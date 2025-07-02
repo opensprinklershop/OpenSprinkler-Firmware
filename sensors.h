@@ -84,7 +84,11 @@ extern "C" {
 #endif
 
 // MaxLogSize
+#if defined(ESP8266)
 #define MAX_LOG_SIZE 8000
+#else
+#define MAX_LOG_SIZE 256*1024 // 256K
+#endif
 
 // Sensor types:
 #define SENSOR_NONE                     0   // None or deleted sensor

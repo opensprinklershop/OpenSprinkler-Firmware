@@ -1288,13 +1288,13 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	os.load_hardware_mac(mac, true);
 #endif
 	String mqtt_opt = os.sopt_load(SOPT_MQTT_OPTS);
-	DEBUG_PRINTLN(mqtt_opt);
+	//DEBUG_PRINTLN(mqtt_opt);
 	//Test for invalid mqtt options:
 	int l = mqtt_opt.length();
 	if (l > 0 && mqtt_opt[l-1] != '"') { //first+last char
 		mqtt_opt += '"';
 	} 
-	DEBUG_PRINTLN(mqtt_opt);
+	//DEBUG_PRINTLN(mqtt_opt);
 
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -1305,7 +1305,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 							 SOPT_WEATHERURL,
 							 SOPT_WEATHER_OPTS,
 							 SOPT_IFTTT_KEY,
-							 mqtt_opt,
+							 mqtt_opt.c_str(),
 							 strlen(wt_rawData)==0?"{}":wt_rawData,
 							 wt_errCode,
 							 SOPT_DEVICE_NAME);
