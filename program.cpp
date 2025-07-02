@@ -42,8 +42,12 @@ time_os_t ProgramData::last_seq_stop_times[NUM_SEQ_GROUPS];
 extern char tmp_buffer[];
 
 void ProgramData::init() {
+	DEBUG_PRINTLN(F("OpenSprinkler programdata init"));
+
 	reset_runtime();
 	load_count();
+
+	DEBUG_PRINTLN(F("OpenSprinkler programdata init-exit"));
 }
 
 void ProgramData::reset_runtime() {

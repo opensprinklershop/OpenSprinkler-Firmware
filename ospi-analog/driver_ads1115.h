@@ -1,3 +1,4 @@
+#ifdef OSPI
 /**
  * Copyright (c) 2015 - present LibDriver All rights reserved
  * 
@@ -688,4 +689,5 @@ uint8_t ads1115_get_reg(ads1115_handle_t *handle, uint8_t reg, int16_t *value);
 }
 #endif
 
+#endif
 #endif

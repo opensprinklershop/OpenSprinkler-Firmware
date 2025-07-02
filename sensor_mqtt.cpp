@@ -137,7 +137,7 @@ static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct
 					DEBUG_PRINT("result: ");
 					DEBUG_PRINTLN(buf);	
 
-					double value = -9999;
+					double value = -999999;
 					int ok = sscanf(buf, "%lf", &value);
 					if (ok && value >= -10000 && value <= 10000 && (value != sensor->last_data || !sensor->flags.data_ok || now-sensor->last_read > 6000)) {
 						sensor->last_data = value;

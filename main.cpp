@@ -40,7 +40,7 @@
 #include "ArduinoJson.hpp"
 
 #if defined(ARDUINO)
-	#if defined(ESP8266)
+	#if defined(ESP8266) 
 		#include <pinger.h>
 		#include <lwip/icmp.h>
 		//extern "C" struct netif* eagle_lwip_getif (int netif_index);
@@ -52,6 +52,15 @@
 		ENC28J60lwIP enc28j60(PIN_ETHER_CS); // ENC28J60 lwip for wired Ether
 		Wiznet5500lwIP w5500(PIN_ETHER_CS); // W5500 lwip for wired Ether
 		lwipEth eth;
+		bool useEth = false; // tracks whether we are using WiFi or wired Ether connection
+	#elif defined(ESP32)
+		#include <ETH.h>
+		#include <esp_system.h>
+		WebServer *update_server = NULL;
+
+		DNSServer *dns = NULL;
+
+		ETHClass eth;
 		bool useEth = false; // tracks whether we are using WiFi or wired Ether connection
 	#else
 		EthernetServer *m_server = NULL;
@@ -69,7 +78,7 @@
 #endif
 
 #if defined(USE_SSD1306)
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	static uint16_t led_blink_ms = LED_FAST_BLINK;
 	#else
 	static uint16_t led_blink_ms = 0;
@@ -114,7 +123,7 @@ uint32_t reboot_timer = 0;
 uint32_t ping_ok = 0;
 
 void flow_poll() {
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	if(os.hw_rev >= 2) pinModeExt(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
 	#endif
 	unsigned char curr_flow_state = digitalReadExt(PIN_SENSOR1);
@@ -209,7 +218,7 @@ void ui_state_machine() {
 					os.lcd.clear(0, 1);
 					os.lcd.setCursor(0, 0);
 					#if defined(ARDUINO)
-					#if defined(ESP8266)
+					#if defined(ESP8266) || defined(ESP32)
 					if (useEth) { os.lcd.print(eth.gatewayIP()); }
 					else { os.lcd.print(WiFi.gatewayIP()); }
 					#else
@@ -240,7 +249,7 @@ void ui_state_machine() {
 				os.lcd.clear(0, 1);
 				os.lcd.setCursor(0, 0);
 				#if defined(ARDUINO)
-				#if defined(ESP8266)
+				#if defined(ESP8266) || defined(ESP32)
 				if (useEth) { os.lcd.print(eth.localIP()); }
 				else { os.lcd.print(WiFi.localIP()); }
 				#else
@@ -319,7 +328,7 @@ void ui_state_machine() {
 					os.lcd.print(os.last_reboot_cause);
 					ui_state = UI_STATE_DISP_IP;
 				} else if(digitalReadExt(PIN_BUTTON_2)==0) {  // if B2 is pressed while holding B3, reset to AP and reboot
-					#if defined(ESP8266)
+					#if defined(ESP8266) || defined(ESP32)
 					if(!ui_confirm(PSTR("Reset to AP?"))) {ui_state = UI_STATE_DEFAULT; break;}
 					os.reset_to_ap();
 					#endif
@@ -371,8 +380,19 @@ void ui_state_machine() {
 // ======================
 #if defined(ARDUINO)
 void do_setup() {
+
+	DEBUG_BEGIN(115200);
+
+#if defined(ESP32)
+	DEBUG_PRINT(F("I2C SDA: "));
+	DEBUG_PRINTLN(SDA);
+	DEBUG_PRINT(F("I2C SCL: "));
+	DEBUG_PRINTLN(SCL);
+#endif
+
+
 	/* Clear WDT reset flag. */
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	WiFi.persistent(false);
 	led_blink_ms = LED_FAST_BLINK;
 #else
@@ -487,7 +507,7 @@ void check_weather();
 static bool process_special_program_command(const char*, uint32_t curr_time);
 static void perform_ntp_sync();
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 bool delete_log_oldest();
 void start_server_ap();
 void start_server_client();
@@ -496,10 +516,13 @@ void reboot_in(uint32_t ms) {
 	if(os.state != OS_STATE_WAIT_REBOOT) {
 		os.state = OS_STATE_WAIT_REBOOT;
 		DEBUG_PRINTLN(F("Prepare to restart..."));
+		#if defined(ESP8266)
 		reboot_ticker.once_ms(ms, ESP.restart);
+		#else
+		reboot_ticker.once_ms(ms, [](){ ESP.restart(); });
+		#endif
 	}
 }
-bool check_enc28j60();
 #elif !defined(OSPI)
 void handle_web_request(char *p);
 #endif
@@ -529,7 +552,7 @@ void do_loop()
 
 	// ====== Process Ethernet packets ======
 #if defined(ARDUINO)	// Process Ethernet packets for Arduino
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	static ulong connecting_timeout;
 	switch(os.state) {
 	case OS_STATE_INITIAL:
@@ -682,7 +705,7 @@ void do_loop()
 	// The main control loop runs once every second
 	if (curr_time != last_time) {
 
-		#if defined(ESP8266)
+		#if defined(ESP8266) || defined(ESP32)
 		if(os.hw_rev>=2) {
 			pinModeExt(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
 			pinModeExt(PIN_SENSOR2, INPUT_PULLUP);
@@ -1122,7 +1145,7 @@ void check_weather() {
 	if (os.status.network_fails>0 || os.iopts[IOPT_REMOTE_EXT_MODE]) return;
 	if (os.status.program_busy) return;
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	if (!os.network_connected()) return;
 #endif
 
@@ -1569,7 +1592,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
 	}
 	#endif
 
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 		EMailSender::EMailMessage email_message;
 	#else
 		struct {
@@ -1813,7 +1836,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
 			if (ifttt_enabled || email_enabled) {
 				#if defined(ARDUINO)
 					strcat_P(postval, PSTR("rebooted. Device IP: "));
-					#if defined(ESP8266)
+					#if defined(ESP8266) || defined(ESP32)
 					{
 						IPAddress _ip;
 						if (useEth) {
@@ -1830,6 +1853,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
 					#endif
 
 					//Adding restart reasons:
+					#if defined(ESP8266) 
 					struct rst_info *rtc_info = system_get_rst_info();
 					if (rtc_info) {
 						int len = strlen(postval);
@@ -1846,6 +1870,13 @@ void push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
 									rtc_info->epc1, rtc_info->epc2, rtc_info->epc3, rtc_info->excvaddr, rtc_info->depc);
 							}
 					}
+					#elif defined(ESP32)
+					esp_reset_reason_t reason = esp_reset_reason();
+					if (reason != ESP_RST_UNKNOWN) {
+						int len = strlen(postval);
+						snprintf_P(postval+len, TMP_BUFFER_SIZE-len, PSTR("<br>reset reason: %d"), reason);
+					}
+					#endif
 
 				#else
 					strcat_P(postval, PSTR("controller process restarted."));
@@ -1897,7 +1928,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
 	if(email_enabled){
 		email_message.message = strchr(postval, 'O'); // ad-hoc: remove the value1 part from the ifttt message
 		#if defined(ARDUINO)
-			#if defined(ESP8266)
+			#if defined(ESP8266) || defined(ESP32)
 				if(email_host && email_username && email_password && email_recipient) { // make sure all are valid
 					free_tmp_memory();
 					EMailSender emailSend(email_username, email_password);
@@ -1947,7 +1978,7 @@ char LOG_PREFIX[] = "./logs/";
  */
 void make_logfile_name(char *name) {
 #if defined(ARDUINO)
-	#if !defined(ESP8266)
+	#if !defined(ESP8266) && !defined(ESP32)
 	sd.chdir("/");
 	#endif
 #endif
@@ -1984,16 +2015,25 @@ void write_log(unsigned char type, time_os_t curr_time) {
 	// and move file pointer to the end
 #if defined(ARDUINO) // prepare log folder for Arduino
 
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	File file = LittleFS.open(tmp_buffer, "r+");
 	if(!file) {
+		#if defined(ESP8266)
 		FSInfo fs_info;
 		LittleFS.info(fs_info);
+
 		// check if we are getting close to run out of space, and delete some oldest files
 		if(fs_info.totalBytes < fs_info.usedBytes + fs_info.blockSize * 4) {
 			// delete the oldest 7 files (1 week of log)
 			for(unsigned char i=0;i<7;i++)	delete_log_oldest();
 		}
+		#else
+		// check if we are getting close to run out of space, and delete some oldest files
+		if(LittleFS.totalBytes() < LittleFS.usedBytes() + 2048 * 4) {
+			// delete the oldest 7 files (1 week of log)
+			for(unsigned char i=0;i<7;i++)	delete_log_oldest();
+		}
+		#endif
 		file = LittleFS.open(tmp_buffer, "w");
 		if(!file) return;
 	}
@@ -2092,7 +2132,7 @@ void write_log(unsigned char type, time_os_t curr_time) {
 	strcat_P(tmp_buffer, PSTR("]\r\n"));
 
 #if defined(ARDUINO)
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	file.write((const uint8_t*)tmp_buffer, strlen(tmp_buffer));
 	#else
 	file.write(tmp_buffer);
@@ -2125,6 +2165,33 @@ bool delete_log_oldest() {
 		return false;
 	}
 }
+#elif defined(ESP32)
+bool delete_log_oldest() {
+	File dir = LittleFS.open(LOG_PREFIX);
+	time_os_t oldest_t = ULONG_MAX;
+	File oldest;
+	if (!dir.isDirectory()) {
+		DEBUG_PRINTLN(F("delete_log_oldest: not a directory"));
+		return false;
+	}
+	File file = dir.openNextFile();
+	while (file) {
+		time_os_t t = file.getLastWrite();
+		if(t<oldest_t) {
+			oldest_t = t;
+			oldest = file;
+		}
+		file = dir.openNextFile();
+	}
+	if(oldest.available()) {
+		DEBUG_PRINT(F("deleting "))
+		DEBUG_PRINTLN(oldest.name());
+		LittleFS.remove(dir.name() + String("/") + oldest.name());
+		return true;
+	} else {
+		return false;
+	}
+}
 #endif
 
 /** Delete log file
@@ -2134,7 +2201,7 @@ void delete_log(char *name) {
 	if (!os.iopts[IOPT_ENABLE_LOGGING]) return;
 #if defined(ARDUINO)
 
-	#if defined(ESP8266)
+	#if defined(ESP8266) 
 	if (strncmp(name, "all", 3) == 0) {
 		// delete all log files
 		Dir dir = LittleFS.openDir(LOG_PREFIX);
@@ -2142,6 +2209,25 @@ void delete_log(char *name) {
 			LittleFS.remove(LOG_PREFIX+dir.fileName());
 		}
 	} else {
+		// delete a single log file
+		make_logfile_name(name);
+		if(!LittleFS.exists(tmp_buffer)) return;
+		LittleFS.remove(tmp_buffer);
+	}
+	#elif defined(ESP32)
+	if (strncmp(name, "all", 3) == 0) {
+		// delete all log files
+		File dir = LittleFS.open(LOG_PREFIX);
+		if (!dir.isDirectory()) {
+			DEBUG_PRINTLN(F("delete_log: not a directory"));
+			return;
+		}
+		File file = dir.openNextFile();
+		while (file) {
+			LittleFS.remove(dir.name() + String("/") + file.name());
+			file = dir.openNextFile();
+		}
+	} else {	
 		// delete a single log file
 		make_logfile_name(name);
 		if(!LittleFS.exists(tmp_buffer)) return;

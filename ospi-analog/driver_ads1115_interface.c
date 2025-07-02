@@ -1,3 +1,4 @@
+#ifdef OSPI
 /**
  * Copyright (c) 2015 - present LibDriver All rights reserved
  * 
@@ -136,3 +137,4 @@ void ads1115_interface_debug_print(const char *const fmt, ...)
     (void)printf((uint8_t *)str, len);
     **/
 }
+#endif // OSPI

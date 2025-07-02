@@ -70,7 +70,7 @@ size_t freeMemory();
 #define MAX_ENCODED_DATE date_encode(12, 31)
 bool isLastDayofMonth(unsigned char month, unsigned char day);
 bool isValidDate(uint16_t date);
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 unsigned char hex2dec(const char *hex);
 bool isHex(char c);
 bool isValidMAC(const char *_mac);

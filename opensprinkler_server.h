@@ -32,7 +32,7 @@
 #include <math.h>
 #endif
 
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 #define OTF_ENABLED
 #endif
 

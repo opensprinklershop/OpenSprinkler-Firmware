@@ -24,7 +24,7 @@
 #ifndef _OSINFLUX_H
 #define _OSINFLUX_H
 #include "ArduinoJson.hpp"
-#if defined(ESP8266) 
+#if defined(ESP8266) || defined(ESP32) 
 #include <InfluxDbClient.h>
 #include <InfluxDbCloud.h>
 #else
@@ -34,7 +34,7 @@
 
 class OSInfluxDB {
 private:
-    #if defined(ESP8266) 
+    #if defined(ESP8266) || defined(ESP32) 
     InfluxDBClient * client;
     #else
     influxdb_cpp::server_info * client;
@@ -57,7 +57,7 @@ public:
     void get_influx_config(ArduinoJson::JsonDocument &doc);
     void get_influx_config(char *json);
     bool isEnabled();
-    #if defined(ESP8266) 
+    #if defined(ESP8266) || defined(ESP32) 
     void write_influx_data(Point &sensor_data);
     #else
     influxdb_cpp::server_info * get_client();

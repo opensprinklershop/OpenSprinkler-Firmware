@@ -41,11 +41,16 @@
 	#include <RCSwitch.h>
 	#include "I2CRTC.h"
 
-	#if defined(ESP8266) // for ESP8266
-		#include <FS.h>
-		#include <LittleFS.h>
+	#if defined(ESP8266)
 		#include <ENC28J60lwIP.h>
 		#include <W5500lwIP.h>
+	#endif
+	#if defined(ESP32)
+		#include <ETH.h>
+	#endif
+	#if defined(ESP8266) || defined(ESP32) // for ESP8266
+		#include <FS.h>
+		#include <LittleFS.h>
 		#include <OpenThingsFramework.h>
 		#include <DNSServer.h>
 		#include <Ticker.h>
@@ -80,7 +85,7 @@
 #endif
 
 #if defined(ARDUINO)
-	#if defined(ESP8266)
+	#if defined(ESP8266) 
 	extern ESP8266WebServer *update_server;
 	extern ENC28J60lwIP enc28j60;
 	extern Wiznet5500lwIP w5500;
@@ -112,6 +117,9 @@
 		}
 	};
 	extern lwipEth eth;
+	#elif defined(ESP32)
+	extern WebServer *update_server;
+	extern ETHClass eth;
 	#else
 		// AVR specific
 	#endif
@@ -425,7 +433,7 @@ public:
 #endif
 
 #if defined(ARDUINO) // LCD functions for Arduino
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	static void lcd_print_pgm(PGM_P str); // ESP8266 does not allow PGM_P followed by PROGMEM
 	static void lcd_print_line_clear_pgm(PGM_P str, unsigned char line);
 	#else
@@ -433,7 +441,7 @@ public:
 	static void lcd_print_line_clear_pgm(PGM_P PROGMEM str, unsigned char line);
 	#endif
 
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	static IOEXP *mainio, *drio;
 	static IOEXP *expanders[];
 	
@@ -461,7 +469,7 @@ private:
 	static unsigned char button_read_busy(unsigned char pin_butt, unsigned char waitmode, unsigned char butt, unsigned char is_holding);
 #endif // LCD functions
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	static void latch_boost(unsigned char volt=0);
 	static void latch_open(unsigned char sid);
 	static void latch_close(unsigned char sid);

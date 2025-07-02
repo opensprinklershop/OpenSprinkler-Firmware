@@ -29,7 +29,11 @@
 extern char tmp_buffer[TMP_BUFFER_SIZE*2];
 extern OpenSprinkler os;
 
+#if !defined(ESP32)
 #define INFLUX_CONFIG_FILE "influx.json"
+#else
+#define INFLUX_CONFIG_FILE "/influx.json"
+#endif
 
 void OSInfluxDB::set_influx_config(int enabled, char *url, uint16_t port, char *org, char *bucket, char *token) {
     ArduinoJson::JsonDocument doc;
@@ -126,7 +130,7 @@ boolean OSInfluxDB::isEnabled() {
     return enabled; 
 }
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 OSInfluxDB::~OSInfluxDB() {
     if (client) delete client;
 }
@@ -191,7 +195,7 @@ influxdb_cpp::server_info *OSInfluxDB::get_client() {
 #endif
 
 
-#if defined(ESP8266) 
+#if defined(ESP8266) || defined(ESP32) 
 void OSInfluxDB::influxdb_send_state(const char *name, int state) {
 	char tmp[TMP_BUFFER_SIZE];
     Point data("opensprinkler");

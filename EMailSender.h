@@ -153,7 +153,7 @@
 
 #elif(EMAIL_NETWORK_TYPE == NETWORK_ESP8266 || EMAIL_NETWORK_TYPE == NETWORK_ESP8266_242)
 
-#if !defined(ESP8266) && !defined(ESP31B)
+#if !defined(ESP8266) && !defined(ESP32) && !defined(ESP31B)
 #error "network type ESP8266 only possible on the ESP mcu!"
 #endif
 

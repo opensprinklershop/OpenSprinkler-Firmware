@@ -28,7 +28,7 @@ extern OpenSprinkler os;
 
 #if defined(ARDUINO)  // Arduino
 
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 		#include <FS.h>
 		#include <LittleFS.h>
 		#include <Esp.h>
@@ -292,7 +292,7 @@ BoardType get_board_type() {
 
 
 void remove_file(const char *fn) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	if(!LittleFS.exists(fn)) return;
 	LittleFS.remove(fn);
@@ -311,7 +311,7 @@ void remove_file(const char *fn) {
 }
 
 bool file_exists(const char *fn) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	//return LittleFS.exists(fn);
 	File f = LittleFS.open(fn, "r");
@@ -339,7 +339,7 @@ bool file_exists(const char *fn) {
 // file functions
 ulong file_size(const char *fn) {
 	ulong size = 0;
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	// do not use File.readBytes or readBytesUntil because it's very slow  
 	File f = LittleFS.open(fn, "r");
@@ -371,7 +371,7 @@ ulong file_size(const char *fn) {
 }
 
 bool rename_file(const char *fn_old, const char *fn_new) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	return LittleFS.rename(fn_old, fn_new);
 #elif defined(ARDUINO)
 	SdFile file(fn_old, O_READ);
@@ -384,7 +384,7 @@ bool rename_file(const char *fn_old, const char *fn_new) {
 // file functions
 ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 	ulong result = 0;
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	// do not use File.read_byte or read_byteUntil because it's very slow
 	File f = LittleFS.open(fn, "r");
@@ -418,7 +418,7 @@ ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 }
 
 void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	File f = LittleFS.open(fn, "r+");
 	if(!f) f = LittleFS.open(fn, "w");
@@ -455,7 +455,7 @@ void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 }
 
 void file_append_block(const char *fn, const void *src, ulong len) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	File f = LittleFS.open(fn, "r+");
 	if(!f) f = LittleFS.open(fn, "w");
@@ -495,7 +495,7 @@ void file_copy_block(const char *fn, ulong from, ulong to, ulong len, void *tmp)
 	// assume tmp buffer is provided and is larger than len
 	// todo future: if tmp buffer is not provided, do unsigned char-to-unsigned char copy
 	if(tmp==NULL) { return; }
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	File f = LittleFS.open(fn, "r+");
 	if(!f) return;
@@ -533,7 +533,7 @@ void file_copy_block(const char *fn, ulong from, ulong to, ulong len, void *tmp)
 
 // compare a block of content
 unsigned char file_cmp_block(const char *fn, const char *buf, ulong pos) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 	File f = LittleFS.open(fn, "r");
 	if(f) {
@@ -721,7 +721,7 @@ bool isValidDate(uint16_t date) {
 	return isValidDate(month, day);
 }
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 unsigned char hex2dec(const char *hex) {
 	return strtol(hex, NULL, 16);
 }

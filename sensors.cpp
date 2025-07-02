@@ -24,7 +24,7 @@
 #include <stdlib.h>
 
 #include "OpenSprinkler.h"
-#ifdef ESP8266
+#if defined(ESP8266) || defined(ESP32)
 #include "Wire.h"
 #else
 #include <stdio.h>
@@ -73,7 +73,7 @@ static Monitor_t *monitors = NULL;
 
 // modbus transaction id
 static uint16_t modbusTcpId = 0;
-#ifdef ESP8266
+#if defined(ESP8266) || defined(ESP32)
 static uint i2c_rs485_allocated[MAX_RS485_DEVICES];
 #else
 static modbus_t * ttyDevices[MAX_RS485_DEVICES];
@@ -131,7 +131,7 @@ uint16_t CRC16(unsigned char buf[], int len) {
  */
 void detect_asb_board() {
   // detect analog sensor board, 0x48+0x49=Board1, 0x4A+0x4B=Board2
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   if (detect_i2c(ASB_BOARD_ADDR1a) && detect_i2c(ASB_BOARD_ADDR1b))
     asb_detected_boards |= ASB_BOARD1;
   if (detect_i2c(ASB_BOARD_ADDR2a) && detect_i2c(ASB_BOARD_ADDR2b))
@@ -186,7 +186,7 @@ void sensor_api_init(boolean detect_boards) {
   prog_adjust_load();
   sensor_mqtt_init();
   monitor_load();
-#ifndef ESP8266
+#if !defined(ESP8266) && !defined(ESP32)
   //Read rs485 file. Details see below
   std::ifstream file;
   file.open("rs485", std::ifstream::in);
@@ -232,7 +232,7 @@ void sensor_save_all() {
   prog_adjust_save();
   SensorUrl_save();
   monitor_save();
-#ifndef ESP8266
+#if !defined(ESP8266) && !defined(ESP32)
   for (int i = 0; i < MAX_RS485_DEVICES; i++) {
     if (ttyDevices[i]) {
       modbus_close(ttyDevices[i]);
@@ -285,7 +285,7 @@ void sensor_api_free() {
   }
 
   modbusTcpId = 0;
-  #ifdef ESP8266
+  #if defined(ESP8266) || defined(ESP32)
   memset(i2c_rs485_allocated, 0, sizeof(i2c_rs485_allocated));
   #endif
   DEBUG_PRINTLN("sensor_api_free5");
@@ -576,7 +576,7 @@ void checkLogSwitchAfterWrite(uint8_t log) {
 }
 
 bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   if (checkDiskFree()) {
 #endif
     DEBUG_PRINT(F("sensorlog_add "));
@@ -587,7 +587,7 @@ bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog) {
     DEBUG_PRINT(F("="));
     DEBUG_PRINTLN(sensorlog_filesize(log));
     return true;
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   }
   return false;
 #endif
@@ -1048,7 +1048,7 @@ void read_all_sensors(boolean online) {
 }
 
 #if defined(ARDUINO)
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 /**
  * Read ESP8296 ADS1115 sensors
  */
@@ -1182,7 +1182,7 @@ bool extract(char *s, char *buf, int maxlen) {
 }
 
 int read_sensor_http(Sensor_t *sensor, ulong time) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   IPAddress _ip(sensor->ip);
   unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
 #else
@@ -1257,7 +1257,7 @@ int read_sensor_http(Sensor_t *sensor, ulong time) {
   return res;
 }
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 /**
  * @brief Truebner RS485 Interface
  *
@@ -1387,7 +1387,7 @@ int read_sensor_ip(Sensor_t *sensor) {
 #if defined(ARDUINO)
 
   Client *client;
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   WiFiClient wifiClient;
   client = &wifiClient;
 #else
@@ -1456,7 +1456,7 @@ int read_sensor_ip(Sensor_t *sensor) {
   buffer[11] = 0x01;  
 
   client->write(buffer, 12);
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   client->flush();
 #endif
 
@@ -1468,7 +1468,7 @@ int read_sensor_ip(Sensor_t *sensor) {
     case SENSOR_TH100_MOIS:
 	  case SENSOR_TH100_TEMP:
       uint32_t stoptime = millis() + SENSOR_READ_TIMEOUT;
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
       while (true) {
         if (client->available()) break;
         if (millis() >= stoptime) {
@@ -1597,7 +1597,7 @@ int read_sensor(Sensor_t *sensor, ulong time) {
       break;
 
 #if defined(ARDUINO)
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
     case SENSOR_ANALOG_EXTENSION_BOARD:
     case SENSOR_ANALOG_EXTENSION_BOARD_P:
     case SENSOR_SMT50_MOIS:          // SMT50 VWC [%] = (U * 50) : 3
@@ -1623,10 +1623,16 @@ int read_sensor(Sensor_t *sensor, ulong time) {
       return HTTP_RQT_SUCCESS;
     }
     case SENSOR_FREE_STORE: {
+      #if defined(ESP8266)
     	struct FSInfo fsinfo;
 	    boolean ok = LittleFS.info(fsinfo);
       if (ok) {
         uint32_t fd = fsinfo.totalBytes-fsinfo.usedBytes;
+      #elif defined(ESP32)
+      boolean ok = LittleFS.totalBytes() > 0;
+      if (ok) {
+        uint32_t fd = LittleFS.totalBytes() - LittleFS.usedBytes();      
+      #endif
         if (sensor->last_native_data == fd)
           return HTTP_RQT_NOT_RECEIVED;
         sensor->last_native_data = fd;
@@ -1773,7 +1779,7 @@ void sensor_update_groups() {
 int set_sensor_address_ip(Sensor_t *sensor, uint8_t new_address) {
 #if defined(ARDUINO)
   Client *client;
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   WiFiClient wifiClient;
   client = &wifiClient;
 #else
@@ -1784,7 +1790,7 @@ int set_sensor_address_ip(Sensor_t *sensor, uint8_t new_address) {
   EthernetClient etherClient;
   EthernetClient *client = &etherClient;
 #endif
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   IPAddress _ip(sensor->ip);
   unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
 #else
@@ -1829,7 +1835,7 @@ int set_sensor_address_ip(Sensor_t *sensor, uint8_t new_address) {
   buffer[11] = new_address;
 
   client->write(buffer, 12);
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   client->flush();
 #endif
 
@@ -1861,7 +1867,7 @@ int set_sensor_address_ip(Sensor_t *sensor, uint8_t new_address) {
   return HTTP_RQT_SUCCESS;
 }
 
-#ifdef ESP8266
+#if defined(ESP8266) || defined(ESP32)
 /**
  * @brief Set the sensor address i2c
  *
@@ -2220,6 +2226,11 @@ ulong diskFree() {
   LittleFS.info(fsinfo);
   return fsinfo.totalBytes - fsinfo.usedBytes;
 }
+#elif defined(ESP32)
+ulong diskFree() {
+  return LittleFS.totalBytes() - LittleFS.usedBytes();
+}
+#endif
 
 bool checkDiskFree() {
   if (diskFree() < MIN_DISK_FREE) {
@@ -2228,7 +2239,6 @@ bool checkDiskFree() {
   }
   return true;
 }
-#endif
 
 const char *getSensorUnit(int unitid) {
   if (unitid == UNIT_USERDEF) return "?";
@@ -2275,7 +2285,7 @@ unsigned char getSensorUnitId(int type) {
 	  case SENSOR_TH100_TEMP:
       return UNIT_DEGREE;
 #if defined(ARDUINO)
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
     case SENSOR_ANALOG_EXTENSION_BOARD:
       return UNIT_VOLT;
     case SENSOR_ANALOG_EXTENSION_BOARD_P:
@@ -2348,7 +2358,7 @@ unsigned char getSensorUnitId(Sensor_t *sensor) {
 	  case SENSOR_TH100_TEMP:
       return UNIT_DEGREE;
 #if defined(ARDUINO)
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
     case SENSOR_ANALOG_EXTENSION_BOARD:
       return UNIT_VOLT;
     case SENSOR_ANALOG_EXTENSION_BOARD_P:
@@ -2427,7 +2437,7 @@ unsigned char getSensorUnitId(Sensor_t *sensor) {
 }
 
 void GetSensorWeather() {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   if (!useEth)
     if (os.state != OS_STATE_CONNECTED || WiFi.status() != WL_CONNECTED) return;
 #endif
@@ -2658,7 +2668,7 @@ void add_influx_data(Sensor_t *sensor) {
   if (!os.influxdb.isEnabled())
     return;
 
-  #if defined(ESP8266)
+  #if defined(ESP8266) || defined(ESP32)
   Point sensor_data("analogsensor");
   os.sopt_load(SOPT_DEVICE_NAME, tmp_buffer);
   sensor_data.addTag("devicename", tmp_buffer);
@@ -2925,7 +2935,7 @@ bool get_monitor(uint nr, bool inv, bool defaultBool) {
 }
 
 bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   IPAddress _ip(mon->m.remote.ip);
   unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
 #else

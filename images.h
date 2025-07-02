@@ -13,7 +13,7 @@ enum {
 	NUM_CUSTOM_ICONS
 };
 
-#if defined(ESP8266) || defined(PIN_SENSOR2)
+#if defined(ESP8266) || defined(ESP32) || defined(PIN_SENSOR2)
 enum {
 	LCD_CURSOR_REMOTEXT = 11,
 	LCD_CURSOR_RAINDELAY,// 12

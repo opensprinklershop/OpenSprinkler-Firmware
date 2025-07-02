@@ -24,12 +24,12 @@
 #ifndef _DEFINES_H
 #define _DEFINES_H
 
-//#define ENABLE_DEBUG  // enable serial debug
+#define ENABLE_DEBUG  // enable serial debug
 
 typedef unsigned long ulong;
 
 #define TMP_BUFFER_SIZE      320   // scratch buffer size
-#define TMP_BUFFER_SIZE_L      TMP_BUFFER_SIZE+100   // scratch buffer size
+#define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
 /** Firmware version, hardware version, and maximal values */
 #define OS_FW_VERSION  233  // Firmware version: 220 means 2.2.0
@@ -50,6 +50,7 @@ typedef unsigned long ulong;
 #define HW_TYPE_UNKNOWN      0xFF
 
 /** Data file names */
+#if !defined(ESP32)
 #define IOPTS_FILENAME        "iopts.dat"   // integer options data file
 #define SOPTS_FILENAME        "sopts.dat"   // string options data file
 #define STATIONS_FILENAME     "stns.dat"    // stations data file
@@ -58,6 +59,16 @@ typedef unsigned long ulong;
 #define NVCON_FILENAME        "nvcon.dat"   // non-volatile controller data file, see OpenSprinkler.h --> struct NVConData
 #define PROG_FILENAME         "prog.dat"    // program data file
 #define DONE_FILENAME         "done.dat"    // used to indicate the completion of all files
+#else
+#define IOPTS_FILENAME        "/iopts.dat"   // integer options data file
+#define SOPTS_FILENAME        "/sopts.dat"   // string options data file
+#define STATIONS_FILENAME     "/stns.dat"    // stations data file
+#define STATIONS2_FILENAME    "/stns2.dat"   // stations data file 2 - flow alert values
+#define STATIONS3_FILENAME    "/stns3.dat"   // stations data file 3 - flow avg values
+#define NVCON_FILENAME        "/nvcon.dat"   // non-volatile controller data file, see OpenSprinkler.h --> struct NVConData
+#define PROG_FILENAME         "/prog.dat"    // program data file
+#define DONE_FILENAME         "/done.dat"    // used to indicate the completion of all files
+#endif
 
 /** Station macro defines */
 #define STN_TYPE_STANDARD    0x00 // standard solenoid station
@@ -118,8 +129,10 @@ typedef unsigned long ulong;
 
 
 /** WiFi defines */
+#if !defined(ESP32)
 #define WIFI_MODE_AP       0xA9
 #define WIFI_MODE_STA      0x2A
+#endif
 
 #define OS_STATE_INITIAL        0
 #define OS_STATE_CONNECTING     1
@@ -343,7 +356,7 @@ enum {
 	#define PIN_CURR_DIGITAL  24    // digital pin index for A7
 
 	#define ETHER_BUFFER_SIZE   2048
-	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
+	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE*2)
 
 	#define 	wdt_reset()   __asm__ __volatile__ ("wdr")  // watchdog timer reset
 
@@ -353,7 +366,7 @@ enum {
 
 	#define USE_DISPLAY
 	#define USE_LCD
-#elif defined(ESP8266) // for ESP8266
+#elif defined(ESP8266) || defined(ESP32) // for ESP8266
 
 	#define OS_HW_VERSION    (OS_HW_VERSION_BASE+30)
 	#define IOEXP_PIN        0x80 // base for pins on main IO expander
@@ -366,13 +379,9 @@ enum {
 	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
 	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
 
-	#define PIN_CURR_SENSE    A0    // current sensing pin
-	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
 	#define PIN_FREE_LIST     {} // no free GPIO pin at the moment
-	#define ETHER_BUFFER_SIZE   2048
-	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
-
-	#define PIN_ETHER_CS       16 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
+	#define ETHER_BUFFER_SIZE   4096
+	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE*2)
 
 	/* To accommodate different OS30 versions, we use software defines pins */
 	extern unsigned char PIN_BUTTON_1;
@@ -392,6 +401,12 @@ enum {
 	/* Original OS30 pin defines */
 	//#define V0_MAIN_INPUTMASK 0b00001010 // main input pin mask
 	// pins on main PCF8574 IO expander have pin numbers IOEXP_PIN+i
+#if !defined(ESP32) 
+	#define PIN_CURR_SENSE    A0    // current sensing pin
+	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
+
+	#define V0_IO_CONFIG         0x1F00 // config bits
+	#define V0_IO_OUTPUT         0x1F00 // output bits
 	#define V0_PIN_BUTTON_1      IOEXP_PIN+1 // button 1
 	#define V0_PIN_BUTTON_2      0           // button 2
 	#define V0_PIN_BUTTON_3      IOEXP_PIN+3 // button 3
@@ -438,6 +453,33 @@ enum {
 	#define V2_PIN_SENSOR1       3  // sensor 1
 	#define V2_PIN_SENSOR2       10 // sensor 2
 
+	#define PIN_ETHER_CS       16 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
+
+#else // ESP32
+	/* OS33 ESP32 pin defines */
+	#define PIN_CURR_SENSE    0    // current sensing pin
+	#define PIN_LATCH_VOLT_SENSE 0 // latch voltage sensing pin
+	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
+	#define ESP32_IO_CONFIG         0x1000 // config bits
+	#define ESP32_IO_OUTPUT         0x1E00 // output bits
+	#define ESP32_PIN_BUTTON_1      8 // button 1 (8266:2)
+	#define ESP32_PIN_BUTTON_2      9 // button 2 (8266:0)
+	#define ESP32_PIN_BUTTON_3      IOEXP_PIN+12 // button 3
+	#define ESP32_PIN_RFTX          255 // undefined! (8266:15
+	#define ESP32_PIN_BOOST         IOEXP_PIN+13
+	#define ESP32_PIN_BOOST_EN      IOEXP_PIN+14
+	#define ESP32_PIN_LATCH_COMA    IOEXP_PIN+8  // latch COM+ (anode)
+	#define V2_PIN_SRLAT            IOEXP_PIN+9  // shift register latch
+	#define V2_PIN_SRCLK            IOEXP_PIN+10 // shift register clock
+	#define V2_PIN_SRDAT            IOEXP_PIN+11 // shift register data
+	#define ESP32_PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
+	#define ESP32_PIN_SENSOR1       20  // sensor 1 (8266:3)
+	#define ESP32_PIN_SENSOR2       7  // sensor 2	(8266:10)
+
+	#define PIN_ETHER_CS       1 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
+	#define PIN_ETHER_IRQ     -1 //
+	#define PIN_ETHER_RESET   -1
+#endif
 	#define USE_DISPLAY
 	#define USE_SSD1306
 
@@ -458,7 +500,7 @@ enum {
 
 	#define PIN_FREE_LIST       {5,6,7,8,9,11,12,13,16,19,20,21,23,25,26}  // free GPIO pins
 	#define ETHER_BUFFER_SIZE   16384
-	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
+	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE+4096)
 
 	#define SDA 0
 	#define SCL 0
@@ -482,7 +524,7 @@ enum {
 	#define PIN_RFTX        0
 	#define PIN_FREE_LIST  {}
 	#define ETHER_BUFFER_SIZE   16384
-	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
+	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE+4096)
 
 #endif
 

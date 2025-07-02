@@ -36,7 +36,10 @@
 #include <stdio.h>
 #if defined(ESP32)
 #include <mbedtls/base64.h>
+#include <esp_task_wdt.h>
+#include "defines.h"
 #endif
+
 
 //#include <SPIFFS.h>
 //#include <LittleFS.h>
@@ -231,7 +234,12 @@ EMailSender::Response EMailSender::awaitSMTPResponse(EMAIL_NETWORK_CLASS &client
 	EMailSender::Response response;
 	uint32_t ts = millis();
 	while (!client.available()) {
-		wdt_reset();
+		#if defined(ESP32)
+			esp_task_wdt_reset();
+		#else
+			wdt_reset();
+		#endif
+		
 		if (millis() > (ts + timeOut)) {
 			response.code = F("1");
 			response.desc = String(respDesc) + "! " + F("SMTP Response TIMEOUT!");

@@ -1,3 +1,4 @@
+#ifdef OSPI
 /**
  * Copyright (c) 2015 - present LibDriver All rights reserved
  * 
@@ -1462,3 +1463,4 @@ uint8_t ads1115_info(ads1115_info_t *info)
     
     return 0;                                                       /* success return 0 */
 }
+#endif

@@ -17,13 +17,18 @@
  * along with this program.  If not, see
  * <http://www.gnu.org/licenses/>.
  */
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 
 #include "espconnect.h"
 
 String scan_network() {
+	#if defined(ESP8266)
 	WiFi.setOutputPower(20.5);
 	WiFi.mode(WIFI_STA);
+	#else 
+	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
+	WiFi.mode(WIFI_MODE_STA); // set mode to STA
+	#endif
 	WiFi.disconnect();
 	unsigned char n = WiFi.scanNetworks();
 	String json;
@@ -52,7 +57,11 @@ String scan_network() {
 
 void start_network_ap(const char *ssid, const char *pass) {
 	if(!ssid) return;
+	#if defined(ESP8266)
 	WiFi.setOutputPower(20.5);
+	#else
+	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
+	#endif
 	if(pass) WiFi.softAP(ssid, pass);
 	else WiFi.softAP(ssid);
 	WiFi.mode(WIFI_AP_STA); // start in AP_STA mode
@@ -61,14 +70,24 @@ void start_network_ap(const char *ssid, const char *pass) {
 
 void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
 	if(!ssid || !pass) return;
+	#if defined(ESP8266)
 	WiFi.setOutputPower(20.5);
+	#else
+	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
+	#endif
+
 	if(WiFi.getMode()!=WIFI_AP_STA) WiFi.mode(WIFI_AP_STA);
 	WiFi.begin(ssid, pass, channel, bssid);
 }
 
 void start_network_sta(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
 	if(!ssid || !pass) return;
+	#if defined(ESP8266)
 	WiFi.setOutputPower(20.5);
+	#else
+	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
+	#endif
+
 	if(WiFi.getMode()!=WIFI_STA) WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid, pass, channel, bssid);
 }

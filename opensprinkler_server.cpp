@@ -55,6 +55,14 @@
 		extern ENC28J60lwIP enc28j60;
 		extern Wiznet5500lwIP w5500;
 		extern lwipEth eth;
+	#elif defined(ESP32)
+		#include <FS.h>
+		#include <LittleFS.h>
+		#include "espconnect.h"
+		#include <Update.h>
+		#include <ETH.h>
+		extern WebServer *update_server;
+		extern ETHClass eth;
 	#else
 		#include "SdFat.h"
 		extern SdFat sd;
@@ -303,7 +311,7 @@ void otf_send_result(OTF_PARAMS_DEF, unsigned char code, const char *item = NULL
 }
 #endif
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 void update_server_send_result(unsigned char code, const char* item = NULL) {
 	String json = F("{\"result\":");
 	json += code;
@@ -1078,7 +1086,7 @@ void server_json_options_main() {
 				continue;
 		#endif
 
-		#if !(defined(ESP8266) || defined(PIN_SENSOR2))
+		#if !(defined(ESP8266) || defined(ESP32) || defined(PIN_SENSOR2))
 		// only OS 3.x or controllers that have PIN_SENSOR2 defined support sensor 2 options
 		if (oid==IOPT_SENSOR2_TYPE || oid==IOPT_SENSOR2_OPTION || oid==IOPT_SENSOR2_ON_DELAY || oid==IOPT_SENSOR2_OFF_DELAY)
 			continue;
@@ -1103,7 +1111,7 @@ void server_json_options_main() {
 		if (oid==IOPT_BOOST_TIME || oid==IOPT_LATCH_ON_VOLTAGE || oid==IOPT_LATCH_OFF_VOLTAGE) continue;
 		#endif
 
-		#if defined(ESP8266)
+		#if defined(ESP8266) || defined(ESP32)
 		if (oid==IOPT_HW_VERSION) {
 			v+=os.hw_rev;	// for OS3.x, add hardware revision number
 		}
@@ -1112,7 +1120,7 @@ void server_json_options_main() {
 		if (oid==IOPT_SEQUENTIAL_RETIRED || oid==IOPT_URS_RETIRED || oid==IOPT_RSO_RETIRED) continue;
 
 #if defined(ARDUINO)
-		#if defined(ESP8266)
+		#if defined(ESP8266) || defined(ESP32)
 		// for SSD1306, we can't adjust contrast or backlight
 		if(oid==IOPT_LCD_CONTRAST || oid==IOPT_LCD_BACKLIGHT) continue;
 		#else
@@ -1266,32 +1274,28 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 							os.status.pause_state,
 							os.pause_timer,
 							pd.nqueue);
-
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	bfill.emit_p(PSTR("\"RSSI\":$D,"), (int16_t)WiFi.RSSI());
 #endif
 
 #if defined(USE_OTF)
 	bfill.emit_p(PSTR("\"otc\":{$O},\"otcs\":$D,"), SOPT_OTC_OPTS, otf->getCloudStatus());
 #endif
-
 	unsigned char mac[6] = {0};
 #if defined(ARDUINO)
 	os.load_hardware_mac(mac, useEth);
 #else
 	os.load_hardware_mac(mac, true);
 #endif
-	char mqtt_opt[MAX_SOPTS_SIZE];
-	os.sopt_load(SOPT_MQTT_OPTS, mqtt_opt);
-	//DEBUG_PRINTLN(mqtt_opt);
-
+	String mqtt_opt = os.sopt_load(SOPT_MQTT_OPTS);
+	DEBUG_PRINTLN(mqtt_opt);
 	//Test for invalid mqtt options:
-	int l = strlen(mqtt_opt);
+	int l = mqtt_opt.length();
 	if (l > 0 && mqtt_opt[l-1] != '"') { //first+last char
-		mqtt_opt[l] = '"';
-		mqtt_opt[l+1] = 0;
-	}
-	//DEBUG_PRINTLN(mqtt_opt);
+		mqtt_opt += '"';
+	} 
+	DEBUG_PRINTLN(mqtt_opt);
+
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
@@ -1323,8 +1327,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 	bfill.emit_p(PSTR("\"sbits\":["));
 	// print sbits
-	for(bid=0;bid<os.nboards;bid++)
+	for(bid=0;bid<os.nboards;bid++) {
 		bfill.emit_p(PSTR("$D,"), os.station_bits[bid]);
+	}
 	bfill.emit_p(PSTR("0],\"ps\":["));
 	// print ps
 	for(sid=0;sid<os.nstations;sid++) {
@@ -1344,7 +1349,6 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 		(qid<255)?q->pid:0, rem, (qid<255)?q->st:0, os.attrib_grp[sid]);
 		bfill.emit_p((sid<os.nstations-1)?PSTR(","):PSTR("]"));
 	}
-
 	unsigned char gpioList[] = PIN_FREE_LIST;
 	bfill.emit_p(PSTR(",\"gpio\":["));
 	for (unsigned char i = 0; i < sizeof(gpioList); ++i)
@@ -1365,7 +1369,6 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	server_influx_get_main();
 	//end influxdb
 
-
 	bfill.emit_p(PSTR("}"));
 }
 
@@ -1378,7 +1381,6 @@ void server_json_controller(OTF_PARAMS_DEF) {
 #else
 	print_header();
 #endif
-
 	bfill.emit_p(PSTR("{"));
 	server_json_controller_main(OTF_PARAMS);
 	handle_return(HTML_OK);
@@ -1387,6 +1389,7 @@ void server_json_controller(OTF_PARAMS_DEF) {
 /** Output homepage */
 void server_home(OTF_PARAMS_DEF)
 {
+	DEBUG_PRINTLN("server_home called");
 	rewind_ether_buffer();
 #if defined(USE_OTF)
 	print_header(OTF_PARAMS,false,strlen(ether_buffer));
@@ -1399,6 +1402,8 @@ void server_home(OTF_PARAMS_DEF)
 							 OS_FW_VERSION, os.iopts[IOPT_IGNORE_PASSWORD]);
 
 	bfill.emit_p(PSTR("<script src=\"$O/home.js\"></script></body></html>"), SOPT_JAVASCRIPTURL);
+
+	DEBUG_PRINTLN("server_home called-exit");
 
 	handle_return(HTML_OK);
 }
@@ -1473,7 +1478,7 @@ void server_change_values(OTF_PARAMS_DEF)
 		}
 	}
 
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ap"), true)) {
 		os.reset_to_ap();
 	}
@@ -1878,7 +1883,7 @@ void server_change_manual(OTF_PARAMS_DEF) {
 }
 
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 int file_fgets(File file, char* buf, int maxsize) {
 	int index=0;
 	while(index<maxsize) {
@@ -1958,7 +1963,7 @@ void server_json_log(OTF_PARAMS_DEF) {
 		snprintf(tmp_buffer, TMP_BUFFER_SIZE_L , "%d", i);
 		make_logfile_name(tmp_buffer);
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 		File file = LittleFS.open(tmp_buffer, "r");
 		if(!file) continue;
 #elif defined(ARDUINO)
@@ -1971,7 +1976,7 @@ void server_json_log(OTF_PARAMS_DEF) {
 #endif // prepare to open log file
 		int result;
 		while(true) {
-		#if defined(ESP8266)
+		#if defined(ESP8266) || defined(ESP32)
 			// do not use file.read_byte or read_byteUntil because it's very slow
 			result = file_fgets(file, tmp_buffer, TMP_BUFFER_SIZE);
 			if (result <= 0) {
@@ -2144,8 +2149,10 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 	bfill.emit_p(PSTR("{\"date\":\"$S\",\"time\":\"$S\",\"heap\":$L"), __DATE__, __TIME__,
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	(unsigned long)ESP.getFreeHeap());
+
+	#if defined(ESP8266)
 	FSInfo fs_info;
 	LittleFS.info(fs_info);
 	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,"), fs_info.totalBytes, fs_info.usedBytes);
@@ -2155,7 +2162,15 @@ void server_json_debug(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("\"rssi\":$D,\"bssid\":\"$S\",\"bssidchl\":\"$O\"}"),
 		WiFi.RSSI(), WiFi.BSSIDstr().c_str(), SOPT_STA_BSSID_CHL);
 	}
-
+	#elif defined(ESP32)
+	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,"), LittleFS.totalBytes(), LittleFS.usedBytes());
+	if(useEth) {
+		bfill.emit_p(PSTR("\"ETH\":$D}"), 1);
+	} else {
+		bfill.emit_p(PSTR("\"rssi\":$D,\"bssid\":\"$S\",\"bssidchl\":\"$O\"}"),
+		WiFi.RSSI(), WiFi.BSSIDstr().c_str(), SOPT_STA_BSSID_CHL);
+	}
+	#endif
 /*
 // print out all log files and all files in the main folder with file sizes
 	DEBUG_PRINTLN(F("List Files:"));
@@ -3448,7 +3463,7 @@ static const int sensor_types[] = {
 	SENSOR_TH100_MOIS,
 	SENSOR_TH100_TEMP,
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	SENSOR_ANALOG_EXTENSION_BOARD,
 	SENSOR_ANALOG_EXTENSION_BOARD_P,
 	SENSOR_SMT50_MOIS,
@@ -3482,7 +3497,7 @@ static const int sensor_types[] = {
 	SENSOR_GROUP_MAX,
 	SENSOR_GROUP_AVG,
 	SENSOR_GROUP_SUM,
-#if defined(ESP8266)	
+#if defined(ESP8266) || defined(ESP32)	
 	SENSOR_FREE_MEMORY,
 	SENSOR_FREE_STORE,
 #endif
@@ -3494,7 +3509,7 @@ static const char* sensor_names[] = {
 	"Truebner SMT100 RS485 Modbus, permittivity mode",
 	"Truebner TH100 RS485 Modbus, humidity mode",
 	"Truebner TH100 RS485 Modbus, temperature mode",
- #if defined(ESP8266)
+ #if defined(ESP8266) || defined(ESP32)
 	"ASB - voltage mode 0..5V",
 	"ASB - 0..3.3V to 0..100%",
 	"ASB - SMT50 moisture mode",
@@ -3530,14 +3545,14 @@ static const char* sensor_names[] = {
 	"Sensor group with max value",
 	"Sensor group with avg value",
 	"Sensor group with sum value",
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	"Free Memory",
 	"Free Storage",
 #endif
 };
 
 void free_tmp_memory() {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	DEBUG_PRINT(F("freememory start: "));
 	DEBUG_PRINTLN(freeMemory());
 
@@ -3550,7 +3565,7 @@ void free_tmp_memory() {
 }
 
 void restore_tmp_memory() {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	sensor_api_init(false);
 
 	DEBUG_PRINT(F("freememory restore: "));
@@ -3627,7 +3642,7 @@ void server_usage(OTF_PARAMS_DEF) {
 
 extern uint32_t ping_ok;
 
-#if defined(ESP8266)
+#if defined(ESP8266) 
 
 	struct FSInfo fsinfo;
 
@@ -3646,7 +3661,16 @@ extern uint32_t ping_ok;
 		ping_ok,
 		os.mqtt.connected(),
 		get_notif_enabled());
-
+#elif defined(ESP32)
+	bfill.emit_p(PSTR("{\"status\":$D,\"freeMemory\":$D,\"totalBytes\":$D,\"usedBytes\":$D,\"freeBytes\":$D,\"pingok\":$D,\"mqtt\":$D,\"ifttt\":$D"),
+		1,
+		freeMemory(),
+		LittleFS.totalBytes(),
+		LittleFS.usedBytes(),
+		LittleFS.totalBytes()-LittleFS.usedBytes(),
+		ping_ok,
+		os.mqtt.connected(),
+		get_notif_enabled());
 #else
 	bfill.emit_p(PSTR("{\"status\":$D,\"mqtt\":$D,\"ifttt\":$D"), 1, os.mqtt.connected(), get_notif_enabled());
 
@@ -4091,7 +4115,7 @@ URLHandler urls[] = {
 };
 
 // handle Ethernet request
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 void on_ap_update(OTF_PARAMS_DEF) {
 	print_header(OTF_PARAMS, false, strlen_P((char*)ap_update_html));
 	res.writeBodyChunk((char *) "%s", ap_update_html);
@@ -4326,7 +4350,7 @@ void handle_web_request(char *p) {
 #if defined(ARDUINO)
 #define NTP_NTRIES 10
 /** NTP sync request */
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 // due to lwip not supporting UDP, we have to use configTime and time() functions
 // othewise, using UDP is much faster for NTP sync
 ulong getNtpTime() {

@@ -37,12 +37,13 @@ extern "C" {
 #endif
 #include "defines.h"
 #include "utils.h"
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 #include <ADS1X15.h>
 #endif
 #include "program.h"
 
 // Files
+#if !defined(ESP32)
 #define SENSOR_FILENAME "sensor.dat"      // analog sensor filename
 #define SENSOR_FILENAME_BAK "sensor.bak"  // analog sensor filename backup
 #define PROG_SENSOR_FILENAME "progsensor.dat"  // sensor to program assign filename
@@ -60,6 +61,27 @@ extern "C" {
   "sensorlogM2.dat"  // analog sensor log filename2 for month average
 
 #define SENSORURL_FILENAME "sensorurl.dat"  // long urls filename
+#else
+#define SENSOR_FILENAME "/sensor.dat"      // analog sensor filename
+#define SENSOR_FILENAME_BAK "/sensor.bak"  // analog sensor filename backup
+#define PROG_SENSOR_FILENAME "/progsensor.dat"  // sensor to program assign filename
+#define SENSORLOG_FILENAME1 "/sensorlog.dat"   // analog sensor log filename
+#define SENSORLOG_FILENAME2 "/sensorlog2.dat"  // analog sensor log filename2
+#define MONITOR_FILENAME "/monitors.dat"
+
+#define SENSORLOG_FILENAME_WEEK1 \
+  "/sensorlogW1.dat"  // analog sensor log filename for  week average
+#define SENSORLOG_FILENAME_WEEK2 \
+  "/sensorlogW2.dat"  // analog sensor log filename2 for week average
+#define SENSORLOG_FILENAME_MONTH1 \
+  "/sensorlogM1.dat"  // analog sensor log filename for month average
+#define SENSORLOG_FILENAME_MONTH2 \
+  "/sensorlogM2.dat"  // analog sensor log filename2 for month average
+
+#define SENSORURL_FILENAME "/sensorurl.dat"  // long urls filename
+
+
+#endif
 
 // MaxLogSize
 #define MAX_LOG_SIZE 8000
@@ -441,7 +463,7 @@ Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);
 void check_monitors();
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 ulong diskFree();
 bool checkDiskFree();  // true: disk space Ok, false: Out of disk space
 #endif
