@@ -86,6 +86,7 @@ void remote_http_callback(char*);
 // Small variations have been added to the timing values below
 // to minimize conflicting events
 #define NTP_SYNC_INTERVAL       86413L  // NTP sync interval (in seconds)
+#define ARP_REQUEST_INTERVAL    5       // ARP request interval (in seconds)
 #define CHECK_NETWORK_INTERVAL  601     // Network checking timeout (in seconds)
 #define CHECK_WEATHER_TIMEOUT   21613L  // Weather check interval (in seconds)
 #define CHECK_WEATHER_SUCCESS_TIMEOUT 86400L // Weather check success interval (in seconds)
@@ -568,6 +569,14 @@ void reboot_in(uint32_t ms) {
 void handle_web_request(char *p);
 #endif
 
+// Gratuitous ARP task for ESP8266 lwIP
+void gratuitousARPTask() {
+        netif *n = netif_list;
+        while (n) {
+                etharp_gratuitous(n);
+                n = n->next;
+        }
+}
 
 /** Main Loop */
 void do_loop()
@@ -693,6 +702,13 @@ void do_loop()
 			}
 		}
 		break;
+	}
+
+	static unsigned long arp_check = 0;
+	if (curr_time && (curr_time > arp_check)) {
+		DEBUG_PRINTLN(F("gratuiousARPTask"));
+		gratuitousARPTask(); // send gratuitous ARP every 5 seconds
+		arp_check = curr_time + ARP_REQUEST_INTERVAL;
 	}
 
 	#else // AVR
@@ -838,6 +854,7 @@ void do_loop()
 		// ====== Schedule program data ======
 		ulong curr_minute = curr_time / 60;
 		boolean match_found = false;
+		double wl = 0;
 		RuntimeQueueStruct *q;
 		// since the granularity of start time is minute
 		// we only need to check once every minute
@@ -884,8 +901,9 @@ void do_loop()
 							// water time is scaled by watering percentage
 							ulong water_time = water_time_resolve(prog.durations[sid]);
 							// if the program is set to use weather scaling
-							double wl = prog.use_weather?os.iopts[IOPT_WATER_PERCENTAGE] : 100;
-							wl = wl / 100 * calc_sensor_watering(pid); //Analog Sensor program adjustment
+							double wl1 = (prog.use_weather?os.iopts[IOPT_WATER_PERCENTAGE] : 100) / 100.0;
+							double wl2 = calc_sensor_watering(pid); //Analog Sensor program adjustment
+							wl = wl1 * wl2;
 							water_time = water_time * wl;
 							// Belowmode handling:
 							uint16_t below_value = os.iopts[IOPT_BELOW2] | os.iopts[IOPT_BELOW1] << 8;
@@ -915,7 +933,7 @@ void do_loop()
 						}// if prog.durations[sid]
 					}// for sid
 					if(match_found) {
-						notif.add(NOTIFY_PROGRAM_SCHED, pid, prog.use_weather?os.iopts[IOPT_WATER_PERCENTAGE]:100);
+						notif.add(NOTIFY_PROGRAM_SCHED, pid, wl);
 					}
 					//delete run-once if on final runtime (stations have already been queued)
 					if(will_delete){
@@ -1594,11 +1612,12 @@ void manual_start_program(unsigned char pid, unsigned char uwt) {
 		reset_all_stations_immediate();
 	ProgramStruct prog;
 	ulong dur;
+	double wl = uwt?os.iopts[IOPT_WATER_PERCENTAGE]:100;
 	unsigned char sid, bid, s;
 	if ((pid>0)&&(pid<255)) {
 		pd.read(pid-1, &prog);
 		if (uwt == 255) uwt = prog.use_weather;
-		notif.add(NOTIFY_PROGRAM_SCHED, pid-1, uwt?os.iopts[IOPT_WATER_PERCENTAGE]:100, 1);
+		notif.add(NOTIFY_PROGRAM_SCHED, pid-1, wl, 1);
 	}
 	for(sid=0;sid<os.nstations;sid++) {
 		bid=sid>>3;
@@ -1611,7 +1630,7 @@ void manual_start_program(unsigned char pid, unsigned char uwt) {
 		else if(pid>0)
 			dur = water_time_resolve(prog.durations[sid]);
 		if(uwt) {
-			dur = dur * os.iopts[IOPT_WATER_PERCENTAGE] / 100;
+			dur = dur * wl / 100;
 		}
 		if(dur>0 && !(os.attrib_dis[bid]&(1<<s))) {
 			RuntimeQueueStruct *q = pd.enqueue();

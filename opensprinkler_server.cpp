@@ -851,15 +851,13 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 	}
 
 	//No repeat count defined or first repeat --> use old API
+	boolean uwt = findKeyVal(FKV_SOURCE,tmp_buffer,TMP_BUFFER_SIZE,PSTR("uwt"),true) && (uint16_t)atol(tmp_buffer);
+	double wl = uwt?os.iopts[IOPT_WATER_PERCENTAGE]:100;
 	unsigned char sid, bid, s;
 	boolean match_found = false;
 	for(sid=0;sid<os.nstations;sid++) {
 		dur=prog.durations[sid];
-		if(findKeyVal(FKV_SOURCE,tmp_buffer,TMP_BUFFER_SIZE,PSTR("uwt"),true)){
-			if((uint16_t)atol(tmp_buffer)){
-				dur = dur * os.iopts[IOPT_WATER_PERCENTAGE] / 100;
-			}
-		}
+		dur = dur * wl / 100;
 		bid=sid>>3;
 		s=sid&0x07;
 		// if non-zero duration is given
