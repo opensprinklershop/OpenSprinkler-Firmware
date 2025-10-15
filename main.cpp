@@ -1254,7 +1254,7 @@ void check_weather() {
  */
 void turn_on_station(unsigned char sid, ulong duration) {
 	// RAH implementation of flow sensor
-	if (flow_sid >= 0 && flow_sid != sid) {
+	if (flow_sid >= 0 && flow_sid != sid && os.get_station_gid(flow_sid) == os.get_station_gid(sid) && os.is_sequential_station(flow_sid)) {
 		// if another station is running, stop its flow measurement
 		if (flow_gallons > 1) {
 			if(flow_stop <= flow_begin) flow_last_gpm = 0;
@@ -1285,7 +1285,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 	//Added flow_gallons reset to station turn on.
 	flow_gallons=0;  
 	flow_sid = sid;
-
+	flow_begin = flow_stop = 0;
 	if (os.set_station_bit(sid, 1, duration)) {
 		notif.add(NOTIFY_STATION_ON, sid, duration);
 	}
@@ -1353,7 +1353,7 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	os.set_station_bit(sid, 0);
 
 	// RAH implementation of flow sensor
-	if (flow_sid == sid) {
+	if (flow_sid == sid || os.get_station_gid(flow_sid) != os.get_station_gid(sid) || !os.is_sequential_station(flow_sid)) {
 		if (flow_gallons > 1) {
 			if(flow_stop <= flow_begin) flow_last_gpm = 0;
 			else flow_last_gpm = (float) 60000 / (float)((flow_stop-flow_begin) / (flow_gallons - 1));
