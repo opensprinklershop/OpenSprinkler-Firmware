@@ -35,5 +35,8 @@ void reset_all_stations_immediate();
 void delete_log(char *name);
 void write_log(unsigned char type, time_os_t curr_time);
 void make_logfile_name(char *name);
+#if defined(ESP32)
+void init_external_flash(); // initialize external flash
+#endif
 
 #endif // _MAIN_H

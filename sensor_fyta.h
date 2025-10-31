@@ -1,11 +1,16 @@
 #ifndef _SENSOR_FYTA_H
 #define _SENSOR_FYTA_H
 
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI) 
 
 #if defined(ESP8266)
 #include <ESP8266HTTPClient.h>
 //#include <WiFiClientSecure.h>
+#elif defined(ESP32)
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h> 
+#elif defined(ESP32)
+#include <HTTPClient.h>
 #elif defined(OSPI)
 #include "naett.h"
 #endif
@@ -15,7 +20,7 @@
 
 using namespace ArduinoJson;
 
-#if defined(ESP8266)
+#if defined(ESP8266) 
 #define FYTA_URL_LOGIN "http://web.fyta.de/api/auth/login"
 #define FYTA_URL_USER_PLANT "http://web.fyta.de/api/user-plant"
 #define FYTA_URL_USER_PLANTF "http://web.fyta.de/api/user-plant/%lu"
@@ -36,7 +41,7 @@ public:
             authenticate(auth);
         }
     ~FytaApi() {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
         http.end();
 #endif
     }
@@ -47,7 +52,7 @@ public:
     bool getSensorData(ulong plantId, JsonDocument& doc);
     // Get plant list
     bool getPlantList(JsonDocument& doc);
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32) 
     String authToken;
 #else
     std::string authToken;
@@ -58,11 +63,14 @@ private:
 #if defined(ESP8266)
     WiFiClient client;
     HTTPClient http;
+#elif defined(ESP32)
+    WiFiClientSecure client;    
+    HTTPClient http;
 #else
     std::string userEmail;
     std::string userPassword;
 #endif
 };
 
-#endif // defined(ESP8266) || defined(OSPI)
+#endif // defined(ESP8266) || defined(ESP32) || defined(OSPI)
 #endif // _SENSOR_FYTA_H

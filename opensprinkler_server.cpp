@@ -3009,7 +3009,7 @@ void server_sensorlog_clear(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 void server_fyta_get_credentials(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	if(!process_password(OTF_PARAMS)) return;
@@ -3082,7 +3082,7 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 			if (first) first = false; else bfill.emit_p(PSTR(","));
 			ulong id = plant["id"];
 			
-		#if defined(ESP8266)
+		#if defined(ESP8266) || defined(ESP32) 
 			String nickname = plant["nickname"];
 			String scientific_name = plant["scientific_name"];
 			String thumb = plant["thumb_path"];
@@ -3620,7 +3620,7 @@ static const int sensor_types[] = {
     SENSOR_OSPI_INTERNAL_TEMP,
 #endif
 
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
     SENSOR_FYTA_MOISTURE,
     SENSOR_FYTA_TEMPERATURE,
 #endif
@@ -3674,7 +3674,7 @@ static const char* sensor_names[] = {
 #if defined(OSPI)
     "Internal Raspbery Pi temperature",
 #endif
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	"FYTA moisture sensor",
 	"FYTA temperature sensor",
 #endif
@@ -4208,7 +4208,7 @@ const char _url_keys[] PROGMEM =
 	"mc"
 	"ml"
 	"mt"
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	"fy"
 	"fc"
 #endif
@@ -4264,7 +4264,7 @@ URLHandler urls[] = {
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	server_fyta_query_plants, // fy
 	server_fyta_get_credentials, //fc
 #endif

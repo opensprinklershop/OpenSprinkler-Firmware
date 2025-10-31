@@ -27,6 +27,7 @@
 #include "opensprinkler_server.h"
 #include "osinfluxdb.h"
 #include "sensors.h"
+#include "espconnect.h"
 
 NotifNodeStruct* NotifQueue::head = NULL;
 NotifNodeStruct* NotifQueue::tail = NULL;
@@ -167,7 +168,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 	}
 	#endif
 
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 		EMailSender::EMailMessage email_message;
 	#else
 		struct {
@@ -493,7 +494,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 			if (ifttt_enabled || email_enabled) {
 				#if defined(ARDUINO)
 					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE, PSTR("rebooted. Cause: %d. Device IP: "), os.last_reboot_cause);
-					#if defined(ESP8266)
+					#if defined(ESP8266) || defined(ESP32)
 					{
 						IPAddress _ip;
 						if (useEth) {
@@ -556,7 +557,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 	if(email_enabled){
 		email_message.message = strchr(postval, 'O'); // ad-hoc: remove the value1 part from the ifttt message
 		#if defined(ARDUINO)
-			#if defined(ESP8266)
+			#if defined(ESP8266) || defined(ESP32)
 				if(email_host && email_username && email_password && email_recipient) { // make sure all are valid
 					free_tmp_memory();
 					EMailSender emailSend(email_username, email_password);

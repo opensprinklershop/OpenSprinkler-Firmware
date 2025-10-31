@@ -545,7 +545,7 @@ unsigned char OpenSprinkler::start_network() {
 	#elif defined(ESP32)
 	update_server = new WebServer(8080);
 	#endif
-	DEBUG_PRINT(F("Started update server"));
+	DEBUG_PRINTLN(F("Started update server"));
 	return 1;
 
 #else
@@ -1249,13 +1249,22 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 			delay(5000);
 		}
 		#else
-		if(!LittleFS.begin(true)) {
+		if(!LittleFS.begin(true, "/littlefs", 10, "spiffs_ext") || !LittleFS.begin(true)) {
 			// !!! flash init failed, stall as we cannot proceed
 			lcd.setCursor(0, 0);
 			lcd_print_pgm(PSTR("Error Code: 0x2D"));
 			delay(5000);
 		}
+		/*if (!file_exists(SOPTS_FILENAME)){
+			// format external littlefs if not existing
+			lcd_print_pgm(PSTR("Formating ext FS"));
+			DEBUG_PRINTF(F("Formatting external LittleFS...\n"));	
+			LittleFS.format();
+			DEBUG_PRINTF(F("completed.\n"));	
+		}*/
 		#endif
+
+		DEBUG_PRINTF(F("Free space: %10u\n"), LittleFS.totalBytes()-LittleFS.usedBytes());  
 
 		state = OS_STATE_INITIAL;
 

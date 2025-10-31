@@ -141,9 +141,6 @@ void OSInfluxDB::write_influx_data(Point &sensor_data) {
         return;
 
     if (!client) {
-        if (!file_exists(INFLUX_CONFIG_FILE))
-            return;
-
         //Load influx config:
         ArduinoJson::JsonDocument doc; 
         get_influx_config(doc);

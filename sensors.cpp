@@ -49,6 +49,9 @@
 #ifdef PCF8591
 #include "sensor_ospi_pcf8591.h"
 #endif
+#ifdef ESP32
+#include <fstream>
+#endif
 
 #define MAX_RS485_DEVICES 4
 
@@ -202,7 +205,7 @@ void sensor_api_init(boolean detect_boards) {
   sensor_mqtt_init();
   monitor_load();
   fyta_check_opts();
-#ifndef ESP8266
+#if defined(OSPI)
   //Read rs485 file. Details see below
   std::ifstream file;
   file.open("rs485", std::ifstream::in);
@@ -263,7 +266,7 @@ void sensor_save_all() {
   prog_adjust_save();
   SensorUrl_save();
   monitor_save();
-#if !defined(ESP8266) && !defined(ESP32)
+#if defined(OSPI)
   for (int i = 0; i < MAX_RS485_DEVICES; i++) {
     if (modbusDevs[i]) {
       modbus_close(modbusDevs[i]);
@@ -1370,7 +1373,7 @@ boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t
 #if defined(ARDUINO)
 
   Client *client;
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   WiFiClient wifiClient;
   client = &wifiClient;
 #else
@@ -1434,7 +1437,7 @@ boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t
   }
 
   client->write(buffer, 12);
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   client->flush();
 #endif
   client->stop();
@@ -2724,7 +2727,7 @@ void GetSensorWeather() {
 }
 
 void GetSensorWeatherEto() {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   if (!useEth)
     if (os.state != OS_STATE_CONNECTED || WiFi.status() != WL_CONNECTED) return;
 #endif
@@ -3485,7 +3488,7 @@ int findString(const char *payload, unsigned int length, const char *jsonFilter,
       p++;
       char *q = strchr(p, '\"');
       if (q) {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
         value.concat(p, q-p);
 #else
         value.assign(p, q-p);

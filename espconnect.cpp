@@ -58,8 +58,8 @@ String scan_network() {
 
 void start_network_ap(const char *ssid, const char *pass) {
 	if(!ssid) return;
-	wifi_set_sleep_type(NONE_SLEEP_T);
 	#if defined(ESP8266)
+	wifi_set_sleep_type(NONE_SLEEP_T);
 	WiFi.setOutputPower(20.5);
 	#else
 	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
@@ -72,8 +72,8 @@ void start_network_ap(const char *ssid, const char *pass) {
 
 void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
 	if(!ssid || !pass) return;
-	wifi_set_sleep_type(NONE_SLEEP_T);
 	#if defined(ESP8266)
+	wifi_set_sleep_type(NONE_SLEEP_T);
 	WiFi.setOutputPower(20.5);
 	#else
 	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
@@ -85,8 +85,8 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 
 void start_network_sta(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
 	if(!ssid || !pass) return;
-	wifi_set_sleep_type(NONE_SLEEP_T);
 	#if defined(ESP8266)
+	wifi_set_sleep_type(NONE_SLEEP_T);
 	WiFi.setOutputPower(20.5);
 	#else
 	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm

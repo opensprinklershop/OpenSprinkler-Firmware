@@ -311,7 +311,7 @@ void remove_file(const char *fn) {
 }
 
 bool file_exists(const char *fn) {
-#if defined(ESP8266) || defined(ESP32)
+#if defined(ESP8266)
 
 	//return LittleFS.exists(fn);
 	File f = LittleFS.open(fn, "r");
@@ -320,6 +320,9 @@ bool file_exists(const char *fn) {
 		return true;
 	}
 	return false;
+#elif defined(ESP32)
+
+	return LittleFS.exists(fn);
 
 #elif defined(ARDUINO)
 
@@ -342,6 +345,7 @@ ulong file_size(const char *fn) {
 #if defined(ESP8266) || defined(ESP32)
 
 	// do not use File.readBytes or readBytesUntil because it's very slow  
+	if (!LittleFS.exists(fn)) return 0;
 	File f = LittleFS.open(fn, "r");
 	if(f) {
 		size = f.size();
@@ -387,6 +391,7 @@ ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 #if defined(ESP8266) || defined(ESP32)
 
 	// do not use File.read_byte or read_byteUntil because it's very slow
+	if (!LittleFS.exists(fn)) return 0;
 	File f = LittleFS.open(fn, "r");
 	if(f) {
 		f.seek(pos, SeekSet);
@@ -755,10 +760,6 @@ bool isValidDate(uint16_t date) {
 	unsigned char month = date >> 5;
 	unsigned char day = date & 31;
 	return isValidDate(month, day);
-}
-
-bool isLeapYear(uint16_t y){ // Accepts 4 digit year and returns if leap year
-	return (y%400==0) || ((y%4==0) && (y%100!=0));
 }
 
 bool isLeapYear(uint16_t y){ // Accepts 4 digit year and returns if leap year

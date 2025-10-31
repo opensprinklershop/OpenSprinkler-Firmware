@@ -21,6 +21,7 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+#include <pins_arduino.h>
 #ifndef _DEFINES_H
 #define _DEFINES_H
 
@@ -466,6 +467,7 @@ enum {
 	#define V2_PIN_SENSOR2       10 // sensor 2
 
 	#define PIN_ETHER_CS       16 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
+	#define ETHER_SPI_CLOCK    10000000L // SPI clock for Ethernet (e.g. 10MHz)
 
 #else // ESP32
 	/* OS33 ESP32 pin defines */
@@ -477,7 +479,7 @@ enum {
 	#define ESP32_PIN_BUTTON_1      8 // button 1 (8266:2)
 	#define ESP32_PIN_BUTTON_2      9 // button 2 (8266:0)
 	#define ESP32_PIN_BUTTON_3      IOEXP_PIN+12 // button 3
-	#define ESP32_PIN_RFTX          255 // undefined! (8266:15
+	#define ESP32_PIN_RFTX          10 // 8266:15
 	#define ESP32_PIN_BOOST         IOEXP_PIN+13
 	#define ESP32_PIN_BOOST_EN      IOEXP_PIN+14
 	#define ESP32_PIN_LATCH_COMA    IOEXP_PIN+8  // latch COM+ (anode)
@@ -489,8 +491,10 @@ enum {
 	#define ESP32_PIN_SENSOR2       7  // sensor 2	(8266:10)
 
 	#define PIN_ETHER_CS       1 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
+	#define PIN_EXT_FLASH_CS   6 // external flash CS pin
 	#define PIN_ETHER_IRQ     -1 //
 	#define PIN_ETHER_RESET   -1
+
 #endif
 	#define USE_DISPLAY
 	#define USE_SSD1306

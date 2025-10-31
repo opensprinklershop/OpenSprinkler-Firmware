@@ -54,7 +54,11 @@
 		bool useEth = false; // tracks whether we are using WiFi or wired Ether connection
 	#elif defined(ESP32)
 		#include <ETH.h>
-		#include <esp_system.h>
+		#include <SPI.h>
+		#include <esp_partition.h>
+		#include <esp_flash.h>
+		#include <hal/spi_types.h>
+		#include <esp_flash_spi_init.h>
 		WebServer *update_server = NULL;
 
 		DNSServer *dns = NULL;
@@ -467,6 +471,10 @@ void do_setup() {
 	DEBUG_BEGIN(115200);
 	DEBUG_PRINTLN(F("started"));
 
+#if defined(ESP32)
+	init_external_flash(); // initialize external flash
+#endif
+
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
 
@@ -594,6 +602,7 @@ void handle_web_request(char *p);
 #endif
 
 // Gratuitous ARP task for ESP8266 lwIP
+#ifdef ESP8266
 void gratuitousARPTask() {
         netif *n = netif_list;
         while (n) {
@@ -601,6 +610,7 @@ void gratuitousARPTask() {
                 n = n->next;
         }
 }
+#endif
 
 /** Main Loop */
 void do_loop()
@@ -728,12 +738,14 @@ void do_loop()
 		break;
 	}
 
+	#ifdef ESP8266
 	static unsigned long arp_check = 0;
 	if (curr_time && (curr_time > arp_check)) {
 		DEBUG_PRINTLN(F("gratuiousARPTask"));
 		gratuitousARPTask(); // send gratuitous ARP every 5 seconds
 		arp_check = curr_time + ARP_REQUEST_INTERVAL;
 	}
+	#endif
 
 	#else // AVR
 
@@ -1571,17 +1583,17 @@ void reset_all_stations_immediate() {
  */
 void reset_all_stations() {
 	RuntimeQueueStruct *q = pd.queue;
-	#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	uint16_t t = 0;
 	#endif
 	// go through runtime queue and assign water time to 0
 	for(;q<pd.queue+pd.nqueue;q++) {
-		#if defined(ESP8266)
+		#if defined(ESP8266) || defined(ESP32)
 		t += q->dur;
 		#endif
 		q->dur = 0;
 	}
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	if (t == 0 && os.hw_type==HW_TYPE_LATCH) {
 		// if this is a latch controller, reset all station bits
 		for(unsigned char i=0;i<os.nstations;i++) {
@@ -1694,6 +1706,9 @@ void make_logfile_name(char *name) {
 #endif
 	strcpy(tmp_buffer+TMP_BUFFER_SIZE-10, name); // hack: we do this because name is from tmp_buffer too
 	strcpy(tmp_buffer, LOG_PREFIX);
+#if defined(ESP8266) || defined(ESP32)
+	LittleFS.mkdir(tmp_buffer);
+#endif
 	strcat(tmp_buffer, tmp_buffer+TMP_BUFFER_SIZE-10);
 	strcat_P(tmp_buffer, PSTR(".txt"));
 }
@@ -2211,5 +2226,104 @@ int main(int argc, char *argv[]) {
 		do_loop();
 	}
 	return 0;
+}
+
+#endif
+
+#if defined(ESP32)
+// https://esp32.com/viewtopic.php?t=30179
+// https://github.com/espressif/arduino-esp32/issues/8479
+size_t last_flash_used() {
+  esp_partition_iterator_t it;
+  size_t endpt = 0;
+  it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL); 
+  for (; it != NULL; it = esp_partition_next(it)) {
+    const esp_partition_t *part = esp_partition_get(it);
+    endpt = part->address >= endpt ? part->address + part->size : endpt;
+  }
+  esp_partition_iterator_release(it);
+  return endpt;
+}
+
+void list_partitions() {
+		esp_partition_iterator_t _partition = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL);
+	DEBUG_PRINTLN(F("Partitions:"));
+	esp_partition_iterator_t it = _partition;
+	while (it != NULL) {
+		const esp_partition_t *part = esp_partition_get(it);
+		if (part) {
+			DEBUG_PRINTF(F("  Found existing partition %s type=0x%x subtype=0x%x at address=0x%x, size=%dKB\n"), part->label, part->type, part->subtype, part->address, part->size / 1024);
+		}
+		esp_partition_iterator_t next = esp_partition_next(it);
+		//esp_partition_iterator_release(it);
+		it = next;
+	}
+	_partition = NULL;
+}
+
+bool register_partition() {
+	esp_err_t err;
+
+	esp_flash_t* ext_flash;
+
+	esp_flash_spi_device_config_t device_config = {};
+	device_config.host_id = SPI2_HOST;
+	device_config.cs_io_num = PIN_EXT_FLASH_CS;
+	device_config.io_mode = SPI_FLASH_DIO;
+	device_config.cs_id = 0;
+	device_config.freq_mhz = ESP_FLASH_40MHZ;
+
+	err = spi_bus_add_flash_device(&ext_flash, &device_config);
+	if (err) {
+		DEBUG_PRINTLN(F("Error adding external flash"));
+		return false;
+	}
+
+	err = esp_flash_init(ext_flash);
+	if (err) {
+		DEBUG_PRINTLN(F("Error initializing external flash"));
+		return false;
+	}
+
+	uint32_t id;
+    esp_flash_read_id(ext_flash, &id);
+    DEBUG_PRINTF(F("Initialized external Flash, size=%d KB, ID=0x%x\n"), ext_flash->size / 1024, id);
+
+	err = esp_partition_register_external(ext_flash, 0x0000, ext_flash->size, "spiffs_ext",
+		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, NULL);
+	if (err) {
+		DEBUG_PRINTLN(F("Error registering partition"));
+		return false;
+	}
+	return true;
+}
+
+void init_external_flash() // initialize external flash
+{
+	DEBUG_PRINTLN(F("Initializing external flash..."));		
+	DEBUG_PRINTF(F("SPI2_HOST=%d\n"), SPI2_HOST);
+	DEBUG_PRINTF(F("MOSI=%d, MISO=%d, SCK=%d, CS=%d\n"), MOSI, MISO, SCK, PIN_EXT_FLASH_CS);
+
+	spi_bus_config_t bus_config = {};
+    bus_config.mosi_io_num = MOSI;
+    bus_config.miso_io_num = MISO;
+    bus_config.sclk_io_num = SCK;
+    bus_config.quadwp_io_num = -1;
+    bus_config.quadhd_io_num = -1;
+	bus_config.max_transfer_sz = 32;
+	
+	esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus_config, SPI_DMA_DISABLED);
+	if (err) {
+		DEBUG_PRINTLN(F("Error bus initialization"));
+		return;
+	}
+
+  if (!register_partition()) {
+	ESP.restart();
+  }
+
+  list_partitions();
+  	
+  DEBUG_PRINTLN(F("External Flash partition created"));
 }
 #endif

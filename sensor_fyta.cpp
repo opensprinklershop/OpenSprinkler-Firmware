@@ -1,6 +1,6 @@
 #include "sensor_fyta.h"
 
-#if defined(ESP8266) || defined(OSPI)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI) 
 
 using namespace ArduinoJson;
 
@@ -18,7 +18,7 @@ static bool fyta_init = false;
 bool FytaApi::authenticate(const String &auth) {
     DEBUG_PRINTLN("FYTA AUTH");
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
     if (auth.indexOf("token") >= 0) {
 #else
     if (auth.find("token", 0) >= 0) {
@@ -36,7 +36,7 @@ bool FytaApi::authenticate(const String &auth) {
         }   
     }
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
     http.begin(client, FYTA_URL_LOGIN);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("accept", "application/json");
@@ -88,7 +88,7 @@ bool FytaApi::authenticate(const String &auth) {
 // Query sensor values
 bool FytaApi::getSensorData(ulong plantId, JsonDocument& doc) {
     DEBUG_PRINTLN("FYTA getSensorData");
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
     if (authToken.isEmpty()) return false;
     char url[50];
     sprintf(url, FYTA_URL_USER_PLANTF, plantId);
@@ -152,7 +152,7 @@ bool FytaApi::getSensorData(ulong plantId, JsonDocument& doc) {
 
 bool FytaApi::getPlantList(JsonDocument& doc) {
     DEBUG_PRINTLN("FYTA getPlantList");
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
     if (authToken.isEmpty()) return false;
     http.begin(client, FYTA_URL_USER_PLANT);
     http.addHeader("Authorization", "Bearer " + authToken);
@@ -217,10 +217,8 @@ bool FytaApi::getPlantList(JsonDocument& doc) {
 }
 
 void FytaApi::init() {
-#if defined(ESP8266)
-    //client.setInsecure();
-    //client.setBufferSizes(512, 512);
-
+#if defined(ESP32)
+    client.setInsecure();
 #elif defined(OSPI)
     if (!fyta_init) {
         fyta_init = true;
@@ -229,4 +227,4 @@ void FytaApi::init() {
 #endif
 }
 
-#endif // defined(ESP8266) || defined(OSPI)
+#endif // defined(ESP8266) || defined(ESP32) || defined(OSPI)
