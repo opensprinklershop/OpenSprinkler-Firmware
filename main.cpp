@@ -2290,7 +2290,7 @@ bool register_partition() {
     DEBUG_PRINTF(F("Initialized external Flash, size=%d KB, ID=0x%x\n"), ext_flash->size / 1024, id);
 
 	err = esp_partition_register_external(ext_flash, 0x0000, ext_flash->size, "spiffs_ext",
-		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, NULL);
+		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
 	if (err) {
 		DEBUG_PRINTLN(F("Error registering partition"));
 		return false;
@@ -2310,9 +2310,9 @@ void init_external_flash() // initialize external flash
     bus_config.sclk_io_num = SCK;
     bus_config.quadwp_io_num = -1;
     bus_config.quadhd_io_num = -1;
-	bus_config.max_transfer_sz = 32;
+	//bus_config.max_transfer_sz = 32;
 	
-	esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus_config, SPI_DMA_DISABLED);
+	esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus_config, SPI_DMA_CH_AUTO);
 	if (err) {
 		DEBUG_PRINTLN(F("Error bus initialization"));
 		return;
