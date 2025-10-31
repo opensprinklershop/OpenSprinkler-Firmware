@@ -53,7 +53,7 @@ public:
 	char* buffer () const { return start; }
 	size_t length () const { return len; }
 	unsigned int position () const { return ptr - start; }
-
+	void append(const char* buf, size_t len) { memcpy(ptr, buf, len); ptr += len; *(ptr)=0; }
 	void emit_p(PGM_P fmt, ...) {
 		va_list ap;
 		va_start(ap, fmt);
@@ -83,9 +83,10 @@ public:
 					sprintf((char*) ptr, "%lu", va_arg(ap, long));
 				#endif	
 				break;
-			case 'S':
-				strcpy((char*) ptr, va_arg(ap, const char*));
-				break;
+			case 'S': {
+				const char * st = va_arg(ap, const char*);
+				strcpy((char*) ptr, !st ? "" : st);
+				break; }
 			case 'X': {
 				char d = va_arg(ap, int);
 				*ptr++ = dec2hexchar((d >> 4) & 0x0F);

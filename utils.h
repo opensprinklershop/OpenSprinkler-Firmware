@@ -60,6 +60,7 @@ ulong water_time_resolve(uint16_t v);
 unsigned char water_time_encode_signed(int16_t i);
 int16_t water_time_decode_signed(unsigned char i);
 void urlDecode(char *);
+void urlEncode(char *);
 void strReplaceQuoteBackslash(char *);
 void peel_http_header(char*);
 void strReplace(char *, char c, char r);
@@ -70,6 +71,7 @@ size_t freeMemory();
 #define MAX_ENCODED_DATE date_encode(12, 31)
 bool isLastDayofMonth(unsigned char month, unsigned char day);
 bool isValidDate(uint16_t date);
+bool isLeapYear(uint16_t year);	// whether a 4 digit year is a leap year
 #if defined(ESP8266) || defined(ESP32)
 unsigned char hex2dec(const char *hex);
 bool isHex(char c);

@@ -215,6 +215,18 @@ struct HTTPStationData {
 	unsigned char data[STATION_SPECIAL_DATA_SIZE];
 };
 
+/** RS485 Station data structures - Must fit in STATION_SPECIAL_DATA_SIZE */
+struct ModbusStationData {
+	unsigned char ip[8];    // ESP8266 only
+	unsigned char port[4];  // ESP8266 only
+	unsigned char device[2]; // OSPI only, lineindex (0 first) in modbusDevs array / rs485 file
+	unsigned char address[2];
+	unsigned char register_on[4];
+	unsigned char data_on[4];
+	unsigned char register_off[4];
+	unsigned char data_off[4];
+};
+
 /** Volatile controller status bits */
 struct ConStatus {
 	unsigned char enabled:1;         // operation enable (when set, controller operation is enabled)
@@ -265,6 +277,7 @@ public:
 #endif
 
 	static OSMqtt mqtt;
+
 	static NVConData nvdata;
 	static ConStatus status;
 	static ConStatus old_status;
@@ -288,6 +301,7 @@ public:
 	static uint16_t attrib_fas[MAX_NUM_STATIONS]; //value*100 flow alert setpoint
 	static uint16_t attrib_favg[MAX_NUM_STATIONS]; //value*100 flow avg values
 	static unsigned char masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
+	static time_os_t masters_last_on[NUM_MASTER_ZONES];
 
 	// variables for time keeping
 	static time_os_t sensor1_on_timer;  // time when sensor1 is detected on last time
@@ -346,7 +360,8 @@ public:
 	static void switch_remotestation(RemoteOTCStationData *data, bool turnon, uint16_t dur=0); // switch remote OTC station
 	static void switch_gpiostation(GPIOStationData *data, bool turnon); // switch gpio station
 	static void switch_httpstation(HTTPStationData *data, bool turnon, bool usessl=false); // switch http station
-	
+	static void switch_modbusStation(ModbusStationData *data, bool turnon); // switch RS485 station
+
 	// -- options and data storeage
 	static void nvdata_load();
 	static void nvdata_save();
@@ -454,6 +469,7 @@ public:
 	static void save_wifi_ip();
 	static void reset_to_ap();
 	static unsigned char state;
+	static void force_close_latch(unsigned char sid);
 	#endif
 
 #else
@@ -487,5 +503,7 @@ private:
 	static void parse_otc_config();
 	#endif
 };
+
+void calc_sunrise_sunset(); // calculate sunrise and sunset time
 
 #endif  // _OPENSPRINKLER_H

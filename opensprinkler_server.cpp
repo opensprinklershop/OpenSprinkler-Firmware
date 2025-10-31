@@ -30,6 +30,8 @@
 #include "main.h"
 #include "sensors.h"
 #include "osinfluxdb.h"
+#include "ArduinoJson.hpp"
+#include "sensor_fyta.h"
 
 // External variables defined in main ion file
 #if defined(USE_OTF)
@@ -72,6 +74,11 @@
 	#include <stdlib.h>
 	#include "etherport.h"
 #endif
+
+using ArduinoJson::JsonDocument;
+using ArduinoJson::DeserializationError;
+using ArduinoJson::JsonArray;
+using ArduinoJson::JsonVariant;
 
 extern char ether_buffer[];
 extern char tmp_buffer[];
@@ -220,23 +227,12 @@ void rewind_ether_buffer() {
 	ether_buffer[0] = 0;
 }
 
-#if defined(USE_OTF)
-boolean buffer_available() {
-	return bfill.position() < RESPONSE_BUFFER_SIZE/2 && available_ether_buffer() > 0;
-}
-#else
-boolean buffer_available() {
-	return available_ether_buffer() > 0;
-}
-#endif
-
 void send_packet(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	res.writeBodyData(ether_buffer, strlen(ether_buffer));
 #else
 	m_client->write((const uint8_t *)ether_buffer, strlen(ether_buffer));
 #endif
-
 	rewind_ether_buffer();
 }
 
@@ -309,7 +305,6 @@ void otf_send_result(OTF_PARAMS_DEF, unsigned char code, const char *item = NULL
 	print_header(OTF_PARAMS, true, json.length());
 	res.writeBodyChunk((char *)"%s",json.c_str());
 }
-#endif
 
 #if defined(ESP8266) || defined(ESP32)
 void update_server_send_result(unsigned char code, const char* item = NULL) {
@@ -406,6 +401,8 @@ void on_ap_try_connect(OTF_PARAMS_DEF) {
 	}
 }
 #endif
+#endif
+
 
 /** Check and verify password */
 #if defined(USE_OTF)
@@ -507,7 +504,7 @@ void server_json_stations_main(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("\"$S\""), tmp_buffer);
 		if(sid!=os.nstations-1)
 			bfill.emit_p(PSTR(","));
-		if (!buffer_available() ) {
+		if (available_ether_buffer() <=0 ) {
 			send_packet(OTF_PARAMS);
 		}
 	}
@@ -552,7 +549,7 @@ void server_json_station_special(OTF_PARAMS_DEF) {
 			else {comma=1;}
 			bfill.emit_p(PSTR("\"$D\":{\"st\":$D,\"sd\":\"$S\"}"), sid, data->type, data->sped);
 		}
-		if (!buffer_available() ) {
+		if (available_ether_buffer() <=0 ) {
 			send_packet(OTF_PARAMS);
 		}
 	}
@@ -570,10 +567,10 @@ void server_change_board_attrib(char *p, char header, unsigned char *attrib)
 	unsigned char bid;
 	tbuf2[0]=header;
 	for(bid=0;bid<os.nboards;bid++) {
-		snprintf(tbuf2+1, 3, "%d", bid);
-		if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, tbuf2)) {
-			attrib[bid] = atoi(tmp_buffer);
-		}
+          snprintf(tbuf2 + 1, 3, "%hhu", (int)bid);
+          if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, tbuf2)) {
+            attrib[bid] = atoi(tmp_buffer);
+          }
 	}
 }
 
@@ -589,7 +586,7 @@ void server_change_stations_attrib(char *p, char header, unsigned char *attrib)
 	for(bid=0;bid<os.nboards;bid++) {
 		for(s=0;s<8;s++) {
 			sid=bid*8+s;
-			snprintf(tbuf2+1, 3, "%d", sid);
+			snprintf(tbuf2+1, 3, "%hhu", (int)sid);
 			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, tbuf2)) {
 				attrib[sid] = atoi(tmp_buffer);
 			}
@@ -609,7 +606,7 @@ void server_change_stations_attrib16(char *p, char header, uint16_t *attrib)
 	for(bid=0;bid<os.nboards;bid++) {
 		for(s=0;s<8;s++) {
 			sid=bid*8+s;
-			snprintf(tbuf2+1, 3, "%d", sid);
+			snprintf(tbuf2+1, 3, "%hhu", (int)sid);
 			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, tbuf2)) {
 				attrib[sid] = atoi(tmp_buffer);
 			}
@@ -642,7 +639,7 @@ void server_change_stations(OTF_PARAMS_DEF) {
 	char tbuf2[5] = {'s', 0, 0, 0, 0};
 	// process station names
 	for(sid=0;sid<os.nstations;sid++) {
-		snprintf(tbuf2+1, 3, "%d", sid);
+		snprintf(tbuf2+1, 3, "%hhu", (int)sid);
 		if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, tbuf2)) {
 			#if !defined(USE_OTF)
 			urlDecode(tmp_buffer);
@@ -724,6 +721,8 @@ uint16_t parse_listdata(char **p) {
 }
 
 void manual_start_program(unsigned char, unsigned char);
+void stop_program(unsigned char);
+
 /** Manual start program
  * Command: /mp?pw=xxx&pid=xxx&uwt=xxx
  *
@@ -748,11 +747,19 @@ void server_manual_program(OTF_PARAMS_DEF) {
 
 	unsigned char uwt = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uwt"), true)) {
-		if(tmp_buffer[0]=='1') uwt = 1;
+		uwt = atoi(tmp_buffer);
+	}
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("stop"), true)) {
+		int16_t stop = atoi(tmp_buffer);
+		if (stop) {
+			stop_program(pid+1);
+			handle_return(HTML_SUCCESS);
+		}
 	}
 
 	// reset all stations and prepare to run one-time program
-	reset_all_stations_immediate();
+	//reset_all_stations_immediate();
 
 	manual_start_program(pid+1, uwt);
 
@@ -838,7 +845,7 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 			prog.days[0] = (epoch_t >> 8) & 0b11111111; //one interval past current day in epoch time
 			prog.days[1] = epoch_t & 0b11111111; //one interval past current day in epoch time
 			prog.starttimes[0] = curr_time % 1440; //one interval past current time
-			strcpy_P(prog.name, "Run Once (Repeat)"); //TODO: Change name
+			strcpy_P(prog.name, PSTR("Run-Once with repeat"));
 
 			//if no more repeats, remove interval to flag for deletion
 			if(prog.starttimes[1] == 0){
@@ -852,10 +859,13 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 	}
 
 	//No repeat count defined or first repeat --> use old API
+	boolean uwt = findKeyVal(FKV_SOURCE,tmp_buffer,TMP_BUFFER_SIZE,PSTR("uwt"),true) && (uint16_t)atol(tmp_buffer);
+	double wl = uwt?os.iopts[IOPT_WATER_PERCENTAGE]:100;
 	unsigned char sid, bid, s;
 	boolean match_found = false;
 	for(sid=0;sid<os.nstations;sid++) {
 		dur=prog.durations[sid];
+		dur = dur * wl / 100;
 		bid=sid>>3;
 		s=sid&0x07;
 		// if non-zero duration is given
@@ -865,8 +875,8 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 			if (q) {
 				q->st = 0;
 				q->dur = water_time_resolve(dur);
-				q->pid = 254;
 				q->sid = sid;
+				q->pid = 254; // 254 is for run-once program
 				match_found = true;
 			}
 		}
@@ -1130,8 +1140,8 @@ void server_json_options_main() {
 		}
 		#endif
 #else
-		// for Linux-based platforms, there is no LCD currently
-		if(oid==IOPT_LCD_CONTRAST || oid==IOPT_LCD_BACKLIGHT || oid==IOPT_LCD_DIMMING) continue;
+		// for Linux-based platforms, we can't adjust contrast or backlight
+		if(oid==IOPT_LCD_CONTRAST || oid==IOPT_LCD_BACKLIGHT) continue;
 #endif
 
 		// each json name takes 5 characters
@@ -1203,7 +1213,7 @@ void server_json_programs_main(OTF_PARAMS_DEF) {
 		}
 		// push out a packet if available
 		// buffer size is getting small
-		if (!buffer_available()) {
+		if (available_ether_buffer() <= 0) {
 			send_packet(OTF_PARAMS);
 		}
 	}
@@ -1335,7 +1345,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	for(sid=0;sid<os.nstations;sid++) {
 		// if available ether buffer is getting small
 		// send out a packet
-		if(!buffer_available()) {
+		if(available_ether_buffer() <= 0) {
 			send_packet(OTF_PARAMS);
 		}
 		unsigned long rem = 0;
@@ -1362,12 +1372,20 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("]"));
 
 	//influxdb
-	if(!buffer_available()) {
+	if (available_ether_buffer() <=0 ) {
 		send_packet(OTF_PARAMS);
 	}
 	bfill.emit_p(PSTR(",\"influxdb\":"));
 	server_influx_get_main();
 	//end influxdb
+
+	//belowmode
+	if (available_ether_buffer() <=0 ) {
+		send_packet(OTF_PARAMS);
+	}
+	uint16_t below_value = os.iopts[IOPT_BELOW2] | os.iopts[IOPT_BELOW1] << 8;
+	bfill.emit_p(PSTR(",\"belowmode\":$D,\"belowvalue\":$D"), os.iopts[IOPT_BELOW_HANDLING], below_value);
+	//end belowmode
 
 	bfill.emit_p(PSTR("}"));
 }
@@ -1594,10 +1612,6 @@ void server_change_options(OTF_PARAMS_DEF)
 			if(oid==IOPT_BOOST_TIME) {
 				 v>>=2;
 			}
-			if (oid==IOPT_NOTIF_ENABLE) {
-				set_notif_enabled(v);
-				continue;
-			}
 
 			if (v>=0 && v<=max_value) {
 				os.iopts[oid] = v;
@@ -1688,6 +1702,17 @@ void server_change_options(OTF_PARAMS_DEF)
 	}
 	//end influxdb set
 
+	//below mode
+	if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("belowmode"), true)) {
+		os.iopts[IOPT_BELOW_HANDLING] = atoi(tmp_buffer);
+	}
+	if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("belowvalue"), true)) {
+		uint16_t below_value = atoi(tmp_buffer);
+		os.iopts[IOPT_BELOW1] = (below_value >> 8) & 0xFF;
+		os.iopts[IOPT_BELOW2] = below_value & 0xFF;
+	}
+	//end below mode
+
 	keyfound = 0;
 	if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("email"), true, &keyfound)) {
 		#if !defined(USE_OTF)
@@ -1705,6 +1730,17 @@ void server_change_options(OTF_PARAMS_DEF)
 		#endif
 		strReplaceQuoteBackslash(tmp_buffer);
 		os.sopt_save(SOPT_DEVICE_NAME, tmp_buffer);
+	}
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("fyta"), true, &keyfound)) {
+		#if !defined(USE_OTF)
+		urlDecode(tmp_buffer);
+		#endif
+		DEBUG_PRINTLN(tmp_buffer);
+		os.sopt_save(SOPT_FYTA_OPTS, tmp_buffer);
+	} else if (keyfound) {
+		tmp_buffer[0]=0;
+		os.sopt_save(SOPT_FYTA_OPTS, tmp_buffer);
 	}
 
 	// if not using NTP and manually setting time
@@ -1851,12 +1887,12 @@ void server_change_manual(OTF_PARAMS_DEF) {
 			RuntimeQueueStruct *q = NULL;
 			unsigned char sqi = pd.station_qid[sid];
 			// check if the station already has a schedule
-			if (sqi!=0xFF) {  // if so, we will overwrite the schedule
-				q = pd.queue+sqi;
+			if (sqi!=0xFF) { // if so, do nothing
+
 			} else {  // otherwise create a new queue element
 				q = pd.enqueue();
 			}
-			// if the queue is not full
+			// if the queue is not full (and the station doesn't already have a schedule
 			if (q) {
 				q->st = 0;
 				q->dur = timer;
@@ -2024,7 +2060,7 @@ void server_json_log(OTF_PARAMS_DEF) {
 			bfill.emit_p(PSTR("$S"), tmp_buffer);
 			// if the available ether buffer size is getting small
 			// push out a packet
-			if (!buffer_available()) {
+			if (available_ether_buffer() <= 0) {
 				send_packet(OTF_PARAMS);
 			}
 		}
@@ -2155,9 +2191,9 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	#if defined(ESP8266)
 	FSInfo fs_info;
 	LittleFS.info(fs_info);
-	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,"), fs_info.totalBytes, fs_info.usedBytes);
+	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,\"devip\":\"$S\","), fs_info.totalBytes, fs_info.usedBytes, (useEth?eth.localIP():WiFi.localIP()).toString().c_str());
 	if(useEth) {
-		bfill.emit_p(PSTR("\"isW5500\":$D}"), eth.isW5500);
+		bfill.emit_p(PSTR("\"isW5500\":$D,\"spi_clock\":$L,\"arp_size\":$D}"), eth.isW5500, ETHER_SPI_CLOCK, ARP_TABLE_SIZE);
 	} else {
 		bfill.emit_p(PSTR("\"rssi\":$D,\"bssid\":\"$S\",\"bssidchl\":\"$O\"}"),
 		WiFi.RSSI(), WiFi.BSSIDstr().c_str(), SOPT_STA_BSSID_CHL);
@@ -2877,7 +2913,7 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 			}
 			// if available ether buffer is getting small
 			// send out a packet
-			if (!buffer_available() ) {
+			if (available_ether_buffer() <=0 ) {
 				send_packet(OTF_PARAMS);
 			}
 			if (++count >= maxResults) {
@@ -2972,6 +3008,99 @@ void server_sensorlog_clear(OTF_PARAMS_DEF) {
 	DEBUG_PRINTLN(F("end log cleaning"));
 	handle_return(HTML_OK);
 }
+
+#if defined(ESP8266) || defined(OSPI)
+void server_fyta_get_credentials(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+#endif
+
+	DEBUG_PRINTLN(F("server_fyta_get_credentials"));
+
+#if defined(USE_OTF)
+	// as the log data can be large, we will use ESP8266's sendContent function to
+	// send multiple packets of data, instead of the standard way of using send().
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	JsonDocument doc;
+	DeserializationError error = deserializeJson(doc, os.sopt_load(SOPT_FYTA_OPTS));
+	if (error || (!doc.containsKey("token") && !doc.containsKey("email"))) {
+		strcpy(tmp_buffer, "{\"token\":\"\"}");
+		os.sopt_save(SOPT_FYTA_OPTS, tmp_buffer);
+	}
+
+//FYTA Options
+	bfill.emit_p(PSTR("{"));
+        bfill.emit_p(PSTR("\"fyta\":$O"), SOPT_FYTA_OPTS);
+        bfill.emit_p(PSTR("}"));
+        
+        handle_return(HTML_OK);
+        DEBUG_PRINTLN(F("server_fyta_get_credentials done"));
+}
+
+void server_fyta_query_plants(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+#endif
+
+	DEBUG_PRINTLN(F("server_fyta_query_plants"));
+
+#if defined(USE_OTF)
+	// as the log data can be large, we will use ESP8266's sendContent function to
+	// send multiple packets of data, instead of the standard way of using send().
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+    FytaApi fytaapi(os.sopt_load(SOPT_FYTA_OPTS));
+    
+    JsonDocument doc;
+    if (!fytaapi.getPlantList(doc)) {
+      DEBUG_PRINTLN(F("No fyta plants found!"));
+	  bfill.emit_p(PSTR("{\"token\":\"$S\",\"error\":\"$S\",\"plants\":[]}"), fytaapi.authToken.c_str(), doc["error"].as<const char*>());
+	  handle_return(HTML_OK);
+	  return;
+    }
+
+    DEBUG_PRINT("found plants: ");
+    DEBUG_PRINTLN(doc["plants"].size());
+
+	bfill.emit_p(PSTR("{\"token\":\"$S\",\"plants\":["), fytaapi.authToken.c_str());
+	bool first = true;
+	for (JsonVariant plant : doc["plants"].as<JsonArray>()) {
+		if (plant.containsKey("sensor") && plant["sensor"]["has_sensor"].as<bool>()) {
+			if (first) first = false; else bfill.emit_p(PSTR(","));
+			ulong id = plant["id"];
+			
+		#if defined(ESP8266)
+			String nickname = plant["nickname"];
+			String scientific_name = plant["scientific_name"];
+			String thumb = plant["thumb_path"];
+		#elif defined(OSPI)
+			string nickname = plant["nickname"];
+			string scientific_name = plant["scientific_name"];
+			string thumb = plant["thumb_path"];
+		#endif
+			bfill.emit_p(PSTR("{\"id\":$L,\"nickname\":\"$S\",\"scientific_name\":\"$S\",\"thumb\":\"$S\"}"),
+				id, nickname.c_str(), scientific_name.c_str(), thumb.c_str());
+		}
+	}
+	bfill.emit_p(PSTR("]}"));
+
+	handle_return(HTML_OK);
+	DEBUG_PRINTLN(F("server_fyta_query_plants done"));	
+}
+#endif
 
 /**
  * mt
@@ -3134,6 +3263,10 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("port"), true))
 		port = strtoul(tmp_buffer, NULL, 0); 
 
+	ulong reset_seconds = 0;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs"), true))
+		reset_seconds = strtoul(tmp_buffer, NULL, 0); 
+
 	Monitor_Union_t m; 
 	switch (type) {
 		case MONITOR_MIN:
@@ -3163,13 +3296,13 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 			break;
 		default: handle_return(HTML_DATA_FORMATERROR);
 	}
-	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio);
+	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds);
 	ret = ret >= HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
 }
 
 void monitorconfig_json(Monitor_t *mon) {
-	bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"sensor\":$D,\"prog\":$D,\"zone\":$D,\"name\":\"$S\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,"),
+	bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"sensor\":$D,\"prog\":$D,\"zone\":$D,\"name\":\"$S\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,"),
 				mon->nr,
 				mon->type,
 				mon->sensor,
@@ -3179,7 +3312,9 @@ void monitorconfig_json(Monitor_t *mon) {
 				mon->maxRuntime,
 				mon->prio,
 				mon->active,
-				mon->time);
+				mon->time,
+				mon->reset_seconds,
+			    mon->reset_time? mon->reset_time-os.now_tz():0);
 
 	switch(mon->type) {
 		case MONITOR_MIN:
@@ -3484,6 +3619,11 @@ static const int sensor_types[] = {
 #if defined(OSPI)
     SENSOR_OSPI_INTERNAL_TEMP,
 #endif
+
+#if defined(ESP8266) || defined(OSPI)
+    SENSOR_FYTA_MOISTURE,
+    SENSOR_FYTA_TEMPERATURE,
+#endif
 	SENSOR_MQTT,
 	SENSOR_REMOTE,
 	SENSOR_WEATHER_TEMP_F,
@@ -3493,6 +3633,8 @@ static const int sensor_types[] = {
 	SENSOR_WEATHER_PRECIP_MM,
 	SENSOR_WEATHER_WIND_MPH,
 	SENSOR_WEATHER_WIND_KMH,
+	SENSOR_WEATHER_ETO,
+	SENSOR_WEATHER_RADIATION,
 	SENSOR_GROUP_MIN,
 	SENSOR_GROUP_MAX,
 	SENSOR_GROUP_AVG,
@@ -3532,6 +3674,11 @@ static const char* sensor_names[] = {
 #if defined(OSPI)
     "Internal Raspbery Pi temperature",
 #endif
+#if defined(ESP8266) || defined(OSPI)
+	"FYTA moisture sensor",
+	"FYTA temperature sensor",
+#endif
+
 	"MQTT subscription",
 	"Remote opensprinkler sensor",
 	"Weather data - temperature (°F)",
@@ -3541,6 +3688,8 @@ static const char* sensor_names[] = {
 	"Weather data - precip (mm)",
 	"Weather data - wind (mph)",
 	"Weather data - wind (kmh)",
+	"Weather data - ETO",
+	"Weather data - radiation",
 	"Sensor group with min value",
 	"Sensor group with max value",
 	"Sensor group with avg value",
@@ -4059,6 +4208,10 @@ const char _url_keys[] PROGMEM =
 	"mc"
 	"ml"
 	"mt"
+#if defined(ESP8266) || defined(OSPI)
+	"fy"
+	"fc"
+#endif
 #if defined(ARDUINO)
 	//"ff"
 #endif
@@ -4111,6 +4264,10 @@ URLHandler urls[] = {
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
+#if defined(ESP8266) || defined(OSPI)
+	server_fyta_query_plants, // fy
+	server_fyta_get_credentials, //fc
+#endif
 	//server_fill_files,
 };
 
@@ -4130,7 +4287,9 @@ void on_sta_update(OTF_PARAMS_DEF) {
 }
 
 void on_sta_upload_fin() {
-	if(!(update_server->hasArg("pw") && os.password_verify(update_server->arg("pw").c_str()))) {
+	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
+		// don't check password
+	} else if(!(update_server->hasArg("pw") && os.password_verify(update_server->arg("pw").c_str()))) {
 		update_server_send_result(HTML_UNAUTHORIZED);
 		Update.end(false);
 		return;

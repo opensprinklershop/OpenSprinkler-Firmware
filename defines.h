@@ -36,7 +36,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      176  // Firmware minor version
+#define OS_FW_MINOR      183  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -78,6 +78,7 @@ typedef unsigned long ulong;
 #define STN_TYPE_HTTP        0x04	// HTTP station
 #define STN_TYPE_HTTPS       0x05	// HTTPS station
 #define STN_TYPE_REMOTE_OTC  0x06 // Remote OpenSprinkler station (by OTC)
+#define STN_TYPE_RS485	     0x07 // RS485 station
 #define STN_TYPE_OTHER       0xFF
 
 /** Notification macro defines */
@@ -97,10 +98,10 @@ typedef unsigned long ulong;
 
 /** HTTP request macro defines */
 #define HTTP_RQT_SUCCESS       0
-#define HTTP_RQT_NOT_RECEIVED  1
-#define HTTP_RQT_CONNECT_ERR   2
-#define HTTP_RQT_TIMEOUT       3
-#define HTTP_RQT_EMPTY_RETURN  4
+#define HTTP_RQT_NOT_RECEIVED  -1
+#define HTTP_RQT_CONNECT_ERR   -2
+#define HTTP_RQT_TIMEOUT       -3
+#define HTTP_RQT_EMPTY_RETURN  -4
 
 /** Sensor macro defines */
 #define SENSOR_TYPE_NONE    0x00
@@ -110,7 +111,7 @@ typedef unsigned long ulong;
 #define SENSOR_TYPE_PSWITCH 0xF0  // program switch sensor
 #define SENSOR_TYPE_OTHER   0xFF
 
-#define FLOWCOUNT_RT_WINDOW   30  // flow count window (for computing real-time flow rate), 30 seconds
+#define FLOWCOUNT_RT_WINDOW   1000  // flow count divisor (for computing real-time flow rate)
 
 /** Reboot cause */
 #define REBOOT_CAUSE_NONE   0
@@ -203,6 +204,17 @@ enum {
 	NUM_MASTER_OPTS,
 };
 
+enum {
+	BELOW_MODE_NONE = 0, // no below handling
+	BELOW_MINIMAL_PERCENT, // adjust runtime to minimal percentage
+	BELOW_DISABLED_PERCENT, // disable stations if runtime is below minimal percentage
+	BELOW_MINIMAL_SECONDS, // adjust runtime to minimal seconds if runtime is below seconds
+	BELOW_DISABLED_SECONDS, // disable stations if runtime is shorter than seconds
+	BELOW_MINIMAL_MINUTES, // adjust station to minutes if runtime is below minutes
+	BELOW_DISABLED_MINUTES, // disable stations if runtime is shorter than minutes
+	NUM_BELOW_MODES,
+};
+
 // Sequential Groups
 #define NUM_SEQ_GROUPS		4
 #define PARALLEL_GROUP_ID	255
@@ -276,12 +288,12 @@ enum {
 	IOPT_FORCE_WIRED,
 	IOPT_LATCH_ON_VOLTAGE,
 	IOPT_LATCH_OFF_VOLTAGE,
-	IOPT_NOTIF2_ENABLE, // Notification part 2
+	IOPT_NOTIF2_ENABLE,
 	IOPT_RESERVE_4,
 	IOPT_RESERVE_5,
-	IOPT_RESERVE_6,
-	IOPT_RESERVE_7,
-	IOPT_RESERVE_8,
+	IOPT_BELOW_HANDLING,
+	IOPT_BELOW1,
+	IOPT_BELOW2,
 	IOPT_WIFI_MODE, //ro
 	IOPT_RESET,     //ro
 	NUM_IOPTS // total number of integer options
@@ -301,6 +313,7 @@ enum {
 	SOPT_DEVICE_NAME,
 	SOPT_STA_BSSID_CHL, // wifi extra info: bssid and channel
 	SOPT_EMAIL_OPTS,
+	SOPT_FYTA_OPTS,
 	NUM_SOPTS // total number of string options
 };
 
@@ -376,7 +389,6 @@ enum {
 	#define LADR_I2CADDR     0x23 // latch driver I2C address
 	#define EXP_I2CADDR_BASE 0x24 // base of expander I2C address
 	#define LCD_I2CADDR      0x3C // 128x64 OLED display I2C address
-	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
 	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
 
 	#define PIN_FREE_LIST     {} // no free GPIO pin at the moment
@@ -546,7 +558,12 @@ enum {
 
 #else
 
+	#if defined(ARDUINO)
+	// work-around for PIN_SENSOR1 on OS3.2 and above
+	#define DEBUG_BEGIN(x)   {Serial.begin(115200); Serial.end();}
+	#else
 	#define DEBUG_BEGIN(x)   {}
+	#endif
 	#define DEBUG_PRINT(x)   {}
 	#define DEBUG_PRINTLN(x) {}
 	#define DEBUG_PRINTF(x, ...)  {}

@@ -289,8 +289,8 @@ void runOnceProgram(char *message){
 			if(q){
 				q->st = 0;
 				q->dur = water_time_resolve(dur);
-				q->pid = 254;
 				q->sid = sid;
+				q->pid = 254; // 254 is for run-once program
 				match_found = true;
 			}
 		}

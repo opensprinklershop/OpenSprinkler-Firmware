@@ -66,21 +66,6 @@ bool mqtt_filter_matches(char* mtopic, char* pattern) {
 	return true;
 }
 
-char *strnlstr(const char *haystack, const char *needle, size_t needle_len, size_t len)
-{
-        int i;
-        for (i=0; i<=(int)(len-needle_len); i++)
-        {
-		if (haystack[0] == 0)
-			break;
-                if ((haystack[0] == needle[0]) &&
-                    (strncmp(haystack, needle, needle_len) == 0))
-                        return (char *)haystack;
-                haystack++;
-        }
-        return NULL;
-}
-
 /**
  * @brief mqtt callback
  * 
@@ -109,44 +94,15 @@ static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct
 			if (topic && mqtt_filter_matches(mtopic, topic)) {
 				DEBUG_PRINTLN("topic match!");
 				char *jsonFilter =  SensorUrl_get(sensor->nr, SENSORURL_TYPE_FILTER);
-				char *p = (char*)payload;				
-				char *f = jsonFilter;
-				bool emptyFilter = !jsonFilter||!jsonFilter[0];
-
-				while (!emptyFilter && f && p) {
-					f = strstr(jsonFilter, "|");
-					if (f) {
-						p = strnlstr(p, jsonFilter, f-jsonFilter, (char*)payload-p+length);
-						jsonFilter = f+1;
-					} else {
-						p = strstr(p, jsonFilter);
-					}
-				}
-				if (p) {
-					p += emptyFilter?0:strlen(jsonFilter);
-					char buf[30];
-					p = strpbrk(p, "0123456789.-+nullNULL");
-					uint i = 0;
-					while (p && i < sizeof(buf) && p < (char*)payload+length) {
-						char ch = *p++;
-						if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+') {
-							buf[i++] = ch;
-						} else break;
-					}
-					buf[i] = 0;
-					DEBUG_PRINT("result: ");
-					DEBUG_PRINTLN(buf);	
-
-					double value = -999999;
-					int ok = sscanf(buf, "%lf", &value);
-					if (ok && value >= -10000 && value <= 10000 && (value != sensor->last_data || !sensor->flags.data_ok || now-sensor->last_read > 6000)) {
-						sensor->last_data = value;
-						sensor->flags.data_ok = true;
-						sensor->last_read = now;	
-						sensor->mqtt_push = true;
-						sensor->repeat_read = 1; //This will call read_sensor_mqtt
-						DEBUG_PRINTLN("sensor_mqtt_callback2");
-					}
+				double value = 0;
+				int ok = findValue((char*)payload, length, jsonFilter, value);
+				if (ok && value >= -10000 && value <= 10000 && (value != sensor->last_data || !sensor->flags.data_ok || now-sensor->last_read > 6000)) {
+					sensor->last_data = value;
+					sensor->flags.data_ok = true;
+					sensor->last_read = now;	
+					sensor->mqtt_push = true;
+					sensor->repeat_read = 1; //This will call read_sensor_mqtt
+					DEBUG_PRINTLN("sensor_mqtt_callback2");
 				}
 			}
 		}

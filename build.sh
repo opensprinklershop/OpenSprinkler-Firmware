@@ -82,7 +82,7 @@ if [ "$1" == "demo" ]; then
 else
 	echo "Installing required libraries..."
 	apt-get update
-	apt-get install -y libmosquitto-dev libi2c-dev libssl-dev libgpiod-dev gpiod libmodbus-dev
+	apt-get install -y libmosquitto-dev libi2c-dev libssl-dev libgpiod-dev gpiod libmodbus-dev libcurlpp-dev
 	enable_i2c
 
 	./build2.sh
@@ -95,7 +95,7 @@ if [ -f /etc/init.d/OpenSprinkler.sh ]; then
     rm /etc/init.d/OpenSprinkler.sh
 fi
 
-if [ ! "$SILENT" = true ] && [ -f OpenSprinkler.service ] && [ -f startOpenSprinkler.sh ] && [ ! -f /etc/systemd/system/OpenSprinkler.service ]; then
+if [ "$SILENT" ] || [ -f OpenSprinkler.service ] && [ -f startOpenSprinkler.sh ] && [ ! -f /etc/systemd/system/OpenSprinkler.service ]; then
 
 	read -p "Do you want to start OpenSprinkler on startup? " -n 1 -r
 	echo

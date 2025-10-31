@@ -136,7 +136,7 @@
 	 *  For enc28j60 use EthernetENC available from library manager or
 	 *  https://github.com/jandrassy/EthernetENC
 	 */
-	#define ANALOG_PIN -1
+	#define ANALOG_PIN A7
 	#include <SSLClient.h>
 	#include "trust_anchors.h"
 

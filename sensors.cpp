@@ -38,9 +38,11 @@
 #include "opensprinkler_server.h"
 #include "program.h"
 #include "sensor_mqtt.h"
+#include "sensor_fyta.h"
 #include "utils.h"
 #include "weather.h"
 #include "osinfluxdb.h"
+#include "notifier.h"
 #ifdef ADS1115
 #include "sensor_ospi_ads1115.h"
 #endif
@@ -76,7 +78,7 @@ static uint16_t modbusTcpId = 0;
 #if defined(ESP8266) || defined(ESP32)
 static uint i2c_rs485_allocated[MAX_RS485_DEVICES];
 #else
-static modbus_t * ttyDevices[MAX_RS485_DEVICES];
+static modbus_t * modbusDevs[MAX_RS485_DEVICES];
 #endif
 
 const char *sensor_unitNames[]{
@@ -101,11 +103,15 @@ uint8_t logFileSwitch[3] = {0, 0, 0};  // 0=use smaller File, 1=LOG1, 2=LOG2
 
 // Weather
 time_t last_weather_time = 0;
+time_t last_weather_time_eto = 0;
 bool current_weather_ok = false;
+bool current_weather_eto_ok = false;
 double current_temp = 0.0;
 double current_humidity = 0.0;
 double current_precip = 0.0;
 double current_wind = 0.0;
+double current_eto = 0.0;
+double current_radiation = 0.0;
 
 uint16_t CRC16(unsigned char buf[], int len) {
   uint16_t crc = 0xFFFF;
@@ -174,6 +180,15 @@ void detect_asb_board() {
   }
 }
 
+void fyta_check_opts() {
+
+    file_read_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+    if (tmp_buffer[0] != '{') {
+      strcpy(tmp_buffer, "{\"token\":\"\"}");
+      file_write_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+    }
+}
+
 uint16_t get_asb_detected_boards() { return asb_detected_boards; }
 /*
  * init sensor api and load data
@@ -186,7 +201,8 @@ void sensor_api_init(boolean detect_boards) {
   prog_adjust_load();
   sensor_mqtt_init();
   monitor_load();
-#if !defined(ESP8266) && !defined(ESP32)
+  fyta_check_opts();
+#ifndef ESP8266
   //Read rs485 file. Details see below
   std::ifstream file;
   file.open("rs485", std::ifstream::in);
@@ -196,7 +212,20 @@ void sensor_api_init(boolean detect_boards) {
     int n = 0;
     DEBUG_PRINTLN(F("Opening USB RS485 Adapters:"));
     while (std::getline(file, tty)) {
-      modbus_t * ctx = modbus_new_rtu(tty.c_str(), 9600, 'E', 8, 1);
+      modbus_t * ctx;
+      if (tty.find(".") > 0 || tty.find(":") > 0) {
+        if (tty.find(":") > 0) {
+          // IP:port
+          std::string host = tty.substr(0, tty.find(':'));
+          std::string port = tty.substr(tty.find(':') + 1);
+          ctx = modbus_new_tcp(host.c_str(), atoi(port.c_str()));
+        } else {
+          // IP only
+          ctx = modbus_new_tcp(tty.c_str(), 502);
+        }
+      }
+      else
+        ctx = modbus_new_rtu(tty.c_str(), 9600, 'E', 8, 1);
       DEBUG_PRINT(idx);
       DEBUG_PRINT(": ");
       DEBUG_PRINTLN(tty.c_str());
@@ -206,10 +235,12 @@ void sensor_api_init(boolean detect_boards) {
       modbus_rtu_set_rts(ctx, MODBUS_RTU_RTS_NONE); // we use auto RTS function by the HAT
       modbus_set_response_timeout(ctx, 1, 500000); // 1.5s
       if (modbus_connect(ctx) == -1) {
+        DEBUG_PRINT(F("Connection failed: "));
+        DEBUG_PRINTLN(modbus_strerror(errno));        
         modbus_free(ctx);
       } else {
         n++;
-        ttyDevices[idx] = ctx;
+        modbusDevs[idx] = ctx;
         asb_detected_boards |= OSPI_USB_RS485;
         #ifdef ENABLE_DEBUG
         modbus_set_debug(ctx, TRUE);
@@ -234,11 +265,11 @@ void sensor_save_all() {
   monitor_save();
 #if !defined(ESP8266) && !defined(ESP32)
   for (int i = 0; i < MAX_RS485_DEVICES; i++) {
-    if (ttyDevices[i]) {
-      modbus_close(ttyDevices[i]);
-      modbus_free(ttyDevices[i]);
+    if (modbusDevs[i]) {
+      modbus_close(modbusDevs[i]);
+      modbus_free(modbusDevs[i]);
     }
-    ttyDevices[i] = NULL;
+    modbusDevs[i] = NULL;
   }
 #endif
 }
@@ -1017,8 +1048,8 @@ void read_all_sensors(boolean online) {
         current_sensor->repeat_read) {
       if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
         int result = read_sensor(current_sensor, time);
+        if (!current_sensor) return; // when saving sensors, current_sensor is set to null
         if (result == HTTP_RQT_SUCCESS) {
-          check_monitors();
           sensorlog_add(LOG_STD, current_sensor, time);
           push_message(current_sensor);
         } else if (result == HTTP_RQT_TIMEOUT) {
@@ -1043,6 +1074,7 @@ void read_all_sensors(boolean online) {
   }
   sensor_update_groups();
   calc_sensorlogs();
+  check_monitors();
   if (time - last_save_time > 3600)  // 1h
     sensor_save();
 }
@@ -1333,6 +1365,82 @@ int read_sensor_rs485(Sensor_t *sensor) {
   DEBUG_PRINTLN(F("read_sensor_rs485: exit"));
   return HTTP_RQT_NOT_RECEIVED;
 }
+
+boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit) {
+#if defined(ARDUINO)
+
+  Client *client;
+#if defined(ESP8266)
+  WiFiClient wifiClient;
+  client = &wifiClient;
+#else
+  EthernetClient etherClient;
+  client = &etherClient;
+#endif
+
+#else
+  EthernetClient etherClient;
+  EthernetClient *client = &etherClient;
+#endif
+
+#if defined(ARDUINO)
+  IPAddress _ip(ip);
+  unsigned char ips[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
+#else
+  unsigned char ip[4];
+  ips[3] = (unsigned char)((ip >> 24) & 0xFF);
+  ips[2] = (unsigned char)((ip >> 16) & 0xFF);
+  ips[1] = (unsigned char)((ip >> 8) & 0xFF);
+  ips[0] = (unsigned char)((ip & 0xFF));
+#endif
+  char server[20];
+  sprintf(server, "%d.%d.%d.%d", ips[0], ips[1], ips[2], ips[3]);
+  client->setTimeout(200);
+  if (!client->connect(server, port)) {
+    DEBUG_PRINT(server);
+    DEBUG_PRINT(":");
+    DEBUG_PRINT(port);
+    DEBUG_PRINT(" ");
+    DEBUG_PRINTLN(F("failed."));
+    client->stop();
+    return false;
+  }
+
+  uint8_t buffer[20];
+
+  // https://ipc2u.com/articles/knowledge-base/detailed-description-of-the-modbus-tcp-protocol-with-command-examples/
+
+  if (modbusTcpId >= 0xFFFE)
+    modbusTcpId = 1;
+  else
+    modbusTcpId++;
+
+  buffer[0] = (0xFF00 & modbusTcpId) >> 8;
+  buffer[1] = (0x00FF & modbusTcpId);
+  buffer[2] = 0;
+  buffer[3] = 0;
+  buffer[4] = 0;
+  buffer[5] = 6;  // len
+  buffer[6] = address;  // Modbus ID
+  buffer[7] = isbit?0x05:0x06;        // Write Registers
+  buffer[8] = reg >> 8;  // high byte of register address
+  buffer[9] = reg && 0xFF;  // low byte
+  if (isbit) {
+    buffer[10] = data?0xFF:0x00;
+    buffer[11] = 0x00;
+  } else {
+    buffer[10] = data >> 8;  // high byte
+    buffer[11] = data && 0xFF;  // low byte
+  }
+
+  client->write(buffer, 12);
+#if defined(ESP8266)
+  client->flush();
+#endif
+  client->stop();
+  return true;
+}
+
 #else
 /**
  * USB RS485 Adapter
@@ -1352,7 +1460,7 @@ int read_sensor_rs485(Sensor_t *sensor) {
 int read_sensor_rs485(Sensor_t *sensor) {
   DEBUG_PRINTLN(F("read_sensor_rs485"));
   int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || !ttyDevices[device])
+  if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
     return HTTP_RQT_NOT_RECEIVED;
 
   DEBUG_PRINTLN(F("read_sensor_rs485: check-ok"));
@@ -1363,8 +1471,8 @@ int read_sensor_rs485(Sensor_t *sensor) {
   uint8_t type = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
 
   uint16_t tab_reg[3] = {0};
-  modbus_set_slave(ttyDevices[device], sensor->id);
-  if (modbus_read_registers(ttyDevices[device], type, 2, tab_reg) > 0) {
+  modbus_set_slave(modbusDevs[device], sensor->id);
+  if (modbus_read_registers(modbusDevs[device], type, 2, tab_reg) > 0) {
     uint16_t data = tab_reg[0];
     DEBUG_PRINTF("read_sensor_rs485: result: %d - %d\n", sensor->id, data);
     double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
@@ -1376,6 +1484,16 @@ int read_sensor_rs485(Sensor_t *sensor) {
   }
   DEBUG_PRINTLN(F("read_sensor_rs485: exit"));
   return HTTP_RQT_NOT_RECEIVED;
+}
+
+boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
+  if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
+    return false;
+
+  modbus_set_slave(modbusDevs[device], address);
+  if (isbit)
+    return modbus_write_bit(modbusDevs[device], reg, data) > 0;
+  return modbus_write_register(modbusDevs[device], reg, data) > 0;
 }
 
 #endif
@@ -1577,6 +1695,55 @@ int read_internal_raspi(Sensor_t *sensor, ulong time) {
 	return HTTP_RQT_SUCCESS;
 }
 #endif
+
+int read_sensor_fyta(Sensor_t *sensor, ulong time) {
+  if (time >= sensor->last_read + sensor->read_interval) {
+    sensor->last_read = time;
+
+    FytaApi fytaapi(os.sopt_load(SOPT_FYTA_OPTS));
+    
+    JsonDocument doc;
+    if (!fytaapi.getSensorData(sensor->id, doc)) {
+      DEBUG_PRINTLN(F("Fyta Sensor not found!"));
+      DEBUG_PRINTLN(sensor->id);
+      sensor->flags.data_ok = false;
+      return HTTP_RQT_NOT_RECEIVED;
+    }
+
+    if (!doc.containsKey("plant")) {
+      sensor->flags.data_ok = false;
+      return HTTP_RQT_NOT_RECEIVED;
+    }
+    int unit = doc["plant"]["temperature_unit"]; //1=Celsius, 2=Fahrenheit
+    
+    if (sensor->type == SENSOR_FYTA_TEMPERATURE) {
+      sensor->last_data = doc["plant"]["measurements"]["temperature"]["values"]["current"].as<double>();
+      if (unit == 1 && sensor->assigned_unitid != UNIT_DEGREE) {
+        sensor->assigned_unitid = UNIT_DEGREE;
+        sensor->unitid = UNIT_DEGREE;
+        sensor_save_all();
+      }
+      else if (unit == 2 && sensor->assigned_unitid != UNIT_FAHRENHEIT) {
+         sensor->assigned_unitid = UNIT_FAHRENHEIT;
+         sensor->unitid = UNIT_FAHRENHEIT;
+         sensor_save_all();
+      }
+      sensor->flags.data_ok = true;
+      return HTTP_RQT_SUCCESS;
+    }
+    else if (sensor->type == SENSOR_FYTA_MOISTURE) {
+      sensor->last_data = doc["plant"]["measurements"]["moisture"]["values"]["current"].as<double>();
+      if (sensor->assigned_unitid != UNIT_PERCENT) {
+        sensor->assigned_unitid = UNIT_PERCENT;
+        sensor->unitid = UNIT_PERCENT;
+        sensor_save_all();
+      }
+      sensor->flags.data_ok = true;
+      return HTTP_RQT_SUCCESS;
+    }
+  }
+  return HTTP_RQT_NOT_RECEIVED;
+}
 /**
  * read a sensor
  */
@@ -1594,7 +1761,10 @@ int read_sensor(Sensor_t *sensor, ulong time) {
       sensor->last_read = time;
       if (sensor->ip) return read_sensor_ip(sensor);
       return read_sensor_rs485(sensor);
-      break;
+
+    case SENSOR_FYTA_MOISTURE:
+    case SENSOR_FYTA_TEMPERATURE:
+      return read_sensor_fyta(sensor, time);
 
 #if defined(ARDUINO)
 #if defined(ESP8266) || defined(ESP32)
@@ -1710,6 +1880,32 @@ int read_sensor(Sensor_t *sensor, ulong time) {
         }
         return HTTP_RQT_SUCCESS;
       }
+      break;
+    }
+    case SENSOR_WEATHER_ETO:
+    case SENSOR_WEATHER_RADIATION: {
+      GetSensorWeatherEto();
+      if (current_weather_eto_ok) {
+        DEBUG_PRINT(F("Reading sensor "));
+        DEBUG_PRINTLN(sensor->name);
+
+        sensor->last_read = time;
+        sensor->last_native_data = 0;
+        sensor->flags.data_ok = true;
+
+        switch (sensor->type) {
+          case SENSOR_WEATHER_ETO: {
+            sensor->last_data = current_eto;
+            break;
+          }
+          case SENSOR_WEATHER_RADIATION: {
+            sensor->last_data = current_radiation;
+            break;
+          }
+        }
+        return HTTP_RQT_SUCCESS;
+      }
+      break;
     }
   }
   return HTTP_RQT_NOT_RECEIVED;
@@ -1913,7 +2109,7 @@ int set_sensor_address_rs485(Sensor_t *sensor, uint8_t new_address) {
 int set_sensor_address_rs485(Sensor_t *sensor, uint8_t new_address) {
   DEBUG_PRINTLN(F("set_sensor_address_rs485"));
   int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || !ttyDevices[device])
+  if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
     return HTTP_RQT_NOT_RECEIVED;
 
 
@@ -1925,8 +2121,8 @@ int set_sensor_address_rs485(Sensor_t *sensor, uint8_t new_address) {
   request[4] = 0x00;
   request[5] = new_address;
   
-  if (modbus_send_raw_request(ttyDevices[device], request, 6) > 0) {
-    modbus_flush(ttyDevices[device]);
+  if (modbus_send_raw_request(modbusDevs[device], request, 6) > 0) {
+    modbus_flush(modbusDevs[device]);
     return HTTP_RQT_SUCCESS;
   }
   return HTTP_RQT_NOT_RECEIVED;
@@ -2321,6 +2517,12 @@ unsigned char getSensorUnitId(int type) {
     case SENSOR_OSPI_INTERNAL_TEMP:
       return UNIT_DEGREE;
 #endif
+
+    case SENSOR_FYTA_MOISTURE: 
+      return UNIT_PERCENT;  
+    case SENSOR_FYTA_TEMPERATURE:
+      return UNIT_DEGREE;
+    
     case SENSOR_MQTT:
       return UNIT_USERDEF;
     case SENSOR_WEATHER_TEMP_F:
@@ -2393,6 +2595,12 @@ unsigned char getSensorUnitId(Sensor_t *sensor) {
     case SENSOR_OSPI_INTERNAL_TEMP:
       return UNIT_DEGREE;
 #endif
+
+    case SENSOR_FYTA_MOISTURE: 
+      return sensor->assigned_unitid;  
+    case SENSOR_FYTA_TEMPERATURE:
+      return sensor->assigned_unitid;
+
     case SENSOR_USERDEF:
     case SENSOR_MQTT:
     case SENSOR_REMOTE:
@@ -2448,30 +2656,14 @@ void GetSensorWeather() {
 
   // use temp buffer to construct get command
   BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE);
-  bf.emit_p(PSTR("weatherData?loc=$O&wto=$O"), SOPT_LOCATION,
-            SOPT_WEATHER_OPTS);
+  bf.emit_p(PSTR("weatherData?loc=$O&wto=$O&fwv=$D"), SOPT_LOCATION,
+            SOPT_WEATHER_OPTS,
+            (int)os.iopts[IOPT_FW_VERSION]);
 
-  char *src = tmp_buffer + strlen(tmp_buffer);
-  char *dst = tmp_buffer + TMP_BUFFER_SIZE - 12;
-
-  char c;
-  // url encode. convert SPACE to %20
-  // copy reversely from the end because we are potentially expanding
-  // the string size
-  while (src != tmp_buffer) {
-    c = *src--;
-    if (c == ' ') {
-      *dst-- = '0';
-      *dst-- = '2';
-      *dst-- = '%';
-    } else {
-      *dst-- = c;
-    }
-  };
-  *dst = *src;
+  urlEncode(tmp_buffer);
 
   strcpy(ether_buffer, "GET /");
-  strcat(ether_buffer, dst);
+  strcat(ether_buffer, tmp_buffer);
   // because dst is part of tmp_buffer,
   // must load weather url AFTER dst is copied to ether_buffer
 
@@ -2481,13 +2673,15 @@ void GetSensorWeather() {
 
   strcat(ether_buffer, " HTTP/1.0\r\nHOST: ");
   strcat(ether_buffer, host);
-  strcat(ether_buffer, "\r\n\r\n");
+  strcat(ether_buffer, "\r\nUser-Agent: ");
+	strcat(ether_buffer, user_agent_string);
+	strcat(ether_buffer, "\r\n\r\n");
 
   DEBUG_PRINTLN(F("GetSensorWeather"));
   DEBUG_PRINTLN(ether_buffer);
 
   last_weather_time = time;
-  int ret = os.send_http_request(host, ether_buffer, NULL, false, 500);
+  int ret = os.send_http_request(host, ether_buffer);
   if (ret == HTTP_RQT_SUCCESS) {
     DEBUG_PRINTLN(ether_buffer);
 
@@ -2526,6 +2720,64 @@ void GetSensorWeather() {
     current_weather_ok = true;
   } else {
     current_weather_ok = false;
+  }
+}
+
+void GetSensorWeatherEto() {
+#if defined(ESP8266)
+  if (!useEth)
+    if (os.state != OS_STATE_CONNECTED || WiFi.status() != WL_CONNECTED) return;
+#endif
+  time_t time = os.now_tz();
+  if (last_weather_time_eto == 0) last_weather_time_eto = time - 59 * 60;
+
+  if (time < last_weather_time_eto + 60 * 60) return;
+
+  // use temp buffer to construct get command
+  BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE);
+  bf.emit_p(PSTR("$D?loc=$O&wto=$O&fwv=$D"),
+								WEATHER_METHOD_ETO,
+								SOPT_LOCATION,
+								SOPT_WEATHER_OPTS,
+								(int)os.iopts[IOPT_FW_VERSION]);
+  
+  urlEncode(tmp_buffer);
+
+  strcpy(ether_buffer, "GET /");
+  strcat(ether_buffer, tmp_buffer);
+  // because dst is part of tmp_buffer,
+  // must load weather url AFTER dst is copied to ether_buffer
+
+  // load weather url to tmp_buffer
+  char *host = tmp_buffer;
+  os.sopt_load(SOPT_WEATHERURL, host);
+
+  strcat(ether_buffer, " HTTP/1.0\r\nHOST: ");
+  strcat(ether_buffer, host);
+  strcat(ether_buffer, "\r\nUser-Agent: ");
+	strcat(ether_buffer, user_agent_string);
+	strcat(ether_buffer, "\r\n\r\n");
+
+  DEBUG_PRINTLN(F("GetSensorWeather"));
+  DEBUG_PRINTLN(ether_buffer);
+
+  last_weather_time_eto = time;
+  int ret = os.send_http_request(host, ether_buffer);
+  if (ret == HTTP_RQT_SUCCESS) {
+    DEBUG_PRINTLN(ether_buffer);
+
+    char buf[20];
+    char *s = strstr(ether_buffer, "\"eto\":");
+    if (s && extract(s, buf, sizeof(buf))) {
+      current_eto = atof(buf) * 25.4;  // convert to mm
+    }
+    s = strstr(ether_buffer, "\"radiation\":");
+    if (s && extract(s, buf, sizeof(buf))) {
+      current_radiation = atof(buf);
+    }
+    current_weather_eto_ok = true;
+  } else {
+    current_weather_eto_ok = false;
   }
 }
 
@@ -2724,6 +2976,10 @@ void monitor_load() {
   DEBUG_PRINTLN(F("monitor_load"));
   monitors = NULL;
   if (!file_exists(MONITOR_FILENAME)) return;
+  DEBUG_PRINT(F("monitor_load_size: "));
+  DEBUG_PRINTLN(file_size(MONITOR_FILENAME));
+  DEBUG_PRINT(F("monitor_load_store_size: "));
+  DEBUG_PRINTLN(MONITOR_STORE_SIZE);
   if (file_size(MONITOR_FILENAME) % MONITOR_STORE_SIZE != 0) return;
   
   ulong pos = 0;
@@ -2790,7 +3046,7 @@ int monitor_delete(uint nr) {
   return HTTP_RQT_NOT_RECEIVED;
 }
 
-bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio) {
+bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds) {
   Monitor_t *p = monitors;
 
   Monitor_t *last = NULL;
@@ -2805,6 +3061,9 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
       //p->active = false;
       p->maxRuntime = maxRuntime;
       p->prio = prio;
+      p->reset_time = 0;
+      p->reset_seconds = reset_seconds;
+
       strncpy(p->name, name, sizeof(p->name)-1);
       monitor_save();
       check_monitors();
@@ -2827,6 +3086,9 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
   p->active = false;
   p->maxRuntime = maxRuntime;
   p->prio = prio;
+  p->reset_time = 0;
+  p->reset_seconds = reset_seconds;
+
   strncpy(p->name, name, sizeof(p->name)-1);
   if (last) {
     p->next = last->next;
@@ -2863,12 +3125,17 @@ Monitor_t *monitor_by_idx(uint idx) {
 void manual_start_program(unsigned char, unsigned char);
 void schedule_all_stations(time_os_t curr_time);
 void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shift=0);
-void push_message(uint16_t type, uint32_t lval=0, float fval=0.f, const char* sval=NULL);
 
 void start_monitor_action(Monitor_t * mon) {
   mon->time = os.now_tz();
   if (mon->prog > 0)
     manual_start_program(mon->prog, 255);
+
+  DEBUG_PRINTLN(F("start_monitor_action"));
+  DEBUG_PRINT(F("Zone: "));
+  DEBUG_PRINTLN(mon->zone);
+  DEBUG_PRINT(F("Max Runtime: "));
+  DEBUG_PRINTLN(mon->maxRuntime);
 
   if (mon->zone > 0) {
     uint sid = mon->zone-1;
@@ -2889,12 +3156,14 @@ void start_monitor_action(Monitor_t * mon) {
 			q = pd.enqueue();
 		}
 		// if the queue is not full
+    DEBUG_PRINTLN(F("start_monitor_action: queue not full"));
 		if (q) {
 			q->st = 0;
 			q->dur = timer;
 			q->sid = sid;
 			q->pid = 253;
 			schedule_all_stations(mon->time);
+      DEBUG_PRINTLN(F("start_monitor_action: schedule_all_stations"));
 		} 
   }
 }
@@ -2911,7 +3180,7 @@ void stop_monitor_action(Monitor_t * mon) {
   }
 }
 
-void push_message(Monitor_t * mon, float value) {
+void push_message(Monitor_t * mon, float value, int monidx) {
   uint16_t type; 
   switch(mon->prio) {
     case 0: type = NOTIFY_MONITOR_LOW; break;
@@ -2925,7 +3194,7 @@ void push_message(Monitor_t * mon, float value) {
   DEBUG_PRINT(name);
   DEBUG_PRINT(" - ");
   DEBUG_PRINTLN(type);
-  push_message(type, (uint32_t)mon->prio, value, name);
+  notif.add(type, (uint32_t)mon->prio, value, (uint8_t)monidx);
 }
 
 bool get_monitor(uint nr, bool inv, bool defaultBool) {
@@ -2987,7 +3256,11 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
 }
 
 void check_monitors() {
+  //DEBUG_PRINTLN(F("check_monitors"));
+  time_os_t timeNow = os.now_tz();
+
   Monitor_t *mon = monitors;
+  int monidx = 0;
   while (mon) {
     uint nr = mon->nr;
 
@@ -3055,7 +3328,6 @@ void check_monitors() {
         mon->active = get_monitor(mon->m.mnot.monitor, true, false);
         break;
       case MONITOR_TIME: {
-        time_os_t timeNow = os.now_tz();
         uint16_t time = hour(timeNow) * 100 + minute(timeNow); //HHMM
 #if defined(ARDUINO)       
         uint8_t wday = (weekday(timeNow)+5)%7; //Monday = 0
@@ -3077,15 +3349,150 @@ void check_monitors() {
     }
 
     if (mon->active != wasActive) {
+      DEBUG_PRINT(F("Monitor "));
+      DEBUG_PRINT(mon->nr);
+      DEBUG_PRINT(F(" changed from "));
+      DEBUG_PRINT(wasActive ? "active" : "inactive");
+      DEBUG_PRINT(F(" to "));
+      DEBUG_PRINTLN(mon->active ? "active" : "inactive");
       if (mon->active) {
+        if (mon->reset_seconds > 0) {
+          mon->reset_time = timeNow + mon->reset_seconds; 
+        } else {
+          mon->reset_time = 0;
+        }
         start_monitor_action(mon);
-        push_message(mon, value);
+        push_message(mon, value, monidx);
         mon = monitor_by_nr(nr); //restart because if send by mail we unloaded+reloaded the monitors
       } else {
         stop_monitor_action(mon);
       }
+    } else if (mon->active) {
+      if (mon->reset_time > 0 && mon->reset_time < timeNow) { //time is over
+        mon->active = false;
+        DEBUG_PRINT(F("Monitor "));
+        DEBUG_PRINT(mon->nr);
+        DEBUG_PRINT(F(" time is over at "));
+        DEBUG_PRINTLN(timeNow);
+        stop_monitor_action(mon);
+        mon->reset_time = timeNow + mon->reset_seconds; 
+      } else if (mon->reset_time == 0 && mon->reset_seconds > 0) { //reset time not set, but reset seconds is set
+        mon->reset_time = timeNow + mon->reset_seconds; 
+      }
     }
 
     mon = mon->next;
+    monidx++;
   }
+}
+
+void replace_pid(uint old_pid, uint new_pid) {
+  Monitor_t *mon = monitors;
+  while (mon) {
+    if (mon->prog == old_pid) {
+      DEBUG_PRINT(F("replace_pid: "));
+      DEBUG_PRINT(old_pid);
+      DEBUG_PRINT(F(" with "));
+      DEBUG_PRINTLN(new_pid);
+      mon->prog = new_pid;
+    }
+    mon = mon->next;
+  }
+  ProgSensorAdjust_t *psa = progSensorAdjusts;
+  while (psa) {
+    if (psa->prog == old_pid) {
+      DEBUG_PRINT(F("replace_pid psa: "));
+      DEBUG_PRINT(old_pid);
+      DEBUG_PRINT(F(" with "));
+      DEBUG_PRINTLN(new_pid);
+      psa->prog = new_pid;
+    }
+    psa = psa->next;
+  }
+  sensor_save_all();
+}
+
+char *strnlstr(const char *haystack, const char *needle, size_t needle_len, size_t len)
+{
+  int i;
+  for (i=0; i<=(int)(len-needle_len); i++)
+  {
+		if (haystack[0] == 0)
+			break;
+    if ((haystack[0] == needle[0]) &&
+        (strncmp(haystack, needle, needle_len) == 0))
+            return (char *)haystack;
+    haystack++;
+  }
+  return NULL;
+}
+
+int findValue(const char *payload, unsigned int length, const char *jsonFilter, double& value) {
+	char *p = (char*)payload;				
+	char *f = (char*)jsonFilter;
+	bool emptyFilter = !jsonFilter||!jsonFilter[0];
+
+	while (!emptyFilter && f && p) {
+		f = strstr((char*)jsonFilter, "|");
+		if (f) {
+			p = strnlstr(p, jsonFilter, f-jsonFilter, (char*)payload-p+length);
+			jsonFilter = f+1;
+		} else {
+			p = strstr(p, jsonFilter);
+		}
+	}
+	if (p) {
+		p += emptyFilter?0:strlen(jsonFilter);
+		char buf[30];
+		p = strpbrk(p, "0123456789.-+nullNULL");
+		uint i = 0;
+		while (p && i < sizeof(buf) && p < (char*)payload+length) {
+			char ch = *p++;
+			if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+') {
+				buf[i++] = ch;
+			} else break;
+		}
+		buf[i] = 0;
+		DEBUG_PRINT("result: ");
+		DEBUG_PRINTLN(buf);	
+
+		value = -9999;
+		return sscanf(buf, "%lf", &value);
+	}
+	return 0;
+}
+
+int findString(const char *payload, unsigned int length, const char *jsonFilter, String& value) {
+	char *p = (char *)payload;				
+	char *f = (char *)jsonFilter;
+	bool emptyFilter = !jsonFilter||!jsonFilter[0];
+
+	while (!emptyFilter && f && p) {
+		f = strstr((char*)jsonFilter, "|");
+		if (f) {
+			p = strnlstr(p, jsonFilter, f-jsonFilter, (char*)payload-p+length);
+			jsonFilter = f+1;
+		} else {
+			p = strstr(p, jsonFilter);
+		}
+	}
+  value = "";
+	if (p) {
+		p += emptyFilter?0:strlen(jsonFilter)+1;
+
+    p = strchr(p, '\"');
+    if (p) {
+      p++;
+      char *q = strchr(p, '\"');
+      if (q) {
+#if defined(ESP8266)
+        value.concat(p, q-p);
+#else
+        value.assign(p, q-p);
+#endif
+        return 1;
+      }
+    }
+	}
+	return 0;
 }

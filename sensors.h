@@ -37,6 +37,7 @@ extern "C" {
 #endif
 #include "defines.h"
 #include "utils.h"
+#include "notifier.h"
 #if defined(ESP8266) || defined(ESP32)
 #include <ADS1X15.h>
 #endif
@@ -111,6 +112,9 @@ extern "C" {
 #define SENSOR_OSPI_ANALOG_SMT50_MOIS   52  // Old OSPi analog input - SMT50 VWC [%] = (U * 50) : 3
 #define SENSOR_OSPI_ANALOG_SMT50_TEMP   53  // Old OSPi analog input - SMT50 T [°C] = (U – 0,5) * 100
 #define SENSOR_OSPI_INTERNAL_TEMP       54  // Internal OSPI Temperature
+
+#define SENSOR_FYTA_MOISTURE            60  // FYTA moisture sensor
+#define SENSOR_FYTA_TEMPERATURE         61  // FYTA temperature sensor
  
 #define SENSOR_MQTT                     90  // subscribe to a MQTT server and query a value
 
@@ -122,6 +126,8 @@ extern "C" {
 #define SENSOR_WEATHER_PRECIP_MM        106 // Weather service - precip (mm)
 #define SENSOR_WEATHER_WIND_MPH         107 // Weather service - wind (mph)
 #define SENSOR_WEATHER_WIND_KMH         108 // Weather service - wind (kmh)
+#define SENSOR_WEATHER_ETO              109 // Weather service - ETO
+#define SENSOR_WEATHER_RADIATION        110 // Weather service - radiation
 
 #define SENSOR_GROUP_MIN                1000 // Sensor group with min value
 #define SENSOR_GROUP_MAX                1001 // Sensor group with max value
@@ -326,10 +332,12 @@ typedef struct Monitor {
   char name[30];
   ulong maxRuntime;
   uint8_t prio;
-  unsigned char undef[20];  // for later
+  ulong reset_seconds;
+  unsigned char undef[16];  // for later
+  ulong reset_time; // time to reset
   Monitor *next;
 } Monitor_t;
-#define MONITOR_STORE_SIZE (sizeof(Monitor_t) - sizeof(char *) - sizeof(Monitor_t *))
+#define MONITOR_STORE_SIZE (sizeof(Monitor_t) - sizeof(char *) - sizeof(Monitor_t *) - 2*sizeof(ulong))
 
 #define UNIT_NONE 0
 #define UNIT_PERCENT 1
@@ -372,7 +380,10 @@ unsigned char getSensorUnitId(Sensor_t *sensor);
 
 extern char ether_buffer[];
 extern char tmp_buffer[];
+extern OpenSprinkler os;
 extern ProgramData pd;
+extern NotifQueue notif;
+extern const char *user_agent_string;
 
 // Utils:
 uint16_t CRC16(unsigned char buf[], int len);
@@ -441,6 +452,7 @@ double calc_sensor_watering_by_nr(uint nr);
 double calc_sensor_watering_int(ProgSensorAdjust_t *p, double sensorData);
 
 void GetSensorWeather();
+void GetSensorWeatherEto();
 // PUSH Message to MQTT and others:
 void push_message(Sensor_t *sensor);
 
@@ -458,14 +470,30 @@ void monitor_load();
 void monitor_save();
 int monitor_count();
 int monitor_delete(uint nr);
-bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio);
+bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0);
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);
 void check_monitors();
 
-#if defined(ESP8266) || defined(ESP32)
+#if defined(OSPI)
+boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
+#elif defined(ESP8266)
+boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
+#endif
+
+#if defined(OSPI)
+boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
+#elif defined(ESP8266)
+boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
+#endif
+
+#if defined(ESP8266) || defined(ESP32) 
 ulong diskFree();
 bool checkDiskFree();  // true: disk space Ok, false: Out of disk space
 #endif
+
+void replace_pid(uint old_pid, uint new_pid);
+int findValue(const char *payload, unsigned int length, const char *jsonFilter, double& value);
+int findString(const char *payload, unsigned int length, const char *jsonFilter, String& value);
 
 #endif  // _SENSORS_H
