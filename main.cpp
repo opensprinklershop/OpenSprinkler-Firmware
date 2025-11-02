@@ -2269,9 +2269,9 @@ bool register_partition() {
 	esp_flash_spi_device_config_t device_config = {};
 	device_config.host_id = SPI2_HOST;
 	device_config.cs_io_num = PIN_EXT_FLASH_CS;
-	device_config.io_mode = SPI_FLASH_DIO;
+	device_config.io_mode = SPI_FLASH_DOUT;
 	device_config.cs_id = 0;
-	device_config.freq_mhz = ESP_FLASH_40MHZ;
+	device_config.freq_mhz = ESP_FLASH_10MHZ;
 
 	err = spi_bus_add_flash_device(&ext_flash, &device_config);
 	if (err) {
@@ -2289,12 +2289,15 @@ bool register_partition() {
     esp_flash_read_id(ext_flash, &id);
     DEBUG_PRINTF(F("Initialized external Flash, size=%d KB, ID=0x%x\n"), ext_flash->size / 1024, id);
 
-	err = esp_partition_register_external(ext_flash, 0x0000, ext_flash->size, "spiffs_ext",
-		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+	err = esp_partition_register_external(ext_flash, 0x0000, ext_flash->size, "littlefs_ext",
+		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, NULL);
 	if (err) {
 		DEBUG_PRINTLN(F("Error registering partition"));
 		return false;
 	}
+
+	esp_flash_set_chip_write_protect(ext_flash, false);
+	
 	return true;
 }
 
@@ -2310,7 +2313,6 @@ void init_external_flash() // initialize external flash
     bus_config.sclk_io_num = SCK;
     bus_config.quadwp_io_num = -1;
     bus_config.quadhd_io_num = -1;
-	//bus_config.max_transfer_sz = 32;
 	
 	esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus_config, SPI_DMA_CH_AUTO);
 	if (err) {

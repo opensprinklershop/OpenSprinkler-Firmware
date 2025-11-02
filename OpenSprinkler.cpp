@@ -1249,7 +1249,7 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 			delay(5000);
 		}
 		#else
-		if(!LittleFS.begin(true, "/littlefs", 10, "spiffs_ext") || !LittleFS.begin(true)) {
+		if(!LittleFS.begin(true, "/littlefs", 10, "littlefs_ext") || !LittleFS.begin(true)) {
 			// !!! flash init failed, stall as we cannot proceed
 			lcd.setCursor(0, 0);
 			lcd_print_pgm(PSTR("Error Code: 0x2D"));
