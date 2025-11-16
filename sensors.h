@@ -85,7 +85,11 @@ extern "C" {
 #endif
 
 // MaxLogSize
+#if defined(ESP32) || defined(OSPI)
+#define MAX_LOG_SIZE 2097152 // 2MB max
+#else 
 #define MAX_LOG_SIZE 8000
+#endif
 
 // Sensor types:
 #define SENSOR_NONE                     0   // None or deleted sensor

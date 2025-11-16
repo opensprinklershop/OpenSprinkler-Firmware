@@ -2271,7 +2271,7 @@ bool register_partition() {
 	device_config.cs_io_num = PIN_EXT_FLASH_CS;
 	device_config.io_mode = SPI_FLASH_DOUT;
 	device_config.cs_id = 0;
-	device_config.freq_mhz = ESP_FLASH_10MHZ;
+	device_config.freq_mhz = ESP_FLASH_20MHZ;
 
 	err = spi_bus_add_flash_device(&ext_flash, &device_config);
 	if (err) {

@@ -530,8 +530,9 @@ unsigned char OpenSprinkler::start_network() {
 		useEth = false;
 	}
 
+	bool ssl = otc.port == 443;
 	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
-		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, false, ether_buffer, ETHER_BUFFER_SIZE);
+		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, ssl, ether_buffer, ETHER_BUFFER_SIZE);
 		DEBUG_PRINTLN(F("Started OTF with remote connection"));
 	} else {
 		otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
@@ -1249,11 +1250,13 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 			delay(5000);
 		}
 		#else
-		if(!LittleFS.begin(true, "/littlefs", 10, "littlefs_ext") || !LittleFS.begin(true)) {
-			// !!! flash init failed, stall as we cannot proceed
-			lcd.setCursor(0, 0);
-			lcd_print_pgm(PSTR("Error Code: 0x2D"));
-			delay(5000);
+		if(!LittleFS.begin(true, "/littlefs", 10, "littlefs_ext")) {
+			if (!LittleFS.begin(true)) {
+				// !!! flash init failed, stall as we cannot proceed
+				lcd.setCursor(0, 0);
+				lcd_print_pgm(PSTR("Error Code: 0x2D"));
+				delay(5000);
+			}	
 		}
 		/*if (!file_exists(SOPTS_FILENAME)){
 			// format external littlefs if not existing
@@ -1264,7 +1267,9 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 		}*/
 		#endif
 
-		DEBUG_PRINTF(F("Free space: %10u\n"), LittleFS.totalBytes()-LittleFS.usedBytes());  
+		DEBUG_PRINTF(F("Total space: %lu kB\n"), LittleFS.totalBytes() / 1024);  
+		DEBUG_PRINTF(F("Used space:  %lu kB\n"), LittleFS.usedBytes() / 1024);  
+		DEBUG_PRINTF(F("Free space:  %lu kb\n"), (LittleFS.totalBytes()-LittleFS.usedBytes()) / 1024);  
 
 		state = OS_STATE_INITIAL;
 
