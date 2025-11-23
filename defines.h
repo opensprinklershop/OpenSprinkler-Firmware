@@ -470,7 +470,8 @@ enum {
 	#define ETHER_SPI_CLOCK    10000000L // SPI clock for Ethernet (e.g. 10MHz)
 
 #else // ESP32
-	/* OS33 ESP32 pin defines */
+#if defined(ESP32C3)
+	/* OS33 ESP32-C3 pin defines */
 	#define PIN_CURR_SENSE    0    // current sensing pin
 	#define PIN_LATCH_VOLT_SENSE 0 // latch voltage sensing pin
 	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
@@ -494,6 +495,37 @@ enum {
 	#define PIN_EXT_FLASH_CS   6 // external flash CS pin
 	#define PIN_ETHER_IRQ     -1 //
 	#define PIN_ETHER_RESET   -1
+#elif defined(ESP32C5)
+/* OS33 ESP32-C6 pin defines */
+	#define PIN_CURR_SENSE    0    // current sensing pin
+	#define PIN_LATCH_VOLT_SENSE 0 // latch voltage sensing pin
+	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
+	#define ESP32_IO_CONFIG         0x1000 // config bits
+	#define ESP32_IO_OUTPUT         0x1E00 // output bits
+	#define ESP32_PIN_BUTTON_1      15 // button 1 (8266:2)
+	#define ESP32_PIN_BUTTON_2      28 // button 2 (8266:0)
+	#define ESP32_PIN_BUTTON_3      IOEXP_PIN+12 // button 3
+	#define ESP32_PIN_RFTX          6 // 8266:15
+	#define ESP32_PIN_BOOST         IOEXP_PIN+13
+	#define ESP32_PIN_BOOST_EN      IOEXP_PIN+14
+	#define ESP32_PIN_LATCH_COMA    IOEXP_PIN+8  // latch COM+ (anode)
+	#define V2_PIN_SRLAT            IOEXP_PIN+9  // shift register latch
+	#define V2_PIN_SRCLK            IOEXP_PIN+10 // shift register clock
+	#define V2_PIN_SRDAT            IOEXP_PIN+11 // shift register data
+	#define ESP32_PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
+	#define ESP32_PIN_SENSOR1       12  // sensor 1 (8266:3)
+	#define ESP32_PIN_SENSOR2       10  // sensor 2	(8266:10)
+	#define MIO2                    13  // QIO IO2 for external flash
+	#define MIO3                    14  // QIO IO3 for external flash
+
+	#define UART_TX_PIN             7   // ethernet pin out
+	#define UART_RX_PIN             8   // ethernet pin out
+
+	#define PIN_ETHER_CS       2 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
+	#define PIN_EXT_FLASH_CS   9 // external flash CS pin
+	#define PIN_ETHER_IRQ     -1 //
+	#define PIN_ETHER_RESET   -1
+#endif
 
 #endif
 	#define USE_DISPLAY

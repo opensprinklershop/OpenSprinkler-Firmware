@@ -2303,17 +2303,25 @@ bool register_partition() {
 
 void init_external_flash() // initialize external flash
 {
+	spi_bus_config_t bus_config = {};
+
 	DEBUG_PRINTLN(F("Initializing external flash..."));		
 	DEBUG_PRINTF(F("SPI2_HOST=%d\n"), SPI2_HOST);
 	DEBUG_PRINTF(F("MOSI=%d, MISO=%d, SCK=%d, CS=%d\n"), MOSI, MISO, SCK, PIN_EXT_FLASH_CS);
-
-	spi_bus_config_t bus_config = {};
+#if defined(ESP32C5)
+    bus_config.mosi_io_num = MOSI;
+    bus_config.miso_io_num = MISO;
+    bus_config.sclk_io_num = SCK;
+    bus_config.quadwp_io_num = MIO2;
+    bus_config.quadhd_io_num = MIO3;
+#else
     bus_config.mosi_io_num = MOSI;
     bus_config.miso_io_num = MISO;
     bus_config.sclk_io_num = SCK;
     bus_config.quadwp_io_num = -1;
     bus_config.quadhd_io_num = -1;
-	
+#endif
+
 	esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus_config, SPI_DMA_CH_AUTO);
 	if (err) {
 		DEBUG_PRINTLN(F("Error bus initialization"));
