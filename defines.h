@@ -21,7 +21,6 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include <pins_arduino.h>
 #ifndef _DEFINES_H
 #define _DEFINES_H
 
@@ -470,6 +469,8 @@ enum {
 	#define ETHER_SPI_CLOCK    10000000L // SPI clock for Ethernet (e.g. 10MHz)
 
 #else // ESP32
+#include <pins_arduino.h>
+
 #if defined(ESP32C3)
 	/* OS33 ESP32-C3 pin defines */
 	#define PIN_CURR_SENSE    0    // current sensing pin
