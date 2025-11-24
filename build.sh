@@ -82,7 +82,8 @@ if [ "$1" == "demo" ]; then
 else
 	echo "Installing required libraries..."
 	apt-get update
-	apt-get install -y libmosquitto-dev libi2c-dev libssl-dev libgpiod-dev gpiod libmodbus-dev libcurlpp-dev
+	# Switched from libgpiod-dev to liblgpio-dev
+	apt-get install -y libmosquitto-dev libi2c-dev libssl-dev liblgpio-dev libmodbus-dev libcurlpp-dev
 	enable_i2c
 
 	./build2.sh

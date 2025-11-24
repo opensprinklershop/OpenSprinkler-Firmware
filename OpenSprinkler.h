@@ -53,6 +53,7 @@
 		#include "SSD1306Display.h"
 		#include "espconnect.h"
 		#include "EMailSender.h"
+		#include "ch224.h"
 	#else // for AVR
 		#include <SdFat.h>
 		#include <Ethernet.h>
@@ -238,6 +239,7 @@ struct ConStatus {
 	unsigned char sensor2_active:1;  // sensor2 active bit (when set, sensor2 is activated)
 	unsigned char req_mqtt_restart:1;// request mqtt restart
 	unsigned char pause_state:1;     // pause station runs
+	unsigned char overcurrent_sid:8; // overcurrent sid (0: no overcurrent; 1~254: overcurrent caused by opening zone; 255: system overcurrent)
 	unsigned char forced_sensor1:1;  // forced sensor1 active (from Analog Sensor API)
 	unsigned char forced_sensor2:1;  // forced sensor2 active (from Analog Sensor API)
 };
@@ -281,7 +283,7 @@ public:
 	static const char*sopts[]; // string options
 	static unsigned char station_bits[];     // station activation bits. each byte corresponds to a board (8 stations)
 																	// first byte-> master controller, second byte-> ext. board 1, and so on
-	// todo future: the following attribute bytes are for backward compatibility
+	// Note: the following attribute bytes are for backward compatibility
 	static unsigned char attrib_mas[];
 	static unsigned char attrib_igs[];
 	static unsigned char attrib_mas2[];
@@ -339,6 +341,8 @@ public:
 	static unsigned char get_master_id(unsigned char mas);
 	static int16_t get_on_adj(unsigned char mas);
 	static int16_t get_off_adj(unsigned char mas);
+	static int16_t get_imin();
+	static int16_t get_imax();
 	static unsigned char is_running(unsigned char sid);
 	static unsigned char get_station_gid(unsigned char sid);
 	static void set_station_gid(unsigned char sid, unsigned char gid);
@@ -378,7 +382,7 @@ public:
 	static unsigned char detect_programswitch_status(time_os_t curr_time); // get program switch status
 	static void sensor_resetall();
 
-	static uint16_t read_current(); // read current sensing value
+	static uint16_t read_current(bool use_ema=false); // read current sensing value. use_ema uses exponential moving average for filtering
 	static uint16_t baseline_current; // resting state current
 
 	static int detect_exp();      // detect the number of expansion boards
@@ -388,12 +392,12 @@ public:
 	static unsigned char get_station_bit(unsigned char sid); // get station bit of one station (sid->station index)
 	static void switch_special_station(unsigned char sid, unsigned char value, uint16_t dur=0); // swtich special station
 	static void clear_all_station_bits(); // clear all station bits
-	static void apply_all_station_bits(); // apply all station bits (activate/deactive values)
+	static void apply_all_station_bits(void (*post_activation_callback)()=NULL); // apply all station bits (activate/deactive values)
 
 	static int8_t send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
 	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
 	static int8_t send_http_request(char* server_with_port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
-	
+
 	#if defined(USE_OTF)
 	static OTCConfig otc;
 	#endif
@@ -451,7 +455,9 @@ public:
 	#if defined(ESP8266)
 	static IOEXP *mainio, *drio;
 	static IOEXP *expanders[];
-	
+	static CH224 usbpd;
+	static uint8_t actual_pd_voltage;
+
 	static void detect_expanders();
 	static unsigned char get_wifi_mode() { if (useEth) return WIFI_MODE_STA; else return wifi_testmode ? WIFI_MODE_STA : iopts[IOPT_WIFI_MODE];}
 	static unsigned char wifi_testmode;
@@ -462,6 +468,7 @@ public:
 	static void reset_to_ap();
 	static unsigned char state;
 	static void force_close_latch(unsigned char sid);
+	static void setup_pd_voltage();
 	#endif
 
 #else
@@ -478,7 +485,7 @@ private:
 #endif // LCD functions
 
 #if defined(ESP8266)
-	static void latch_boost(unsigned char volt=0);
+	static void latch_boost(int8_t volt=-1);
 	static void latch_open(unsigned char sid);
 	static void latch_close(unsigned char sid);
 	static void latch_setzonepin(unsigned char sid, unsigned char value);

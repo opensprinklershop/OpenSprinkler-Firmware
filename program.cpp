@@ -283,7 +283,7 @@ unsigned char ProgramStruct::check_day_match(time_os_t t) {
 			} else if (dt != (days[0]&0b11111)){
 				return 0;
 			}
-				
+
 		break;
 
 		case PROGRAM_TYPE_INTERVAL:
@@ -465,7 +465,7 @@ void ProgramStruct::gen_station_runorder(uint16_t runcount, unsigned char *order
 			case 'R': // random ordering
 
 			{
-				for(i=0;i<ns-1;i++) { // todo: need random seeding
+				for(i=0;i<ns-1;i++) {
 					unsigned char sel = (rand()%(ns-i))+i;
 					temp = order[i]; // swap order[i] with order[sel]
 					order[i] = order[sel];
@@ -475,12 +475,14 @@ void ProgramStruct::gen_station_runorder(uint16_t runcount, unsigned char *order
 			break;
 		}
 	}
+#if defined(ENABLE_DEBUG)
 	DEBUG_PRINT("station order:[");
 	for(i=0;i<ns;i++) {
 		DEBUG_PRINT(order[i]);
 		DEBUG_PRINT(",");
 	}
 	DEBUG_PRINTLN("]");
+#endif
 }
 
 // convert absolute remainder (reference time 1970 01-01) to relative remainder (reference time today)

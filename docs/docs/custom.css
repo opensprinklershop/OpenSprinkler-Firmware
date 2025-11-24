@@ -1,0 +1,88 @@
+.vsp1 { display:block; margin: 6px 0; }
+.vsp2 { display:block; margin: 50px 0; }
+p + ul,
+p + ol {
+    margin-top: -0.5em; /* Or try 0 or 0.5rem. Adjust as needed! */
+}
+hr.double {
+  height: 3px;
+  border-top: 4px double #ccc;
+  border-bottom: none; /* Ensure no other borders interfere */
+}
+.hl {
+  background-color: #d0ead0; /* Light Green */
+}
+.hllight {
+  background-color: #e0e0e0; /* Light Green */
+}
+.hltitle {
+  background-color: #d0ead0; /* A light green color */
+  padding: 6px 8px;
+  border-radius: 4px;
+  display: inline-block; /* Makes the background fit the text */
+}
+.hl_purple {
+  background-color: #A000A0;
+  color: white;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.hl_yellow {
+  background-color: #F0F020;
+  color: black;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.hl_red {
+  color: #C02020;
+}
+.hl_orange {
+  color: #F28500;
+}
+.hl_green {
+  background-color: #209020;
+  color: white;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+table th,
+table td {
+  padding: 6px 10px;
+}
+.rst-content :not(pre) > code {
+  border: none;
+  background-color: #f4f4f4;
+  color: #A04020;
+  font-size: 85%;
+}
+.center {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  width: 350px;
+}
+.center_wider {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  width: 500px;
+}
+ul > li {
+  margin-bottom: 0.25em; /* Adjust this value as needed */
+}
+.custom-box {
+  background-color: #d0ead0;
+  padding: 0.7em;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+.img-border {
+  border: 1px solid #ccc;  /* A light gray border */
+  border-radius: 4px;       /* Optional: nice rounded corners */
+  padding: 4px;             /* Optional: space between image and border */
+}
+/* You could also make a class for a shadow, which often looks nicer */
+.img-shadow {
+  box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}

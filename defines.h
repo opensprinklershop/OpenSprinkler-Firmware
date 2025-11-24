@@ -81,9 +81,23 @@ typedef unsigned long ulong;
 #define NOTIFY_RAINDELAY       0x0080
 #define NOTIFY_STATION_ON      0x0100
 #define NOTIFY_FLOW_ALERT      0x0200
-#define NOTIFY_MONITOR_LOW     0x0400
-#define NOTIFY_MONITOR_MID     0x0800
-#define NOTIFY_MONITOR_HIGH    0x1000
+#define NOTIFY_CURR_ALERT      0x0400
+
+/** Queue Insertion Mode */
+enum {
+	QUEUE_OPTION_APPEND = 0,
+	QUEUE_OPTION_INSERT_FRONT,
+	QUEUE_OPTION_REPLACE
+};
+
+enum {
+	CURR_ALERT_TYPE_UNDER = 0,		// undercurrent when running a station
+	CURR_ALERT_TYPE_OVER_STATION,	// overcurrent when turning on a station
+	CURR_ALERT_TYPE_OVER_SYSTEM		// overcurrent while system is running
+};
+#define NOTIFY_MONITOR_LOW     0x0800
+#define NOTIFY_MONITOR_MID     0x1000
+#define NOTIFY_MONITOR_HIGH    0x2000
 
 /** HTTP request macro defines */
 #define HTTP_RQT_SUCCESS       0
@@ -158,6 +172,12 @@ typedef unsigned long ulong;
 #define DEFAULT_OTC_TOKEN_LENGTH   32
 #define DEFAULT_DEVICE_NAME       "My OpenSprinkler"
 #define DEFAULT_EMPTY_STRING      ""
+#define DEFAULT_UNDERCURRENT_THRESHOLD 100 // in mA
+#define DEFAULT_OVERCURRENT_LIMIT 1200 // in mA
+#define OVERCURRENT_INRUSH_EXTRA   600 // in mA, extra margin for inrush
+#define OVERCURRENT_DC_EXTRA      1200 // in mA, extra margin for DC controller
+#define DEFAULT_LATCH_BOOST_VOLTAGE  9 // default latch boost voltage in volt
+#define DEFAULT_TARGET_PD_VOLTAGE   75 // default target voltage (unit: 100mV, so 75 means 7500mV ot 7.5V)
 
 #if (defined(__AVR_ATmega1284P__) || defined(__AVR_ATmega1284__))
 	#define OS_AVR
@@ -171,7 +191,7 @@ typedef unsigned long ulong;
 enum {
 	WEATHER_METHOD_MANUAL = 0,
 	WEATHER_METHOD_ZIMMERMAN,
-	WEATHER_METHOD_AUTORAINDELY,
+	WEATHER_METHOD_AUTORAINDELAY,
 	WEATHER_METHOD_ETO,
 	WEATHER_METHOD_MONTHLY,
 	NUM_WEATHER_METHODS
@@ -276,13 +296,16 @@ enum {
 	IOPT_LATCH_ON_VOLTAGE,
 	IOPT_LATCH_OFF_VOLTAGE,
 	IOPT_NOTIF2_ENABLE,
-	IOPT_RESERVE_4,
-	IOPT_RESERVE_5,
+	IOPT_I_MIN_THRESHOLD,
+	IOPT_I_MAX_LIMIT,
+	IOPT_TARGET_PD_VOLTAGE,
+	IOPT_RESERVE_7,
+	IOPT_RESERVE_8,
+	IOPT_WIFI_MODE, //ro
+	IOPT_RESET,     //ro
 	IOPT_BELOW_HANDLING,
 	IOPT_BELOW1,
 	IOPT_BELOW2,
-	IOPT_WIFI_MODE, //ro
-	IOPT_RESET,     //ro
 	NUM_IOPTS // total number of integer options
 };
 
@@ -377,6 +400,7 @@ enum {
 	#define EXP_I2CADDR_BASE 0x24 // base of expander I2C address
 	#define LCD_I2CADDR      0x3C // 128x64 OLED display I2C address
 	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
+	#define CH224_I2CADDR    0x22 // CH224A/Q I2C address
 
 	#define PIN_CURR_SENSE    A0    // current sensing pin
 	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
@@ -450,6 +474,7 @@ enum {
 	#define V2_PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
 	#define V2_PIN_SENSOR1       3  // sensor 1
 	#define V2_PIN_SENSOR2       10 // sensor 2
+	#define V2_PIN_BOOST_SEL     IOEXP_PIN+8
 
 	#define USE_DISPLAY
 	#define USE_SSD1306

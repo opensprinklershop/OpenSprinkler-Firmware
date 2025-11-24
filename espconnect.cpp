@@ -75,5 +75,8 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	WiFi.setOutputPower(20.5);
 	if(WiFi.getMode()!=WIFI_STA) WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid, pass, channel, bssid);
+	WiFi.setSleep(false); // work-around for ARP issue: disable sleep mode
+	WiFi.setOutputPower(20.5);
+	WiFi.setAutoReconnect(true); // enable auto reconnect
 }
 #endif

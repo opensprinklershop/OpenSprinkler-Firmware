@@ -1,22 +1,184 @@
-<head><title>OpenSprinkler WiFi Config</title><meta name='viewport' content='width=device-width, initial-scale=1'></head>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>OpenSprinkler WiFi Config</title>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <style>
+        :root{
+          --bg:#f6f7fb; --fg:#0f172a; --muted:#586380;
+          --card:#fff; --border:#cdd5e0;
+          --accent:#2563eb;
+        }
+        @media (prefers-color-scheme: dark){
+          :root{
+            --bg:#0b1220; --fg:#e6eaff; --muted:#a3acc7;
+            --card:#0f172a; --border:#334155;
+            --accent:#60a5fa;
+          }
+        }
+        /* --- General Body & Typography --- */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            margin: 0;
+            padding: 20px;
+            color: var(--fg);
+        }
+
+        /* --- Main Content Container --- */
+        main {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: var(--card);
+            padding: 25px 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            text-align: center;
+            color: var(--fg);
+            margin-top: 0;
+            margin-bottom: 25px;
+        }
+
+        /* --- Form Elements & Inputs --- */
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        input:not([type]),input[type="text"],input[type="password"] {
+            width: 100%;
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            box-sizing: border-box;
+            background-color: transparent;
+            color: inherit;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:not([type]):focus,input[type="text"]:focus,input[type="password"]:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 25%, transparent);
+            outline: none;
+        }
+
+        /* --- Buttons --- */
+        button {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            background-color: var(--accent);
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* --- Responsive Table Container --- */
+        .table-container {
+            overflow-x: auto; /* Makes the container scrollable horizontally */
+            -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 25px;
+        }
+
+        /* --- WiFi Network List Table --- */
+        #rd {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        #rd th, #rd td {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap; /* Prevents columns from wrapping */
+        }
+
+        #rd tr:last-child td {
+            border-bottom: none; /* remove border from the last row */
+        }
+
+        #rd th {
+            font-weight: 600;
+            color: var(--muted);
+            background-color: color-mix(in oklab, var(--border) 20%, transparent);
+        }
+
+        /* --- Message Area --- */
+        #msg {
+            text-align: left;
+            font-weight: 600;
+            margin: 20px 0;
+            min-height: 20px;
+        }
+    </style>
+</head>
 <body>
-<style> table, th, td { padding:4px; border-collapse: collapse;}
-.ipt {font-size:12pt;height:28px;}
-</style>
-<caption><b>OpenSprinkler WiFi Config</caption><br><br>
-<table border=1 id='rd'>
-  <tr><td align='center'><b>Detected SSID</b></td><td align='center'><b>BSSID</b></td><td align='center'><b>Signal</b></td>
-    <td><b>Ch.</b></td></tr><tr><td>(Scanning...)</td></tr>
-</table>
-<br>
-<table>
-  <tr><td><b>SSID</b>:</td><td><input type='text' id='ssid' class='ipt' size=18></td></tr>
-  <tr><td><b>Password</b>:</td><td><input type='password' id='pass' class='ipt' size=18></td></tr>
-  <tr><td><b>BSSID</b>:</td><td><input type='text' id='bssid' class='ipt' size=18 placeholder='(optional)'></td></tr>
-  <tr><td><b>Channel</b>:<td><input type='text' id='channel' class='ipt' size=18 placeholder='(optional)'></td></tr>
-  <tr><td colspan=2><p id='msg'></p></td></tr>
-  <tr><td></td></td><td><button type='button' id='butt' onclick='sf();' style='height:48px;width:180px;font-size:16px'><b>Submit</b></button></td></tr>
-</table>
+
+<main>
+    <h1>OpenSprinkler WiFi Config</h1>
+
+    <div class="form-group">
+        <label>Available Networks</label>
+        <div class="table-container">
+            <table id='rd'>
+                <thead>
+                    <tr>
+                        <th>Detected SSID</th>
+                        <th>BSSID</th>
+                        <th>Signal</th>
+                        <th>Ch.</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="4">(Scanning...)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id='div_input'>
+        <div class="form-group">
+            <label for="ssid">SSID</label>
+            <input type='text' id='ssid'>
+        </div>
+        <div class="form-group">
+            <label for="pass">Password</label>
+            <input type='password' id='pass'>
+        </div>
+        <div class="form-group">
+            <label for="bssid">BSSID (optional)</label>
+            <input type='text' id='bssid' placeholder='(optional)'>
+        </div>
+        <div class="form-group">
+            <label for="channel">Channel (optional)</label>
+            <input type='text' id='channel' placeholder='(optional)'>
+        </div>
+    </div>
+
+    <p id='msg'></p>
+    <button type='button' id='butt' onclick='sf()'><b>Submit</b></button>
+</main>
+
 <script>
 function id(s) {return document.getElementById(s);}
 function sel(i) {id('ssid').value=ssids[i][0];id('bssid').value=ssids[i][1];id('channel').value=ssids[i][3];}
@@ -48,8 +210,9 @@ function sf() {
       tci=setInterval(tryConnect, 1000); return; }
       id('msg').innerHTML='<b><font color=red>Error code: '+jd.result+', item: '+jd.item+'</font></b>';
       id('butt').innerHTML='Submit';
-      id('butt').disabled=false;id('ssid').disabled=false;id('pass').disabled=false;
-      id('bssid').disabled=false;id('channel').disabled=false;
+      var inputs = document.querySelectorAll('#div_input input');
+      for(var i = 0; i < inputs.length; i++) { inputs[i].disabled = false; }
+      id('butt').disabled=false;
     }
   };
   var comm='ccap?ssid='+encodeURIComponent(id('ssid').value)+'&pass='+encodeURIComponent(id('pass').value);
@@ -58,8 +221,9 @@ function sf() {
     else comm+='&extra='+encodeURIComponent(id('bssid').value+'@0');
   }
   xhr.open('POST', comm, true); xhr.send();
-  id('butt').disabled=true;id('ssid').disabled=true;id('pass').disabled=true;
-  id('bssid').disabled=true;id('channel').disabled=true;
+  var inputs = document.querySelectorAll('#div_input input');
+  for(var i = 0; i < inputs.length; i++) { inputs[i].disabled = true; }
+  id('butt').disabled=true;
 }
 function truncateStr(s,n) {if(s.length<=n) return s; else return s.slice(0,n)+'...';}
 function loadSSIDs() {
@@ -70,12 +234,23 @@ function loadSSIDs() {
       if(typeof jd.scanned !== 'object') return;
       ssids = jd.scanned;
       ssids.sort((a,b) => {return b[2]-a[2];}); // sort by signal strength
-      id('rd').deleteRow(1);
+      var tableBody = document.querySelector("#rd tbody");
+      tableBody.innerHTML = ''; // Clear the '(Scanning...)' message
+      if (!ssids || ssids.length === 0) {
+          tableBody.innerHTML = "<tr><td colspan='4'>No networks found.</td></tr>";
+          return;
+      }
       for(i=0;i<ssids.length;i++) {
         var strength= ssids[i][2]>-71?'Ok':(ssids[i][2]>-81?'Weak':'Poor');
-        var row=id('rd').insertRow(-1);
-        row.innerHTML ="<tr><td><input type='radio' name='ssids' onclick=sel("+i+")>"
-          +truncateStr(ssids[i][0],15)+"</td><td>"+ssids[i][1]+"</td><td>"+ssids[i][2]+" dbm ("+strength+")</td><td align='center'>"+ssids[i][3]+"</td></tr>";
+        var row=tableBody.insertRow(-1);
+        var cell1 = row.insertCell(0);
+        var cell2 = row.insertCell(1);
+        var cell3 = row.insertCell(2);
+        var cell4 = row.insertCell(3);
+        cell1.innerHTML = "<label style='display:flex; align-items:center; font-weight:normal; margin:0;'><input name='ssids' onclick=sel("+i+") type='radio' style='margin-right: 8px;'>" + truncateStr(ssids[i][0],15) + "</label>";
+        cell2.innerHTML = ssids[i][1];
+        cell3.innerHTML = ssids[i][2] + " dBm (" + strength + ")";
+        cell4.innerHTML = ssids[i][3];
       }
     };
   }
@@ -83,4 +258,6 @@ function loadSSIDs() {
 }
 setTimeout(loadSSIDs, 1000);
 </script>
+
 </body>
+</html>

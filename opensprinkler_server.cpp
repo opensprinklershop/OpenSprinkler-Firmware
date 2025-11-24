@@ -243,6 +243,16 @@ void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
 	res.writeHeader(F("Connection"), F("close"));
 }
+
+void print_header_compressed_html(OTF_PARAMS_DEF, int len) {
+	res.writeStatus(200, F("OK"));
+	res.writeHeader(F("Content-Type"), F("text/html; charset=utf-8"));
+	res.writeHeader(F("Access-Control-Allow-Origin"), F("*")); // from esp8266 2.4 this has to be sent explicitly
+	res.writeHeader(F("Content-Length"), len);
+	res.writeHeader(F("Vary"), F("Accept-Encoding"));
+	res.writeHeader(F("Content-Encoding"), F("gzip"));
+	res.writeHeader(F("Connection"), F("close"));
+}
 #else
 void print_header(bool isJson=true)  {
 	bfill.emit_p(PSTR("$F$F$F$F\r\n"), html200OK, isJson?htmlContentJSON:htmlContentHTML, htmlAccessControl, htmlNoCache);
@@ -329,8 +339,9 @@ static String scanned_ssids;
 
 void on_ap_home(OTF_PARAMS_DEF) {
 	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
-	print_header(OTF_PARAMS, false, strlen_P((char*)ap_home_html));
-	res.writeBodyChunk((char *) "%s", ap_home_html);
+	print_header_compressed_html(OTF_PARAMS, ap_home_html_gz_len);
+	//res.writeBodyChunk((char *) "%s", ap_home_html_gz);
+	res.writeBodyData((const __FlashStringHelper*)ap_home_html_gz, ap_home_html_gz_len);
 }
 
 void on_ap_scan(OTF_PARAMS_DEF) {
@@ -555,7 +566,7 @@ void server_change_board_attrib(const OTF::Request &req, char header, unsigned c
 void server_change_board_attrib(char *p, char header, unsigned char *attrib)
 #endif
 {
-	char tbuf2[5] = {0, 0, 0, 0, 0};
+	char tbuf2[6] = {0};
 	unsigned char bid;
 	tbuf2[0]=header;
 	for(bid=0;bid<os.nboards;bid++) {
@@ -572,13 +583,13 @@ void server_change_stations_attrib(const OTF::Request &req, char header, unsigne
 void server_change_stations_attrib(char *p, char header, unsigned char *attrib)
 #endif
 {
-	char tbuf2[6] = {0, 0, 0, 0, 0, 0};
+	char tbuf2[6] = {0};
 	unsigned char bid, s, sid;
 	tbuf2[0]=header;
 	for(bid=0;bid<os.nboards;bid++) {
 		for(s=0;s<8;s++) {
 			sid=bid*8+s;
-			snprintf(tbuf2+1, 3, "%hhu", (int)sid);
+			snprintf(tbuf2+1, 4, "%d", (int)sid);
 			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, tbuf2)) {
 				attrib[sid] = atoi(tmp_buffer);
 			}
@@ -631,7 +642,7 @@ void server_change_stations(OTF_PARAMS_DEF) {
 	char tbuf2[5] = {'s', 0, 0, 0, 0};
 	// process station names
 	for(sid=0;sid<os.nstations;sid++) {
-		snprintf(tbuf2+1, 3, "%hhu", (int)sid);
+		snprintf(tbuf2+1, 4, "%d", (int)sid);
 		if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, tbuf2)) {
 			#if !defined(USE_OTF)
 			urlDecode(tmp_buffer);
@@ -674,6 +685,9 @@ void server_change_stations(OTF_PARAMS_DEF) {
 					handle_return(HTML_DATA_OUTOFBOUND);
 				}
 			} else if ((tmp_buffer[0] == STN_TYPE_HTTP) || (tmp_buffer[0] == STN_TYPE_HTTPS) || (tmp_buffer[0] == STN_TYPE_REMOTE_OTC)) {
+				#if !defined(USE_OTF)
+				urlDecode(tmp_buffer+1); // decode the string for OS_AVR
+				#endif
 				if (strlen(tmp_buffer+1) > sizeof(HTTPStationData)) {
 					handle_return(HTML_DATA_OUTOFBOUND);
 				}
@@ -712,15 +726,16 @@ uint16_t parse_listdata(char **p) {
 	return (uint16_t)atol(tmp_buffer);
 }
 
-void manual_start_program(unsigned char, unsigned char);
+void manual_start_program(unsigned char, unsigned char, unsigned char);
 void stop_program(unsigned char);
 
 /** Manual start program
- * Command: /mp?pw=xxx&pid=xxx&uwt=xxx
+ * Command: /mp?pw=xxx&pid=xx&uwt=x&qo=x
  *
  * pw:	password
  * pid: program index (0 refers to the first program)
  * uwt: use weather (i.e. watering percentage)
+ * qo: queue option (0: append; 1: insert at front; 2: replace (default) )
  */
 void server_manual_program(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -750,23 +765,30 @@ void server_manual_program(OTF_PARAMS_DEF) {
 		}
 	}
 
-	// reset all stations and prepare to run one-time program
-	//reset_all_stations_immediate();
+	unsigned char qo = QUEUE_OPTION_REPLACE;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("qo"), true)) {
+		qo=(unsigned char)atoi(tmp_buffer);
+	}
+	if (qo == QUEUE_OPTION_REPLACE) {
+		// reset all stations and clear queue
+		reset_all_stations_immediate();
+	}
 
-	manual_start_program(pid+1, uwt);
+	manual_start_program(pid+1, uwt, qo);
 
 	handle_return(HTML_SUCCESS);
 }
 
 /**
  * Change run-once program
- * Command: /cr?pw=xxx&t=[x,x,x...]&cnt?=xxx&int?=xxx&uwt?=xxx
+ * Command: /cr?pw=xxx&t=[x,x,x...]&cnt?=xxx&int?=xxx&uwt?=xxx&&anno?=xxx
  *
  * pw: password
  * t:  station water time
  * cnt?: repeat count
  * int?: repeat interval
  * uwt?: use weather adjustment
+ * anno?: annotation for station ordering (refer to program name annotation)
  */
 void server_change_runonce(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -777,9 +799,7 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 	char *p = get_buffer;
 
 	// decode url first
-	#if !defined(USE_OTF)
 	if(p) urlDecode(p);
-	#endif
 	// search for the start of t=[
 	char *pv;
 	boolean found=false;
@@ -793,16 +813,23 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 	pv+=3;
 #endif
 
-	// reset all stations and prepare to run one-time program
-	reset_all_stations_immediate();
-
-	ProgramStruct prog;
+	ProgramStruct prog, annoprog;
+	unsigned char ns = os.nstations;
 
 	uint16_t dur;
-	for(int i=0;i<os.nstations;i++) {
+	for(int i=0;i<ns;i++) {
 		dur = parse_listdata(&pv);
 		prog.durations[i] = dur > 0 ? dur : 0;
 	}
+
+	unsigned char order[ns];
+	annoprog.name[0] = 0;
+	// check if anno parameter is provided
+	if(findKeyVal(FKV_SOURCE,tmp_buffer,PROGRAM_NAME_SIZE-1,PSTR("anno"),true)){
+		tmp_buffer[PROGRAM_NAME_SIZE-1] = 0; // make sure it ends properly
+		strcpy(annoprog.name, tmp_buffer);
+	}
+	annoprog.gen_station_runorder(1, order);
 
 	//check if repeat count is defined and create program to perform the repetitions
 	if(findKeyVal(FKV_SOURCE,tmp_buffer,TMP_BUFFER_SIZE,PSTR("cnt"),true)){
@@ -838,6 +865,8 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 			prog.days[1] = epoch_t & 0b11111111; //one interval past current day in epoch time
 			prog.starttimes[0] = curr_time % 1440; //one interval past current time
 			strcpy_P(prog.name, PSTR("Run-Once with repeat"));
+			strncat(prog.name, annoprog.name, PROGRAM_NAME_SIZE-strlen(prog.name)-1);
+			prog.name[PROGRAM_NAME_SIZE-1]=0;
 
 			//if no more repeats, remove interval to flag for deletion
 			if(prog.starttimes[1] == 0){
@@ -855,9 +884,24 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 	double wl = uwt?os.iopts[IOPT_WATER_PERCENTAGE]:100;
 	unsigned char sid, bid, s;
 	boolean match_found = false;
-	for(sid=0;sid<os.nstations;sid++) {
-		dur=prog.durations[sid];
-		dur = dur * wl / 100;
+
+	unsigned char wl = 100;
+	if(findKeyVal(FKV_SOURCE,tmp_buffer,TMP_BUFFER_SIZE,PSTR("uwt"),true)){
+		if(tmp_buffer[0]=='1') wl = os.iopts[IOPT_WATER_PERCENTAGE];
+	}
+
+	unsigned char qo = QUEUE_OPTION_REPLACE;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("qo"), true)) {
+		qo=(unsigned char)atoi(tmp_buffer);
+	}
+	if (qo == QUEUE_OPTION_REPLACE) {
+		// reset all stations and clear queue
+		reset_all_stations_immediate();
+	}
+
+	for(unsigned char oi=0;oi<ns;oi++) {
+		sid=order[oi];
+		dur=prog.durations[sid]*wl/100;
 		bid=sid>>3;
 		s=sid&0x07;
 		// if non-zero duration is given
@@ -874,7 +918,7 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 		}
 	}
 	if(match_found) {
-		schedule_all_stations(os.now_tz());
+		schedule_all_stations(os.now_tz(), qo);
 		handle_return(HTML_SUCCESS);
 	}
 
@@ -1038,7 +1082,7 @@ void server_change_program(OTF_PARAMS_DEF) {
 	*(char*)(&prog) = parse_listdata(&pv);
 	prog.days[0]= parse_listdata(&pv);
 	prog.days[1]= parse_listdata(&pv);
-	
+
 	if (prog.type == PROGRAM_TYPE_INTERVAL) {
 		if (prog.days[1] == 0) handle_return(HTML_DATA_OUTOFBOUND)
 		else if (prog.days[1] >= 1) {
@@ -1106,11 +1150,21 @@ void server_json_options_main() {
 			if (os.hw_type==HW_TYPE_AC || os.hw_type==HW_TYPE_UNKNOWN) continue;
 			else v<<=2;
 		}
+
+		if (oid==IOPT_I_MIN_THRESHOLD || oid==IOPT_I_MAX_LIMIT) {
+			if (os.hw_type==HW_TYPE_AC || os.hw_type==HW_TYPE_DC ) v*=10;
+			else continue;
+		}
+
 		if (oid==IOPT_LATCH_ON_VOLTAGE || oid==IOPT_LATCH_OFF_VOLTAGE) {
 			if (os.hw_type!=HW_TYPE_LATCH) continue;
 		}
+
+		if (oid==IOPT_TARGET_PD_VOLTAGE) {
+			if (!(os.hw_rev==4 && os.hw_type==HW_TYPE_DC)) continue;
+		}
 		#else
-		if (oid==IOPT_BOOST_TIME || oid==IOPT_LATCH_ON_VOLTAGE || oid==IOPT_LATCH_OFF_VOLTAGE) continue;
+		if (oid==IOPT_BOOST_TIME || oid==IOPT_I_MIN_THRESHOLD || oid==IOPT_I_MAX_LIMIT || oid==IOPT_LATCH_ON_VOLTAGE || oid==IOPT_LATCH_OFF_VOLTAGE || oid==IOPT_TARGET_PD_VOLTAGE) continue;
 		#endif
 
 		#if defined(ESP8266)
@@ -1119,7 +1173,7 @@ void server_json_options_main() {
 		}
 		#endif
 
-		if (oid==IOPT_SEQUENTIAL_RETIRED || oid==IOPT_URS_RETIRED || oid==IOPT_RSO_RETIRED) continue;
+		if (oid==IOPT_SEQUENTIAL_RETIRED || oid==IOPT_URS_RETIRED || oid==IOPT_RSO_RETIRED || oid==IOPT_RESERVE_7 || oid==IOPT_RESERVE_8) continue;
 
 #if defined(ARDUINO)
 		#if defined(ESP8266)
@@ -1147,6 +1201,7 @@ void server_json_options_main() {
 	bfill.emit_p(PSTR(",\"feature\":\"ASB\""));
 
 	bfill.emit_p(PSTR(",\"dexp\":$D,\"mexp\":$D,\"hwt\":$D,"), os.detect_exp(), MAX_EXT_BOARDS, os.hw_type);
+
 	// print master array
 	unsigned char masid, optidx;
 	bfill.emit_p(PSTR("\"ms\":["));
@@ -1193,9 +1248,9 @@ void server_json_programs_main(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("$D],["), prog.starttimes[i]);	// this is the last element
 		// station water time
 		for (i=0; i<os.nstations-1; i++) {
-			bfill.emit_p(PSTR("$L,"),(unsigned long)prog.durations[i]);
+			bfill.emit_p(PSTR("$L,"),(uint32_t)prog.durations[i]);
 		}
-		bfill.emit_p(PSTR("$L],\""),(unsigned long)prog.durations[i]); // this is the last element
+		bfill.emit_p(PSTR("$L],\""),(uint32_t)prog.durations[i]); // this is the last element
 		// program name
 		strncpy(tmp_buffer, prog.name, PROGRAM_NAME_SIZE);
 		tmp_buffer[PROGRAM_NAME_SIZE] = 0;	// make sure the string ends
@@ -1254,20 +1309,20 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	time_os_t curr_time = os.now_tz();
 	bfill.emit_p(PSTR("\"devt\":$L,\"nbrd\":$D,\"en\":$D,\"sn1\":$D,\"sn2\":$D,\"rd\":$D,\"rdst\":$L,"
 										"\"sunrise\":$D,\"sunset\":$D,\"eip\":$L,\"lwc\":$L,\"lswc\":$L,"
-										"\"lupt\":$L,\"lrbtc\":$D,\"lrun\":[$D,$D,$D,$L],\"pq\":$D,\"pt\":$L,\"nq\":$D,"),
-							curr_time,
+										"\"lupt\":$L,\"lrbtc\":$D,\"lrun\":[$D,$D,$D,$L],\"pq\":$D,\"pt\":$L,\"nq\":$D,\"ocs\":$D,"),
+							(uint32_t)curr_time,
 							os.nboards,
 							os.status.enabled,
 							os.status.sensor1_active,
 							os.status.sensor2_active,
 							os.status.rain_delayed,
-							os.nvdata.rd_stop_time,
+							(uint32_t)os.nvdata.rd_stop_time,
 							os.nvdata.sunrise_time,
 							os.nvdata.sunset_time,
 							os.nvdata.external_ip,
-							os.checkwt_lasttime,
-							os.checkwt_success_lasttime,
-							os.powerup_lasttime,
+							(uint32_t)os.checkwt_lasttime,
+							(uint32_t)os.checkwt_success_lasttime,
+							(uint32_t)os.powerup_lasttime,
 							os.last_reboot_cause,
 							pd.lastrun.station,
 							pd.lastrun.program,
@@ -1275,10 +1330,12 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 							pd.lastrun.endtime,
 							os.status.pause_state,
 							os.pause_timer,
-							pd.nqueue);
+							pd.nqueue,
+							os.status.overcurrent_sid);
 
 #if defined(ESP8266)
 	bfill.emit_p(PSTR("\"RSSI\":$D,"), (int16_t)WiFi.RSSI());
+	bfill.emit_p(PSTR("\"apdv\":$D,"), os.actual_pd_voltage);
 #endif
 
 #if defined(USE_OTF)
@@ -1305,7 +1362,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"dname\":\"$O\","),
+	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
 							 SOPT_LOCATION,
 							 SOPT_JAVASCRIPTURL,
 							 SOPT_WEATHERURL,
@@ -1314,21 +1371,29 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 							 mqtt_opt,
 							 strlen(wt_rawData)==0?"{}":wt_rawData,
 							 wt_errCode,
+							 wt_restricted,
 							 SOPT_DEVICE_NAME);
 
 #if defined(SUPPORT_EMAIL)
 	bfill.emit_p(PSTR("\"email\":{$O},"), SOPT_EMAIL_OPTS);
 #endif
 
-#if defined(ARDUINO)
-	if(os.status.has_curr_sense) {
-		uint16_t current = os.read_current();
-		if((!os.status.program_busy) && (current<os.baseline_current)) current=0;
-		bfill.emit_p(PSTR("\"curr\":$D,"), current);
+	bfill.emit_p(PSTR("\"wls\":["));
+	if (md_N == 0) {
+		bfill.emit_p(PSTR("],"));
 	}
+	for (unsigned char idx = 0; idx < md_N; idx++) {
+		bfill.emit_p(PSTR("$D"), (int)md_scales[idx]);
+		bfill.emit_p((idx == md_N-1) ? PSTR("],") : PSTR(","));
+	}
+
+#if defined(ARDUINO)
+	uint16_t current = os.read_current(true);
+	if((!os.status.program_busy) && (current<os.baseline_current)) current=0;
+	bfill.emit_p(PSTR("\"curr\":$D,"), current);
 #endif
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
-		bfill.emit_p(PSTR("\"flcrt\":$L,\"flwrt\":$D,"), os.flowcount_rt, FLOWCOUNT_RT_WINDOW);
+		bfill.emit_p(PSTR("\"flcrt\":$L,\"flwrt\":$D,\"flcto\":$L,"), os.flowcount_rt, FLOWCOUNT_RT_WINDOW, flow_count);
 	}
 
 	bfill.emit_p(PSTR("\"sbits\":["));
@@ -1351,7 +1416,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 			if(rem>65535) rem = 0;
 		}
 		bfill.emit_p(PSTR("[$D,$L,$L,$D]"),
-		(qid<255)?q->pid:0, rem, (qid<255)?q->st:0, os.attrib_grp[sid]);
+		(qid<255)?q->pid:0, (uint32_t)rem, (uint32_t)((qid<255)?q->st:0), os.attrib_grp[sid]);
 		bfill.emit_p((sid<os.nstations-1)?PSTR(","):PSTR("]"));
 	}
 
@@ -1422,14 +1487,16 @@ void server_home(OTF_PARAMS_DEF)
 
 /**
  * Change controller variables
- * Command: /cv?pw=xxx&rsn=x&rbt=x&en=x&rd=x&re=x&ap=x
+ * Command: /cv?pw=xxx&rsn=x&rrsn=x&rbt=x&en=x&rd=x&rocs=x&re=x&ap=x
  *
  * pw:	password
  * rsn: reset all stations (0 or 1)
+ * rrsn:reset all running stations (0 or 1)
  * rbt: reboot controller (0 or 1)
  * en:	enable (0 or 1)
  * rd:	rain delay hours (0 turns off rain delay)
  * re:	remote extension mode
+ * rocs: reset overcurrent status (0 or 1)
  * ap:	reset to ap (ESP8266 only)
  * update: launch update script (for OSPi/Linux only)
  */
@@ -1441,11 +1508,19 @@ void server_change_values(OTF_PARAMS_DEF)
 #else
 	char *p = get_buffer;
 #endif
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rsn"), true)) {
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rsn"), true) && atoi(tmp_buffer) > 0) {
 		reset_all_stations();
 	}
 
-#if !defined(ARDUINO)
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rrsn"), true) && atoi(tmp_buffer) > 0) {
+		reset_all_stations(true);
+	}
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rocs"), true) && atoi(tmp_buffer) > 0) {
+		os.status.overcurrent_sid = 0; // clear overcurrent status
+	}
+
+	#if !defined(ARDUINO)
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("update"), true) && atoi(tmp_buffer) > 0) {
 		os.update_dev();
 	}
@@ -1575,6 +1650,7 @@ void server_change_options(OTF_PARAMS_DEF)
 	bool time_change = false;
 	bool weather_change = false;
 	bool sensor_change = false;
+	bool tpdv_change = false;
 
 	// !!! p and bfill share the same buffer, so don't write
 	// to bfill before you are done analyzing the buffer !!!
@@ -1606,7 +1682,9 @@ void server_change_options(OTF_PARAMS_DEF)
 			if(oid==IOPT_BOOST_TIME) {
 				 v>>=2;
 			}
-
+			if(oid==IOPT_I_MIN_THRESHOLD || oid==IOPT_I_MAX_LIMIT) {
+				v/=10;
+			}
 			if (v>=0 && v<=max_value) {
 				os.iopts[oid] = v;
 			} else {
@@ -1617,8 +1695,13 @@ void server_change_options(OTF_PARAMS_DEF)
 		if (os.iopts[oid] != prev_value) {	// if value has changed
 			if (oid==IOPT_TIMEZONE || oid==IOPT_USE_NTP)		time_change = true;
 			if (oid>=IOPT_NTP_IP1 && oid<=IOPT_NTP_IP4)			time_change = true;
-			if (oid==IOPT_USE_WEATHER) weather_change = true;
+			if (oid==IOPT_USE_WEATHER) {
+				weather_change = true;
+				// California restriction is now indicated in wto and no longer by the highest bit of uwt. So we force that bit to 0
+				os.iopts[oid] &= 0x7F;
+			}
 			if (oid>=IOPT_SENSOR1_TYPE && oid<=IOPT_SENSOR2_OFF_DELAY) sensor_change = true;
+			if (oid==IOPT_TARGET_PD_VOLTAGE) tpdv_change = true;
 		}
 	}
 
@@ -1637,12 +1720,10 @@ void server_change_options(OTF_PARAMS_DEF)
 		urlDecode(tmp_buffer);
 		#endif
 		if (os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer)) {
-			if(os.iopts[IOPT_USE_WEATHER]==WEATHER_METHOD_MONTHLY) {
-				load_wt_monthly(tmp_buffer);
-				apply_monthly_adjustment(os.now_tz());
-			} else {
-				weather_change = true;	// if wto has changed
-			}
+			os.sopt_load(SOPT_WEATHER_OPTS, tmp_buffer+1); // make room for the leading '{'
+			parse_wto(tmp_buffer); // parse wto
+			apply_monthly_adjustment(os.now_tz());
+			weather_change = true;
 		}
 	}
 
@@ -1755,13 +1836,21 @@ void server_change_options(OTF_PARAMS_DEF)
 	os.iopts_save();
 	os.populate_master();
 
+#if defined(ESP8266)
+	if (tpdv_change) {
+		os.setup_pd_voltage();
+	}
+#endif
+
 	if(time_change) {
 		os.status.req_ntpsync = 1;
 	}
 
 	if(weather_change) {
-		os.iopts[IOPT_WATER_PERCENTAGE] = 100;  // reset watering percentage to 100%
-		wt_rawData[0] = 0;  // reset wt_rawData and errCode
+		DEBUG_PRINTLN("weather change happened");
+		//os.iopts[IOPT_WATER_PERCENTAGE] = 100;  // reset watering percentage to 100%
+		wt_restricted = 0; // reset wt_restrcited, wt_rawData and errCode
+		wt_rawData[0] = 0;
 		wt_errCode = HTTP_RQT_NOT_RECEIVED;
 		os.checkwt_lasttime = 0;  // force weather update
 	}
@@ -1794,7 +1883,7 @@ void server_change_password(OTF_PARAMS_DEF) {
 #endif
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("npw"), true)) {
 		const int pwBufferSize = TMP_BUFFER_SIZE/2;
-		char *tbuf2 = tmp_buffer + pwBufferSize;	// use the second half of tmp_buffer 
+		char *tbuf2 = tmp_buffer + pwBufferSize;	// use the second half of tmp_buffer
 		if (findKeyVal(FKV_SOURCE, tbuf2, pwBufferSize, PSTR("cpw"), true) && strncmp(tmp_buffer, tbuf2, pwBufferSize) == 0) {
 			os.sopt_save(SOPT_PASSWORD, tmp_buffer);
 			handle_return(HTML_SUCCESS);
@@ -1834,13 +1923,14 @@ void server_json_status(OTF_PARAMS_DEF)
 
 /**
  * Test station (previously manual operation)
- * Command: /cm?pw=xxx&sid=x&en=x&t=x&ssta=x
+ * Command: /cm?pw=xxx&sid=x&en=x&t=x&ssta=x&qo=x
  *
  * pw: password
  * sid:station index (starting from 0)
  * en: enable (0 or 1)
  * t:  timer (required if en=1)
  * ssta: shift remaining stations
+ * qo: queuing option (0: append after others; 1: run now and pause others)
  */
 void server_change_manual(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -1872,6 +1962,11 @@ void server_change_manual(OTF_PARAMS_DEF) {
 			if (timer==0 || timer>64800) {
 				handle_return(HTML_DATA_OUTOFBOUND);
 			}
+
+			unsigned char qo = 0;
+			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("qo"), true)) {
+				qo=(unsigned char)atoi(tmp_buffer);
+			}
 			// schedule manual station
 			// skip if the station is a master station
 			// (because master cannot be scheduled independently)
@@ -1892,7 +1987,7 @@ void server_change_manual(OTF_PARAMS_DEF) {
 				q->dur = timer;
 				q->sid = sid;
 				q->pid = 99;  // testing stations are assigned program index 99
-				schedule_all_stations(curr_time);
+				schedule_all_stations(curr_time, qo);
 			} else {
 				handle_return(HTML_NOT_PERMITTED);
 			}
@@ -1905,9 +2000,14 @@ void server_change_manual(OTF_PARAMS_DEF) {
 			ssta = atoi(tmp_buffer);
 		}
 		// mark station for removal
-		RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
-		q->deque_time = curr_time;
-		turn_off_station(sid, curr_time, ssta);
+		if(pd.station_qid[sid]==255) {
+			// return error message if turning off a zone that's not currently in the queue
+			handle_return(HTML_DATA_OUTOFBOUND);
+		} else {
+			RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
+			q->deque_time = curr_time;
+			turn_off_station(sid, curr_time, ssta);
+		}
 	}
 	handle_return(HTML_SUCCESS);
 }
@@ -2109,7 +2209,7 @@ void server_pause_queue(OTF_PARAMS_DEF) {
 			pd.set_pause();
 			os.status.pause_state = 1;
 		}
-		
+
 		handle_return(HTML_SUCCESS);
 	}
 
@@ -2180,7 +2280,7 @@ void server_json_debug(OTF_PARAMS_DEF) {
 #endif
 	bfill.emit_p(PSTR("{\"date\":\"$S\",\"time\":\"$S\",\"heap\":$L"), __DATE__, __TIME__,
 #if defined(ESP8266)
-	(unsigned long)ESP.getFreeHeap());
+	ESP.getFreeHeap());
 	FSInfo fs_info;
 	LittleFS.info(fs_info);
 	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,\"devip\":\"$S\","), fs_info.totalBytes, fs_info.usedBytes, (useEth?eth.localIP():WiFi.localIP()).toString().c_str());
@@ -2207,7 +2307,7 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	}
 */
 #else
-	(unsigned long)freeHeap());
+	(uint32_t)freeHeap());
 	bfill.emit_p(PSTR("}"));
 #endif
 	handle_return(HTML_OK);
@@ -4247,20 +4347,14 @@ URLHandler urls[] = {
 
 // handle Ethernet request
 #if defined(ESP8266)
-void on_ap_update(OTF_PARAMS_DEF) {
-	print_header(OTF_PARAMS, false, strlen_P((char*)ap_update_html));
-	res.writeBodyChunk((char *) "%s", ap_update_html);
-}
-
-void on_sta_update(OTF_PARAMS_DEF) {
+void on_firmware_update(OTF_PARAMS_DEF) {
 	if(req.isCloudRequest()) otf_send_result(OTF_PARAMS, HTML_NOT_PERMITTED, "fw update");
-	else {
-		print_header(OTF_PARAMS, false, strlen_P((char*)sta_update_html));
-		res.writeBodyChunk((char *) "%s", sta_update_html);
-	}
+	print_header_compressed_html(OTF_PARAMS, update_html_gz_len);
+	//res.writeBodyChunk((char *) "%s", ap_update_html);
+	res.writeBodyData((const __FlashStringHelper*)update_html_gz, update_html_gz_len);
 }
 
-void on_sta_upload_fin() {
+void on_firmware_upload_fin() {
 	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
 		// don't check password
 	} else if(!(update_server->hasArg("pw") && os.password_verify(update_server->arg("pw").c_str()))) {
@@ -4275,17 +4369,26 @@ void on_sta_upload_fin() {
 	}
 
 	update_server_send_result(HTML_SUCCESS);
+	delay(1000); // so the UI has time to receive the success code
 	os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 }
 
-void on_ap_upload_fin() { on_sta_upload_fin(); }
+void on_update_options() {
+	update_server->sendHeader("Access-Control-Allow-Origin", "*");
+	update_server->sendHeader("Access-Control-Max-Age", "10000");
+	update_server->sendHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
+	update_server->sendHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+	update_server->send(200, "text/plain", "");
+}
 
-void on_sta_upload() {
+void on_firmware_upload() {
 	HTTPUpload& upload = update_server->upload();
 	if(upload.status == UPLOAD_FILE_START){
-		// todo:
-		// WiFiUDP::stopAll();
-		//mqtt_client->disconnect();
+		if(os.iopts[IOPT_WIFI_MODE]==WIFI_MODE_STA) {
+			// TODO: stopping these can cause problems if the update fails and the user abandons the task
+			//WiFiUDP::stopAll();
+			//mqtt_client->disconnect();
+		}
 		DEBUG_PRINT(F("upload: "));
 		DEBUG_PRINTLN(upload.filename);
 		uint32_t maxSketchSpace = (ESP.getFreeSketchSpace()-0x1000)&0xFFFFF000;
@@ -4311,8 +4414,6 @@ void on_sta_upload() {
 	delay(0);
 }
 
-void on_ap_upload() { on_sta_upload(); }
-
 void start_server_client() {
 	if(!otf) return;
 	static bool callback_initialized = false;
@@ -4320,8 +4421,9 @@ void start_server_client() {
 	if(!callback_initialized) {
 		otf->on("/", server_home);  // handle home page
 		otf->on("/index.html", server_home);
-		otf->on("/update", on_sta_update, OTF::HTTP_GET); // handle firmware update
-		update_server->on("/update", HTTP_POST, on_sta_upload_fin, on_sta_upload);
+		otf->on("/update", on_firmware_update, OTF::HTTP_GET); // handle firmware update
+		update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
+		update_server->on("/update", HTTP_OPTIONS, on_update_options);
 
 		// set up all other handlers
 		char uri[4];
@@ -4348,8 +4450,9 @@ void start_server_ap() {
 	otf->on("/jsap", on_ap_scan);
 	otf->on("/ccap", on_ap_change_config);
 	otf->on("/jtap", on_ap_try_connect);
-	otf->on("/update", on_ap_update, OTF::HTTP_GET);
-	update_server->on("/update", HTTP_POST, on_ap_upload_fin, on_ap_upload);
+	otf->on("/update", on_firmware_update, OTF::HTTP_GET);
+	update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
+	update_server->on("/update", HTTP_OPTIONS, on_update_options);
 	otf->onMissingPage(on_ap_home);
 	update_server->begin();
 
@@ -4526,7 +4629,7 @@ ulong getNtpTime() {
 
 	uint16_t port = (uint16_t)(os.iopts[IOPT_HTTPPORT_1]<<8) + (uint16_t)os.iopts[IOPT_HTTPPORT_0];
 	port = (port==8000) ? 8888:8000; // use a different port than http port
-	UDP *udp = new EthernetUDP();
+	EthernetUDP udp;
 
 	#define NTP_PACKET_SIZE 48
 	#define NTP_PORT 123
@@ -4547,11 +4650,10 @@ ulong getNtpTime() {
 		os.iopts[IOPT_NTP_IP3],
 		os.iopts[IOPT_NTP_IP4]};
 	unsigned char tries=0;
-	ulong gt = 0;
 	ulong startt = millis();
 	while(tries<NTP_NTRIES) {
 		// sendNtpPacket
-		udp->begin(port);
+		udp.begin(port);
 
 		memset(packetBuffer, 0, NTP_PACKET_SIZE);
 		packetBuffer[0] = 0b11100011;  // LI, Version, Mode
@@ -4570,31 +4672,31 @@ ulong getNtpTime() {
 		int ret;
 		if (!os.iopts[IOPT_NTP_IP1] || os.iopts[IOPT_NTP_IP1] == '0') {
 			DEBUG_PRINT(public_ntp_servers[sidx]);
-			ret = udp->beginPacket(public_ntp_servers[sidx], NTP_PORT);
+			ret = udp.beginPacket(public_ntp_servers[sidx], NTP_PORT);
 		} else {
 			DEBUG_PRINTLN(IPAddress(ntpip[0],ntpip[1],ntpip[2],ntpip[3]));
-			ret = udp->beginPacket(ntpip, NTP_PORT);
+			ret = udp.beginPacket(ntpip, NTP_PORT);
 		}
 		if(ret!=1) {
 			DEBUG_PRINT(F(" not available (ret: "));
 			DEBUG_PRINT(ret);
 			DEBUG_PRINTLN(")");
-			udp->stop();
+			udp.stop();
 			tries++;
 			sidx=(sidx+1)%N_PUBLIC_SERVERS;
 			continue;
 		} else {
 			DEBUG_PRINTLN(F(" connected"));
 		}
-		udp->write(packetBuffer, NTP_PACKET_SIZE);
-		udp->endPacket();
+		udp.write(packetBuffer, NTP_PACKET_SIZE);
+		udp.endPacket();
 		// end of sendNtpPacket
 
 		// process response
 		ulong timeout = millis()+2000;
-		while(millis() < timeout) {
-			if(udp->parsePacket()) {
-				udp->read(packetBuffer, NTP_PACKET_SIZE);
+		while((long)(millis()-timeout)<0) {
+			if(udp.parsePacket()) {
+				udp.read(packetBuffer, NTP_PACKET_SIZE);
 				ulong highWord = word(packetBuffer[40], packetBuffer[41]);
 				ulong lowWord = word(packetBuffer[42], packetBuffer[43]);
 				ulong secsSince1900 = highWord << 16 | lowWord;
@@ -4602,8 +4704,7 @@ ulong getNtpTime() {
 				ulong gt = secsSince1900 - seventyYears;
 				// check validity: has to be larger than 1/1/2020 12:00:00
 				if(gt>1577836800UL) {
-					udp->stop();
-					delete udp;
+					udp.stop();
 					DEBUG_PRINT(F("took "));
 					DEBUG_PRINT(millis()-startt);
 					DEBUG_PRINTLN(F("ms"));
@@ -4612,12 +4713,11 @@ ulong getNtpTime() {
 			}
 		}
 		tries++;
-		udp->stop();
+		udp.stop();
 		sidx=(sidx+1)%N_PUBLIC_SERVERS;
 	}
 	if(tries==NTP_NTRIES) {DEBUG_PRINTLN(F("NTP failed!!"));}
-	udp->stop();
-	delete udp;
+	udp.stop();
 	return 0;
 }
 #endif

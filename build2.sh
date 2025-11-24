@@ -9,7 +9,14 @@
         if [[ $VERSION_ID -gt 10 ]]; then
                 echo "using libgpiod"
                 USEGPIO="-DLIBGPIOD"
-                GPIOLIB="-lgpiod"
+	        GPIOLIB="-lgpiod"
+        fi
+
+        if [[ $VERSION_ID -gt 13 ]]; then
+                echo "using liblgpiod"
+                USEGPIO="-DLIBLGPIO"
+        	# Switched linker flag from libgpiod to liblgpio
+	        GPIOLIB="-llgpio"
         fi
 
 
@@ -30,11 +37,12 @@
         fi
 
 
-        echo "Compiling firmware..."
+        echo "Compiling OSPi firmware..."
         ws=$(ls external/TinyWebsockets/tiny_websockets_lib/src/*.cpp)
         otf=$(ls external/OpenThings-Framework-Firmware-Library/*.cpp)
         ifx=$(ls external/influxdb-cpp/*.hpp)
-        g++ -o OpenSprinkler -DOSPI $USEGPIO $ADS1115 $PCF8591 -DSMTP_OPENSSL $DEBUG -std=c++17 -include string.h main.cpp \
+        g++ -o OpenSprinkler -DOSPI $USEGPIO $ADS1115 $PCF8591 -DSMTP_OPENSSL $DEBUG -std=c++17 -include string.h \
+                -include cstdint main.cpp \
                 OpenSprinkler.cpp program.cpp opensprinkler_server.cpp utils.cpp weather.cpp gpio.cpp mqtt.cpp sunrise.cpp \
                 smtp.c RCSwitch.cpp sensor*.cpp notifier.cpp naett.c \
                 $ADS1115FILES $PCF8591FILES \
@@ -44,5 +52,3 @@
                 $otf \
                 $ifx osinfluxdb.cpp -Iexternal/influxdb-cpp/ \
                 -lpthread -lmosquitto -lssl -lcrypto -lcurl -li2c -lmodbus $GPIOLIB
-
-

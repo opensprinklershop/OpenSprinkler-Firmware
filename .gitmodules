@@ -1,6 +1,3 @@
-[submodule "external/OpenThings-Framework-Firmware-Library"]
-	path = external/OpenThings-Framework-Firmware-Library
-	url = https://github.com/OpenThingsIO/OpenThings-Framework-Firmware-Library.git
 [submodule "external/TinyWebsockets"]
 	path = external/TinyWebsockets
 	url = https://github.com/gilmaimon/TinyWebsockets.git

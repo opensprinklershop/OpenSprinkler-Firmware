@@ -13,5 +13,10 @@ influx.json
 !build.sh
 !startOpenSprinkler.sh
 !updater.sh
+*.bak
+node_modules
+*.json
+!package.json
+.DS_Store
 DEADJOE
 build/*
