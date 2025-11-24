@@ -7,12 +7,6 @@
 
 	source /etc/os-release
         if [[ $VERSION_ID -gt 10 ]]; then
-                echo "using libgpiod"
-                USEGPIO="-DLIBGPIOD"
-	        GPIOLIB="-lgpiod"
-        fi
-
-        if [[ $VERSION_ID -gt 13 ]]; then
                 echo "using liblgpiod"
                 USEGPIO="-DLIBLGPIO"
         	# Switched linker flag from libgpiod to liblgpio

@@ -885,7 +885,6 @@ void server_change_runonce(OTF_PARAMS_DEF) {
 	unsigned char sid, bid, s;
 	boolean match_found = false;
 
-	unsigned char wl = 100;
 	if(findKeyVal(FKV_SOURCE,tmp_buffer,TMP_BUFFER_SIZE,PSTR("uwt"),true)){
 		if(tmp_buffer[0]=='1') wl = os.iopts[IOPT_WATER_PERCENTAGE];
 	}

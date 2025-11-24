@@ -903,7 +903,6 @@ void do_loop()
 		// ====== Schedule program data ======
 		ulong curr_minute = curr_time / 60;
 		boolean match_found = false;
-		double wl = 0;
 		RuntimeQueueStruct *q;
 		// since the granularity of start time is minute
 		// we only need to check once every minute
@@ -1843,7 +1842,6 @@ void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo
 		order[sid] = sid;
 	}
 
-	unsigned char wl = 100;
 	if ((pid>0)&&(pid<255)) {
 		pd.read(pid-1, &prog);
 		if(uwt == 255) uwt = prog.use_weather;

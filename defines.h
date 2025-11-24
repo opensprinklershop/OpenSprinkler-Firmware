@@ -32,11 +32,11 @@ typedef unsigned long ulong;
 #define TMP_BUFFER_SIZE_L      TMP_BUFFER_SIZE+100   // scratch buffer size
 
 /** Firmware version, hardware version, and maximal values */
-#define OS_FW_VERSION  233  // Firmware version: 220 means 2.2.0
+#define OS_FW_VERSION  234  // Firmware version: 220 means 2.2.0
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      183  // Firmware minor version
+#define OS_FW_MINOR      184  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler

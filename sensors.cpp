@@ -3112,14 +3112,14 @@ Monitor_t *monitor_by_idx(uint idx) {
   return NULL;
 }
 
-void manual_start_program(unsigned char, unsigned char);
-void schedule_all_stations(time_os_t curr_time);
+void manual_start_program(unsigned char, unsigned char, unsigned char);
+void schedule_all_stations(time_os_t curr_time, unsigned char qo);
 void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shift=0);
 
 void start_monitor_action(Monitor_t * mon) {
   mon->time = os.now_tz();
   if (mon->prog > 0)
-    manual_start_program(mon->prog, 255);
+    manual_start_program(mon->prog, 255, QUEUE_OPTION_REPLACE);
 
   DEBUG_PRINTLN(F("start_monitor_action"));
   DEBUG_PRINT(F("Zone: "));
@@ -3152,7 +3152,7 @@ void start_monitor_action(Monitor_t * mon) {
 			q->dur = timer;
 			q->sid = sid;
 			q->pid = 253;
-			schedule_all_stations(mon->time);
+			schedule_all_stations(mon->time, QUEUE_OPTION_REPLACE);
       DEBUG_PRINTLN(F("start_monitor_action: schedule_all_stations"));
 		} 
   }
