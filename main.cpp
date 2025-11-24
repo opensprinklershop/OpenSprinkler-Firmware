@@ -603,6 +603,8 @@ void overcurrent_monitor() {
 	}
 #endif
 }
+
+#if defined(ESP8266) || defined(ESP32)
 // Gratuitous ARP task for ESP8266 lwIP
 void gratuitousARPTask() {
         netif *n = netif_list;
@@ -611,6 +613,7 @@ void gratuitousARPTask() {
                 n = n->next;
         }
 }
+#endif
 
 /** Main Loop */
 void do_loop()
