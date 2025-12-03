@@ -159,6 +159,7 @@ extern "C" {
 #define RS485_TRUEBNER3 0x0080
 #define RS485_TRUEBNER4 0x0100
 #define OSPI_USB_RS485 0x0200
+#define ASB_I2C_RS485 0x0400
 
 typedef struct SensorFlags {
   uint enable : 1;   // enabled
@@ -370,6 +371,7 @@ typedef struct Monitor {
 #define RS485_TRUEBNER2_ADDR 0x39
 #define RS485_TRUEBNER3_ADDR 0x3A
 #define RS485_TRUEBNER4_ADDR 0x3B
+#define ASB_I2C_RS485_ADDR 0x90
 
 void sensor_api_init(boolean detect_boards);
 uint16_t get_asb_detected_boards();

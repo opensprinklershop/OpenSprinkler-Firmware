@@ -150,6 +150,8 @@ void detect_asb_board() {
   if (detect_i2c(RS485_TRUEBNER2_ADDR)) asb_detected_boards |= RS485_TRUEBNER2;
   if (detect_i2c(RS485_TRUEBNER3_ADDR)) asb_detected_boards |= RS485_TRUEBNER3;
   if (detect_i2c(RS485_TRUEBNER4_ADDR)) asb_detected_boards |= RS485_TRUEBNER4;
+
+  if (detect_i2c(ASB_I2C_RS485_ADDR)) asb_detected_boards |= ASB_I2C_RS485;
 #endif
 
 // Old, pre OSPi 1.43 analog inputs:
@@ -1293,6 +1295,200 @@ int read_sensor_http(Sensor_t *sensor, ulong time) {
 }
 
 #if defined(ESP8266) || defined(ESP32)
+#define I2C_RS485_2 0x90
+int active_i2c_RS485 = 0;
+int active_i2c_RS485_mode = 0;
+
+
+// SC16IS752 Register Adressen (Teilauswahl)
+#define REG_RHR     0x00
+#define REG_THR     0x00
+#define REG_DLL     0x00
+#define REG_DLH     0x01
+#define REG_FCR     0x02
+#define REG_LCR     0x03
+#define REG_LSR     0x05
+#define REG_IOD     0x0A
+#define REG_IOS     0x0B
+#define REG_IOC     0x0E
+#define REG_EFCR    0x0F
+
+void writeSC16Register(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(I2C_RS485_2); // Wire Lib erwartet 7-bit Adresse
+  Wire.write( (reg << 3) | 0x00 ); // Befehlsbyte für Schreibzugriff
+  Wire.write(value);
+  Wire.endTransmission();
+}
+
+uint8_t readSC16Register(uint8_t reg) {
+  Wire.beginTransmission(I2C_RS485_2);
+  Wire.write( (reg << 3) | 0x80 ); // Befehlsbyte für Lesezugriff
+  Wire.endTransmission(false); // Kein Stop, um Re-Start zu senden
+
+  Wire.requestFrom(I2C_RS485_2, 1);
+  if (Wire.available()) {
+    return Wire.read();
+  }
+  return 0;
+}
+
+void UART_sendByte(uint8_t data) {
+  // Warten bis der THR (Transmit Holding Register) leer ist
+  while (!(readSC16Register(REG_LSR) & 0x20)); // LSR Bit 5 (THRE)
+  writeSC16Register(REG_THR, data);
+}
+
+void UART_sendBytes(uint8_t data[], uint8_t len) {
+  for (uint8_t i = 0; i < len; i++) {
+    UART_sendByte(data[i]);
+  }
+}
+
+uint8_t UART_receiveByte() {
+  // Warten bis Daten im RHR (Receive Holding Register) verfügbar sind
+  while (!(readSC16Register(REG_LSR) & 0x01)); // LSR Bit 0 (DR)
+  return readSC16Register(REG_RHR);
+}
+
+bool UART_available() {
+    return (readSC16Register(REG_LSR) & 0x01);
+}
+
+uint8_t UART_readBytes(uint8_t* buffer, uint8_t len, uint16_t timeout) {
+  uint8_t count = 0;
+  uint32_t startTime = millis();
+  while (count < len) {
+    if (UART_available()) {
+      buffer[count++] = UART_receiveByte();
+    } else {
+      if (millis() - startTime >= timeout) {
+        break; // Timeout erreicht
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * @brief I2C to RS485 Interface
+ *        Alternative I2C Board for any RS485 Sensors
+ *        (SC16IS752 and MAX485)
+ * @param sensor
+ * @return int
+ */
+int read_sensor_i2c_rs485(Sensor_t *sensor) {
+  DEBUG_PRINTLN(F("read_sensor_i2c_rs485"));
+  if (!(asb_detected_boards & ASB_I2C_RS485)) 
+    return HTTP_RQT_NOT_RECEIVED;
+
+  if (active_i2c_RS485 > 0 && active_i2c_RS485 != sensor->nr) {
+    sensor->repeat_read = 1000;
+    DEBUG_PRINT(F("cant' read, allocated by sensor "));
+    DEBUG_PRINTLN(active_i2c_RS485);
+    Sensor_t *t = sensor_by_nr(active_i2c_RS485);
+    if (!t || !t->flags.enable)
+      active_i2c_RS485 = 0; //breakout
+    return HTTP_RQT_NOT_RECEIVED;
+  }
+
+  DEBUG_PRINTLN(F("read_sensor_i2c_rs485: check-ok"));
+
+  if (active_i2c_RS485_mode == 0) { // Init SC16IS752 for Modbus:
+    writeSC16Register(REG_LCR, 0x08);// Enable access to the baud rate registers
+    writeSC16Register(REG_DLL, 0x14); // Set baud rate to 9600 (assuming 3.072 MHz clock)
+    writeSC16Register(REG_DLH, 0x00); // Set baud rate to 9600
+    writeSC16Register(REG_LCR, 0x1B); // 1 stop bit, parity even, 8 data bits
+    writeSC16Register(REG_EFCR, 0x30); // Activate RS485 automatic
+    writeSC16Register(REG_IOD, 0x80); // GPIO7 Output
+    writeSC16Register(REG_IOS, 0x80); // hi=power off
+    active_i2c_RS485_mode = 1;
+  }
+
+  //Switch power on
+  if (active_i2c_RS485_mode == 1) {
+    writeSC16Register(REG_IOD, 0x80); // GPIO7 Output
+    writeSC16Register(REG_IOS, 0x00); // lo=power on
+    writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
+    active_i2c_RS485_mode = 2;
+    active_i2c_RS485 = sensor->nr;
+    sensor->repeat_read = 1000;
+    return HTTP_RQT_NOT_RECEIVED;
+  }
+
+  bool isTemp = sensor->type == SENSOR_SMT100_TEMP || sensor->type == SENSOR_TH100_TEMP;
+  bool isMois = sensor->type == SENSOR_SMT100_MOIS || sensor->type == SENSOR_TH100_MOIS;
+  uint8_t type = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
+
+  if (active_i2c_RS485_mode == 2) {
+    // Send Request
+    uint8_t request[8];
+    request[0] = sensor->id;
+    request[1] = 0x03; // Read Holding Registers
+    request[2] = 0x00;    
+    request[3] = type; // Register Address
+    request[4] = 0x00;
+    request[5] = 0x01; // Number of Registers to read (1
+    uint16_t crc = CRC16(request, 6);
+    request[6] = lowByte(crc); // CRC Low Byte
+    request[7] = highByte(crc); // CRC High Byte
+    UART_sendBytes(request, 8);
+    sensor->repeat_read = 1000;
+    active_i2c_RS485_mode = 3;
+    return HTTP_RQT_NOT_RECEIVED;
+  }
+
+  //Read Response
+  if (active_i2c_RS485_mode == 3) {
+    uint8_t response[7];
+    uint8_t len = UART_readBytes(response, 7, 100); // timeout 100ms
+    // Expected Response:
+    // Byte 0: Slave Address
+    // Byte 1: Function Code
+    // Byte 2: Byte Count
+    // Byte 3: Data Low Byte
+    // Byte 4: Data High Byte
+    // Byte 5: CRC Low Byte
+    // Byte 6: CRC High Byte
+    uint16_t crc = CRC16(response, 5);
+    if (len != 7 || response[0] != sensor->id || response[1] != 0x03 || response[2] != 0x02 ||
+        response[5] != lowByte(crc) || response[6] != highByte(crc)) {
+      DEBUG_PRINTLN(F("read_sensor_i2c_rs485: invalid response"));
+      sensor->repeat_read = 0;
+      sensor->flags.data_ok = false;
+      active_i2c_RS485 = 0;
+      writeSC16Register(REG_IOD, 0x80); // GPIO7 Output
+      writeSC16Register(REG_IOS, 0x80); // hi=power off
+      return HTTP_RQT_NOT_RECEIVED;
+    }
+
+    uint16_t data = (response[4] << 8) | response[3];
+    DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n", sensor->id,
+                   data, response[4], response[3]);
+    double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
+    sensor->last_native_data = data;
+    sensor->last_data = value;
+    DEBUG_PRINTLN(sensor->last_data); 
+    sensor->flags.data_ok = true;
+    sensor->repeat_read = 0;
+    active_i2c_RS485 = 1;
+    writeSC16Register(REG_IOD, 0x80); // GPIO7 Output
+    writeSC16Register(REG_IOS, 0x80); // hi=power off
+    return HTTP_RQT_SUCCESS;
+  }
+
+  sensor->repeat_read++;
+  if (sensor->repeat_read > 4) {  // timeout
+    sensor->repeat_read = 0;
+    sensor->flags.data_ok = false;
+    active_i2c_RS485 = 0;
+    DEBUG_PRINTLN(F("read_sensor_i2c_rs485: timeout"));
+  }
+  DEBUG_PRINTLN(F("read_sensor_i2c_rs485: exit"));
+  return HTTP_RQT_NOT_RECEIVED;
+}
+
+
+
 /**
  * @brief Truebner RS485 Interface
  *
@@ -1763,6 +1959,8 @@ int read_sensor(Sensor_t *sensor, ulong time) {
       //DEBUG_PRINTLN(sensor->name);
       sensor->last_read = time;
       if (sensor->ip) return read_sensor_ip(sensor);
+       if (asb_detected_boards & ASB_I2C_RS485)
+        return read_sensor_i2c_rs485(sensor);
       return read_sensor_rs485(sensor);
 
     case SENSOR_FYTA_MOISTURE:
