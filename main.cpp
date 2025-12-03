@@ -55,6 +55,7 @@
 	#elif defined(ESP32)
 		#include <ETH.h>
 		#include <SPI.h>
+		#include <gpio.h>
 		#include <esp_partition.h>
 		#include <esp_flash.h>
 		#include <hal/spi_types.h>
@@ -593,7 +594,11 @@ void reboot_in(uint32_t ms) {
 		#if defined(ESP8266)
 		reboot_ticker.once_ms(ms, ESP.restart);
 		#else
-		reboot_ticker.once_ms(ms, [](){ ESP.restart(); });
+		reboot_ticker.once_ms(ms, [](){ 
+			digitalWrite(18, LOW); // set BOOT_CONTROL_PIN low to allow normal boot
+			delay(50); 
+			ESP.restart(); 
+		});
 		#endif
 	}
 }
@@ -2271,7 +2276,7 @@ bool register_partition() {
 	device_config.cs_io_num = PIN_EXT_FLASH_CS;
 	device_config.io_mode = SPI_FLASH_DOUT;
 	device_config.cs_id = 0;
-	device_config.freq_mhz = ESP_FLASH_20MHZ;
+	device_config.freq_mhz = 60;
 
 	err = spi_bus_add_flash_device(&ext_flash, &device_config);
 	if (err) {
@@ -2314,6 +2319,7 @@ void init_external_flash() // initialize external flash
     bus_config.sclk_io_num = SCK;
     bus_config.quadwp_io_num = MIO2;
     bus_config.quadhd_io_num = MIO3;
+	bus_config.flags = SPICOMMON_BUSFLAG_QUAD;
 #else
     bus_config.mosi_io_num = MOSI;
     bus_config.miso_io_num = MISO;
