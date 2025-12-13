@@ -498,8 +498,8 @@ enum {
 	#define PIN_ETHER_RESET   -1
 #elif defined(ESP32C5)
 /* OS33 ESP32-C6 pin defines */
-	#define PIN_CURR_SENSE    0    // current sensing pin
-	#define PIN_LATCH_VOLT_SENSE 0 // latch voltage sensing pin
+	#define PIN_CURR_SENSE    A0    // current sensing pin
+	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
 	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
 	#define ESP32_IO_CONFIG         0x1000 // config bits
 	#define ESP32_IO_OUTPUT         0x1E00 // output bits

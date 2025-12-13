@@ -3377,7 +3377,7 @@ void server_monitor_list(OTF_PARAMS_DEF) {
 	char *p = get_buffer;
 #endif
 
-	DEBUG_PRINTLN(F("server_monitor_list"));
+	//DEBUG_PRINTLN(F("server_monitor_list"));
 
 	uint nr = 0;
 	int prog = -1;
@@ -3438,7 +3438,7 @@ void server_sensorprog_config(OTF_PARAMS_DEF) {
 	char *p = get_buffer;
 #endif
 
-	DEBUG_PRINTLN(F("server_sensorprog_config"));
+	//DEBUG_PRINTLN(F("server_sensorprog_config"));
 	//uint nr, uint type, uint sensor, uint prog, double factor1, double factor2, double min, double max
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
@@ -3527,7 +3527,7 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 	char *p = get_buffer;
 #endif
 
-	DEBUG_PRINTLN(F("server_sensorprog_list"));
+	//DEBUG_PRINTLN(F("server_sensorprog_list"));
 
 	uint nr = 0;
 	int prog = -1;

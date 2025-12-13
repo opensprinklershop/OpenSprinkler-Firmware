@@ -752,7 +752,7 @@ byte OpenSprinkler::start_ether() {
 	
 	ulong timeout = millis()+60000; // 60 seconds time out
 	unsigned char timecount = 1;
-	while ((!eth.connected() || eth.localIP() == INADDR_NONE) && millis()<timeout) {
+	while ((!eth.connected() || eth.localIP().toString().equals("255.255.255.255"))  && millis()<timeout) {
 		DEBUG_PRINT(".");
 		lcd.setCursor(13, 2);
 		lcd.print(timecount);
