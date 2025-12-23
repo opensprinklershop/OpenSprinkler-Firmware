@@ -29,6 +29,9 @@ using namespace ArduinoJson;
 #define FYTA_URL_USER_PLANT "https://web.fyta.de/api/user-plant"
 #define FYTA_URL_USER_PLANTF "https://web.fyta.de/api/user-plant/%lu"
 #endif
+
+void fyta_check_opts();
+
 /**
  * @brief FYTA Public API Client
  * https://fyta-io.notion.site/FYTA-Public-API-d2f4c30306f74504924c9a40402a3afd

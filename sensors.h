@@ -93,11 +93,18 @@ extern "C" {
 
 // Sensor types:
 #define SENSOR_NONE                     0   // None or deleted sensor
+
+#define RS485_SENSORS_START             1   // Generic RS485 sensor id
+#define RS485_SENSORS_END               9  // Generic RS485 sensor id
 #define SENSOR_SMT100_MOIS              1   // Truebner SMT100 RS485, moisture mode
 #define SENSOR_SMT100_TEMP              2   // Truebner SMT100 RS485, temperature mode
 #define SENSOR_SMT100_PMTY              3   // Truebner SMT100 RS485, permittivity mode
 #define SENSOR_TH100_MOIS               4   // Truebner TH100 RS485,  humidity mode
 #define SENSOR_TH100_TEMP               5   // Truebner TH100 RS485,  temperature mode
+#define SENSOR_RS485                    9  // RS485 generic sensor
+
+#define ASB_SENSORS_START               10  // starting id for ASB sensors
+#define ASB_SENSORS_END                 49  // ending id for ASB sensors
 #define SENSOR_ANALOG_EXTENSION_BOARD   10  // New OpenSprinkler analog extension board x8 - voltage mode 0..4V
 #define SENSOR_ANALOG_EXTENSION_BOARD_P 11  // New OpenSprinkler analog extension board x8 - percent 0..3.3V to 0..100%
 #define SENSOR_SMT50_MOIS               15  // New OpenSprinkler analog extension board x8 - SMT50 VWC [%] = (U * 50) : 3
@@ -111,12 +118,15 @@ extern "C" {
 
 #define SENSOR_USERDEF                  49  // New OpenSprinkler analog extension board x8 - User defined sensor
 
+#define OSPI_SENSORS_START              50  // starting id for Old OSPi sensors
+#define OSPI_SENSORS_END                59  // ending id for Old OSPi sensors
 #define SENSOR_OSPI_ANALOG              50  // Old OSPi analog input - voltage mode 0..3.3V
 #define SENSOR_OSPI_ANALOG_P            51  // Old OSPi analog input - percent 0..3.3V to 0...100%
 #define SENSOR_OSPI_ANALOG_SMT50_MOIS   52  // Old OSPi analog input - SMT50 VWC [%] = (U * 50) : 3
 #define SENSOR_OSPI_ANALOG_SMT50_TEMP   53  // Old OSPi analog input - SMT50 T [°C] = (U – 0,5) * 100
 #define SENSOR_OSPI_INTERNAL_TEMP       54  // Internal OSPI Temperature
 
+#define INDEPENDENT_SENSORS_START       60  // starting id for independent sensors
 #define SENSOR_FYTA_MOISTURE            60  // FYTA moisture sensor
 #define SENSOR_FYTA_TEMPERATURE         61  // FYTA temperature sensor
  
@@ -168,6 +178,21 @@ typedef struct SensorFlags {
   uint show : 1;     // show on mainpage
 } SensorFlags_t;
 
+#define RS485FLAGS_DATATYPE_UINT16 0 // 2 bytes
+#define RS485FLAGS_DATATYPE_INT16  1 // 2 bytes
+#define RS485FLAGS_DATATYPE_UINT32 2 // 4 bytes
+#define RS485FLAGS_DATATYPE_INT32  3 // 4 bytes
+#define RS485FLAGS_DATATYPE_FLOAT  4 // 4 bytes
+#define RS485FLAGS_DATATYPE_DOUBLE 5 // 8 bytes
+
+typedef struct RS485Flags { // 0 is default
+  uint parity : 2;      // use even/odd parity (0=none,1=even,2=odd)
+  uint stopbits : 1;    // use 2 stop bits (0=1 stop bit, 1=2 stop bits)
+  uint speed : 3;       // 0=9600, 1=19200, 2=38400, 3=57600, 4=115200
+  uint swapped : 1;     // swapped low/high byte (0=big endian, 1=little endian)
+  uint datatype: 3;     // 0=uint16 (2 bytes), 1=int16 (2 bytes) 2=uint32 (4 bytes), 3=int32 (4 bytes), 4=float (4 bytes),5=double (8 bytes)
+} RS485Flags_t;
+
 // Definition of a sensor
 typedef struct Sensor {
   uint nr;                    // 1..n sensor-nr, 0=deleted
@@ -189,7 +214,10 @@ typedef struct Sensor {
                     //   sensorvalue = (read_value-offset_mv/1000) * factor /
                     //   divider + offset2/100
   unsigned char assigned_unitid;  // unitid for userdef and mqtt sensors
-  unsigned char undef[15];        // for later
+  RS485Flags_t rs485_flags;    // RS485 specific flags
+  uint8_t rs485_code;          // RS485 functioncode
+  uint16_t rs485_reg;          // RS485 register address
+  unsigned char undef[11];     // for later
   // unstored:
   bool mqtt_init : 1;
   bool mqtt_push : 1;
@@ -367,14 +395,11 @@ typedef struct Monitor {
 #define ASB_BOARD_ADDR1b 0x49
 #define ASB_BOARD_ADDR2a 0x4A
 #define ASB_BOARD_ADDR2b 0x4B
-#define RS485_TRUEBNER1_ADDR 0x38
-#define RS485_TRUEBNER2_ADDR 0x39
-#define RS485_TRUEBNER3_ADDR 0x3A
-#define RS485_TRUEBNER4_ADDR 0x3B
-#define ASB_I2C_RS485_ADDR 0x48
 
 void sensor_api_init(boolean detect_boards);
 uint16_t get_asb_detected_boards();
+boolean sensor_type_supported(int type);
+void add_asb_detected_boards(uint16_t board);
 void sensor_save_all();
 void sensor_api_free();
 
@@ -399,7 +424,8 @@ int sensor_delete(uint nr);
 int sensor_define(uint nr, const char *name, uint type, uint group, uint32_t ip,
                   uint port, uint id, uint ri, int16_t factor, int16_t divider,
                   const char *userdef_unit, int16_t offset_mv, int16_t offset2,
-                  SensorFlags_t flags, int16_t assigned_unitid);
+                  SensorFlags_t flags, int16_t assigned_unitid, 
+                  RS485Flags_t rs485_flags, uint8_t rs485_code, uint16_t rs485_reg);
 int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
                           const char *userdef_unit, int16_t offset_mv,
                           int16_t offset2, int16_t sensor_define_userdef);
@@ -483,13 +509,15 @@ void check_monitors();
 
 #if defined(OSPI)
 boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
-#elif defined(ESP8266)
+#endif
+#if defined(ESP8266) || defined(ESP32)
 boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
 #endif
 
 #if defined(OSPI)
 boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
-#elif defined(ESP8266)
+#endif
+#if defined(ESP8266) || defined(ESP32)
 boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
 #endif
 

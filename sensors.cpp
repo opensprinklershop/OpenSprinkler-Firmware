@@ -39,6 +39,9 @@
 #include "program.h"
 #include "sensor_mqtt.h"
 #include "sensor_fyta.h"
+#include "sensor_rs485_i2c.h"
+#include "sensor_truebner_rs485.h"
+#include "sensor_modbus_rtu.h"
 #include "utils.h"
 #include "weather.h"
 #include "osinfluxdb.h"
@@ -52,8 +55,6 @@
 #ifdef ESP32
 #include <fstream>
 #endif
-
-#define MAX_RS485_DEVICES 4
 
 unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const char *key,
                 bool key_in_pgm = false, uint8_t *keyfound = NULL);
@@ -75,14 +76,6 @@ static ProgSensorAdjust_t *progSensorAdjusts = NULL;
 
 // Monitor data
 static Monitor_t *monitors = NULL;
-
-// modbus transaction id
-static uint16_t modbusTcpId = 0;
-#if defined(ESP8266) || defined(ESP32)
-static uint i2c_rs485_allocated[MAX_RS485_DEVICES];
-#else
-static modbus_t * modbusDevs[MAX_RS485_DEVICES];
-#endif
 
 const char *sensor_unitNames[]{
     "",  "%", "°C", "°F", "V", "%", "in", "mm", "mph", "kmh", "%", "DK", "LM", "LX"
@@ -134,7 +127,6 @@ uint16_t CRC16(unsigned char buf[], int len) {
   return crc;
 }  // End: CRC16
 
-static int i2c_rs485 = ASB_I2C_RS485_ADDR;
 /**
  * @brief detect connected boards
  *
@@ -147,16 +139,8 @@ void detect_asb_board() {
   if (detect_i2c(ASB_BOARD_ADDR2a) && detect_i2c(ASB_BOARD_ADDR2b))
     asb_detected_boards |= ASB_BOARD2;
 
-  if (detect_i2c(RS485_TRUEBNER1_ADDR)) asb_detected_boards |= RS485_TRUEBNER1;
-  if (detect_i2c(RS485_TRUEBNER2_ADDR)) asb_detected_boards |= RS485_TRUEBNER2;
-  if (detect_i2c(RS485_TRUEBNER3_ADDR)) asb_detected_boards |= RS485_TRUEBNER3;
-  if (detect_i2c(RS485_TRUEBNER4_ADDR)) asb_detected_boards |= RS485_TRUEBNER4;
-
-  if (detect_i2c(ASB_I2C_RS485_ADDR)) {
-    asb_detected_boards |= ASB_I2C_RS485;
-    i2c_rs485 = ASB_I2C_RS485_ADDR;
-    DEBUG_PRINTLN("Found I2C RS485 at address " + String(i2c_rs485, HEX));
-  }
+  sensor_truebner_rs485_init();
+  sensor_rs485_i2c_init();
 #endif
 
 // Old, pre OSPi 1.43 analog inputs:
@@ -190,16 +174,26 @@ void detect_asb_board() {
   }
 }
 
-void fyta_check_opts() {
-
-    file_read_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
-    if (tmp_buffer[0] != '{') {
-      strcpy(tmp_buffer, "{\"token\":\"\"}");
-      file_write_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
-    }
-}
-
 uint16_t get_asb_detected_boards() { return asb_detected_boards; }
+void add_asb_detected_boards(uint16_t board) { asb_detected_boards |= board; }
+
+boolean sensor_type_supported(int type) {
+
+  if (type >= ASB_SENSORS_START && type <= ASB_SENSORS_END &&
+    (asb_detected_boards & ASB_BOARD1) != 0 || (asb_detected_boards & ASB_BOARD2) != 0)
+      return true;
+
+  if (type >= OSPI_SENSORS_START && type <= OSPI_SENSORS_END &&
+    (asb_detected_boards & OSPI_PCF8591) != 0 || (asb_detected_boards & OSPI_ADS1115) != 0)
+      return true;
+
+  if (type >= INDEPENDENT_SENSORS_START)
+      return true;
+
+  if (type >= RS485_SENSORS_START && type <= RS485_SENSORS_END) //Always available because of modbus_rtu IP
+      return true;
+  return false;
+}
 /*
  * init sensor api and load data
  */
@@ -325,10 +319,8 @@ void sensor_api_free() {
     sensors = next;
   }
 
-  modbusTcpId = 0;
-  #if defined(ESP8266) || defined(ESP32)
-  memset(i2c_rs485_allocated, 0, sizeof(i2c_rs485_allocated));
-  #endif
+  sensor_truebner_rs485_free();
+  sensor_modbus_rtu_free();
   DEBUG_PRINTLN("sensor_api_free5");
 }
 
@@ -373,7 +365,8 @@ int sensor_delete(uint nr) {
 int sensor_define(uint nr, const char *name, uint type, uint group, uint32_t ip,
                   uint port, uint id, uint ri, int16_t factor, int16_t divider,
                   const char *userdef_unit, int16_t offset_mv, int16_t offset2,
-                  SensorFlags_t flags, int16_t assigned_unitid) {
+                  SensorFlags_t flags, int16_t assigned_unitid,
+                  RS485Flags_t rs485_flags, uint8_t rs485_code, uint16_t rs485_reg) {
   if (nr == 0 || type == 0) return HTTP_RQT_NOT_RECEIVED;
   if (ri < 10) ri = 10;
 
@@ -399,6 +392,9 @@ int sensor_define(uint nr, const char *name, uint type, uint group, uint32_t ip,
       sensor->flags = flags;
       if (assigned_unitid >= 0) sensor->assigned_unitid = assigned_unitid;
       else sensor->assigned_unitid = 0;
+      sensor->rs485_flags = rs485_flags;
+      sensor->rs485_code = rs485_code;
+      sensor->rs485_reg = rs485_reg;  
       sensor_save();
       return HTTP_RQT_SUCCESS;
     }
@@ -700,7 +696,8 @@ void sensorlog_clear(bool std, bool week, bool month) {
 
 ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
                              double under, bool use_over, double over, time_t before, time_t after) {
-  SensorLog_t sensorlog;
+#define SLOG_BUFSIZE 64
+  SensorLog_t * sensorlog = new SensorLog_t[SLOG_BUFSIZE];
   checkLogSwitch(log);
   const char *flast = getlogfile2(log);
   const char *fcur = getlogfile(log);
@@ -720,28 +717,30 @@ ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
       f = flast;
     }
 
-    ulong result = file_read_block(f, &sensorlog, idx * SENSORLOG_STORE_SIZE,
-                                   SENSORLOG_STORE_SIZE);
-    if (result == 0) break;
-    if (sensorlog.nr > 0 && (sensorlog.nr == sensorNr || sensorNr == 0)) {
-      DEBUG_PRINTF("clearlog2 idx=%ld idx2=%ld\n", idx, idxr);
-      boolean found = false;
-      if (use_under && sensorlog.data < under) found = true;
-      if (use_over && sensorlog.data > over) found = true;
-      if (before && sensorlog.time < before) found = true;
-      if (after && sensorlog.time > after) found = true;
-      if (sensorNr > 0 && sensorlog.nr != sensorNr) found = false;
-      if (sensorNr > 0 && sensorlog.nr == sensorNr && !use_under && !use_over && !before && !after) found = true;
-      if (found) {
-        sensorlog.nr = 0;
-        file_write_block(f, &sensorlog, idx * SENSORLOG_STORE_SIZE,
-                         SENSORLOG_STORE_SIZE);
-        DEBUG_PRINTF("clearlog3 idx=%ld idxr=%ld\n", idx, idxr);
-        n++;
+    ulong result = file_read_block(f, sensorlog, idx * SENSORLOG_STORE_SIZE,
+                                   SENSORLOG_STORE_SIZE*SLOG_BUFSIZE);
+    int entries = result / SENSORLOG_STORE_SIZE;
+    for (int i = 0; i < entries; i++, idxr++) {
+      SensorLog_t * sl = &sensorlog[i];
+      if (sl->nr > 0 && (sl->nr == sensorNr || sensorNr == 0)) {
+        DEBUG_PRINTF("clearlog2 idx=%ld idx2=%ld\n", idx, idxr);
+        boolean found = false;
+        if (use_under && sl->data < under) found = true;
+        if (use_over && sl->data > over) found = true;
+        if (before && sl->time < before) found = true;
+        if (after && sl->time > after) found = true;
+        if (sensorNr > 0 && sl->nr != sensorNr) found = false;
+        if (sensorNr > 0 && sl->nr == sensorNr && !use_under && !use_over && !before && !after) found = true;
+        if (found) {
+          sl->nr = 0;
+          file_write_block(f, sl, (idx+i) * SENSORLOG_STORE_SIZE, sizeof(sl->nr));
+          DEBUG_PRINTF("clearlog3 idx=%ld idxr=%ld\n", idx, idxr);
+          n++;
+        }
       }
     }
-    idxr++;
   }
+  delete[] sensorlog;
   DEBUG_PRINTF("clearlog4 n=%ld\n", n);
   return n;
 }
@@ -1089,7 +1088,6 @@ void read_all_sensors(boolean online) {
     sensor_save();
 }
 
-#if defined(ARDUINO)
 #if defined(ESP8266) || defined(ESP32)
 /**
  * Read ESP8296 ADS1115 sensors
@@ -1204,7 +1202,6 @@ int read_sensor_adc(Sensor_t *sensor, ulong time) {
   return HTTP_RQT_SUCCESS;
 }
 #endif
-#endif
 
 bool extract(char *s, char *buf, int maxlen) {
   s = strstr(s, ":");
@@ -1300,390 +1297,14 @@ int read_sensor_http(Sensor_t *sensor, ulong time) {
 }
 
 #if defined(ESP8266) || defined(ESP32)
-int active_i2c_RS485 = 0;
-int active_i2c_RS485_mode = 0;
-
-// SC16IS752 Register Adressen (Teilauswahl)
-#define REG_RHR     0x00
-#define REG_THR     0x00
-#define REG_DLL     0x00
-#define REG_DLH     0x01
-#define REG_FCR     0x02
-#define REG_LCR     0x03
-#define REG_MCR     0x04
-#define REG_LSR     0x05
-#define REG_IOD     0x0A
-#define REG_IOS     0x0B
-#define REG_IOC     0x0E
-#define REG_EFCR    0x0F
-
-void writeSC16Register(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(i2c_rs485); // Wire Lib erwartet 7-bit Adresse
-  Wire.write( (reg << 3) | 0x00 ); // Befehlsbyte für Schreibzugriff
-  Wire.write(value);
-  Wire.endTransmission();
+boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
+  if (ip)
+    return send_modbus_rtu_command(ip, port, address, reg, data, isbit);
+  return send_i2c_rs485_command(address, reg, data, isbit);
 }
-
-uint8_t readSC16Register(uint8_t reg) {
-  uint8_t result =0;
-  Wire.beginTransmission(i2c_rs485);
-  Wire.write( (reg << 3) | 0x80 ); // Befehlsbyte für Lesezugriff
-  Wire.endTransmission(false); // Kein Stop, um Re-Start zu senden
-
-  Wire.requestFrom(i2c_rs485, 1);
-  if (Wire.available()) {
-    result = Wire.read();
-  }
-  delay(1);
-  return result;
-}
-
-void UART_sendByte(uint8_t data) {
-  // Warten bis der THR (Transmit Holding Register) leer ist
-  while (!(readSC16Register(REG_LSR) & 0x20)) // LSR Bit 5 (THRE)
-    delay(1); 
-  writeSC16Register(REG_THR, data);
-}
-
-void UART_sendBytes(uint8_t data[], uint8_t len) {
-  for (uint8_t i = 0; i < len; i++) {
-    UART_sendByte(data[i]);
-  }
-}
-
-uint8_t UART_receiveByte() {
-  // Warten bis Daten im RHR (Receive Holding Register) verfügbar sind
-  while (!(readSC16Register(REG_LSR) & 0x01)); // LSR Bit 0 (DR)
-  return readSC16Register(REG_RHR);
-}
-
-bool UART_available() {
-    return (readSC16Register(REG_LSR) & 0x01);
-}
-
-uint8_t UART_readBytes(uint8_t* buffer, uint8_t len, uint16_t timeout) {
-  uint8_t count = 0;
-  uint32_t startTime = millis();
-  while (count < len) {
-    if (UART_available()) {
-      buffer[count++] = UART_receiveByte();
-    } else {
-      if (millis() - startTime >= timeout) {
-        break; // Timeout erreicht
-      }
-    }
-  }
-  return count;
-}
-
-void set_RS485_Mode(bool transmitMode) {
-    writeSC16Register(REG_IOD, 0x80); // GPIO7 Output
-    uint8_t ioState = readSC16Register(REG_IOS);
-
-    if (transmitMode) {
-      // Bei RS485: DE=LOW, RE=HIGH -> Pin muss LOW sein
-      ioState &= ~0x80; // Löscht Bit 7 auf LOW
-    } else {
-      // Bei RS485: DE=HIGH, RE=LOW -> Pin muss HIGH sein
-      ioState |= 0x80; // Setzt Bit 7 auf HIGH
-    }
-    writeSC16Register(REG_IOS, ioState);
-}
-
-/**
- * @brief I2C to RS485 Interface
- *        Alternative I2C Board for any RS485 Sensors
- *        (SC16IS752 and MAX485)
- * @param sensor
- * @return int
- */
-int read_sensor_i2c_rs485(Sensor_t *sensor) {
-  if (!(asb_detected_boards & ASB_I2C_RS485)) 
-    return HTTP_RQT_NOT_RECEIVED;
-
-  DEBUG_PRINTF(F("read_sensor_i2c_rs485: %d %s\n"), sensor->nr, sensor->name)
-  
-  if (active_i2c_RS485 > 0 && active_i2c_RS485 != sensor->nr) {
-    sensor->repeat_read = 1000;
-    //DEBUG_PRINT(F("cant' read, allocated by sensor "));
-    //DEBUG_PRINTLN(active_i2c_RS485);
-    Sensor_t *t = sensor_by_nr(active_i2c_RS485);
-    if (!t || !t->flags.enable)
-      active_i2c_RS485 = 0; //breakout
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-  active_i2c_RS485 = sensor->nr;
-
-  //Init chip
-  if (active_i2c_RS485_mode == 0) { // Init SC16IS752 for Modbus:
-    DEBUG_PRINTLN(F("i2c_rs485: init"));
-
-    writeSC16Register(REG_LCR, 0x80);// Enable access to the baud rate registers
-    writeSC16Register(REG_DLL, 0x34); // Set baud rate to 9600 (assuming 8 MHz clock)
-    writeSC16Register(REG_DLH, 0x00); // Set baud rate to 9600
-    writeSC16Register(REG_LCR, 0x3B); // 1 stop bit, parity even, 8 data bits
-    set_RS485_Mode(false);
-    writeSC16Register(REG_EFCR, 0x30); // 0x30 = 00110000 RS485 Mode Enable + RTS Inversion
-
-    active_i2c_RS485_mode = 1;
-    sensor->repeat_read = 1000;
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-
-  // Switch power on
-  if (active_i2c_RS485_mode == 1) {
-    DEBUG_PRINTLN(F("i2c_rs485: POWER ON"));
-    set_RS485_Mode(true);
-    writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
-    writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
-
-    active_i2c_RS485_mode = 2;
-    sensor->repeat_read = 1000;
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-
-  bool isTemp = sensor->type == SENSOR_SMT100_TEMP || sensor->type == SENSOR_TH100_TEMP;
-  bool isMois = sensor->type == SENSOR_SMT100_MOIS || sensor->type == SENSOR_TH100_MOIS;
-  uint8_t type = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
-
-  // Send Request
-  if (active_i2c_RS485_mode == 2) {
-    DEBUG_PRINT(F("i2c_rs485: Send Request:"));
-    uint8_t request[8];
-    request[0] = sensor->id;
-    request[1] = 0x03; // Read Holding Registers
-    request[2] = 0x00;    
-    request[3] = type; // Register Address
-    request[4] = 0x00;
-    request[5] = 0x01; // Number of Registers to read (1
-    uint16_t crc = CRC16(request, 6);
-    request[6] = lowByte(crc); // CRC Low Byte
-    request[7] = highByte(crc); // CRC High Byte
-    for (int i = 0; i < 8; i++) {
-      DEBUG_PRINTF(F(" %02x"), request[i]);
-    }
-    DEBUG_PRINTLN();
-
-    UART_sendBytes(request, 8);
-    active_i2c_RS485_mode = 3;
-    sensor->repeat_read = 1000;
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-
-  // Read Response
-  if (active_i2c_RS485_mode == 3) {
-    DEBUG_PRINT(F("i2c_rs485: Read Response:"));
-    uint8_t response[7];
-    uint8_t len = UART_readBytes(response, 7, 100); // timeout 100ms
-    for (int i = 0; i < len; i++) {
-      DEBUG_PRINTF(F(" %02x"), response[i]);
-    }
-    DEBUG_PRINTLN();
-    // Expected Response:
-    // Byte 0: Slave Address
-    // Byte 1: Function Code
-    // Byte 2: Byte Count
-    // Byte 3: Data Low Byte
-    // Byte 4: Data High Byte
-    // Byte 5: CRC Low Byte
-    // Byte 6: CRC High Byte
-    uint16_t crc = len == 7?CRC16(response, 5):0xFFFF;
-    if (len != 7 || response[0] != sensor->id || response[1] != 0x03 || response[2] != 0x02 ||
-        response[5] != lowByte(crc) || response[6] != highByte(crc)) {
-          
-      DEBUG_PRINTLN(F("read_sensor_i2c_rs485: invalid response"));
-      DEBUG_PRINT(F("len="));
-      DEBUG_PRINTLN(len);
-      sensor->repeat_read = 0;
-      sensor->flags.data_ok = false;
-      active_i2c_RS485 = 0;
-      active_i2c_RS485_mode = 1;
-      set_RS485_Mode(false);
-      return HTTP_RQT_NOT_RECEIVED;
-    }
-
-    //Extract Data
-    uint16_t data = (response[3] << 8) | response[4];
-    DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n", sensor->id,
-                   data, response[4], response[3]);
-    double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
-    sensor->last_native_data = data;
-    sensor->last_data = value;
-    DEBUG_PRINTLN(sensor->last_data); 
-    sensor->flags.data_ok = true;
-    sensor->repeat_read = 0;
-    active_i2c_RS485 = 0;
-    active_i2c_RS485_mode = 1;
-    set_RS485_Mode(false);
-    return HTTP_RQT_SUCCESS;
-  }
-
-  // Timeout
-  sensor->repeat_read++;
-  if (sensor->repeat_read > 4) {  // timeout
-    sensor->repeat_read = 0;
-    sensor->flags.data_ok = false;
-    active_i2c_RS485 = 0;
-    active_i2c_RS485_mode = 0;
-    DEBUG_PRINTLN(F("i2c_rs485: timeout"));
-  }
-  DEBUG_PRINTLN(F("i2c_rs485: Exit"));
-  return HTTP_RQT_NOT_RECEIVED;
-}
-
-
-
-/**
- * @brief Truebner RS485 Interface
- *
- * @param sensor
- * @return int
- */
-int read_sensor_rs485(Sensor_t *sensor) {
-  int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || (asb_detected_boards & (RS485_TRUEBNER1 << device)) == 0) 
-    return HTTP_RQT_NOT_RECEIVED;
-
-  if (i2c_rs485_allocated[device] > 0 && i2c_rs485_allocated[device] != sensor->nr) {
-    sensor->repeat_read = 1000;
-    DEBUG_PRINT(F("cant' read, allocated by sensor "));
-    DEBUG_PRINTLN(i2c_rs485_allocated[device]);
-    Sensor_t *t = sensor_by_nr(i2c_rs485_allocated[device]);
-    if (!t || !t->flags.enable)
-      i2c_rs485_allocated[device] = 0; //breakout
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-
-  DEBUG_PRINTLN(F("read_sensor_rs485: check-ok"));
-
-  bool isTemp = sensor->type == SENSOR_SMT100_TEMP || sensor->type == SENSOR_TH100_TEMP;
-  bool isMois = sensor->type == SENSOR_SMT100_MOIS || sensor->type == SENSOR_TH100_MOIS;
-  uint8_t type = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
-  
-  if (sensor->repeat_read == 0 || sensor->repeat_read == 1000) {
-    Wire.beginTransmission(RS485_TRUEBNER1_ADDR + device);
-    Wire.write((uint8_t)sensor->id);
-    Wire.write(type);
-    if (Wire.endTransmission() == 0) {
-      DEBUG_PRINTF("read_sensor_rs485: request send: %d - %d\n", sensor->id,
-                   type);
-      sensor->repeat_read = 1;
-      i2c_rs485_allocated[device] = sensor->nr;
-    }
-    return HTTP_RQT_NOT_RECEIVED;
-    // delay(500);
-  }
-
-  if (Wire.requestFrom((uint8_t)(RS485_TRUEBNER1_ADDR + device), (size_t)4, true)) {
-    // read the incoming bytes:
-    uint8_t addr = Wire.read();
-    uint8_t reg = Wire.read();
-    uint8_t low_byte = Wire.read();
-    uint8_t high_byte = Wire.read();
-    if (addr == sensor->id && reg == type) {
-      uint16_t data = (high_byte << 8) | low_byte;
-      DEBUG_PRINTF("read_sensor_rs485: result: %d - %d (%d %d)\n", sensor->id,
-                   data, low_byte, high_byte);
-      double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
-      sensor->last_native_data = data;
-      sensor->last_data = value;
-      DEBUG_PRINTLN(sensor->last_data);
-
-      sensor->flags.data_ok = true;
-
-      sensor->repeat_read = 0;
-      i2c_rs485_allocated[device] = 0;
-      return HTTP_RQT_SUCCESS;
-    }
-  }
-
-  sensor->repeat_read++;
-  if (sensor->repeat_read > 4) {  // timeout
-    sensor->repeat_read = 0;
-    sensor->flags.data_ok = false;
-    i2c_rs485_allocated[device] = 0;
-    DEBUG_PRINTLN(F("read_sensor_rs485: timeout"));
-  }
-  DEBUG_PRINTLN(F("read_sensor_rs485: exit"));
-  return HTTP_RQT_NOT_RECEIVED;
-}
-
-boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit) {
-#if defined(ARDUINO)
-
-  Client *client;
-#if defined(ESP8266) || defined(ESP32)
-  WiFiClient wifiClient;
-  client = &wifiClient;
-#else
-  EthernetClient etherClient;
-  client = &etherClient;
 #endif
 
-#else
-  EthernetClient etherClient;
-  EthernetClient *client = &etherClient;
-#endif
-
-#if defined(ARDUINO)
-  IPAddress _ip(ip);
-  unsigned char ips[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
-  unsigned char ip[4];
-  ips[3] = (unsigned char)((ip >> 24) & 0xFF);
-  ips[2] = (unsigned char)((ip >> 16) & 0xFF);
-  ips[1] = (unsigned char)((ip >> 8) & 0xFF);
-  ips[0] = (unsigned char)((ip & 0xFF));
-#endif
-  char server[20];
-  sprintf(server, "%d.%d.%d.%d", ips[0], ips[1], ips[2], ips[3]);
-  client->setTimeout(200);
-  if (!client->connect(server, port)) {
-    DEBUG_PRINT(server);
-    DEBUG_PRINT(":");
-    DEBUG_PRINT(port);
-    DEBUG_PRINT(" ");
-    DEBUG_PRINTLN(F("failed."));
-    client->stop();
-    return false;
-  }
-
-  uint8_t buffer[20];
-
-  // https://ipc2u.com/articles/knowledge-base/detailed-description-of-the-modbus-tcp-protocol-with-command-examples/
-
-  if (modbusTcpId >= 0xFFFE)
-    modbusTcpId = 1;
-  else
-    modbusTcpId++;
-
-  buffer[0] = (0xFF00 & modbusTcpId) >> 8;
-  buffer[1] = (0x00FF & modbusTcpId);
-  buffer[2] = 0;
-  buffer[3] = 0;
-  buffer[4] = 0;
-  buffer[5] = 6;  // len
-  buffer[6] = address;  // Modbus ID
-  buffer[7] = isbit?0x05:0x06;        // Write Registers
-  buffer[8] = reg >> 8;  // high byte of register address
-  buffer[9] = reg && 0xFF;  // low byte
-  if (isbit) {
-    buffer[10] = data?0xFF:0x00;
-    buffer[11] = 0x00;
-  } else {
-    buffer[10] = data >> 8;  // high byte
-    buffer[11] = data && 0xFF;  // low byte
-  }
-
-  client->write(buffer, 12);
-#if defined(ESP8266) || defined(ESP32)
-  client->flush();
-#endif
-  client->stop();
-  return true;
-}
-
-#else
+#if defined(OSPI)
 /**
  * USB RS485 Adapter
  * Howto use: Create a file rs485 inside the OpenSprinkler-Firmware directory, enter the USB-TTY connections here.
@@ -1740,180 +1361,6 @@ boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg, uint16
 
 #endif
 
-/**
- * Read ip connected sensors
- */
-int read_sensor_ip(Sensor_t *sensor) {
-#if defined(ARDUINO)
-
-  Client *client;
-#if defined(ESP8266) || defined(ESP32)
-  WiFiClient wifiClient;
-  client = &wifiClient;
-#else
-  EthernetClient etherClient;
-  client = &etherClient;
-#endif
-
-#else
-  EthernetClient etherClient;
-  EthernetClient *client = &etherClient;
-#endif
-
-  sensor->flags.data_ok = false;
-  if (!sensor->ip || !sensor->port) {
-    sensor->flags.enable = false;
-    return HTTP_RQT_CONNECT_ERR;
-  }
-
-#if defined(ARDUINO)
-  IPAddress _ip(sensor->ip);
-  unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
-  unsigned char ip[4];
-  ip[3] = (unsigned char)((sensor->ip >> 24) & 0xFF);
-  ip[2] = (unsigned char)((sensor->ip >> 16) & 0xFF);
-  ip[1] = (unsigned char)((sensor->ip >> 8) & 0xFF);
-  ip[0] = (unsigned char)((sensor->ip & 0xFF));
-#endif
-  char server[20];
-  sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-  client->setTimeout(200);
-  if (!client->connect(server, sensor->port)) {
-    DEBUG_PRINT(server);
-    DEBUG_PRINT(":");
-    DEBUG_PRINT(sensor->port);
-    DEBUG_PRINT(" ");
-    DEBUG_PRINTLN(F("failed."));
-    client->stop();
-    return HTTP_RQT_TIMEOUT;
-  }
-
-  uint8_t buffer[20];
-
-  // https://ipc2u.com/articles/knowledge-base/detailed-description-of-the-modbus-tcp-protocol-with-command-examples/
-
-  if (modbusTcpId >= 0xFFFE)
-    modbusTcpId = 1;
-  else
-    modbusTcpId++;
-
-  bool isTemp = sensor->type == SENSOR_SMT100_TEMP || sensor->type == SENSOR_TH100_TEMP;
-  bool isMois = sensor->type == SENSOR_SMT100_MOIS || sensor->type == SENSOR_TH100_MOIS;
-  uint8_t type = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
-
-  buffer[0] = (0xFF00 & modbusTcpId) >> 8;
-  buffer[1] = (0x00FF & modbusTcpId);
-  buffer[2] = 0;
-  buffer[3] = 0;
-  buffer[4] = 0;
-  buffer[5] = 6;  // len
-  buffer[6] = sensor->id;  // Modbus ID
-  buffer[7] = 0x03;        // Read Holding Registers
-  buffer[8] = 0x00;
-  buffer[9] = type;
-  buffer[10] = 0x00;
-  buffer[11] = 0x01;  
-
-  client->write(buffer, 12);
-#if defined(ESP8266) || defined(ESP32)
-  client->flush();
-#endif
-
-  // Read result:
-  switch (sensor->type) {
-    case SENSOR_SMT100_MOIS:
-    case SENSOR_SMT100_TEMP:
-    case SENSOR_SMT100_PMTY:
-    case SENSOR_TH100_MOIS:
-	  case SENSOR_TH100_TEMP:
-      uint32_t stoptime = millis() + SENSOR_READ_TIMEOUT;
-#if defined(ESP8266) || defined(ESP32)
-      while (true) {
-        if (client->available()) break;
-        if (millis() >= stoptime) {
-          client->stop();
-          DEBUG_PRINT(F("Sensor "));
-          DEBUG_PRINT(sensor->nr);
-          DEBUG_PRINTLN(F(" timeout read!"));
-          return HTTP_RQT_TIMEOUT;
-        }
-        delay(5);
-      }
-
-      int n = client->read(buffer, 11);
-      if (n < 11) n += client->read(buffer + n, 11 - n);
-#else
-      int n = 0;
-      while (true) {
-        n = client->read(buffer, 11);
-        if (n < 11) n += client->read(buffer + n, 11 - n);
-        if (n > 0) break;
-        if (millis() >= stoptime) {
-          client->stop();
-          DEBUG_PRINT(F("Sensor "));
-          DEBUG_PRINT(sensor->nr);
-          DEBUG_PRINT(F(" timeout read!"));
-          return HTTP_RQT_TIMEOUT;
-        }
-        delay(5);
-      }
-#endif
-      client->stop();
-      DEBUG_PRINT(F("Sensor "));
-      DEBUG_PRINT(sensor->nr);
-      if (n != 11) {
-        DEBUG_PRINT(F(" returned "));
-        DEBUG_PRINT(n);
-        DEBUG_PRINTLN(F(" bytes??"));
-        return n == 0 ? HTTP_RQT_EMPTY_RETURN : HTTP_RQT_TIMEOUT;
-      }
-      if (buffer[0] != (0xFF00 & modbusTcpId) >> 8 ||
-          buffer[1] != (0x00FF & modbusTcpId)) {
-        DEBUG_PRINT(F(" returned transaction id "));
-        DEBUG_PRINTLN((uint16_t)((buffer[0] << 8) + buffer[1]));
-        return HTTP_RQT_NOT_RECEIVED;
-      }
-      if ((buffer[6] != sensor->id && sensor->id != 253)) {  // 253 is broadcast
-        DEBUG_PRINT(F(" returned sensor id "));
-        DEBUG_PRINTLN((int)buffer[0]);
-        return HTTP_RQT_NOT_RECEIVED;
-      }
-
-      // Valid result:
-      sensor->last_native_data = (buffer[9] << 8) | buffer[10];
-      DEBUG_PRINT(F(" native: "));
-      DEBUG_PRINT(sensor->last_native_data);
-
-      // Convert to readable value:
-      switch (sensor->type) {
-        case SENSOR_TH100_MOIS:
-        case SENSOR_SMT100_MOIS:  // Equation: soil moisture [vol.%]=
-                                  // (16Bit_soil_moisture_value / 100)
-          sensor->last_data = ((double)sensor->last_native_data / 100.0);
-          sensor->flags.data_ok = sensor->last_native_data < 10000;
-          DEBUG_PRINT(F(" soil moisture %: "));
-          break;
-        case SENSOR_TH100_TEMP:
-        case SENSOR_SMT100_TEMP:  // Equation: temperature [°C]=
-                                  // (16Bit_temperature_value / 100)-100
-          sensor->last_data =
-              ((double)sensor->last_native_data / 100.0) - 100.0;
-          sensor->flags.data_ok = sensor->last_native_data > 7000;
-          DEBUG_PRINT(F(" temperature °C: "));
-          break;
-        case SENSOR_SMT100_PMTY:  // permittivity
-          sensor->last_data = ((double)sensor->last_native_data / 100.0);
-          sensor->flags.data_ok = true;
-          DEBUG_PRINT(F(" permittivity DK: "));
-          break;
-      }
-      DEBUG_PRINTLN(sensor->last_data);
-      return sensor->flags.data_ok ? HTTP_RQT_SUCCESS : HTTP_RQT_NOT_RECEIVED;
-  }
-
-  return HTTP_RQT_NOT_RECEIVED;
-}
 
 #if defined(OSPI)
 int read_internal_raspi(Sensor_t *sensor, ulong time) {
@@ -2004,7 +1451,7 @@ int read_sensor(Sensor_t *sensor, ulong time) {
       if (sensor->ip) return read_sensor_ip(sensor);
       if (asb_detected_boards & ASB_I2C_RS485)
         return read_sensor_i2c_rs485(sensor);
-      return read_sensor_rs485(sensor);
+      return read_sensor_truebner_rs485(sensor);
 
     case SENSOR_FYTA_MOISTURE:
     case SENSOR_FYTA_TEMPERATURE:
@@ -2216,134 +1663,7 @@ void sensor_update_groups() {
   }
 }
 
-int set_sensor_address_ip(Sensor_t *sensor, uint8_t new_address) {
-#if defined(ARDUINO)
-  Client *client;
-#if defined(ESP8266) || defined(ESP32)
-  WiFiClient wifiClient;
-  client = &wifiClient;
-#else
-  EthernetClient etherClient;
-  client = &etherClient;
-#endif
-#else
-  EthernetClient etherClient;
-  EthernetClient *client = &etherClient;
-#endif
-#if defined(ESP8266) || defined(ESP32)
-  IPAddress _ip(sensor->ip);
-  unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
-  unsigned char ip[4];
-  ip[3] = (unsigned char)((sensor->ip >> 24) & 0xFF);
-  ip[2] = (unsigned char)((sensor->ip >> 16) & 0xFF);
-  ip[1] = (unsigned char)((sensor->ip >> 8) & 0xFF);
-  ip[0] = (unsigned char)((sensor->ip & 0xFF));
-#endif
-  char server[20];
-  sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-  client->setTimeout(200);
-  if (!client->connect(server, sensor->port)) {
-    DEBUG_PRINT(F("Cannot connect to "));
-    DEBUG_PRINT(server);
-    DEBUG_PRINT(":");
-    DEBUG_PRINTLN(sensor->port);
-    client->stop();
-    return HTTP_RQT_CONNECT_ERR;
-  }
-
-  uint8_t buffer[20];
-
-  // https://ipc2u.com/articles/knowledge-base/detailed-description-of-the-modbus-tcp-protocol-with-command-examples/
-
-  if (modbusTcpId >= 0xFFFE)
-    modbusTcpId = 1;
-  else
-    modbusTcpId++;
-
-  buffer[0] = (0xFF00 & modbusTcpId) >> 8;
-  buffer[1] = (0x00FF & modbusTcpId);
-  buffer[2] = 0;
-  buffer[3] = 0;
-  buffer[4] = 0;
-  buffer[5] = 6;  // len
-  buffer[6] = sensor->id;
-  buffer[7] = 0x06;
-  buffer[8] = 0x00;
-  buffer[9] = 0x04;
-  buffer[10] = 0x00;
-  buffer[11] = new_address;
-
-  client->write(buffer, 12);
-#if defined(ESP8266) || defined(ESP32)
-  client->flush();
-#endif
-
-  // Read result:
-  int n = client->read(buffer, 12);
-  client->stop();
-  DEBUG_PRINT(F("Sensor "));
-  DEBUG_PRINT(sensor->nr);
-  if (n != 12) {
-    DEBUG_PRINT(F(" returned "));
-    DEBUG_PRINT(n);
-    DEBUG_PRINT(F(" bytes??"));
-    return n == 0 ? HTTP_RQT_EMPTY_RETURN : HTTP_RQT_TIMEOUT;
-  }
-  if (buffer[0] != (0xFF00 & modbusTcpId) >> 8 ||
-      buffer[1] != (0x00FF & modbusTcpId)) {
-    DEBUG_PRINT(F(" returned transaction id "));
-    DEBUG_PRINTLN((uint16_t)((buffer[0] << 8) + buffer[1]));
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-  if ((buffer[6] != sensor->id && sensor->id != 253)) {  // 253 is broadcast
-    DEBUG_PRINT(F(" returned sensor id "));
-    DEBUG_PRINT((int)buffer[0]);
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-  // Read OK:
-  sensor->id = new_address;
-  sensor_save();
-  return HTTP_RQT_SUCCESS;
-}
-
-#if defined(ESP8266) || defined(ESP32)
-/**
- * @brief Set the sensor address i2c
- *
- * @param sensor
- * @param new_address
- * @return int
- */
-int set_sensor_address_rs485(Sensor_t *sensor, uint8_t new_address) {
-  DEBUG_PRINTLN(F("set_sensor_address_rs485"));
-  int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || (asb_detected_boards & (RS485_TRUEBNER1 << device)) == 0) 
-    return HTTP_RQT_NOT_RECEIVED;
-
-  if (i2c_rs485_allocated[device] > 0) {
-    DEBUG_PRINT(F("sensor currently allocated by "));
-    DEBUG_PRINTLN(i2c_rs485_allocated[device]);
-    Sensor_t *t = sensor_by_nr(i2c_rs485_allocated[device]);
-    if (!t || !t->flags.enable)
-      i2c_rs485_allocated[device] = 0; //breakout
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-
-  Wire.beginTransmission(RS485_TRUEBNER1_ADDR + device);
-  Wire.write(254);
-  Wire.write(new_address);
-  Wire.endTransmission();
-  delay(3000);
-  Wire.requestFrom((uint8_t)(RS485_TRUEBNER1_ADDR + device), (size_t)1, true);
-  if (Wire.available()) {
-    delay(10);
-    uint8_t modbus_address = Wire.read();
-    if (modbus_address == new_address) return HTTP_RQT_SUCCESS;
-  }
-  return HTTP_RQT_NOT_RECEIVED;
-}
-#else
+#if defined(OSPI)
 /**
  * @brief Raspberry PI RS485 Interface - Set SMT100 Sensor address
  *
@@ -2371,9 +1691,15 @@ int set_sensor_address_rs485(Sensor_t *sensor, uint8_t new_address) {
   }
   return HTTP_RQT_NOT_RECEIVED;
 }
-
 #endif
 
+#if defined(ESP8266) || defined(ESP32)
+/**
+ * @brief Set SMT100 Sensor address
+ *
+ * @param sensor
+ * @return int
+ */
 int set_sensor_address(Sensor_t *sensor, uint8_t new_address) {
   if (!sensor) return HTTP_RQT_NOT_RECEIVED;
 
@@ -2386,10 +1712,13 @@ int set_sensor_address(Sensor_t *sensor, uint8_t new_address) {
       sensor->flags.data_ok = false;
       if (sensor->ip && sensor->port)
         return set_sensor_address_ip(sensor, new_address);
-      return set_sensor_address_rs485(sensor, new_address);
+      if (asb_detected_boards & ASB_I2C_RS485)
+        return set_sensor_address_i2c_rs485(sensor, new_address);
+      return set_sensor_address_truebner_rs485(sensor, new_address);
   }
   return HTTP_RQT_CONNECT_ERR;
 }
+#endif
 
 double calc_linear(ProgSensorAdjust_t *p, double sensorData) {
   //   min max  factor1 factor2

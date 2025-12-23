@@ -2421,7 +2421,7 @@ void OpenSprinkler::switch_httpstation(HTTPStationData *data, bool turnon, bool 
 
 #if defined(OSPI)
 extern boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
-#elif defined(ESP8266)
+#elif defined(ESP8266) || defined(ESP32)
 extern boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
 #endif
 
@@ -2444,7 +2444,7 @@ void OpenSprinkler::switch_modbusStation(ModbusStationData *data, bool turnon) {
 	uint16_t onoff = (uint16_t)hex2ulong(turnon ? data->data_on : data->data_off, sizeof(data->data_on));
 
 	send_rs485_command(device, address, reg, onoff, true);
-#elif defined(ESP8266)
+#elif defined(ESP8266) || defined(ESP32)
 	uint32_t ip4 = hex2ulong(data->ip, sizeof(data->ip));
 	uint16_t port = (uint16_t)hex2ulong(data->port, sizeof(data->port));
 	uint8_t address = (uint8_t)hex2ulong(data->address, sizeof(data->address));

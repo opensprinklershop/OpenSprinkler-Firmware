@@ -1152,7 +1152,11 @@ void server_json_options_main() {
 	}
 
 	//feature flag Analog Sensor API
+	#if defined(ESP32)
+	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32\""));
+	#else
 	bfill.emit_p(PSTR(",\"feature\":\"ASB\""));
+	#endif
 
 	bfill.emit_p(PSTR(",\"dexp\":$D,\"mexp\":$D,\"hwt\":$D,"), os.detect_exp(), MAX_EXT_BOARDS, os.hw_type);
 	// print master array
@@ -2494,10 +2498,21 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("filter"), true, &filter_found))
 		filter = strdup(urlDecodeAndUnescape(tmp_buffer));
 
+	uint16_t rs485_flags = 0;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485flags"), true))
+		rs485_flags = strtol(tmp_buffer, NULL, 0); // RS485 flags
+	uint8_t rs485_code = 0;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485code"), true))
+		rs485_code = strtol(tmp_buffer, NULL, 0); // RS485 code
+	uint16_t rs485_reg;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485reg"), true))
+		rs485_reg = strtol(tmp_buffer, NULL, 0); // RS485 register	
+
 	DEBUG_PRINTLN(F("server_sensor_config4"));
 
 	SensorFlags_t flags = {.enable=enable, .log=log, .show=show};
-	int ret = sensor_define(nr, name, type, group, ip, port, id, ri, factor, divider, userdef_unit, offset_mv, offset2, flags, assigned_unitid);
+	int ret = sensor_define(nr, name, type, group, ip, port, id, ri, factor, divider, userdef_unit, offset_mv, offset2, flags, 
+		assigned_unitid, (RS485Flags)rs485_flags, rs485_code, rs485_reg);
 	if (url_found) {
 		SensorUrl_add(nr, SENSORURL_TYPE_URL, url);
 		free(url);
@@ -2665,7 +2680,7 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
 		char* topic = SensorUrl_get(sensor->nr, SENSORURL_TYPE_TOPIC);
 		char* filter = SensorUrl_get(sensor->nr, SENSORURL_TYPE_FILTER);
 
-		bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"group\":$D,\"name\":\"$S\",\"ip\":$L,\"port\":$D,\"id\":$D,\"ri\":$D,\"fac\":$D,\"div\":$D,\"offset\":$D,\"offset2\":$D,\"nativedata\":$L,\"data\":$E,\"unit\":\"$S\",\"unitid\":$D,\"enable\":$D,\"log\":$D,\"show\":$D,\"data_ok\":$D,\"last\":$L,\"url\":\"$S\",\"topic\":\"$S\",\"filter\":\"$S\"}"),
+		bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"group\":$D,\"name\":\"$S\",\"ip\":$L,\"port\":$D,\"id\":$D,\"ri\":$D,\"fac\":$D,\"div\":$D,\"offset\":$D,\"offset2\":$D,\"nativedata\":$L,\"data\":$E,\"unit\":\"$S\",\"unitid\":$D,\"rs485flags\":$D,\"rs485code\":$D,\"rs485reg\":$D,\"enable\":$D,\"log\":$D,\"show\":$D,\"data_ok\":$D,\"last\":$L,\"url\":\"$S\",\"topic\":\"$S\",\"filter\":\"$S\"}"),
 			sensor->nr,
 			sensor->type,
 			sensor->group,
@@ -2682,6 +2697,9 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
 			sensor->last_data,
 			getSensorUnit(sensor),
 			getSensorUnitId(sensor),
+			sensor->rs485_flags,
+			sensor->rs485_code,
+			sensor->rs485_reg,	
 			sensor->flags.enable,
 			sensor->flags.log,
 			sensor->flags.show,
@@ -2819,7 +2837,11 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 			bfill.emit_p(PSTR("nr;type;time;nativedata;data;unit;unitid\r\n"));
 	}
 
+#if defined(ESP8266)
 	#define BLOCKSIZE 64
+#else
+	#define BLOCKSIZE 256
+#endif
 	ulong count = 0;
  	SensorLog_t *sensorlog = (SensorLog_t*)malloc(sizeof(SensorLog_t)*BLOCKSIZE);
 	Sensor_t *sensor = NULL;
@@ -3597,7 +3619,7 @@ static const int sensor_types[] = {
 	SENSOR_SMT100_PMTY,
 	SENSOR_TH100_MOIS,
 	SENSOR_TH100_TEMP,
-
+	SENSOR_RS485,
 #if defined(ESP8266) || defined(ESP32)
 	SENSOR_ANALOG_EXTENSION_BOARD,
 	SENSOR_ANALOG_EXTENSION_BOARD_P,
@@ -3651,6 +3673,7 @@ static const char* sensor_names[] = {
 	"Truebner SMT100 RS485 Modbus, permittivity mode",
 	"Truebner TH100 RS485 Modbus, humidity mode",
 	"Truebner TH100 RS485 Modbus, temperature mode",
+	"RS485 generic sensor",
  #if defined(ESP8266) || defined(ESP32)
 	"ASB - voltage mode 0..5V",
 	"ASB - 0..3.3V to 0..100%",
@@ -3744,16 +3767,20 @@ void server_sensor_types(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	int count = sizeof(sensor_types)/sizeof(int);
-	boolean use_asb = get_asb_detected_boards() > 0;
-	if (!use_asb) count -= 10;
+	int count = 0;
+	for (uint i = 0; i < sizeof(sensor_types)/sizeof(int); i++)
+	{
+		int type = sensor_types[i];
+		if (sensor_type_supported(type))
+			count++;	
+	}	
 
 	bfill.emit_p(PSTR("{\"count\":$D,\"detected\":$D,\"sensorTypes\":["), count, get_asb_detected_boards());
 
 	for (uint i = 0; i < sizeof(sensor_types)/sizeof(int); i++)
 	{
 		int type = sensor_types[i];
-		if (!use_asb && type >= SENSOR_ANALOG_EXTENSION_BOARD && type <= SENSOR_USERDEF)
+		if (!sensor_type_supported(type))
 			continue;
 		if (i > 0)
 			bfill.emit_p(PSTR(","));

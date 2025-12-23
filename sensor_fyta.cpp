@@ -1,4 +1,5 @@
 #include "sensor_fyta.h"
+#include "sensors.h"
 
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI) 
 
@@ -7,6 +8,15 @@ using namespace ArduinoJson;
 #if defined(OSPI)
 static bool fyta_init = false;
 #endif
+
+void fyta_check_opts() {
+    file_read_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+    if (tmp_buffer[0] != '{') {
+      strcpy(tmp_buffer, "{\"token\":\"\"}");
+      file_write_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+    }
+}
+
 
 /**
  * @brief FYTA Public API Client
