@@ -27,10 +27,18 @@
 	1.4  5	Sep 2014 - compatibility with Arduino 1.5.7
 */
 
-#if ARDUINO >= 100
-#include <Arduino.h>
+#if defined(ARDUINO)
+  #if ARDUINO >= 100
+    #include <Arduino.h>
+  #else
+    #include <WProgram.h>
+  #endif
 #else
-#include <WProgram.h>
+  /* native build: include standard time headers */
+  #include <time.h>
+  #include <stdint.h>
+  /* provide Arduino-like timing helpers prototypes */
+  #include "utils.h"
 #endif
 
 #include "TimeLib.h"

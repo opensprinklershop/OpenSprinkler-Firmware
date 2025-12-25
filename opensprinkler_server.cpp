@@ -32,6 +32,7 @@
 #include "osinfluxdb.h"
 #include "ArduinoJson.hpp"
 #include "sensor_fyta.h"
+#include "sensor_mqtt.h"
 
 // External variables defined in main ion file
 #if defined(USE_OTF)
@@ -2309,7 +2310,19 @@ void server_sensor_config_userdef(OTF_PARAMS_DEF)
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("offset2"), true))
 		offset2 = strtol(tmp_buffer, NULL, 0); // offset unit value
 
-	int ret = sensor_define_userdef(nr, factor, divider, userdef_unit, offset_mv, offset2, assigned_unitid);
+	// Build JSON configuration
+	JsonDocument doc;
+	JsonObject config = doc.to<JsonObject>();
+	
+	config["nr"] = nr;
+	config["fac"] = factor;
+	config["div"] = divider;
+	config["unit"] = userdef_unit;
+	config["offset"] = offset_mv;
+	config["offset2"] = offset2;
+	config["unitid"] = assigned_unitid;
+	
+	int ret = sensor_define(config, true);  // save=true
 	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
 }
@@ -2338,8 +2351,22 @@ void server_sensorurl_get(OTF_PARAMS_DEF)
 		handle_return(HTML_DATA_MISSING);
 	uint type = strtoul(tmp_buffer, NULL, 0); // Sensor type
 
-	char *value = SensorUrl_get(nr, type);
-	bfill.emit_p(PSTR("{\"value\":\"$S\"}"), value?value:"");
+	SensorBase *sensor = sensor_by_nr(nr);
+	char value[200] = {0};
+	if (sensor && sensor->type == SENSOR_MQTT) {
+		// Use toJson to get MQTT-specific fields
+		ArduinoJson::JsonDocument doc;
+		ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+		sensor->toJson(obj);
+		
+		if (type == SENSORURL_TYPE_URL && obj.containsKey("url"))
+			strncpy(value, obj["url"] | "", sizeof(value)-1);
+		else if (type == SENSORURL_TYPE_TOPIC && obj.containsKey("topic"))
+			strncpy(value, obj["topic"] | "", sizeof(value)-1);
+		else if (type == SENSORURL_TYPE_FILTER && obj.containsKey("filter"))
+			strncpy(value, obj["filter"] | "", sizeof(value)-1);
+	}
+	bfill.emit_p(PSTR("{\"value\":\"$S\"}"), value[0] ? value : "");
 	handle_return(HTML_OK);
 }
 
@@ -2375,10 +2402,25 @@ void server_sensorurl_config(OTF_PARAMS_DEF)
 	DEBUG_PRINTLN(tmp_buffer);
 	urlDecodeAndUnescape(tmp_buffer);
 	DEBUG_PRINTLN(tmp_buffer);
-	value = strdup(tmp_buffer);
 
-	bool ok = SensorUrl_add(nr, type, value);
-	free(value);
+	SensorBase *sensor = sensor_by_nr(nr);
+	bool ok = false;
+	if (sensor && sensor->type == SENSOR_MQTT) {
+		MqttSensor *mqtt = static_cast<MqttSensor*>(sensor);
+		if (type == SENSORURL_TYPE_URL) {
+			strncpy(mqtt->url, tmp_buffer, sizeof(mqtt->url)-1);
+			ok = true;
+		} else if (type == SENSORURL_TYPE_TOPIC) {
+			strncpy(mqtt->topic, tmp_buffer, sizeof(mqtt->topic)-1);
+			ok = true;
+		} else if (type == SENSORURL_TYPE_FILTER) {
+			strncpy(mqtt->filter, tmp_buffer, sizeof(mqtt->filter)-1);
+			ok = true;
+		}
+		if (ok) {
+			sensor_mqtt_subscribe(nr, type, tmp_buffer);
+		}
+	}
 	handle_return(ok?HTML_SUCCESS:HTML_DATA_MISSING);
 }
 
@@ -2504,27 +2546,56 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	uint8_t rs485_code = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485code"), true))
 		rs485_code = strtol(tmp_buffer, NULL, 0); // RS485 code
-	uint16_t rs485_reg;
+	uint16_t rs485_reg = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485reg"), true))
 		rs485_reg = strtol(tmp_buffer, NULL, 0); // RS485 register	
 
 	DEBUG_PRINTLN(F("server_sensor_config4"));
 
-	SensorFlags_t flags = {.enable=enable, .log=log, .show=show};
-	int ret = sensor_define(nr, name, type, group, ip, port, id, ri, factor, divider, userdef_unit, offset_mv, offset2, flags, 
-		assigned_unitid, (RS485Flags)rs485_flags, rs485_code, rs485_reg);
-	if (url_found) {
-		SensorUrl_add(nr, SENSORURL_TYPE_URL, url);
-		free(url);
+	// Build JSON configuration
+	JsonDocument doc;
+	JsonObject config = doc.to<JsonObject>();
+	
+	config["nr"] = nr;
+	config["name"] = name;
+	config["type"] = type;
+	config["group"] = group;
+	config["ip"] = ip;
+	config["port"] = port;
+	config["id"] = id;
+	config["ri"] = ri;
+	config["fac"] = factor;
+	config["div"] = divider;
+	config["unit"] = userdef_unit;
+	config["offset"] = offset_mv;
+	config["offset2"] = offset2;
+	config["unitid"] = assigned_unitid;
+	config["enable"] = enable;
+	config["log"] = log;
+	config["show"] = show;
+	
+	// RS485 flags
+	config["rs485flags"] = rs485_flags;
+	config["rs485code"] = rs485_code;
+	config["rs485reg"] = rs485_reg;
+	
+	// MQTT/URL fields
+	if (url_found && url) {
+		config["url"] = url;
 	}
-	if (topic_found) {
-		SensorUrl_add(nr, SENSORURL_TYPE_TOPIC, topic);
-		free(topic);
+	if (topic_found && topic) {
+		config["topic"] = topic;
 	}
-	if (filter_found) {
-		SensorUrl_add(nr, SENSORURL_TYPE_FILTER, filter);
-		free(filter);
+	if (filter_found && filter) {
+		config["filter"] = filter;
 	}
+	
+	// Call sensor_define with JSON
+	int ret = sensor_define(config, true);  // save=true
+	
+	if (url) free(url);
+	if (topic) free(topic);
+	if (filter) free(filter);
 	
 	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
@@ -2588,12 +2659,13 @@ void server_sensor_get(OTF_PARAMS_DEF) {
 #endif
 
 	bfill.emit_p(PSTR("{\"datas\":["));
-	uint count = sensor_count();
 	bool first = true;
-	for (uint i = 0; i < count; i++) {
-
-		Sensor_t *sensor = sensor_by_idx(i);
-		if (!sensor || (nr != 0 && nr != sensor->nr))
+	
+	for (auto it = sensors_iterate_begin(); ; ) {
+		SensorBase *sensor = sensors_iterate_next(it);
+		if (!sensor) break;
+		
+		if (nr != 0 && nr != sensor->nr)
 			continue;
 
 		if (first) first = false; else bfill.emit_p(PSTR(","));
@@ -2639,14 +2711,14 @@ void server_sensor_readnow(OTF_PARAMS_DEF) {
 #endif
 
 	bfill.emit_p(PSTR("{\"datas\":["));
-	uint count = sensor_count();
 	bool first = true;
 	ulong time = os.now_tz();
 
-	for (uint i = 0; i < count; i++) {
-
-		Sensor_t *sensor = sensor_by_idx(i);
-		if (!sensor || (nr != 0 && nr != sensor->nr))
+	for (auto it = sensors_iterate_begin(); ; ) {
+		SensorBase *sensor = sensors_iterate_next(it);
+		if (!sensor) break;
+		
+		if (nr != 0 && nr != sensor->nr)
 			continue;
 
 		sensor->last_read = time - sensor->read_interval - 1;
@@ -2669,43 +2741,15 @@ void server_sensor_readnow(OTF_PARAMS_DEF) {
 }
 
 void sensorconfig_json(OTF_PARAMS_DEF) {
-	int count = sensor_count();
 	bool first = true;
-	for (int i = 0; i < count; i++) {
-		Sensor_t *sensor = sensor_by_idx(i);
-
+	for (auto it = sensors_iterate_begin(); ; ) {
+		SensorBase *sensor = sensors_iterate_next(it);
+		if (!sensor) break;
+		
 		if (first) first = false; else bfill.emit_p(PSTR(","));
-
-		char* url = SensorUrl_get(sensor->nr, SENSORURL_TYPE_URL);
-		char* topic = SensorUrl_get(sensor->nr, SENSORURL_TYPE_TOPIC);
-		char* filter = SensorUrl_get(sensor->nr, SENSORURL_TYPE_FILTER);
-
-		bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"group\":$D,\"name\":\"$S\",\"ip\":$L,\"port\":$D,\"id\":$D,\"ri\":$D,\"fac\":$D,\"div\":$D,\"offset\":$D,\"offset2\":$D,\"nativedata\":$L,\"data\":$E,\"unit\":\"$S\",\"unitid\":$D,\"rs485flags\":$D,\"rs485code\":$D,\"rs485reg\":$D,\"enable\":$D,\"log\":$D,\"show\":$D,\"data_ok\":$D,\"last\":$L,\"url\":\"$S\",\"topic\":\"$S\",\"filter\":\"$S\"}"),
-			sensor->nr,
-			sensor->type,
-			sensor->group,
-			sensor->name,
-			sensor->ip,
-			sensor->port,
-			sensor->id,
-			sensor->read_interval,
-			sensor->factor,
-			sensor->divider,
-			sensor->offset_mv,
-			sensor->offset2,
-			sensor->last_native_data,
-			sensor->last_data,
-			getSensorUnit(sensor),
-			getSensorUnitId(sensor),
-			sensor->rs485_flags,
-			sensor->rs485_code,
-			sensor->rs485_reg,	
-			sensor->flags.enable,
-			sensor->flags.log,
-			sensor->flags.show,
-			sensor->flags.data_ok,
-			sensor->last_read,
-			url?url:"", topic?topic:"", filter?filter:"");
+		
+		// Each sensor emits its own JSON via virtual method
+		sensor->emitJson(bfill);
 		send_packet(OTF_PARAMS);
 	}
 }
@@ -2743,8 +2787,7 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("{\"test\":$D,"), test);
 		bfill.emit_p(PSTR("\"detected\":$D}"), get_asb_detected_boards());
 	} else {
-		int count = sensor_count();
-		bfill.emit_p(PSTR("{\"count\":$D,"), count);
+		bfill.emit_p(PSTR("{\"count\":$D,"), sensor_count());
 		bfill.emit_p(PSTR("\"detected\":$D,"), get_asb_detected_boards());
 		bfill.emit_p(PSTR("\"sensors\":["));
 		sensorconfig_json(OTF_PARAMS);
@@ -2844,7 +2887,7 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 #endif
 	ulong count = 0;
  	SensorLog_t *sensorlog = (SensorLog_t*)malloc(sizeof(SensorLog_t)*BLOCKSIZE);
-	Sensor_t *sensor = NULL;
+	SensorBase *sensor = NULL;
 
 	//lastHours: find limit for this
 	if (lastHours > 0 && log_size > 0) {
@@ -3380,10 +3423,13 @@ void monitorconfig_json(Monitor_t *mon) {
 }
 
 void monitorconfig_json() {
-	uint count = monitor_count();
-	for (uint i = 0; i < count; i++) {
-		Monitor_t *mon = monitor_by_idx(i);
-		if (i > 0) bfill.emit_p(PSTR(","));
+	bool first = true;
+	for (auto it = monitor_iterate_begin(); ; ) {
+		Monitor_t *mon = monitor_iterate_next(it);
+		if (!mon) break;
+		
+		if (!first) bfill.emit_p(PSTR(","));
+		first = false;
 		monitorconfig_json(mon);
 	}
 }
@@ -3424,12 +3470,12 @@ void server_monitor_list(OTF_PARAMS_DEF) {
 #endif
 
 	bfill.emit_p(PSTR("{\"monitors\": ["));
-	uint8_t idx = 0;
-	uint8_t count = monitor_count();
 	bool first = true;
 
-	while (idx < count) {
-		Monitor_t *mon = monitor_by_idx(idx++);
+	for (auto it = monitor_iterate_begin(); ; ) {
+		Monitor_t *mon = monitor_iterate_next(it);
+		if (!mon) break;
+		
 		if (nr > 0 && mon->nr != nr)
 			continue;
 		if (prog >= 0 && mon->prog != (uint)prog)
@@ -3461,78 +3507,87 @@ void server_sensorprog_config(OTF_PARAMS_DEF) {
 #endif
 
 	//DEBUG_PRINTLN(F("server_sensorprog_config"));
-	//uint nr, uint type, uint sensor, uint prog, double factor1, double factor2, double min, double max
+	
+	// Build JSON object from request parameters
+	ArduinoJson::JsonDocument doc;
+	ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
 		handle_return(HTML_DATA_MISSING);
-	uint nr = strtoul(tmp_buffer, NULL, 0); // Adjustment nr
+	uint nr = strtoul(tmp_buffer, NULL, 0);
 	if (nr == 0)
 		handle_return(HTML_DATA_MISSING);
+	obj["nr"] = nr;
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("type"), true))
 		handle_return(HTML_DATA_MISSING);
-	uint type = strtoul(tmp_buffer, NULL, 0); // Adjustment type
+	uint type = strtoul(tmp_buffer, NULL, 0);
+	obj["type"] = type;
 
 	if (type == 0) {
+		// Delete request
 		prog_adjust_delete(nr);
 		handle_return(HTML_SUCCESS);
 	}
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("sensor"), true))
 		handle_return(HTML_DATA_MISSING);
-	uint sensor = strtoul(tmp_buffer, NULL, 0); // Sensor nr
+	obj["sensor"] = strtoul(tmp_buffer, NULL, 0);
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("prog"), true))
 		handle_return(HTML_DATA_MISSING);
-	uint prog = strtoul(tmp_buffer, NULL, 0); // Program nr
+	obj["prog"] = strtoul(tmp_buffer, NULL, 0);
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("factor1"), true))
 		handle_return(HTML_DATA_MISSING);
-	double factor1 = atof(tmp_buffer); // Factor 1
+	obj["factor1"] = atof(tmp_buffer);
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("factor2"), true))
 		handle_return(HTML_DATA_MISSING);
-	double factor2 = atof(tmp_buffer); // Factor 2
+	obj["factor2"] = atof(tmp_buffer);
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("min"), true))
 		handle_return(HTML_DATA_MISSING);
-	double min = atof(tmp_buffer); // Min value
+	obj["min"] = atof(tmp_buffer);
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("max"), true))
 		handle_return(HTML_DATA_MISSING);
-	double max = atof(tmp_buffer); // Max value
+	obj["max"] = atof(tmp_buffer);
 
-	char name[30] = {0};
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("name"), true))
-		strncpy(name, tmp_buffer, sizeof(name)-1);
+		obj["name"] = tmp_buffer;
 
-	int ret = prog_adjust_define(nr, type, sensor, prog, factor1, factor2, min, max, name);
+	int ret = prog_adjust_define(obj);
 	ret = ret >= HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
 }
 
 void progconfig_json(ProgSensorAdjust_t *p, double current) {
-	bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"sensor\":$D,\"prog\":$D,\"factor1\":$E,\"factor2\":$E,\"min\":$E,\"max\":$E,\"name\":\"$S\",\"current\":$E}"),
-		p->nr,
-		p->type,
-		p->sensor,
-		p->prog,
-		p->factor1,
-		p->factor2,
-		p->min,
-		p->max,
-		(p->name[0] < 0x20 || p->name[0] > 0xEE || p->name[0] == 0x90) ? "" : p->name,
-		current);
+	ArduinoJson::JsonDocument doc;
+	ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+	
+	// Use toJson() method to serialize all fields
+	p->toJson(obj);
+	
+	// Add calculated current value
+	obj["current"] = current;
+	
+	// Serialize to string and emit
+	String jsonStr;
+	ArduinoJson::serializeJson(doc, jsonStr);
+	bfill.emit_p(PSTR("$S"), jsonStr.c_str());
 }
 
 void progconfig_json() {
-	uint count = prog_adjust_count();
 	bool first = true;
-	for (uint i = 0; i < count; i++) {
-		ProgSensorAdjust_t *p = prog_adjust_by_idx(i);
+	for (auto it = prog_adjust_iterate_begin(); ; ) {
+		ProgSensorAdjust_t *p = prog_adjust_iterate_next(it);
+		if (!p) break;
+		
 		double current = calc_sensor_watering_by_nr(p->nr);
 
-		if (first) first = false; else bfill.emit_p(PSTR(","));
+		if (!first) bfill.emit_p(PSTR(","));
+		first = false;
 
 		progconfig_json(p, current);
 	}
@@ -3573,11 +3628,11 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	uint n = prog_adjust_count();
-	uint idx = 0;
 	uint count = 0;
-	while (idx < n) {
-		ProgSensorAdjust_t *p = prog_adjust_by_idx(idx++);
+	for (auto it = prog_adjust_iterate_begin(); ; ) {
+		ProgSensorAdjust_t *p = prog_adjust_iterate_next(it);
+		if (!p) break;
+		
 		if (nr > 0 && p->nr != nr)
 			continue;
 		if (prog >= 0 && p->prog != (uint)prog)
@@ -3590,11 +3645,12 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("{\"count\": $D,"), count);
 
 	bfill.emit_p(PSTR("\"progAdjust\": ["));
-	idx = 0;
-	count = 0;
+	bool first = true;
 
-	while (idx < n) {
-		ProgSensorAdjust_t *p = prog_adjust_by_idx(idx++);
+	for (auto it = prog_adjust_iterate_begin(); ; ) {
+		ProgSensorAdjust_t *p = prog_adjust_iterate_next(it);
+		if (!p) break;
+		
 		if (nr > 0 && p->nr != nr)
 			continue;
 		if (prog >= 0 && p->prog != (uint)prog)
@@ -3604,8 +3660,9 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 
 		double current = calc_sensor_watering_by_nr(p->nr);
 
-		if (count++ > 0)
+		if (!first)
 			bfill.emit_p(PSTR(","));
+		first = false;
 		progconfig_json(p, current);
 		send_packet(OTF_PARAMS);
 	}
@@ -3909,7 +3966,7 @@ void server_sensorprog_calc(OTF_PARAMS_DEF) {
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("sensor"), true))
 		handle_return(HTML_DATA_MISSING);
 	progAdj.sensor = strtoul(tmp_buffer, NULL, 0);
-	Sensor_t *sensor = sensor_by_nr(progAdj.sensor); // Sensor nr
+	SensorBase *sensor = sensor_by_nr(progAdj.sensor); // Sensor nr
 	if (!sensor)
 		handle_return(HTML_DATA_MISSING);
 	

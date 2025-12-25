@@ -26,13 +26,35 @@
 #ifdef ADS1115
 
 #include "sensors.h"
+#include "Sensor.hpp"
 
-/*
- * @brief     Read sensor function
- * @param[in] Sensor
- * @note      
+/**
+ * @brief ADS1115 16-bit ADC sensor for OSPI platform
+ * @note Provides high-precision analog readings via I2C interface
  */
-int read_sensor_ospi(Sensor_t *sensor, ulong time);
+class OspiAds1115Sensor : public SensorBase {
+public:
+    /**
+     * @brief Constructor
+     * @param type Sensor type identifier
+     */
+    explicit OspiAds1115Sensor(uint type) : SensorBase(type) {}
+    virtual ~OspiAds1115Sensor() {}
+    
+    /**
+     * @brief Read analog value from ADS1115 ADC
+     * @param time Current timestamp
+     * @return HTTP_RQT_SUCCESS on successful read, HTTP_RQT_NOT_RECEIVED on error
+     * @note Reads voltage from specified channel and applies conversion formula
+     */
+    virtual int read(unsigned long time) override;
+    
+    /**
+     * @brief Get measurement unit identifier
+     * @return Unit ID based on sensor configuration
+     */
+    virtual unsigned char getUnitId() const override;
+};
 
 #endif // ADS1115
 

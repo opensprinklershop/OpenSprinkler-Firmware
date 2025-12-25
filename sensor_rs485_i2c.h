@@ -24,15 +24,98 @@
 #define _SENSOR_RS485_I2C_H
 
 #include "sensors.h"
+#include "Sensor.hpp"
 
 #if defined(ESP8266) || defined(ESP32)
 
 #define ASB_I2C_RS485_ADDR 0x48
 
+/**
+ * @brief Initialize I2C-RS485 bridge subsystem
+ * @note Sets up I2C communication with RS485 bridge device
+ */
 void sensor_rs485_i2c_init();
-int read_sensor_i2c_rs485(Sensor_t *sensor);
-int set_sensor_address_i2c_rs485(Sensor_t *sensor, uint8_t new_address);
-boolean send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, bool isbit);
+
+/**
+ * @brief Send Modbus command via I2C-RS485 bridge
+ * @param address Modbus device address (1-247)
+ * @param reg Register address to read/write
+ * @param data Data value or function code
+ * @param isbit True for bit operations, false for register operations
+ * @return Command result code
+ * @note Low-level function, use RS485I2CSensor::sendCommand instead
+ */
+int send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, bool isbit);
+
+// C++ wrapper
+/**
+ * @brief RS485 sensor over I2C bridge (for ESP platforms)
+ * @note Uses I2C-to-RS485 converter at address ASB_I2C_RS485_ADDR (0x48)
+ */
+class RS485I2CSensor : public SensorBase {
+public:
+  RS485Flags_t rs485_flags = {};  // RS485 specific flags
+  uint8_t rs485_code = 0;         // RS485 function code
+  uint16_t rs485_reg = 0;         // RS485 register address
+
+  /**
+   * @brief Constructor
+   * @param type Sensor type identifier
+   */
+  explicit RS485I2CSensor(uint type) : SensorBase(type) {}
+  virtual ~RS485I2CSensor() {}
+  
+  /**
+   * @brief Read sensor value via I2C-RS485 bridge
+   * @param time Current timestamp
+   * @return HTTP_RQT_SUCCESS on successful read, HTTP_RQT_NOT_RECEIVED on error
+   * @note Handles asynchronous reading via repeat_read mechanism
+   */
+  virtual int read(unsigned long time) override;
+  
+  /**
+   * @brief Set RS485 device address via I2C command
+   * @param newAddress New Modbus address to assign to the device
+   * @return HTTP_RQT_SUCCESS on success, error code on failure
+   * @note Sends special command to change device address permanently
+   */
+  virtual int setAddress(uint8_t newAddress) override;
+
+  /**
+   * @brief Serialize sensor configuration to JSON
+   * @param obj JSON object to populate with RS485 flags, code, and register
+   */
+  virtual void toJson(ArduinoJson::JsonObject obj) const override;
+  
+  /**
+   * @brief Deserialize sensor configuration from JSON
+   * @param obj JSON object containing RS485 configuration
+   */
+  virtual void fromJson(ArduinoJson::JsonVariantConst obj) override;
+  
+  /**
+   * @brief Get measurement unit identifier
+   * @return Unit ID based on sensor type
+   */
+  virtual unsigned char getUnitId() const override;
+  
+  /**
+   * @brief Emit sensor data as JSON to BufferFiller
+   * @param bfill BufferFiller object for output
+   */
+  virtual void emitJson(BufferFiller& bfill) const override;
+
+  // Class-level helpers moved from global functions
+  /**
+   * @brief Send Modbus command via I2C-RS485 bridge
+   * @param address Modbus device address (1-247)
+   * @param reg Register address to read/write
+   * @param data Data value or function code
+   * @param isbit True for bit operations, false for register operations
+   * @return true on success, false on communication failure
+   */
+  static int sendCommand(uint8_t address, uint16_t reg, uint16_t data, bool isbit);
+};
 
 #endif
 

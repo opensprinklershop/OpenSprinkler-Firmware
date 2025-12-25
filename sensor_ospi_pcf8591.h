@@ -26,13 +26,35 @@
 #ifdef PCF8591
 
 #include "sensors.h"
+#include "Sensor.hpp"
 
-/*
- * @brief     Read sensor function
- * @param[in] Sensor
- * @note      
+/**
+ * @brief PCF8591 8-bit ADC sensor for OSPI platform
+ * @note Basic analog-to-digital converter with I2C interface
  */
-int read_sensor_ospi(Sensor_t *sensor, ulong time);
+class OspiPcf8591Sensor : public SensorBase {
+public:
+    /**
+     * @brief Constructor
+     * @param type Sensor type identifier
+     */
+    explicit OspiPcf8591Sensor(uint type) : SensorBase(type) {}
+    virtual ~OspiPcf8591Sensor() {}
+    
+    /**
+     * @brief Read analog value from PCF8591 ADC
+     * @param time Current timestamp
+     * @return HTTP_RQT_SUCCESS on successful read, HTTP_RQT_NOT_RECEIVED on error
+     * @note Reads 8-bit value from specified channel
+     */
+    virtual int read(unsigned long time) override;
+    
+    /**
+     * @brief Get measurement unit identifier
+     * @return Unit ID based on sensor configuration
+     */
+    virtual unsigned char getUnitId() const override;
+};
 
 #endif // PCF8591
 

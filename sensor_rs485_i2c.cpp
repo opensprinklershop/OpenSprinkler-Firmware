@@ -22,6 +22,7 @@
 #include "sensor_rs485_i2c.h"
 #include "sensors.h"
 #include "OpenSprinkler.h"
+#include "opensprinkler_server.h"
 
 #if defined(ESP8266) || defined(ESP32)
 
@@ -182,38 +183,36 @@ void init_SC16IS752(uint32_t baudrate, uint8_t use2stopbits, uint parity) {
  * @param sensor
  * @return int
  */
-int read_sensor_i2c_rs485(Sensor_t *sensor) {
+int RS485I2CSensor::read(unsigned long /*time*/) {
   if (!(get_asb_detected_boards() & ASB_I2C_RS485)) 
     return HTTP_RQT_NOT_RECEIVED;
 
-  if (active_i2c_RS485 > 0 && active_i2c_RS485 != sensor->nr) {
-    sensor->repeat_read = 1;
-    //DEBUG_PRINT(F("cant' read, allocated by sensor "));
-    //DEBUG_PRINTLN(active_i2c_RS485);
-    Sensor_t *t = sensor_by_nr(active_i2c_RS485);
+  if (active_i2c_RS485 > 0 && active_i2c_RS485 != (int)nr) {
+    repeat_read = 1;
+    SensorBase *t = sensor_by_nr(active_i2c_RS485);
     if (!t || !t->flags.enable)
       active_i2c_RS485 = 0; //breakout
     if (i2c_pending == 0)
-      i2c_pending = sensor->nr;
+      i2c_pending = nr;
     return HTTP_RQT_NOT_RECEIVED;
   }
 
-  DEBUG_PRINTF(F("read_sensor_i2c_rs485: %d %s m=%d\n"), sensor->nr, sensor->name, active_i2c_RS485_mode);
+  DEBUG_PRINTF(F("read_sensor_i2c_rs485: %d %s m=%d\n"), nr, name, active_i2c_RS485_mode);
 
-  if (active_i2c_RS485 != sensor->nr) {  
-    active_i2c_RS485 = sensor->nr;
-    if (i2c_pending != sensor->nr)
+  if (active_i2c_RS485 != (int)nr) {  
+    active_i2c_RS485 = nr;
+    if (i2c_pending != (int)nr)
       active_i2c_RS485_mode = 0;
     i2c_pending = 0;
   } 
-  bool isGeneric = sensor->type == SENSOR_RS485;
-  
+  bool isGeneric = type == SENSOR_RS485;
+
   //Init chip
   if (active_i2c_RS485_mode == 0) { // Init SC16IS752 for RS485:
     DEBUG_PRINTLN(F("i2c_rs485: INIT"));
-    uint32_t baudrate = isGeneric ? generic_baud(sensor->rs485_flags.speed) : 9600;
-    uint8_t stopbits = isGeneric ? sensor->rs485_flags.stopbits : 0; // 0=1 stopbit
-    uint8_t parity = isGeneric ? sensor->rs485_flags.parity : 1; // 1=even parity default for truebner
+    uint32_t baudrate = isGeneric ? generic_baud(rs485_flags.speed) : 9600;
+    uint8_t stopbits = isGeneric ? rs485_flags.stopbits : 0; // 0=1 stopbit
+    uint8_t parity = isGeneric ? rs485_flags.parity : 1; // 1=even parity default for truebner
     init_SC16IS752(baudrate, stopbits, parity);
     active_i2c_RS485_mode = 1;
   } 
@@ -225,21 +224,21 @@ int read_sensor_i2c_rs485(Sensor_t *sensor) {
     writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
 
     active_i2c_RS485_mode = 2;
-    sensor->repeat_read = 1;
+    repeat_read = 1;
     return HTTP_RQT_NOT_RECEIVED;
   }
 
-  bool isTemp = sensor->type == SENSOR_SMT100_TEMP || sensor->type == SENSOR_TH100_TEMP;
-  bool isMois = sensor->type == SENSOR_SMT100_MOIS || sensor->type == SENSOR_TH100_MOIS;
-  uint8_t code = isGeneric ? sensor->rs485_code : 0x03; // Read Holding Registers
-  uint16_t reg = isGeneric ? sensor->rs485_reg : isTemp ? 0x00 : isMois ? 0x01 : 0x02;
-  uint16_t reg_count = isGeneric ? datatype2length(sensor->rs485_flags.datatype) : 0x01;
+  bool isTemp = type == SENSOR_SMT100_TEMP || type == SENSOR_TH100_TEMP;
+  bool isMois = type == SENSOR_SMT100_MOIS || type == SENSOR_TH100_MOIS;
+  uint8_t code = isGeneric ? rs485_code : 0x03; // Read Holding Registers
+  uint16_t reg = isGeneric ? rs485_reg : isTemp ? 0x00 : isMois ? 0x01 : 0x02;
+  uint16_t reg_count = isGeneric ? datatype2length(rs485_flags.datatype) : 0x01;
 
   // Send Request
   if (active_i2c_RS485_mode == 2) {
     DEBUG_PRINT(F("i2c_rs485: Send Request:"));
     uint8_t request[8];
-    request[0] = sensor->id;
+    request[0] = id;
     request[1] = code; // Function Code
     request[2] = highByte(reg); // Register Address
     request[3] = lowByte(reg); // Register Address
@@ -255,7 +254,7 @@ int read_sensor_i2c_rs485(Sensor_t *sensor) {
     writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
     UART_sendBytes(request, 8);
     active_i2c_RS485_mode = 3;
-    sensor->repeat_read = 1;
+    repeat_read = 1;
     return HTTP_RQT_NOT_RECEIVED;
   }
 
@@ -278,14 +277,14 @@ int read_sensor_i2c_rs485(Sensor_t *sensor) {
     // Byte 5: CRC Low Byte
     // Byte 6: CRC High Byte
     uint16_t crc = len == expected_length?CRC16(response, expected_length-2):0xFFFF;
-    if (len != expected_length || response[0] != sensor->id || response[1] != code || response[2] != reg_count*2 ||
+    if (len != expected_length || response[0] != id || response[1] != code || response[2] != reg_count*2 ||
         response[expected_length-2] != lowByte(crc) || response[expected_length-1] != highByte(crc)) {
           
       DEBUG_PRINTLN(F("read_sensor_i2c_rs485: invalid response"));
       DEBUG_PRINT(F("len="));
       DEBUG_PRINTLN(len);
-      sensor->repeat_read = 0;
-      sensor->flags.data_ok = false;
+      repeat_read = 0;
+      flags.data_ok = false;
       active_i2c_RS485 = 0;
       active_i2c_RS485_mode = 0;
       set_RS485_Mode(false);
@@ -295,26 +294,26 @@ int read_sensor_i2c_rs485(Sensor_t *sensor) {
     //Extract Data
     if (!isGeneric) { // Truebner Sensor Data Extraction
       uint16_t data = (response[3] << 8) | response[4];
-      DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n", sensor->id,
+      DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n", id,
                    data, response[3], response[4]);
       double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
-      sensor->last_native_data = data;
-      sensor->last_data = value;
-      sensor->flags.data_ok = true;
+      last_native_data = data;
+      last_data = value;
+      flags.data_ok = true;
     } else {       // Generic Sensor Data Extraction
       uint64_t data = 0;
       for (uint8_t i = 0; i < reg_count*2; i++) {
         data <<= 8;
-        if (sensor->rs485_flags.swapped) {
+        if (rs485_flags.swapped) {
           data |= response[3 + ((reg_count*2 -1) - i)];
         } else {
           data |= response[3 + i];
         }
       }
-      DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %llx\n", sensor->id, data);
-      sensor->last_native_data = data; // raw data - only 32bit
+      DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %llx\n", id, data);
+      last_native_data = data; // raw data - only 32bit
       double value = 0.0;
-      switch (sensor->rs485_flags.datatype) {
+      switch (rs485_flags.datatype) {
         case RS485FLAGS_DATATYPE_UINT16:
           value = (uint16_t)data;
           break;
@@ -345,18 +344,18 @@ int read_sensor_i2c_rs485(Sensor_t *sensor) {
           value = static_cast<double>(static_cast<uint16_t>(data));
           break;
       }
-      if (sensor->factor && sensor->divider)
-        value *= (double)sensor->factor / (double)sensor->divider;
-      else if (sensor->divider)
-        value /= sensor->divider;
-      else if (sensor->factor)
-        value *= sensor->factor;
-      sensor->last_native_data = data;
-      sensor->last_data = value;
+      if (factor && divider)
+        value *= (double)factor / (double)divider;
+      else if (divider)
+        value /= divider;
+      else if (factor)
+        value *= factor;
+      last_native_data = data;
+      last_data = value;
     }
-    DEBUG_PRINTF(F("Result = %f %s\n"), sensor->last_data, getSensorUnit(sensor));
-    sensor->flags.data_ok = true;
-    sensor->repeat_read = 0;
+    DEBUG_PRINTF(F("Result = %f %s\n"), last_data, getSensorUnit(this));
+    flags.data_ok = true;
+    repeat_read = 0;
     active_i2c_RS485 = 0;
     if (i2c_pending) {
       active_i2c_RS485_mode = 2;
@@ -368,10 +367,10 @@ int read_sensor_i2c_rs485(Sensor_t *sensor) {
   }
 
   // Timeout
-  sensor->repeat_read++;
-  if (sensor->repeat_read > 4) {  // timeout
-    sensor->repeat_read = 0;
-    sensor->flags.data_ok = false;
+  repeat_read++;
+  if (repeat_read > 4) {  // timeout
+    repeat_read = 0;
+    flags.data_ok = false;
     active_i2c_RS485 = 0;
     active_i2c_RS485_mode = 0;
     set_RS485_Mode(false);
@@ -381,20 +380,18 @@ int read_sensor_i2c_rs485(Sensor_t *sensor) {
   return HTTP_RQT_NOT_RECEIVED;
 }
 
-int set_sensor_address_i2c_rs485(Sensor_t *sensor, uint8_t new_address) {
+int RS485I2CSensor::setAddress(uint8_t new_address) {
   if (!(get_asb_detected_boards() & ASB_I2C_RS485)) 
     return HTTP_RQT_NOT_RECEIVED;
 
-  if (!sensor || new_address == 0 || new_address > 247)
+  if (new_address == 0 || new_address > 247)
     return HTTP_RQT_CONNECT_ERR;
 
-  DEBUG_PRINTF(F("set_sensor_address_i2c_rs485: %d %s\n"), sensor->nr, sensor->name)
+  DEBUG_PRINTF(F("set_sensor_address_i2c_rs485: %d %s\n"), nr, name)
   
-  if (active_i2c_RS485 > 0 && active_i2c_RS485 != sensor->nr) {
-    sensor->repeat_read = 1;
-    //DEBUG_PRINT(F("cant' send, allocated by sensor "));
-    //DEBUG_PRINTLN(active_i2c_RS485);
-    Sensor_t *t = sensor_by_nr(active_i2c_RS485);
+  if (active_i2c_RS485 > 0 && active_i2c_RS485 != (int)nr) {
+    repeat_read = 1;
+    SensorBase *t = sensor_by_nr(active_i2c_RS485);
     if (!t || !t->flags.enable)
       active_i2c_RS485 = 0; //breakout
     return HTTP_RQT_NOT_RECEIVED;
@@ -437,7 +434,8 @@ int set_sensor_address_i2c_rs485(Sensor_t *sensor, uint8_t new_address) {
   return HTTP_RQT_SUCCESS;
 }
 
-boolean send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
+// class-level helper
+int RS485I2CSensor::sendCommand(uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
   if (!(get_asb_detected_boards() & ASB_I2C_RS485)) 
     return HTTP_RQT_NOT_RECEIVED;
 
@@ -446,7 +444,7 @@ boolean send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, boo
   if (active_i2c_RS485 > 0) {
     DEBUG_PRINT(F("cant' send, allocated by sensor "));
     DEBUG_PRINTLN(active_i2c_RS485);
-    Sensor_t *t = sensor_by_nr(active_i2c_RS485);
+    SensorBase *t = sensor_by_nr(active_i2c_RS485);
     if (!t || !t->flags.enable)
       active_i2c_RS485 = 0; //breakout
     return HTTP_RQT_NOT_RECEIVED;
@@ -465,17 +463,17 @@ boolean send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, boo
   request[0] = address;  // Modbus ID
   request[1] = isbit?0x05:0x06;        // Write Registers
   request[2] = reg >> 8;  // high byte of register address
-  request[3] = reg && 0xFF;  // low byte  uint16_t crc = CRC16(request, 6);
+  request[3] = reg & 0xFF;  // low byte
   if (isbit) {
     request[4] = data?0xFF:0x00;
     request[5] = 0x00;
   } else {
     request[4] = data >> 8;  // high byte
-    request[5] = data && 0xFF;  // low byte
+    request[5] = data & 0xFF;  // low byte
   }
   uint16_t crc = CRC16(request, 6);
-  request[4] = lowByte(crc); // CRC Low Byte
-  request[5] = highByte(crc); // CRC High Byte
+  request[6] = lowByte(crc); // CRC Low Byte
+  request[7] = highByte(crc); // CRC High Byte
   for (int i = 0; i < 8; i++) {
     DEBUG_PRINTF(F(" %02x"), request[i]);
   }
@@ -491,6 +489,53 @@ boolean send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, boo
   DEBUG_PRINTLN();
   
   return HTTP_RQT_SUCCESS;
+}
+
+void RS485I2CSensor::toJson(ArduinoJson::JsonObject obj) const {
+  SensorBase::toJson(obj);
+  
+  // RS485-specific fields
+  uint16_t rs = 0;
+  rs |= (rs485_flags.parity & 0x3) << 0;
+  rs |= (rs485_flags.stopbits & 0x1) << 2;
+  rs |= (rs485_flags.speed & 0x7) << 3;
+  rs |= (rs485_flags.swapped & 0x1) << 6;
+  rs |= (rs485_flags.datatype & 0x7) << 7;
+  obj["rs485flags"] = rs;
+  obj["rs485code"] = rs485_code;
+  obj["rs485reg"] = rs485_reg;
+}
+
+void RS485I2CSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
+  SensorBase::fromJson(obj);
+  
+  // RS485-specific fields
+  if (obj.containsKey("rs485flags")) {
+    uint16_t rs = obj["rs485flags"];
+    rs485_flags.parity = (rs >> 0) & 0x3;
+    rs485_flags.stopbits = (rs >> 2) & 0x1;
+    rs485_flags.speed = (rs >> 3) & 0x7;
+    rs485_flags.swapped = (rs >> 6) & 0x1;
+    rs485_flags.datatype = (rs >> 7) & 0x7;
+  }
+  if (obj.containsKey("rs485code")) rs485_code = obj["rs485code"];
+  if (obj.containsKey("rs485reg")) rs485_reg = obj["rs485reg"];
+}
+
+void RS485I2CSensor::emitJson(BufferFiller& bfill) const {
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+  toJson(obj);
+  
+  // Serialize to string and output
+  String jsonStr;
+  ArduinoJson::serializeJson(doc, jsonStr);
+  bfill.emit_p(PSTR("$S"), jsonStr.c_str());
+}
+
+// Backwards-compatible wrapper
+int send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
+  return RS485I2CSensor::sendCommand(address, reg, data, isbit);
 }
 
 #endif

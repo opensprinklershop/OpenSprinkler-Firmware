@@ -11,16 +11,7 @@
     #define strdup _strdup
 #endif
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#include <winhttp.h>
-#ifndef min
-    #define min(x,y) ((x) < (y) ? (x) : (y))
-#endif
-#define __WINDOWS__ 1
-#endif
+/* Removed Windows-specific definitions for Linux target */
 
 #if __linux__ && !__ANDROID__
 #define __LINUX__ 1

@@ -23,11 +23,43 @@
 #include "sensors.h"
 #include "mqtt.h"
 #include "OpenSprinkler.h"
+#include "opensprinkler_server.h"
 
 extern OpenSprinkler os;
 
 void sensor_mqtt_init() {
-	os.mqtt.setCallback(2, sensor_mqtt_callback);
+    os.mqtt.setCallback(2, MqttSensor::callback);
+}
+
+void MqttSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
+	SensorBase::fromJson(obj);
+	    // MQTT-specific fields
+    if (obj.containsKey("url")) {
+      const char *u = obj["url"].as<const char*>();
+      if (u) strncpy(url, u, sizeof(url)-1);
+    }
+    if (obj.containsKey("topic")) {
+      const char *t = obj["topic"].as<const char*>();
+      if (t) {
+        strncpy(topic, t, sizeof(topic)-1);
+        // Subscribe to MQTT topic when it's set
+        if (topic[0]) {
+          sensor_mqtt_subscribe(nr, SENSORURL_TYPE_TOPIC, topic);
+        }
+      }
+    }
+    if (obj.containsKey("filter")) {
+      const char *f = obj["filter"].as<const char*>();
+      if (f) strncpy(filter, f, sizeof(filter)-1);
+    }
+}
+
+void MqttSensor::toJson(ArduinoJson::JsonObject obj) const {
+	SensorBase::toJson(obj);
+		// MQTT-specific fields
+	if (url[0]) obj["url"] = url;
+	if (topic[0]) obj["topic"] = topic;
+	if (filter[0]) obj["filter"] = filter;
 }
 /**
  * @brief 
@@ -37,33 +69,36 @@ void sensor_mqtt_init() {
  * @return true 
  * @return false 
  */
-bool mqtt_filter_matches(char* mtopic, char* pattern) {
-	
-	while (pattern && mtopic) {
-		char ch1 = *mtopic++;
-		char ch2 = *pattern++;
-		if (ch2 == '+') { //level ok up to "/"
-			while (mtopic[0]) {
-				if (ch1 == '/')
-					break;
-				ch1 = *mtopic++;
-			}
-		} else if (ch2 == '#') { //multilevel
-			char *p = strpbrk(pattern, "#+");
-			if (!p) return true;
-			if (strncmp(pattern, mtopic, p-pattern) ==0) {
-				mtopic = mtopic + (p-pattern);
-				pattern = p;
-			}
-		} 
-		if (ch1 != ch2) 
-			return false;
-		else if (ch1 == 0 && ch2 == 0)
-			return true;
-		else if (ch1 == 0 || ch2 == 0)
-			return false;
-	}
-	return true;
+bool MqttSensor::filterMatches(const char* mtopic, const char* pattern) {
+    if (!mtopic || !pattern) return false;
+
+    const char *mp = mtopic;
+    const char *pp = pattern;
+    while (*pp && *mp) {
+        char ch1 = *mp++;
+        char ch2 = *pp++;
+        if (ch2 == '+') { //level ok up to "/"
+            while (*mp) {
+                if (ch1 == '/')
+                    break;
+                ch1 = *mp++;
+            }
+        } else if (ch2 == '#') { //multilevel
+            const char *p = strpbrk(pp, "#+");
+            if (!p) return true;
+            if (strncmp(pp, mp, p-pp) == 0) {
+                mp = mp + (p-pp);
+                pp = p;
+            }
+        }
+        if (ch1 != ch2)
+            return false;
+        else if (ch1 == 0 && ch2 == 0)
+            return true;
+        else if (ch1 == 0 || ch2 == 0)
+            return false;
+    }
+    return true;
 }
 
 /**
@@ -71,11 +106,11 @@ bool mqtt_filter_matches(char* mtopic, char* pattern) {
  * 
  */
 #if defined(ARDUINO)
-void sensor_mqtt_callback(char* mtopic, byte* payload, unsigned int length) {
+void MqttSensor::callback(char* mtopic, byte* payload, unsigned int length) {
 #else
-static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
+void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
     DEBUG_PRINTLN("sensor_mqtt_callback0");
-	char* mtopic = msg->topic;
+	char* mtopic = (char*)msg->topic;
 	byte* payload = (byte*)msg->payload;
 	unsigned int length = msg->payloadlen;
 #endif
@@ -84,18 +119,23 @@ static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct
 
 	if (!mtopic || !payload) return;
 	time_t now = os.now_tz();
-	Sensor_t *sensor = getSensors();
+	SensorIterator it = sensors_iterate_begin();
+	SensorBase *sensor = sensors_iterate_next(it);
 	while (sensor) {
 		if (sensor->type == SENSOR_MQTT && sensor->last_read != now) {
-			char *topic = SensorUrl_get(sensor->nr, SENSORURL_TYPE_TOPIC);
+			// Use toJson to get MQTT-specific fields
+			ArduinoJson::JsonDocument doc;
+			ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+			sensor->toJson(obj);
+			const char* topic = obj["topic"] | "";
+			const char* filter = obj["filter"] | "";
+			
 			DEBUG_PRINT("mtopic: "); DEBUG_PRINTLN(mtopic);
 			DEBUG_PRINT("topic:  "); DEBUG_PRINTLN(topic);
 			
-			if (topic && mqtt_filter_matches(mtopic, topic)) {
-				DEBUG_PRINTLN("topic match!");
-				char *jsonFilter =  SensorUrl_get(sensor->nr, SENSORURL_TYPE_FILTER);
+			if (topic[0] && MqttSensor::filterMatches(mtopic, topic)) {
 				double value = 0;
-				int ok = findValue((char*)payload, length, jsonFilter, value);
+				int ok = findValue((char*)payload, length, filter[0] ? filter : NULL, value);
 				if (ok && value >= -10000 && value <= 10000 && (value != sensor->last_data || !sensor->flags.data_ok || now-sensor->last_read > 6000)) {
 					sensor->last_data = value;
 					sensor->flags.data_ok = true;
@@ -106,37 +146,37 @@ static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct
 				}
 			}
 		}
-		sensor = sensor->next;
+		sensor = sensors_iterate_next(it);
 	}
     DEBUG_PRINTLN("sensor_mqtt_callback3");
 }
 
-int read_sensor_mqtt(Sensor_t *sensor) {
+int MqttSensor::read(unsigned long time) {
 	if (!os.mqtt.enabled() || !os.mqtt.connected()) {
-		sensor->flags.data_ok = false;
-		sensor->mqtt_init = false;
-	} else if (sensor->mqtt_push) {
+		flags.data_ok = false;
+		mqtt_init = false;
+	} else if (mqtt_push) {
 		DEBUG_PRINTLN("read_sensor_mqtt: push data");
-		sensor->mqtt_push = false;
-		sensor->repeat_read = 0;
+		mqtt_push = false;
+		repeat_read = 0;
 		return HTTP_RQT_SUCCESS; //Adds also data to the log + push data
 	} else {
-		sensor->repeat_read = 0;
+		repeat_read = 0;
+		last_read = time;
         DEBUG_PRINT("read_sensor_mqtt1: ");
-		DEBUG_PRINTLN(sensor->name);
-		char *topic = SensorUrl_get(sensor->nr, SENSORURL_TYPE_TOPIC);
-		if (topic && topic[0]) {
+		DEBUG_PRINTLN(name);
+		if (topic[0]) {
             DEBUG_PRINT("subscribe: ");
             DEBUG_PRINTLN(topic);
 			os.mqtt.subscribe(topic);
-			sensor->mqtt_init = true;
+			mqtt_init = true;
 		}
 	}
 	return HTTP_RQT_NOT_RECEIVED;
 }
 
 void sensor_mqtt_subscribe(uint nr, uint type, const char *urlstr) {
-    Sensor_t* sensor = sensor_by_nr(nr);
+    SensorBase* sensor = sensor_by_nr(nr);
     if (urlstr && urlstr[0] && type == SENSORURL_TYPE_TOPIC && sensor && sensor->type == SENSOR_MQTT) {
 	    DEBUG_PRINT("sensor_mqtt_subscribe1: ");
 		DEBUG_PRINTLN(sensor->name);
@@ -148,8 +188,19 @@ void sensor_mqtt_subscribe(uint nr, uint type, const char *urlstr) {
     }
 }
 
+void MqttSensor::emitJson(BufferFiller& bfill) const {
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+  toJson(obj);
+  
+  // Serialize to string and output
+  String jsonStr;
+  ArduinoJson::serializeJson(doc, jsonStr);
+  bfill.emit_p(PSTR("$S"), jsonStr.c_str());
+}
+
 void sensor_mqtt_unsubscribe(uint nr, uint type, const char *urlstr) {
-    Sensor_t* sensor = sensor_by_nr(nr);
+    SensorBase* sensor = sensor_by_nr(nr);
     if (urlstr && urlstr[0] && type == SENSORURL_TYPE_TOPIC && sensor && sensor->type == SENSOR_MQTT) {
 	    DEBUG_PRINT("sensor_mqtt_unsubscribe1: ");
 		DEBUG_PRINTLN(sensor->name);

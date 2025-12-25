@@ -30,30 +30,57 @@ using namespace ArduinoJson;
 #define FYTA_URL_USER_PLANTF "https://web.fyta.de/api/user-plant/%lu"
 #endif
 
+/**
+ * @brief Check and validate FYTA configuration options
+ * @note Ensures FYTA credentials are properly configured before API access
+ */
 void fyta_check_opts();
 
 /**
  * @brief FYTA Public API Client
- * https://fyta-io.notion.site/FYTA-Public-API-d2f4c30306f74504924c9a40402a3afd
- * 
+ * @note API documentation: https://fyta-io.notion.site/FYTA-Public-API-d2f4c30306f74504924c9a40402a3afd
+ * @note ESP8266 uses HTTP due to memory constraints, ESP32/OSPI use HTTPS
  */
 class FytaApi {
 public:
+    /**
+     * @brief Constructor with authentication credentials
+     * @param auth Authentication string (email:password format)
+     */
     FytaApi(const String& auth) {
             init();
             authenticate(auth);
         }
+    /**
+     * @brief Destructor - cleans up HTTP client resources
+     */
     ~FytaApi() {
 #if defined(ESP8266) || defined(ESP32)
         http.end();
 #endif
     }
 
-    // Authenticate and store token
+    /**
+     * @brief Authenticate with FYTA API and store access token
+     * @param auth Authentication string in format "email:password"
+     * @return true if authentication successful, false on failure
+     * @note Stores JWT token in authToken member for subsequent API calls
+     */
     bool authenticate(const String &auth);
-    // Query sensor values
+    
+    /**
+     * @brief Query sensor data for a specific plant
+     * @param plantId FYTA plant ID
+     * @param doc JSON document to populate with sensor data
+     * @return true if data retrieved successfully, false on error
+     */
     bool getSensorData(ulong plantId, JsonDocument& doc);
-    // Get plant list
+    
+    /**
+     * @brief Get list of all plants associated with account
+     * @param doc JSON document to populate with plant list
+     * @return true if list retrieved successfully, false on error
+     */
     bool getPlantList(JsonDocument& doc);
 #if defined(ESP8266) || defined(ESP32) 
     String authToken;
@@ -62,6 +89,10 @@ public:
 #endif
     
 private:
+    /**
+     * @brief Initialize HTTP client for platform-specific implementation
+     * @note Sets up WiFi client (ESP8266/ESP32) or stores credentials (OSPI)
+     */
     void init();
 #if defined(ESP8266)
     WiFiClient client;
@@ -73,6 +104,37 @@ private:
     std::string userEmail;
     std::string userPassword;
 #endif
+};
+
+// New C++ wrapper class for FYTA sensors (incremental migration)
+#include "Sensor.hpp"
+
+/**
+ * @brief FYTA plant sensor integration
+ * @note Retrieves moisture, temperature, light and nutrient data from FYTA cloud service
+ */
+class FytaSensor : public SensorBase {
+public:
+    /**
+     * @brief Constructor
+     * @param type Sensor type identifier
+     */
+    explicit FytaSensor(uint type) : SensorBase(type) {}
+    virtual ~FytaSensor() {}
+
+    /**
+     * @brief Read sensor value from FYTA cloud API
+     * @param time Current timestamp
+     * @return HTTP_RQT_SUCCESS on successful read, error code on failure
+     * @note Fetches data from FYTA API using stored plant ID and authentication
+     */
+    virtual int read(unsigned long time) override;
+    
+    /**
+     * @brief Get measurement unit identifier
+     * @return Unit ID from assigned_unitid field
+     */
+    virtual unsigned char getUnitId() const override;
 };
 
 #endif // defined(ESP8266) || defined(ESP32) || defined(OSPI)

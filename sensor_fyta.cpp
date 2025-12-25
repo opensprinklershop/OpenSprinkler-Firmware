@@ -237,4 +237,55 @@ void FytaApi::init() {
 #endif
 }
 
+// Implementation of the C++ wrapper read() method
+int FytaSensor::read(unsigned long time) {
+    SensorBase *data_ = this;
+    if (!data_) return HTTP_RQT_NOT_RECEIVED;
+    if (time >= data_->last_read + data_->read_interval) {
+        data_->last_read = time;
+
+        FytaApi fytaapi(os.sopt_load(SOPT_FYTA_OPTS));
+
+        JsonDocument doc;
+        if (!fytaapi.getSensorData(data_->id, doc)) {
+            DEBUG_PRINTLN(F("Fyta Sensor not found!"));
+            data_->flags.data_ok = false;
+            return HTTP_RQT_NOT_RECEIVED;
+        }
+
+        if (!doc.containsKey("plant")) {
+            data_->flags.data_ok = false;
+            return HTTP_RQT_NOT_RECEIVED;
+        }
+        int unit = doc["plant"]["temperature_unit"]; //1=Celsius, 2=Fahrenheit
+
+        if (data_->type == SENSOR_FYTA_TEMPERATURE) {
+            data_->last_data = doc["plant"]["measurements"]["temperature"]["values"]["current"].as<double>();
+            if (unit == 1 && data_->assigned_unitid != UNIT_DEGREE) {
+                data_->assigned_unitid = UNIT_DEGREE;
+                data_->unitid = UNIT_DEGREE;
+                sensor_save_all();
+            }
+            else if (unit == 2 && data_->assigned_unitid != UNIT_FAHRENHEIT) {
+                data_->assigned_unitid = UNIT_FAHRENHEIT;
+                data_->unitid = UNIT_FAHRENHEIT;
+                sensor_save_all();
+            }
+            data_->flags.data_ok = true;
+            return HTTP_RQT_SUCCESS;
+        }
+        else if (data_->type == SENSOR_FYTA_MOISTURE) {
+            data_->last_data = doc["plant"]["measurements"]["moisture"]["values"]["current"].as<double>();
+            if (data_->assigned_unitid != UNIT_PERCENT) {
+                data_->assigned_unitid = UNIT_PERCENT;
+                data_->unitid = UNIT_PERCENT;
+                sensor_save_all();
+            }
+            data_->flags.data_ok = true;
+            return HTTP_RQT_SUCCESS;
+        }
+    }
+    return HTTP_RQT_NOT_RECEIVED;
+}
+
 #endif // defined(ESP8266) || defined(ESP32) || defined(OSPI)

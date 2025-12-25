@@ -217,7 +217,11 @@ EMailSender::Response EMailSender::awaitSMTPResponse(SSLClient &client,
 	_serverResponce = client.readStringUntil('\n');
 
 	EMAIL_DEBUG_PRINTLN(_serverResponce);
+	#if defined(ARDUINO)
 	if (resp && _serverResponce.indexOf(resp) == -1){
+	#else
+	if (resp && _serverResponce.find(resp) == String::npos){
+	#endif
 		response.code = resp;
 		response.desc = respDesc +String(" (") + _serverResponce + String(")");
 		response.status = false;
@@ -250,7 +254,11 @@ EMailSender::Response EMailSender::awaitSMTPResponse(EMAIL_NETWORK_CLASS &client
 	_serverResponce = client.readStringUntil('\n');
 
 	EMAIL_DEBUG_PRINTLN(_serverResponce);
+	#if defined(ARDUINO)
 	if (resp && _serverResponce.indexOf(resp) == -1){
+	#else
+	if (resp && _serverResponce.find(resp) == String::npos){
+	#endif
 		response.code = resp;
 		response.desc = respDesc +String(" (") + _serverResponce + String(")");
 		response.status = false;

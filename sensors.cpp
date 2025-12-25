@@ -20,6 +20,8 @@
  */
 
 #include "sensors.h"
+#include "Sensor.hpp"
+#include "sensors_util.h"
 
 #include <stdlib.h>
 
@@ -37,15 +39,27 @@
 #include "defines.h"
 #include "opensprinkler_server.h"
 #include "program.h"
+#include "Sensor.hpp"
 #include "sensor_mqtt.h"
 #include "sensor_fyta.h"
+#include "sensor_group.h"
 #include "sensor_rs485_i2c.h"
 #include "sensor_truebner_rs485.h"
 #include "sensor_modbus_rtu.h"
+#include "sensor_asb.h"
+#include "sensor_remote.h"
+#include "sensor_internal.h"
+#include "sensor_weather.h"
+#include "sensor_remote.h"
+#ifdef OSPI
+#include "sensor_usbrs485.h"
+#endif
 #include "utils.h"
 #include "weather.h"
 #include "osinfluxdb.h"
 #include "notifier.h"
+
+#include <map>
 #ifdef ADS1115
 #include "sensor_ospi_ads1115.h"
 #endif
@@ -59,23 +73,24 @@
 unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const char *key,
                 bool key_in_pgm = false, uint8_t *keyfound = NULL);
 
-// All sensors:
-static Sensor_t *sensors = NULL;
+// All sensors (map nr -> SensorBase*)
+static std::map<uint, SensorBase*> sensorsMap;
 static time_t last_save_time = 0;
 static boolean apiInit = false;
-static Sensor_t *current_sensor = NULL;
+static SensorBase *current_sensor = NULL;
+static std::map<uint, SensorBase*>::iterator current_sensor_it;
+
+// Factory forward declaration
+SensorBase* sensor_make_obj(uint type, boolean ip_based);
 
 // Boards:
 static uint16_t asb_detected_boards = 0;  // bit 1=0x48+0x49 bit 2=0x4A+0x4B usw
 
-// Sensor URLS:
-static SensorUrl_t *sensorUrls = NULL;
+// Program sensor data (HashMap for efficient lookup by nr)
+static std::map<uint, ProgSensorAdjust*> progSensorAdjustsMap;
 
-// Program sensor data
-static ProgSensorAdjust_t *progSensorAdjusts = NULL;
-
-// Monitor data
-static Monitor_t *monitors = NULL;
+// Monitor data (HashMap for efficient lookup by nr)
+static std::map<uint, Monitor*> monitorsMap;
 
 const char *sensor_unitNames[]{
     "",  "%", "°C", "°F", "V", "%", "in", "mm", "mph", "kmh", "%", "DK", "LM", "LX"
@@ -97,17 +112,7 @@ const char *sensor_unitNames[]{
 };
 uint8_t logFileSwitch[3] = {0, 0, 0};  // 0=use smaller File, 1=LOG1, 2=LOG2
 
-// Weather
-time_t last_weather_time = 0;
-time_t last_weather_time_eto = 0;
-bool current_weather_ok = false;
-bool current_weather_eto_ok = false;
-double current_temp = 0.0;
-double current_humidity = 0.0;
-double current_precip = 0.0;
-double current_wind = 0.0;
-double current_eto = 0.0;
-double current_radiation = 0.0;
+
 
 uint16_t CRC16(unsigned char buf[], int len) {
   uint16_t crc = 0xFFFF;
@@ -179,12 +184,12 @@ void add_asb_detected_boards(uint16_t board) { asb_detected_boards |= board; }
 
 boolean sensor_type_supported(int type) {
 
-  if (type >= ASB_SENSORS_START && type <= ASB_SENSORS_END &&
-    (asb_detected_boards & ASB_BOARD1) != 0 || (asb_detected_boards & ASB_BOARD2) != 0)
+  if ((type >= ASB_SENSORS_START && type <= ASB_SENSORS_END) &&
+    ((asb_detected_boards & ASB_BOARD1) != 0 || (asb_detected_boards & ASB_BOARD2) != 0))
       return true;
 
-  if (type >= OSPI_SENSORS_START && type <= OSPI_SENSORS_END &&
-    (asb_detected_boards & OSPI_PCF8591) != 0 || (asb_detected_boards & OSPI_ADS1115) != 0)
+  if ((type >= OSPI_SENSORS_START && type <= OSPI_SENSORS_END) &&
+    ((asb_detected_boards & OSPI_PCF8591) != 0 || (asb_detected_boards & OSPI_ADS1115) != 0))
       return true;
 
   if (type >= INDEPENDENT_SENSORS_START)
@@ -265,7 +270,6 @@ void sensor_api_init(boolean detect_boards) {
 void sensor_save_all() {
   sensor_save();
   prog_adjust_save();
-  SensorUrl_save();
   monitor_save();
 #if defined(OSPI)
   for (int i = 0; i < MAX_RS485_DEVICES; i++) {
@@ -288,36 +292,26 @@ void sensor_api_free() {
   current_sensor = NULL;
   os.mqtt.setCallback(2, NULL);
 
-  while (progSensorAdjusts) {
-    ProgSensorAdjust_t* next = progSensorAdjusts->next;
-    delete progSensorAdjusts;
-    progSensorAdjusts = next;
+  for (auto &kv : progSensorAdjustsMap) {
+    delete kv.second;
   }
+  progSensorAdjustsMap.clear();
 
   DEBUG_PRINTLN("sensor_api_free2");
 
-  while (sensorUrls) {
-    SensorUrl_t* next = sensorUrls->next;
-    free(sensorUrls->urlstr);
-    delete sensorUrls;
-    sensorUrls = next;
-  }
-
   DEBUG_PRINTLN("sensor_api_free3");
 
-  while (monitors) {
-    Monitor_t* next = monitors->next;
-    delete monitors;
-    monitors = next;
+  for (auto &kv : monitorsMap) {
+    delete kv.second;
   }
+  monitorsMap.clear();
 
   DEBUG_PRINTLN("sensor_api_free4");
 
-  while (sensors) {
-    Sensor_t* next = sensors->next;
-    delete sensors;
-    sensors = next;
+  for (auto &kv : sensorsMap) {
+    delete kv.second;
   }
+  sensorsMap.clear();
 
   sensor_truebner_rs485_free();
   sensor_modbus_rtu_free();
@@ -327,169 +321,223 @@ void sensor_api_free() {
 /*
  * get list of all configured sensors
  */
-Sensor_t *getSensors() { return sensors; }
+// returns first sensor (deprecated - prefer sensor_map access)
+SensorBase *getSensors() {
+  if (sensorsMap.empty()) return NULL;
+  return sensorsMap.begin()->second;
+}
+
+// Helper functions for iterating through sensors
+SensorIterator sensors_iterate_begin() {
+  return sensorsMap.begin();
+}
+
+SensorBase* sensors_iterate_next(SensorIterator& it) {
+  if (it != sensorsMap.end()) {
+    SensorBase *sensor = it->second;
+    ++it;
+    return sensor;
+  }
+  return NULL;
+}
+
+// Helper functions for iterating through program adjustments
+ProgAdjustIterator prog_adjust_iterate_begin() {
+  return progSensorAdjustsMap.begin();
+}
+
+ProgSensorAdjust* prog_adjust_iterate_next(ProgAdjustIterator& it) {
+  if (it != progSensorAdjustsMap.end()) {
+    ProgSensorAdjust *pa = it->second;
+    ++it;
+    return pa;
+  }
+  return NULL;
+}
+
+// Helper functions for iterating through monitors
+MonitorIterator monitor_iterate_begin() {
+  return monitorsMap.begin();
+}
+
+Monitor* monitor_iterate_next(MonitorIterator& it) {
+  if (it != monitorsMap.end()) {
+    Monitor *mon = it->second;
+    ++it;
+    return mon;
+  }
+  return NULL;
+}
+
 /**
  * @brief delete a sensor
  *
  * @param nr
  */
 int sensor_delete(uint nr) {
-  Sensor_t *sensor = sensors;
-  Sensor_t *last = NULL;
-  while (sensor) {
-    if (sensor->nr == nr) {
-      if (last == NULL)
-        sensors = sensor->next;
-      else
-        last->next = sensor->next;
-      delete sensor;
-      sensor_save();
-      return HTTP_RQT_SUCCESS;
-    }
-    last = sensor;
-    sensor = sensor->next;
-  }
-  return HTTP_RQT_NOT_RECEIVED;
+  auto it = sensorsMap.find(nr);
+  if (it == sensorsMap.end()) return HTTP_RQT_NOT_RECEIVED;
+  // Do not create a new driver object here; just remove the sensor
+  delete it->second;
+  sensorsMap.erase(it);
+  sensor_save();
+  return HTTP_RQT_SUCCESS;
 }
 
 /**
- * @brief define or insert a sensor
+ * @brief define or insert a sensor from JSON configuration
  *
- * @param nr  > 0
- * @param type > 0 add/modify, 0=delete
- * @param group group assignment
- * @param ip
- * @param port
- * @param id
+ * @param json JsonDocument containing sensor configuration
+ * @param save if true, save to file after update (default: false)
  */
-int sensor_define(uint nr, const char *name, uint type, uint group, uint32_t ip,
-                  uint port, uint id, uint ri, int16_t factor, int16_t divider,
-                  const char *userdef_unit, int16_t offset_mv, int16_t offset2,
-                  SensorFlags_t flags, int16_t assigned_unitid,
-                  RS485Flags_t rs485_flags, uint8_t rs485_code, uint16_t rs485_reg) {
-  if (nr == 0 || type == 0) return HTTP_RQT_NOT_RECEIVED;
-  if (ri < 10) ri = 10;
-
-  DEBUG_PRINTLN(F("server_define"));
-
-  Sensor_t *sensor = sensors;
-  Sensor_t *last = NULL;
-  while (sensor) {
-    if (sensor->nr == nr) {  // Modify existing
-      sensor->type = type;
-      sensor->group = group;
-      strncpy(sensor->name, name, sizeof(sensor->name) - 1);
-      sensor->ip = ip;
-      sensor->port = port;
-      sensor->id = id;
-      sensor->read_interval = ri;
-      sensor->factor = factor;
-      sensor->divider = divider;
-      sensor->offset_mv = offset_mv;
-      sensor->offset2 = offset2;
-      strncpy(sensor->userdef_unit, userdef_unit,
-              sizeof(sensor->userdef_unit) - 1);
-      sensor->flags = flags;
-      if (assigned_unitid >= 0) sensor->assigned_unitid = assigned_unitid;
-      else sensor->assigned_unitid = 0;
-      sensor->rs485_flags = rs485_flags;
-      sensor->rs485_code = rs485_code;
-      sensor->rs485_reg = rs485_reg;  
-      sensor_save();
+int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
+  if (!json.containsKey("nr")) {
+    return HTTP_RQT_NOT_RECEIVED;
+  }
+  
+  uint nr = json["nr"];
+  if (nr == 0) return HTTP_RQT_NOT_RECEIVED;
+  
+  DEBUG_PRINTLN(F("sensor_define"));
+  
+  // Check if this is a partial update (no type field) or full definition
+  bool is_partial_update = !json.containsKey("type");
+  
+  auto it = sensorsMap.find(nr);
+  
+  if (is_partial_update) {
+    // Partial update - sensor must exist
+    if (it == sensorsMap.end()) {
+      return HTTP_RQT_NOT_RECEIVED;
+    }
+    
+    SensorBase *sensor = it->second;
+    sensor->fromJson(json);
+    
+    if (save) sensor_save();
+    else last_save_time = os.now_tz() - 3600 + 5; // force save next time
+    
+    return HTTP_RQT_SUCCESS;
+  }
+  
+  // Full definition with type
+  uint type = json["type"];
+  if (type == 0) return HTTP_RQT_NOT_RECEIVED;
+  
+  if (it != sensorsMap.end()) {
+    // Sensor exists - check if type changed
+    SensorBase *old_sensor = it->second;
+    if (old_sensor->type != type) {
+      DEBUG_PRINTLN(F("sensor_define: type changed, recreating"));
+      delete old_sensor;
+      sensorsMap.erase(it);
+      // Fall through to create new sensor
+    } else {
+      // Same type, update from JSON
+      old_sensor->fromJson(json);
+      
+      if (save) sensor_save();
       return HTTP_RQT_SUCCESS;
     }
-
-    if (sensor->nr > nr) break;
-
-    last = sensor;
-    sensor = sensor->next;
   }
-
-  DEBUG_PRINTLN(F("server_define2"));
-
-  // Insert new
-  Sensor_t *new_sensor = new Sensor_t;
-  memset(new_sensor, 0, sizeof(Sensor_t));
-  new_sensor->nr = nr;
-  new_sensor->type = type;
-  new_sensor->group = group;
-  strncpy(new_sensor->name, name, sizeof(new_sensor->name) - 1);
-  new_sensor->ip = ip;
-  new_sensor->port = port;
-  new_sensor->id = id;
-  new_sensor->read_interval = ri;
-  new_sensor->factor = factor;
-  new_sensor->divider = divider;
-  new_sensor->offset_mv = offset_mv;
-  new_sensor->offset2 = offset2;
-  strncpy(new_sensor->userdef_unit, userdef_unit,
-          sizeof(new_sensor->userdef_unit) - 1);
-  new_sensor->flags = flags;
-  if (assigned_unitid >= 0) new_sensor->assigned_unitid = assigned_unitid;
-  else new_sensor->assigned_unitid = 0;
-
-  if (last) {
-    new_sensor->next = last->next;
-    last->next = new_sensor;
-  } else {
-    new_sensor->next = sensors;
-    sensors = new_sensor;
+  
+  // Create new sensor
+  boolean ip_based = json.containsKey("ip") && (json["ip"].as<uint32_t>() > 0);
+  SensorBase *new_sensor = sensor_make_obj(type, ip_based);
+  
+  if (!new_sensor) {
+    return HTTP_RQT_NOT_RECEIVED;
   }
-  sensor_save();
+  
+  // Load from JSON
+  new_sensor->fromJson(json);
+  
+  sensorsMap[nr] = new_sensor;
+  if (save) sensor_save();
+  
   return HTTP_RQT_SUCCESS;
 }
 
 int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
                           const char *userdef_unit, int16_t offset_mv,
                           int16_t offset2, int16_t assigned_unitid) {
-  Sensor_t *sensor = sensor_by_nr(nr);
-  if (!sensor) return HTTP_RQT_NOT_RECEIVED;
-
-  sensor->factor = factor;
-  sensor->divider = divider;
-  sensor->offset_mv = offset_mv;
-  sensor->offset2 = offset2;
-  sensor->assigned_unitid = assigned_unitid;
-  if (userdef_unit)
-    strncpy(sensor->userdef_unit, userdef_unit,
-            sizeof(sensor->userdef_unit) - 1);
-  else
-    memset(sensor->userdef_unit, 0, sizeof(sensor->userdef_unit));
-
-  return HTTP_RQT_SUCCESS;
+  // Wrapper: build JSON and call sensor_define
+  JsonDocument doc;
+  JsonObject config = doc.to<JsonObject>();
+  
+  config["nr"] = nr;
+  config["fac"] = factor;
+  config["div"] = divider;
+  config["unit"] = userdef_unit;
+  config["offset"] = offset_mv;
+  config["offset2"] = offset2;
+  config["unitid"] = assigned_unitid;
+  
+  return sensor_define(config);
 }
 
 /**
  * @brief initial load stored sensor definitions
- *
+ * Supports both new JSON format and legacy binary format migration
  */
+#include "ArduinoJson.hpp"
+
 void sensor_load() {
   // DEBUG_PRINTLN(F("sensor_load"));
-  sensors = NULL;
+  sensorsMap.clear();
   current_sensor = NULL;
-  if (!file_exists(SENSOR_FILENAME)) return;
 
-  ulong pos = 0;
-  Sensor_t *last = NULL;
-  while (true) {
-    Sensor_t *sensor = new Sensor_t;
-    memset(sensor, 0, sizeof(Sensor_t));
-    file_read_block(SENSOR_FILENAME, sensor, pos, SENSOR_STORE_SIZE);
-    if (!sensor->nr || !sensor->type) {
-      delete sensor;
-      break;
-    }
-    if (!last)
-      sensors = sensor;
-    else
-      last->next = sensor;
-    last = sensor;
-    sensor->flags.data_ok = false;
-    sensor->next = NULL;
-    pos += SENSOR_STORE_SIZE;
+  // First try legacy binary format migration (sensor.dat)
+  // If successful, sensors are already initialized and saved
+  sensor_load_legacy(sensorsMap);
+  
+  if (!sensorsMap.empty()) {
+    last_save_time = os.now_tz();
+    return;
   }
 
-  SensorUrl_load();
+  // Try JSON format (current format)
+  if (file_exists(SENSOR_FILENAME_JSON)) {
+    ulong size = file_size(SENSOR_FILENAME_JSON);
+    if (size == 0) return;
+
+    FileReader reader(SENSOR_FILENAME_JSON);
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, reader);
+    if (err) {
+      DEBUG_PRINTLN(F("sensor_load: JSON parse error"));
+      return;
+    }
+
+    JsonArray arr;
+    if (doc.is<JsonArray>()) arr = doc.as<JsonArray>();
+    else if (doc.containsKey("sensors")) arr = doc["sensors"].as<JsonArray>();
+    else return;
+
+    for (JsonVariant v : arr) {
+      uint sensorType = v["type"] | 0;
+      boolean ip_based = (v["ip"] | 0) != 0;
+      
+      SensorBase *sensor = sensor_make_obj(sensorType, ip_based);
+      if (!sensor) {
+        sensor = new GenericSensor(sensorType);
+      }
+      
+      sensor->fromJson(v);
+      sensorsMap[sensor->nr] = sensor;
+      sensor->flags.data_ok = false;
+    }
+
+    // Initialize sensor drivers
+    for (auto &kv : sensorsMap) {
+      SensorBase *s = kv.second;
+      s->init();
+    }
+
+    last_save_time = os.now_tz();
+    return;
+  }
+  
   last_save_time = os.now_tz();
 }
 
@@ -499,18 +547,24 @@ void sensor_load() {
  */
 void sensor_save() {
   if (!apiInit) return;
-  DEBUG_PRINTLN(F("sensor_save"));
-  if (file_exists(SENSOR_FILENAME_BAK)) remove_file(SENSOR_FILENAME_BAK);
-  if (file_exists(SENSOR_FILENAME))
-    rename_file(SENSOR_FILENAME, SENSOR_FILENAME_BAK);
+  DEBUG_PRINTLN(F("sensor_save (json)"));
 
-  ulong pos = 0;
-  Sensor_t *sensor = sensors;
-  while (sensor) {
-    file_write_block(SENSOR_FILENAME, sensor, pos, SENSOR_STORE_SIZE);
-    sensor = sensor->next;
-    pos += SENSOR_STORE_SIZE;
+  // Remove old json file if present (write fresh)
+  if (file_exists(SENSOR_FILENAME_JSON)) remove_file(SENSOR_FILENAME_JSON);
+
+  // Build JSON
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+
+  for (auto &kv : sensorsMap) {
+    SensorBase *sensor = kv.second;
+    JsonObject obj = arr.add<JsonObject>();
+    sensor->toJson(obj);
   }
+
+  // Serialize directly to file
+  FileWriter writer(SENSOR_FILENAME_JSON);
+  serializeJson(doc, writer);
 
   last_save_time = os.now_tz();
   DEBUG_PRINTLN(F("sensor_save2"));
@@ -518,34 +572,21 @@ void sensor_save() {
 }
 
 uint sensor_count() {
-  // DEBUG_PRINTLN(F("sensor_count"));
-  Sensor_t *sensor = sensors;
-  uint count = 0;
-  while (sensor) {
-    count++;
-    sensor = sensor->next;
-  }
-  return count;
+  return (uint)sensorsMap.size();
 }
 
-Sensor_t *sensor_by_nr(uint nr) {
-  // DEBUG_PRINTLN(F("sensor_by_nr"));
-  Sensor_t *sensor = sensors;
-  while (sensor) {
-    if (sensor->nr == nr) return sensor;
-    sensor = sensor->next;
-  }
-  return NULL;
+SensorBase *sensor_by_nr(uint nr) {
+  auto it = sensorsMap.find(nr);
+  if (it == sensorsMap.end()) return NULL;
+  return it->second;
 }
 
-Sensor_t *sensor_by_idx(uint idx) {
-  // DEBUG_PRINTLN(F("sensor_by_idx"));
-  Sensor_t *sensor = sensors;
+SensorBase *sensor_by_idx(uint idx) {
+  if (idx >= sensorsMap.size()) return NULL;
   uint count = 0;
-  while (sensor) {
-    if (count == idx) return sensor;
+  for (auto &kv : sensorsMap) {
+    if (count == idx) return kv.second;
     count++;
-    sensor = sensor->next;
   }
   return NULL;
 }
@@ -630,7 +671,7 @@ bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog) {
 #endif
 }
 
-bool sensorlog_add(uint8_t log, Sensor_t *sensor, ulong time) {
+bool sensorlog_add(uint8_t log, SensorBase *sensor, ulong time) {
 
   if (sensor->flags.data_ok && sensor->flags.log && time > 1000) {
 
@@ -843,7 +884,7 @@ Calculate week+month Data
 We store only the average value of 6 hours utc
 **/
 void calc_sensorlogs() {
-  if (!sensors || timeStatus() != timeSet) return;
+  if (sensorsMap.empty() || timeStatus() != timeSet) return;
 
   ulong log_size = sensorlog_size(LOG_STD);
   if (log_size == 0) return;
@@ -871,8 +912,8 @@ void calc_sensorlogs() {
 
     while (todate < time) {
       ulong startidx = findLogPosition(LOG_STD, fromdate);
-      Sensor_t *sensor = sensors;
-      while (sensor) {
+      for (auto &kv : sensorsMap) {
+        SensorBase *sensor = kv.second;
         if (sensor->flags.enable && sensor->flags.log) {
           ulong idx = startidx;
           double data = 0;
@@ -901,7 +942,6 @@ void calc_sensorlogs() {
             sensorlog_add(LOG_WEEK, sensorlog);
           }
         }
-        sensor = sensor->next;
       }
       fromdate += CALCRANGE_WEEK;
       todate += CALCRANGE_WEEK;
@@ -934,8 +974,8 @@ void calc_sensorlogs() {
 
     while (todate < time) {
       ulong startidx = findLogPosition(LOG_WEEK, fromdate);
-      Sensor_t *sensor = sensors;
-      while (sensor) {
+      for (auto &kv : sensorsMap) {
+        SensorBase *sensor = kv.second;
         if (sensor->flags.enable && sensor->flags.log) {
           ulong idx = startidx;
           double data = 0;
@@ -964,7 +1004,6 @@ void calc_sensorlogs() {
             sensorlog_add(LOG_MONTH, sensorlog);
           }
         }
-        sensor = sensor->next;
       }
       fromdate += CALCRANGE_MONTH;
       todate += CALCRANGE_MONTH;
@@ -979,7 +1018,7 @@ void sensor_remote_http_callback(char *) {
   // unused
 }
 
-void push_message(Sensor_t *sensor) {
+void push_message(SensorBase *sensor) {
   if (!sensor || !sensor->last_read) return;
 
   static char topic[TMP_BUFFER_SIZE];
@@ -1037,7 +1076,7 @@ void push_message(Sensor_t *sensor) {
 }
 
 void read_all_sensors(boolean online) {
-  if (!sensors) return;
+  if (sensorsMap.empty()) return;
   //DEBUG_PRINTLN(F("read_all_sensors"));
 
   ulong time = os.now_tz();
@@ -1049,37 +1088,57 @@ void read_all_sensors(boolean online) {
 #endif
     return;  // wait 30s before first sensor read
 
-  // When we run out of time, skip some sensors and continue on next loop
-  if (current_sensor == NULL) current_sensor = sensors;
+  // Initialize iterator if we're starting over
+  if (!current_sensor && !sensorsMap.empty()) {
+    current_sensor_it = sensorsMap.begin();
+    current_sensor = current_sensor_it->second;
+  }
 
-  while (current_sensor) {
+  while (current_sensor && current_sensor_it != sensorsMap.end()) {
     if (time >= current_sensor->last_read + current_sensor->read_interval ||
         current_sensor->repeat_read) {
       if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
         int result = read_sensor(current_sensor, time);
-        if (!current_sensor) return; // when saving sensors, current_sensor is set to null
+        if (!current_sensor) {
+          // Reset iterator if sensor was deleted during save
+          current_sensor = NULL;
+          return;
+        }
         if (result == HTTP_RQT_SUCCESS) {
+          current_sensor->last_read = time;
           sensorlog_add(LOG_STD, current_sensor, time);
           push_message(current_sensor);
         } else if (result == HTTP_RQT_TIMEOUT) {
           // delay next read on timeout:
           current_sensor->last_read = time + max((uint)60, current_sensor->read_interval);
           current_sensor->repeat_read = 0;
-          DEBUG_PRINTF("Delayed1: %s", current_sensor->name);
+          DEBUG_PRINTF("Delayed1: %s\n", current_sensor->name);
         } else if (result == HTTP_RQT_CONNECT_ERR) {
           // delay next read on error:
           current_sensor->last_read = time + max((uint)60, current_sensor->read_interval);
           current_sensor->repeat_read = 0;
-          DEBUG_PRINTF("Delayed2: %s", current_sensor->name);
+          DEBUG_PRINTF("Delayed2: %s\n", current_sensor->name);
         }
         ulong passed = os.now_tz() - time;
         if (passed > MAX_SENSOR_READ_TIME) {
-          current_sensor = current_sensor->next;
+          // Move to next sensor
+          ++current_sensor_it;
+          if (current_sensor_it != sensorsMap.end()) {
+            current_sensor = current_sensor_it->second;
+          } else {
+            current_sensor = NULL;
+          }
           break;
         }
       }
     }
-    current_sensor = current_sensor->next;
+    // Move to next sensor
+    ++current_sensor_it;
+    if (current_sensor_it != sensorsMap.end()) {
+      current_sensor = current_sensor_it->second;
+    } else {
+      current_sensor = NULL;
+    }
   }
   sensor_update_groups();
   calc_sensorlogs();
@@ -1089,212 +1148,11 @@ void read_all_sensors(boolean online) {
 }
 
 #if defined(ESP8266) || defined(ESP32)
-/**
- * Read ESP8296 ADS1115 sensors
- */
-int read_sensor_adc(Sensor_t *sensor, ulong time) {
-  //DEBUG_PRINTLN(F("read_sensor_adc"));
-  if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
-  if (sensor->id >= 16) return HTTP_RQT_NOT_RECEIVED;
-  // Init + Detect:
-
-  if (sensor->id < 8 && ((asb_detected_boards & ASB_BOARD1) == 0))
-    return HTTP_RQT_NOT_RECEIVED;
-  if (sensor->id >= 8 && sensor->id < 16 &&
-      ((asb_detected_boards & ASB_BOARD2) == 0))
-    return HTTP_RQT_NOT_RECEIVED;
-
-  int port = ASB_BOARD_ADDR1a + sensor->id / 4;
-  int id = sensor->id % 4;
-
-  // unsigned long startTime = millis();
-  ADS1115 adc(port);
-  if (!adc.begin()) {
-    DEBUG_PRINTLN(F("no asb board?!?"));
-    return HTTP_RQT_NOT_RECEIVED;
-  }
-  // unsigned long endTime = millis();
-  // DEBUG_PRINTF("t=%lu ms\n", endTime-startTime);
-
-  // startTime = millis();
-  sensor->repeat_native += adc.readADC(id);
-  // endTime = millis();
-  // DEBUG_PRINTF("t=%lu ms\n", endTime-startTime);
-
-  if (++sensor->repeat_read < MAX_SENSOR_REPEAT_READ &&
-      time < sensor->last_read + sensor->read_interval)
-    return HTTP_RQT_NOT_RECEIVED;
-
-  uint64_t avgValue = sensor->repeat_native / sensor->repeat_read;
-
-  sensor->repeat_native = avgValue;
-  sensor->repeat_data = 0;
-  sensor->repeat_read = 1;  // read continously
-
-  sensor->last_native_data = avgValue;
-  sensor->last_data = adc.toVoltage(sensor->last_native_data);
-  double v = sensor->last_data;
-
-  switch (sensor->type) {
-    case SENSOR_SMT50_MOIS:  // SMT50 VWC [%] = (U * 50) : 3
-      sensor->last_data = (v * 50.0) / 3.0;
-      break;
-    case SENSOR_SMT50_TEMP:  // SMT50 T [°C] = (U – 0,5) * 100
-      sensor->last_data = (v - 0.5) * 100.0;
-      break;
-    case SENSOR_ANALOG_EXTENSION_BOARD_P:  // 0..3,3V -> 0..100%
-      sensor->last_data = v * 100.0 / 3.3;
-      if (sensor->last_data < 0)
-        sensor->last_data = 0;
-      else if (sensor->last_data > 100)
-        sensor->last_data = 100;
-      break;
-    case SENSOR_SMT100_ANALOG_MOIS:  // 0..3V -> 0..100%
-      sensor->last_data = v * 100.0 / 3;
-      break;
-    case SENSOR_SMT100_ANALOG_TEMP:  // 0..3V -> -40°C..60°C
-      sensor->last_data = v * 100.0 / 3 - 40;
-      break;
-
-    case SENSOR_VH400:  // http://vegetronix.com/Products/VH400/VH400-Piecewise-Curve
-      if (v <= 1.1)  // 0 to 1.1V         VWC= 10*V-1
-        sensor->last_data = 10 * v - 1;
-      else if (v < 1.3)  // 1.1V to 1.3V      VWC= 25*V- 17.5
-        sensor->last_data = 25 * v - 17.5;
-      else if (v < 1.82)  // 1.3V to 1.82V     VWC= 48.08*V- 47.5
-        sensor->last_data = 48.08 * v - 47.5;
-      else if (v < 2.2)  // 1.82V to 2.2V     VWC= 26.32*V- 7.89
-        sensor->last_data = 26.32 * v - 7.89;
-      else  // 2.2V - 3.0V       VWC= 62.5*V - 87.5
-        sensor->last_data = 62.5 * v - 87.5;
-      break;
-    case SENSOR_THERM200:  // http://vegetronix.com/Products/THERM200/
-      sensor->last_data = v * 41.67 - 40;
-      break;
-    case SENSOR_AQUAPLUMB:  // http://vegetronix.com/Products/AquaPlumb/
-      sensor->last_data = v * 100.0 / 3.0;  // 0..3V -> 0..100%
-      if (sensor->last_data < 0)
-        sensor->last_data = 0;
-      else if (sensor->last_data > 100)
-        sensor->last_data = 100;
-      break;
-    case SENSOR_USERDEF:  // User defined sensor
-      v -= (double)sensor->offset_mv /
-           1000;  // adjust zero-point offset in millivolt
-      if (sensor->factor && sensor->divider)
-        v *= (double)sensor->factor / (double)sensor->divider;
-      else if (sensor->divider)
-        v /= sensor->divider;
-      else if (sensor->factor)
-        v *= sensor->factor;
-      sensor->last_data = v + sensor->offset2 / 100;
-      break;
-  }
-
-  sensor->flags.data_ok = true;
-  sensor->last_read = time;
-
-  DEBUG_PRINT(F("adc sensor values: "));
-  DEBUG_PRINT(sensor->last_native_data);
-  DEBUG_PRINT(",");
-  DEBUG_PRINTLN(sensor->last_data);
-
-  return HTTP_RQT_SUCCESS;
-}
+// read_sensor_adc has been moved to AsbSensor::read in sensor_asb.cpp
+// extract function has been moved to sensor_remote.cpp
 #endif
 
-bool extract(char *s, char *buf, int maxlen) {
-  s = strstr(s, ":");
-  if (!s) return false;
-  s++;
-  while (*s == ' ') s++;  // skip spaces
-  char *e = strstr(s, ",");
-  char *f = strstr(s, "}");
-  if (!e && !f) return false;
-  if (f && f < e) e = f;
-  int l = e - s;
-  if (l < 1 || l > maxlen) return false;
-  strncpy(buf, s, l);
-  buf[l] = 0;
-  // DEBUG_PRINTLN(buf);
-  return true;
-}
-
-int read_sensor_http(Sensor_t *sensor, ulong time) {
-#if defined(ESP8266) || defined(ESP32)
-  IPAddress _ip(sensor->ip);
-  unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
-  unsigned char ip[4];
-  ip[3] = (unsigned char)((sensor->ip >> 24) & 0xFF);
-  ip[2] = (unsigned char)((sensor->ip >> 16) & 0xFF);
-  ip[1] = (unsigned char)((sensor->ip >> 8) & 0xFF);
-  ip[0] = (unsigned char)((sensor->ip & 0xFF));
-#endif
-
-  DEBUG_PRINTLN(F("read_sensor_http"));
-
-  char *p = tmp_buffer;
-  BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE);
-
-  bf.emit_p(PSTR("GET /sg?pw=$O&nr=$D"), SOPT_PASSWORD, sensor->id);
-  bf.emit_p(PSTR(" HTTP/1.0\r\nHOST: $D.$D.$D.$D\r\n\r\n"), ip[0], ip[1], ip[2],
-            ip[3]);
-
-  DEBUG_PRINTLN(p);
-
-  char server[20];
-  sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-
-  int res = os.send_http_request(server, sensor->port, p, NULL, false, 500);
-  if (res == HTTP_RQT_SUCCESS) {
-    DEBUG_PRINTLN("Send Ok");
-    p = ether_buffer;
-    DEBUG_PRINTLN(p);
-
-    sensor->last_read = time;
-
-    char buf[20];
-    char *s = strstr(p, "\"nativedata\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      sensor->last_native_data = strtoul(buf, NULL, 0);
-    }
-    s = strstr(p, "\"data\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      double value = -1;
-      int ok = sscanf(buf, "%lf", &value);
-      if (ok && (value != sensor->last_data || !sensor->flags.data_ok ||
-                 time - sensor->last_read > 6000)) {
-        sensor->last_data = value;
-        sensor->flags.data_ok = true;
-      } else {
-        return HTTP_RQT_NOT_RECEIVED;
-      }
-    }
-    s = strstr(p, "\"unitid\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      sensor->unitid = atoi(buf);
-      sensor->assigned_unitid = sensor->unitid;
-    }
-    s = strstr(p, "\"unit\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      urlDecodeAndUnescape(buf);
-      strncpy(sensor->userdef_unit, buf, sizeof(sensor->userdef_unit) - 1);
-    }
-    s = strstr(p, "\"last\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      ulong last = strtoul(buf, NULL, 0);
-      if (last == 0 || last == sensor->last_read) {
-        return HTTP_RQT_NOT_RECEIVED;
-      } else {
-        sensor->last_read = last;
-      }
-    }
-
-    return HTTP_RQT_SUCCESS;
-  }
-  return res;
-}
+// read_sensor_http has been moved to RemoteSensor::read in sensor_remote.cpp
 
 #if defined(ESP8266) || defined(ESP32)
 boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
@@ -1305,301 +1163,123 @@ boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t
 #endif
 
 #if defined(OSPI)
-/**
- * USB RS485 Adapter
- * Howto use: Create a file rs485 inside the OpenSprinkler-Firmware directory, enter the USB-TTY connections here.
- * For example:
- *  /dev/ttyUSB0
- *  /dev/ttyUSB1
- * You can use multiple rs485 adapters, every line increments the "port" index, starting with 0 for the first line
- */
-
-/**
- * @brief Raspberry PI RS485 Interface
- *
- * @param sensor
- * @return int
- */
-int read_sensor_rs485(Sensor_t *sensor) {
-  DEBUG_PRINTLN(F("read_sensor_rs485"));
-  int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
-    return HTTP_RQT_NOT_RECEIVED;
-
-  DEBUG_PRINTLN(F("read_sensor_rs485: check-ok"));
-
-  uint8_t buffer[10];
-  bool isTemp = sensor->type == SENSOR_SMT100_TEMP || sensor->type == SENSOR_TH100_TEMP;
-  bool isMois = sensor->type == SENSOR_SMT100_MOIS || sensor->type == SENSOR_TH100_MOIS;
-  uint8_t type = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
-
-  uint16_t tab_reg[3] = {0};
-  modbus_set_slave(modbusDevs[device], sensor->id);
-  if (modbus_read_registers(modbusDevs[device], type, 2, tab_reg) > 0) {
-    uint16_t data = tab_reg[0];
-    DEBUG_PRINTF("read_sensor_rs485: result: %d - %d\n", sensor->id, data);
-    double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
-    sensor->last_native_data = data;
-    sensor->last_data = value;
-    DEBUG_PRINTLN(sensor->last_data);
-    sensor->flags.data_ok = true;
-    return HTTP_RQT_SUCCESS;
-  }
-  DEBUG_PRINTLN(F("read_sensor_rs485: exit"));
-  return HTTP_RQT_NOT_RECEIVED;
-}
-
-boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
-  if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
-    return false;
-
-  modbus_set_slave(modbusDevs[device], address);
-  if (isbit)
-    return modbus_write_bit(modbusDevs[device], reg, data) > 0;
-  return modbus_write_register(modbusDevs[device], reg, data) > 0;
-}
-
+// read_sensor_rs485 and send_rs485_command have been moved to UsbRs485Sensor in sensor_usbrs485.cpp
 #endif
 
+// read_internal_raspi has been moved to InternalSensor::read in sensor_internal.cpp
 
-#if defined(OSPI)
-int read_internal_raspi(Sensor_t *sensor, ulong time) {
-  if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
-
-  char buf[10];
-  size_t res = 0;
-  FILE *fp = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
-	if(fp) {
-		res = fread(buf, 1, 10, fp);
-		fclose(fp);
-	}
-  if (!res)
-    return HTTP_RQT_NOT_RECEIVED;
-
-  sensor->last_read = time;
-  sensor->last_native_data = strtol(buf, NULL, 0);
-  sensor->last_data = (double)sensor->last_native_data / 1000;
-  sensor->flags.data_ok = true;
-
-	return HTTP_RQT_SUCCESS;
-}
-#endif
-
-int read_sensor_fyta(Sensor_t *sensor, ulong time) {
-  if (time >= sensor->last_read + sensor->read_interval) {
-    sensor->last_read = time;
-
-    FytaApi fytaapi(os.sopt_load(SOPT_FYTA_OPTS));
-    
-    JsonDocument doc;
-    if (!fytaapi.getSensorData(sensor->id, doc)) {
-      DEBUG_PRINTLN(F("Fyta Sensor not found!"));
-      DEBUG_PRINTLN(sensor->id);
-      sensor->flags.data_ok = false;
-      return HTTP_RQT_NOT_RECEIVED;
-    }
-
-    if (!doc.containsKey("plant")) {
-      sensor->flags.data_ok = false;
-      return HTTP_RQT_NOT_RECEIVED;
-    }
-    int unit = doc["plant"]["temperature_unit"]; //1=Celsius, 2=Fahrenheit
-    
-    if (sensor->type == SENSOR_FYTA_TEMPERATURE) {
-      sensor->last_data = doc["plant"]["measurements"]["temperature"]["values"]["current"].as<double>();
-      if (unit == 1 && sensor->assigned_unitid != UNIT_DEGREE) {
-        sensor->assigned_unitid = UNIT_DEGREE;
-        sensor->unitid = UNIT_DEGREE;
-        sensor_save_all();
-      }
-      else if (unit == 2 && sensor->assigned_unitid != UNIT_FAHRENHEIT) {
-         sensor->assigned_unitid = UNIT_FAHRENHEIT;
-         sensor->unitid = UNIT_FAHRENHEIT;
-         sensor_save_all();
-      }
-      sensor->flags.data_ok = true;
-      return HTTP_RQT_SUCCESS;
-    }
-    else if (sensor->type == SENSOR_FYTA_MOISTURE) {
-      sensor->last_data = doc["plant"]["measurements"]["moisture"]["values"]["current"].as<double>();
-      if (sensor->assigned_unitid != UNIT_PERCENT) {
-        sensor->assigned_unitid = UNIT_PERCENT;
-        sensor->unitid = UNIT_PERCENT;
-        sensor_save_all();
-      }
-      sensor->flags.data_ok = true;
-      return HTTP_RQT_SUCCESS;
-    }
-  }
-  return HTTP_RQT_NOT_RECEIVED;
-}
 /**
  * read a sensor
  */
-int read_sensor(Sensor_t *sensor, ulong time) {
-  if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
+#include "Sensor.hpp"
 
-  switch (sensor->type) {
-    case SENSOR_SMT100_MOIS:
-    case SENSOR_SMT100_TEMP:
-    case SENSOR_SMT100_PMTY:
-    case SENSOR_TH100_MOIS:
-	  case SENSOR_TH100_TEMP:
-      //DEBUG_PRINT(F("Reading sensor "));
-      //DEBUG_PRINTLN(sensor->name);
-      sensor->last_read = time;
-      if (sensor->ip) return read_sensor_ip(sensor);
-      if (asb_detected_boards & ASB_I2C_RS485)
-        return read_sensor_i2c_rs485(sensor);
-      return read_sensor_truebner_rs485(sensor);
+SensorBase* sensor_make_obj(uint type, boolean ip_based) {
+  switch (type) {
+    // Group sensors
+    case SENSOR_GROUP_MIN:
+    case SENSOR_GROUP_MAX:
+    case SENSOR_GROUP_AVG:
+    case SENSOR_GROUP_SUM:
+      return new GroupSensor(type);
 
     case SENSOR_FYTA_MOISTURE:
-    case SENSOR_FYTA_TEMPERATURE:
-      return read_sensor_fyta(sensor, time);
+    case SENSOR_FYTA_TEMPERATURE: {
+      FytaSensor *s = new FytaSensor(type);
+      return s;
+    }
 
-#if defined(ARDUINO)
+    // Analog Sensor Board (ASB) sensors
 #if defined(ESP8266) || defined(ESP32)
     case SENSOR_ANALOG_EXTENSION_BOARD:
     case SENSOR_ANALOG_EXTENSION_BOARD_P:
-    case SENSOR_SMT50_MOIS:          // SMT50 VWC [%] = (U * 50) : 3
-    case SENSOR_SMT50_TEMP:          // SMT50 T [°C] = (U – 0,5) * 100
-    case SENSOR_SMT100_ANALOG_MOIS:  // SMT100 Analog Moisture
-    case SENSOR_SMT100_ANALOG_TEMP:  // SMT100 Analog Temperature
+    case SENSOR_SMT50_MOIS:
+    case SENSOR_SMT50_TEMP:
+    case SENSOR_SMT100_ANALOG_MOIS:
+    case SENSOR_SMT100_ANALOG_TEMP:
     case SENSOR_VH400:
     case SENSOR_THERM200:
     case SENSOR_AQUAPLUMB:
     case SENSOR_USERDEF:
-      //DEBUG_PRINT(F("Reading sensor "));
-      //DEBUG_PRINTLN(sensor->name);
-      return read_sensor_adc(sensor, time);
-    case SENSOR_FREE_MEMORY:
-    {
-      uint32_t fm = freeMemory();
-      if (sensor->last_native_data == fm)
-        return HTTP_RQT_NOT_RECEIVED;
-      sensor->last_native_data = fm;
-      sensor->last_data = fm;
-      sensor->last_read = time;
-      sensor->flags.data_ok = true;
-      return HTTP_RQT_SUCCESS;
-    }
-    case SENSOR_FREE_STORE: {
-      #if defined(ESP8266)
-    	struct FSInfo fsinfo;
-	    boolean ok = LittleFS.info(fsinfo);
-      if (ok) {
-        uint32_t fd = fsinfo.totalBytes-fsinfo.usedBytes;
-      #elif defined(ESP32)
-      boolean ok = LittleFS.totalBytes() > 0;
-      if (ok) {
-        uint32_t fd = LittleFS.totalBytes() - LittleFS.usedBytes();      
-      #endif
-        if (sensor->last_native_data == fd)
-          return HTTP_RQT_NOT_RECEIVED;
-        sensor->last_native_data = fd;
-        sensor->last_data = fd;
-      } 
-      sensor->flags.data_ok = ok;
-      sensor->last_read = time;
-      return HTTP_RQT_SUCCESS;
-    }
+      return new AsbSensor(type);
 #endif
-#else
-#if defined ADS1115 | PCF8591
+
+    // Truebner sensors (SENSOR_SMT100_*, SENSOR_TH100_*)
+    case SENSOR_SMT100_MOIS:
+    case SENSOR_SMT100_TEMP:
+    case SENSOR_SMT100_PMTY:
+    case SENSOR_TH100_MOIS:
+    case SENSOR_TH100_TEMP:
+      if (ip_based)
+        return new ModbusRtuSensor(type);
+#if defined(ESP8266) || defined(ESP32)
+      if (get_asb_detected_boards() & ASB_I2C_RS485)
+        return new RS485I2CSensor(type);
+      if (get_asb_detected_boards() & (RS485_TRUEBNER1 | RS485_TRUEBNER2 | RS485_TRUEBNER3 | RS485_TRUEBNER4))
+        return new TruebnerRS485Sensor(type);
+#elif defined(OSPI)
+      // On OSPI, use USB RS485 if available
+      if (get_asb_detected_boards() & OSPI_USB_RS485)
+        return new UsbRs485Sensor(type);
+#endif
+      break;
+
+    // Generic RS485 sensor (prefer I2C RS485 if available)
+    case SENSOR_RS485:
+      if (get_asb_detected_boards() & ASB_I2C_RS485)
+        return new RS485I2CSensor(type);
+      return nullptr; // fallback to existing C implementation
+
+    // OSPI analog sensors
     case SENSOR_OSPI_ANALOG:
     case SENSOR_OSPI_ANALOG_P:
     case SENSOR_OSPI_ANALOG_SMT50_MOIS:
     case SENSOR_OSPI_ANALOG_SMT50_TEMP:
-      return read_sensor_ospi(sensor, time);
+#ifdef ADS1115
+      return new OspiAds1115Sensor(type);
+#elif defined(PCF8591)
+      return new OspiPcf8591Sensor(type);
+#else
+      return nullptr;
+#endif
+
+    // Remote HTTP sensor
+    case SENSOR_REMOTE:
+      return new RemoteSensor(type);
+
+    // MQTT sensor
+    case SENSOR_MQTT:
+      return new MqttSensor(type);
+
+    // Internal system sensors
+#if defined(ESP8266) || defined(ESP32)
+    case SENSOR_FREE_MEMORY:
+    case SENSOR_FREE_STORE:
+      return new InternalSensor(type);
 #endif
 #if defined(OSPI)
     case SENSOR_OSPI_INTERNAL_TEMP:
-      return read_internal_raspi(sensor, time);
+      return new InternalSensor(type);
 #endif
-#endif
-    case SENSOR_REMOTE:
-      return read_sensor_http(sensor, time);
-    case SENSOR_MQTT:
-      sensor->last_read = time;
-      return read_sensor_mqtt(sensor);
 
+    // Weather sensors
     case SENSOR_WEATHER_TEMP_F:
     case SENSOR_WEATHER_TEMP_C:
     case SENSOR_WEATHER_HUM:
     case SENSOR_WEATHER_PRECIP_IN:
     case SENSOR_WEATHER_PRECIP_MM:
     case SENSOR_WEATHER_WIND_MPH:
-    case SENSOR_WEATHER_WIND_KMH: {
-      GetSensorWeather();
-      if (current_weather_ok) {
-        DEBUG_PRINT(F("Reading sensor "));
-        DEBUG_PRINTLN(sensor->name);
-
-        sensor->last_read = time;
-        sensor->last_native_data = 0;
-        sensor->flags.data_ok = true;
-
-        switch (sensor->type) {
-          case SENSOR_WEATHER_TEMP_F: {
-            sensor->last_data = current_temp;
-            break;
-          }
-          case SENSOR_WEATHER_TEMP_C: {
-            sensor->last_data = (current_temp - 32.0) / 1.8;
-            break;
-          }
-          case SENSOR_WEATHER_HUM: {
-            sensor->last_data = current_humidity;
-            break;
-          }
-          case SENSOR_WEATHER_PRECIP_IN: {
-            sensor->last_data = current_precip;
-            break;
-          }
-          case SENSOR_WEATHER_PRECIP_MM: {
-            sensor->last_data = current_precip * 25.4;
-            break;
-          }
-          case SENSOR_WEATHER_WIND_MPH: {
-            sensor->last_data = current_wind;
-            break;
-          }
-          case SENSOR_WEATHER_WIND_KMH: {
-            sensor->last_data = current_wind * 1.609344;
-            break;
-          }
-        }
-        return HTTP_RQT_SUCCESS;
-      }
-      break;
-    }
+    case SENSOR_WEATHER_WIND_KMH:
     case SENSOR_WEATHER_ETO:
-    case SENSOR_WEATHER_RADIATION: {
-      GetSensorWeatherEto();
-      if (current_weather_eto_ok) {
-        DEBUG_PRINT(F("Reading sensor "));
-        DEBUG_PRINTLN(sensor->name);
-
-        sensor->last_read = time;
-        sensor->last_native_data = 0;
-        sensor->flags.data_ok = true;
-
-        switch (sensor->type) {
-          case SENSOR_WEATHER_ETO: {
-            sensor->last_data = current_eto;
-            break;
-          }
-          case SENSOR_WEATHER_RADIATION: {
-            sensor->last_data = current_radiation;
-            break;
-          }
-        }
-        return HTTP_RQT_SUCCESS;
-      }
-      break;
-    }
+    case SENSOR_WEATHER_RADIATION:
+      return new WeatherSensor(type);
   }
-  return HTTP_RQT_NOT_RECEIVED;
+  return new GenericSensor(type);
+}
+
+int read_sensor(SensorBase *sensor, ulong time) {
+  if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
+
+  return sensor->read(time);
 }
 
 /**
@@ -1607,11 +1287,10 @@ int read_sensor(Sensor_t *sensor, ulong time) {
  *
  */
 void sensor_update_groups() {
-  Sensor_t *sensor = sensors;
-
   ulong time = os.now_tz();
 
-  while (sensor) {
+  for (auto &kv : sensorsMap) {
+    SensorBase *sensor = kv.second;
     if (time >= sensor->last_read + sensor->read_interval) {
       switch (sensor->type) {
         case SENSOR_GROUP_MIN:
@@ -1619,10 +1298,10 @@ void sensor_update_groups() {
         case SENSOR_GROUP_AVG:
         case SENSOR_GROUP_SUM: {
           uint nr = sensor->nr;
-          Sensor_t *group = sensors;
           double value = 0;
           int n = 0;
-          while (group) {
+          for (auto &kv2 : sensorsMap) {
+            SensorBase *group = kv2.second;
             if (group->nr != nr && group->group == nr &&
                 group->flags.enable) {  // && group->flags.data_ok) {
               switch (sensor->type) {
@@ -1645,7 +1324,6 @@ void sensor_update_groups() {
                   break;
               }
             }
-            group = group->next;
           }
           if (sensor->type == SENSOR_GROUP_AVG && n > 0) {
             value = value / (double)n;
@@ -1659,66 +1337,19 @@ void sensor_update_groups() {
         }
       }
     }
-    sensor = sensor->next;
   }
 }
 
-#if defined(OSPI)
-/**
- * @brief Raspberry PI RS485 Interface - Set SMT100 Sensor address
- *
- * @param sensor
- * @return int
- */
-int set_sensor_address_rs485(Sensor_t *sensor, uint8_t new_address) {
-  DEBUG_PRINTLN(F("set_sensor_address_rs485"));
-  int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
-    return HTTP_RQT_NOT_RECEIVED;
-
-
-  uint8_t request[10];
-  request[0] = 0xFD; //253=Truebner Broadcast
-  request[1] = 0x06; //Write
-  request[2] = 0x00;
-  request[3] = 0x04; //Register address
-  request[4] = 0x00;
-  request[5] = new_address;
-  
-  if (modbus_send_raw_request(modbusDevs[device], request, 6) > 0) {
-    modbus_flush(modbusDevs[device]);
-    return HTTP_RQT_SUCCESS;
-  }
-  return HTTP_RQT_NOT_RECEIVED;
-}
-#endif
-
-#if defined(ESP8266) || defined(ESP32)
 /**
  * @brief Set SMT100 Sensor address
  *
  * @param sensor
  * @return int
  */
-int set_sensor_address(Sensor_t *sensor, uint8_t new_address) {
+int set_sensor_address(SensorBase *sensor, uint8_t new_address) {
   if (!sensor) return HTTP_RQT_NOT_RECEIVED;
-
-  switch (sensor->type) {
-    case SENSOR_SMT100_MOIS:
-    case SENSOR_SMT100_TEMP:
-    case SENSOR_SMT100_PMTY:
-    case SENSOR_TH100_MOIS:
-	  case SENSOR_TH100_TEMP:
-      sensor->flags.data_ok = false;
-      if (sensor->ip && sensor->port)
-        return set_sensor_address_ip(sensor, new_address);
-      if (asb_detected_boards & ASB_I2C_RS485)
-        return set_sensor_address_i2c_rs485(sensor, new_address);
-      return set_sensor_address_truebner_rs485(sensor, new_address);
-  }
-  return HTTP_RQT_CONNECT_ERR;
+  return sensor->setAddress(new_address);
 }
-#endif
 
 double calc_linear(ProgSensorAdjust_t *p, double sensorData) {
   //   min max  factor1 factor2
@@ -1766,18 +1397,17 @@ double calc_digital_minmax(ProgSensorAdjust_t *p, double sensorData) {
  */
 double calc_sensor_watering(uint prog) {
   double result = 1;
-  ProgSensorAdjust_t *p = progSensorAdjusts;
 
-  while (p) {
+  for (auto &kv : progSensorAdjustsMap) {
+    ProgSensorAdjust_t *p = kv.second;
+    if (!p) continue;
     if (p->prog - 1 == prog) {
-      Sensor_t *sensor = sensor_by_nr(p->sensor);
+      SensorBase *sensor = sensor_by_nr(p->sensor);
       if (sensor && sensor->flags.enable && sensor->flags.data_ok) {
         double res = calc_sensor_watering_int(p, sensor->last_data);
         result = result * res;
       }
     }
-
-    p = p->next;
   }
   if (result < 0.0) result = 0.0;
   if (result > 20.0)  // Factor 20 is a huge value!
@@ -1810,6 +1440,34 @@ double calc_sensor_watering_int(ProgSensorAdjust_t *p, double sensorData) {
   return res;
 }
 
+// ProgSensorAdjust JSON serialization methods
+void ProgSensorAdjust::toJson(ArduinoJson::JsonObject obj) const {
+  obj["nr"] = nr;
+  obj["type"] = type;
+  obj["sensor"] = sensor;
+  obj["prog"] = prog;
+  obj["factor1"] = factor1;
+  obj["factor2"] = factor2;
+  obj["min"] = min;
+  obj["max"] = max;
+  obj["name"] = name;
+}
+
+void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
+  nr = obj["nr"] | 0;
+  type = obj["type"] | 0;
+  sensor = obj["sensor"] | 0;
+  prog = obj["prog"] | 0;
+  factor1 = obj["factor1"] | 0.0;
+  factor2 = obj["factor2"] | 0.0;
+  min = obj["min"] | 0.0;
+  max = obj["max"] | 0.0;
+  
+  const char* nameStr = obj["name"] | "";
+  strncpy(name, nameStr, sizeof(name) - 1);
+  name[sizeof(name) - 1] = '\0';
+}
+
 /**
  * @brief calculate adjustment
  *
@@ -1818,11 +1476,12 @@ double calc_sensor_watering_int(ProgSensorAdjust_t *p, double sensorData) {
  */
 double calc_sensor_watering_by_nr(uint nr) {
   double result = 1;
-  ProgSensorAdjust_t *p = progSensorAdjusts;
-
-  while (p) {
-    if (p->nr == nr) {
-      Sensor_t *sensor = sensor_by_nr(p->sensor);
+  
+  auto it = progSensorAdjustsMap.find(nr);
+  if (it != progSensorAdjustsMap.end()) {
+    ProgSensorAdjust_t *p = it->second;
+    if (p) {
+      SensorBase *sensor = sensor_by_nr(p->sensor);
       if (sensor && sensor->flags.enable && sensor->flags.data_ok) {
         double res = 0;
         switch (p->type) {
@@ -1844,149 +1503,202 @@ double calc_sensor_watering_by_nr(uint nr) {
 
         result = result * res;
       }
-      break;
     }
-
-    p = p->next;
   }
 
   return result;
 }
 
-int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
-                       double factor1, double factor2, double min, double max, char * name) {
-  ProgSensorAdjust_t *p = progSensorAdjusts;
-
-  ProgSensorAdjust_t *last = NULL;
-
-  while (p) {
-    if (p->nr == nr) {
-      p->type = type;
-      p->sensor = sensor;
-      p->prog = prog;
-      p->factor1 = factor1;
-      p->factor2 = factor2;
-      p->min = min;
-      p->max = max;
-      strncpy(p->name, name, sizeof(p->name));
-      prog_adjust_save();
-      return HTTP_RQT_SUCCESS;
-    }
-
-    if (p->nr > nr) break;
-
-    last = p;
-    p = p->next;
+/**
+ * @brief Define or update a program sensor adjustment from JSON configuration
+ * @param json JsonDocument containing prog adjustment configuration
+ * @param save if true, save to file after update (default: true)
+ * @return HTTP_RQT_SUCCESS on success, HTTP_RQT_NOT_RECEIVED on error
+ */
+int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save) {
+  if (!json.containsKey("nr")) {
+    return HTTP_RQT_NOT_RECEIVED;
   }
-
-  p = new ProgSensorAdjust_t;
-  p->nr = nr;
-  p->type = type;
-  p->sensor = sensor;
-  p->prog = prog;
-  p->factor1 = factor1;
-  p->factor2 = factor2;
-  p->min = min;
-  p->max = max;
-  strncpy(p->name, name, sizeof(p->name));
-  if (last) {
-    p->next = last->next;
-    last->next = p;
+  
+  uint nr = json["nr"];
+  if (nr == 0) return HTTP_RQT_NOT_RECEIVED;
+  
+  DEBUG_PRINTLN(F("prog_adjust_define"));
+  
+  // Check if type is 0 (delete request)
+  if (json.containsKey("type") && json["type"].as<uint>() == 0) {
+    return prog_adjust_delete(nr);
+  }
+  
+  // Check if already exists
+  auto it = progSensorAdjustsMap.find(nr);
+  ProgSensorAdjust_t *p = nullptr;
+  
+  if (it != progSensorAdjustsMap.end()) {
+    // Update existing
+    p = it->second;
+    p->fromJson(json);
   } else {
-    p->next = progSensorAdjusts;
-    progSensorAdjusts = p;
+    // Create new
+    p = new ProgSensorAdjust_t;
+    p->fromJson(json);
+    
+    // Validate required fields
+    if (p->nr == 0 || p->type == 0) {
+      delete p;
+      return HTTP_RQT_NOT_RECEIVED;
+    }
+    
+    progSensorAdjustsMap[nr] = p;
   }
-
-  prog_adjust_save();
+  
+  if (save) {
+    prog_adjust_save();
+  }
   return HTTP_RQT_SUCCESS;
 }
 
+/**
+ * @brief Legacy interface - define a program sensor adjustment with individual parameters
+ * @deprecated Use prog_adjust_define(JsonVariantConst, bool) instead
+ */
+int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
+                       double factor1, double factor2, double min, double max, char * name) {
+  // Convert to JSON and call new implementation
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+  
+  obj["nr"] = nr;
+  obj["type"] = type;
+  obj["sensor"] = sensor;
+  obj["prog"] = prog;
+  obj["factor1"] = factor1;
+  obj["factor2"] = factor2;
+  obj["min"] = min;
+  obj["max"] = max;
+  if (name && name[0] != 0) {
+    obj["name"] = name;
+  }
+  
+  return prog_adjust_define(obj, true);
+}
+
 int prog_adjust_delete(uint nr) {
-  ProgSensorAdjust_t *p = progSensorAdjusts;
-
-  ProgSensorAdjust_t *last = NULL;
-
-  while (p) {
-    if (p->nr == nr) {
-      if (last)
-        last->next = p->next;
-      else
-        progSensorAdjusts = p->next;
-      delete p;
-      prog_adjust_save();
-      return HTTP_RQT_SUCCESS;
-    }
-    last = p;
-    p = p->next;
+  auto it = progSensorAdjustsMap.find(nr);
+  if (it != progSensorAdjustsMap.end()) {
+    delete it->second;
+    progSensorAdjustsMap.erase(it);
+    prog_adjust_save();
+    return HTTP_RQT_SUCCESS;
   }
   return HTTP_RQT_NOT_RECEIVED;
 }
 
 void prog_adjust_save() {
   if (!apiInit) return;
-  if (file_exists(PROG_SENSOR_FILENAME)) remove_file(PROG_SENSOR_FILENAME);
-
-  ulong pos = 0;
-  ProgSensorAdjust_t *pa = progSensorAdjusts;
-  while (pa) {
-    file_write_block(PROG_SENSOR_FILENAME, pa, pos, PROGSENSOR_STORE_SIZE);
-    pa = pa->next;
-    pos += PROGSENSOR_STORE_SIZE;
+  
+  DEBUG_PRINTLN(F("prog_adjust_save"));
+  
+  // Delete old file if exists
+  if (file_exists(PROG_SENSOR_FILENAME)) {
+    remove_file(PROG_SENSOR_FILENAME);
   }
+  
+  // Create JSON document
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::JsonArray array = doc.to<ArduinoJson::JsonArray>();
+  
+  // Serialize all prog sensor adjusts
+  for (auto &kv : progSensorAdjustsMap) {
+    ProgSensorAdjust_t *pa = kv.second;
+    if (pa) {
+      ArduinoJson::JsonObject obj = array.add<ArduinoJson::JsonObject>();
+      pa->toJson(obj);
+    }
+  }
+  
+  // Write to file using FileWriter for buffered writing
+  FileWriter writer(PROG_SENSOR_FILENAME);
+  ArduinoJson::serializeJson(doc, writer);
 }
 
 void prog_adjust_load() {
   DEBUG_PRINTLN(F("prog_adjust_load"));
-  progSensorAdjusts = NULL;
-  if (!file_exists(PROG_SENSOR_FILENAME)) return;
-
-  ulong pos = 0;
-  ProgSensorAdjust_t *last = NULL;
-  while (true) {
+  
+  // Clean up existing map
+  for (auto &kv : progSensorAdjustsMap) {
+    delete kv.second;
+  }
+  progSensorAdjustsMap.clear();
+  
+  // Check if JSON file exists
+  if (!file_exists(PROG_SENSOR_FILENAME)) {
+    DEBUG_PRINTLN(F("prog_adjust JSON file not found, checking for legacy"));
+    // Try to load legacy binary format
+    if (prog_adjust_load_legacy(progSensorAdjustsMap)) {
+      DEBUG_PRINTLN(F("prog_adjust loaded from legacy binary format"));
+      return;
+    }
+    DEBUG_PRINTLN(F("No prog_adjust data found"));
+    return;
+  }
+  
+  // Read JSON from file using FileReader for buffered reading
+  FileReader reader(PROG_SENSOR_FILENAME);
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, reader);
+  
+  if (error) {
+    DEBUG_PRINT(F("prog_adjust_load deserializeJson() failed: "));
+    DEBUG_PRINTLN(error.c_str());
+    return;
+  }
+  
+  // Parse JSON array
+  if (!doc.is<ArduinoJson::JsonArray>()) {
+    DEBUG_PRINTLN(F("prog_adjust JSON is not an array"));
+    return;
+  }
+  
+  ArduinoJson::JsonArray array = doc.as<ArduinoJson::JsonArray>();
+  
+  for (ArduinoJson::JsonVariantConst v : array) {
     ProgSensorAdjust_t *pa = new ProgSensorAdjust_t;
-    memset(pa, 0, sizeof(ProgSensorAdjust_t));
-    file_read_block(PROG_SENSOR_FILENAME, pa, pos, PROGSENSOR_STORE_SIZE);
+    pa->fromJson(v);
+    
+    // Skip invalid entries
     if (!pa->nr || !pa->type) {
       delete pa;
-      break;
+      continue;
     }
-    if (!last)
-      progSensorAdjusts = pa;
-    else
-      last->next = pa;
-    last = pa;
-    pa->next = NULL;
-    pos += PROGSENSOR_STORE_SIZE;
+    
+    // Add to map
+    progSensorAdjustsMap[pa->nr] = pa;
   }
+  
+  DEBUG_PRINT(F("Loaded "));
+  DEBUG_PRINT(prog_adjust_count());
+  DEBUG_PRINTLN(F(" prog adjustments"));
 }
 
 uint prog_adjust_count() {
-  uint count = 0;
-  ProgSensorAdjust_t *pa = progSensorAdjusts;
-  while (pa) {
-    count++;
-    pa = pa->next;
-  }
-  return count;
+  return progSensorAdjustsMap.size();
 }
 
 ProgSensorAdjust_t *prog_adjust_by_nr(uint nr) {
-  ProgSensorAdjust_t *pa = progSensorAdjusts;
-  while (pa) {
-    if (pa->nr == nr) return pa;
-    pa = pa->next;
+  auto it = progSensorAdjustsMap.find(nr);
+  if (it != progSensorAdjustsMap.end()) {
+    return it->second;
   }
   return NULL;
 }
 
 ProgSensorAdjust_t *prog_adjust_by_idx(uint idx) {
-  ProgSensorAdjust_t *pa = progSensorAdjusts;
-  uint idxCounter = 0;
-  while (pa) {
-    if (idxCounter++ == idx) return pa;
-    pa = pa->next;
-  }
-  return NULL;
+  if (idx >= progSensorAdjustsMap.size()) return NULL;
+  
+  auto it = progSensorAdjustsMap.begin();
+  std::advance(it, idx);
+  return it->second;
 }
 
 #if defined(ESP8266)
@@ -2009,6 +1721,35 @@ bool checkDiskFree() {
   return true;
 }
 
+// SensorBase default emitJson implementation
+void SensorBase::emitJson(BufferFiller& bfill) const {
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+  toJson(obj);
+  
+  // Serialize to string and output
+  String jsonStr;
+  ArduinoJson::serializeJson(doc, jsonStr);
+  bfill.emit_p(PSTR("$S"), jsonStr.c_str());
+}
+
+// SensorBase default implementation for getUnitId()
+// Most sensor types override this method with their own implementation
+unsigned char SensorBase::getUnitId() const {
+  // Default fallback for unknown types
+  // Group sensors have their own override in GroupSensor class
+  return UNIT_NONE;
+}
+
+const char* SensorBase::getUnit() const {
+  int unitid = getUnitId();
+  if (unitid == UNIT_USERDEF) return userdef_unit;
+  if (unitid < 0 || (uint16_t)unitid >= sizeof(sensor_unitNames))
+    return sensor_unitNames[0];
+  return sensor_unitNames[unitid];
+}
+
+// Wrapper functions for backward compatibility
 const char *getSensorUnit(int unitid) {
   if (unitid == UNIT_USERDEF) return "?";
   if (unitid < 0 || (uint16_t)unitid >= sizeof(sensor_unitNames))
@@ -2016,17 +1757,12 @@ const char *getSensorUnit(int unitid) {
   return sensor_unitNames[unitid];
 }
 
-const char *getSensorUnit(Sensor_t *sensor) {
+const char *getSensorUnit(SensorBase *sensor) {
   if (!sensor) return sensor_unitNames[0];
-
-  int unitid = getSensorUnitId(sensor);
-  if (unitid == UNIT_USERDEF) return sensor->userdef_unit;
-  if (unitid < 0 || (uint16_t)unitid >= sizeof(sensor_unitNames))
-    return sensor_unitNames[0];
-  return sensor_unitNames[unitid];
+  return sensor->getUnit();
 }
 
-boolean sensor_isgroup(Sensor_t *sensor) {
+boolean sensor_isgroup(const SensorBase *sensor) {
   if (!sensor) return false;
 
   switch (sensor->type) {
@@ -2041,446 +1777,16 @@ boolean sensor_isgroup(Sensor_t *sensor) {
   }
 }
 
+// Wrapper for backward compatibility - delegates to sensor type
 unsigned char getSensorUnitId(int type) {
-  switch (type) {
-    case SENSOR_SMT100_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_SMT100_TEMP:
-      return UNIT_DEGREE;
-    case SENSOR_SMT100_PMTY:
-      return UNIT_DK;
-    case SENSOR_TH100_MOIS:
-      return UNIT_HUM_PERCENT;
-	  case SENSOR_TH100_TEMP:
-      return UNIT_DEGREE;
-#if defined(ARDUINO)
-#if defined(ESP8266) || defined(ESP32)
-    case SENSOR_ANALOG_EXTENSION_BOARD:
-      return UNIT_VOLT;
-    case SENSOR_ANALOG_EXTENSION_BOARD_P:
-      return UNIT_PERCENT;
-    case SENSOR_SMT50_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_SMT50_TEMP:
-      return UNIT_DEGREE;
-    case SENSOR_SMT100_ANALOG_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_SMT100_ANALOG_TEMP:
-      return UNIT_DEGREE;
-
-    case SENSOR_VH400:
-      return UNIT_PERCENT;
-    case SENSOR_THERM200:
-      return UNIT_DEGREE;
-    case SENSOR_AQUAPLUMB:
-      return UNIT_PERCENT;
-    case SENSOR_USERDEF:
-    case SENSOR_FREE_MEMORY:
-    case SENSOR_FREE_STORE:
-      return UNIT_USERDEF;
-#endif
-#else
-    case SENSOR_OSPI_ANALOG:
-      return UNIT_VOLT;
-    case SENSOR_OSPI_ANALOG_P:
-      return UNIT_PERCENT;
-    case SENSOR_OSPI_ANALOG_SMT50_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_OSPI_ANALOG_SMT50_TEMP:
-    case SENSOR_OSPI_INTERNAL_TEMP:
-      return UNIT_DEGREE;
-#endif
-
-    case SENSOR_FYTA_MOISTURE: 
-      return UNIT_PERCENT;  
-    case SENSOR_FYTA_TEMPERATURE:
-      return UNIT_DEGREE;
-    
-    case SENSOR_MQTT:
-      return UNIT_USERDEF;
-    case SENSOR_WEATHER_TEMP_F:
-      return UNIT_FAHRENHEIT;
-    case SENSOR_WEATHER_TEMP_C:
-      return UNIT_DEGREE;
-    case SENSOR_WEATHER_HUM:
-      return UNIT_HUM_PERCENT;
-    case SENSOR_WEATHER_PRECIP_IN:
-      return UNIT_INCH;
-    case SENSOR_WEATHER_PRECIP_MM:
-      return UNIT_MM;
-    case SENSOR_WEATHER_WIND_MPH:
-      return UNIT_MPH;
-    case SENSOR_WEATHER_WIND_KMH:
-      return UNIT_KMH;
-
-    default:
-      return UNIT_NONE;
-  }
+  // Create temporary sensor to get unit ID for type
+  GenericSensor temp(type);
+  return temp.getUnitId();
 }
 
-unsigned char getSensorUnitId(Sensor_t *sensor) {
-  if (!sensor) return 0;
-
-  switch (sensor->type) {
-    case SENSOR_SMT100_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_SMT100_TEMP:
-      return UNIT_DEGREE;
-    case SENSOR_SMT100_PMTY:
-      return UNIT_DK;
-    case SENSOR_TH100_MOIS:
-      return UNIT_HUM_PERCENT;
-	  case SENSOR_TH100_TEMP:
-      return UNIT_DEGREE;
-#if defined(ARDUINO)
-#if defined(ESP8266) || defined(ESP32)
-    case SENSOR_ANALOG_EXTENSION_BOARD:
-      return UNIT_VOLT;
-    case SENSOR_ANALOG_EXTENSION_BOARD_P:
-      return UNIT_LEVEL;
-    case SENSOR_SMT50_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_SMT50_TEMP:
-      return UNIT_DEGREE;
-    case SENSOR_SMT100_ANALOG_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_SMT100_ANALOG_TEMP:
-      return UNIT_DEGREE;
-
-    case SENSOR_VH400:
-      return UNIT_PERCENT;
-    case SENSOR_THERM200:
-      return UNIT_DEGREE;
-    case SENSOR_AQUAPLUMB:
-      return UNIT_PERCENT;
-    case SENSOR_FREE_MEMORY:
-    case SENSOR_FREE_STORE:
-      return UNIT_USERDEF;
-#endif
-#else
-    case SENSOR_OSPI_ANALOG:
-      return UNIT_VOLT;
-    case SENSOR_OSPI_ANALOG_P:
-      return UNIT_PERCENT;
-    case SENSOR_OSPI_ANALOG_SMT50_MOIS:
-      return UNIT_PERCENT;
-    case SENSOR_OSPI_ANALOG_SMT50_TEMP:
-    case SENSOR_OSPI_INTERNAL_TEMP:
-      return UNIT_DEGREE;
-#endif
-
-    case SENSOR_FYTA_MOISTURE: 
-      return sensor->assigned_unitid;  
-    case SENSOR_FYTA_TEMPERATURE:
-      return sensor->assigned_unitid;
-
-    case SENSOR_USERDEF:
-    case SENSOR_MQTT:
-    case SENSOR_REMOTE:
-      return sensor->assigned_unitid > 0 ? sensor->assigned_unitid
-                                         : UNIT_USERDEF;
-
-    case SENSOR_WEATHER_TEMP_F:
-      return UNIT_FAHRENHEIT;
-    case SENSOR_WEATHER_TEMP_C:
-      return UNIT_DEGREE;
-    case SENSOR_WEATHER_HUM:
-      return UNIT_HUM_PERCENT;
-    case SENSOR_WEATHER_PRECIP_IN:
-      return UNIT_INCH;
-    case SENSOR_WEATHER_PRECIP_MM:
-      return UNIT_MM;
-    case SENSOR_WEATHER_WIND_MPH:
-      return UNIT_MPH;
-    case SENSOR_WEATHER_WIND_KMH:
-      return UNIT_KMH;
-
-    case SENSOR_GROUP_MIN:
-    case SENSOR_GROUP_MAX:
-    case SENSOR_GROUP_AVG:
-    case SENSOR_GROUP_SUM:
-
-      for (int i = 0; i < 100; i++) {
-        Sensor_t *sen = sensors;
-        while (sen) {
-          if (sen != sensor && sen->group > 0 && sen->group == sensor->nr) {
-            if (!sensor_isgroup(sen)) return getSensorUnitId(sen);
-            sensor = sen;
-            break;
-          }
-          sen = sen->next;
-        }
-      }
-      
-    default:
-      return UNIT_NONE;
-  }
-}
-
-void GetSensorWeather() {
-#if defined(ESP8266) || defined(ESP32)
-  if (!useEth)
-    if (os.state != OS_STATE_CONNECTED || WiFi.status() != WL_CONNECTED) return;
-#endif
-  time_t time = os.now_tz();
-  if (last_weather_time == 0) last_weather_time = time - 59 * 60;
-
-  if (time < last_weather_time + 60 * 60) return;
-
-  // use temp buffer to construct get command
-  BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE);
-  bf.emit_p(PSTR("weatherData?loc=$O&wto=$O&fwv=$D"), SOPT_LOCATION,
-            SOPT_WEATHER_OPTS,
-            (int)os.iopts[IOPT_FW_VERSION]);
-
-  urlEncode(tmp_buffer);
-
-  strcpy(ether_buffer, "GET /");
-  strcat(ether_buffer, tmp_buffer);
-  // because dst is part of tmp_buffer,
-  // must load weather url AFTER dst is copied to ether_buffer
-
-  // load weather url to tmp_buffer
-  char *host = tmp_buffer;
-  os.sopt_load(SOPT_WEATHERURL, host);
-
-  strcat(ether_buffer, " HTTP/1.0\r\nHOST: ");
-  strcat(ether_buffer, host);
-  strcat(ether_buffer, "\r\nUser-Agent: ");
-	strcat(ether_buffer, user_agent_string);
-	strcat(ether_buffer, "\r\n\r\n");
-
-  DEBUG_PRINTLN(F("GetSensorWeather"));
-  DEBUG_PRINTLN(ether_buffer);
-
-  last_weather_time = time;
-  int ret = os.send_http_request(host, ether_buffer);
-  if (ret == HTTP_RQT_SUCCESS) {
-    DEBUG_PRINTLN(ether_buffer);
-
-    char buf[20];
-    char *s = strstr(ether_buffer, "\"temp\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      current_temp = atof(buf);
-    }
-    s = strstr(ether_buffer, "\"humidity\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      current_humidity = atof(buf);
-    }
-    s = strstr(ether_buffer, "\"precip\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      current_precip = atof(buf);
-    }
-    s = strstr(ether_buffer, "\"wind\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      current_wind = atof(buf);
-    }
-#ifdef ENABLE_DEBUG
-    char tmp[10];
-    DEBUG_PRINT("temp: ");
-    dtostrf(current_temp, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
-    DEBUG_PRINT("humidity: ");
-    dtostrf(current_humidity, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
-    DEBUG_PRINT("precip: ");
-    dtostrf(current_precip, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
-    DEBUG_PRINT("wind: ");
-    dtostrf(current_wind, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
-#endif
-    current_weather_ok = true;
-  } else {
-    current_weather_ok = false;
-  }
-}
-
-void GetSensorWeatherEto() {
-#if defined(ESP8266) || defined(ESP32)
-  if (!useEth)
-    if (os.state != OS_STATE_CONNECTED || WiFi.status() != WL_CONNECTED) return;
-#endif
-  time_t time = os.now_tz();
-  if (last_weather_time_eto == 0) last_weather_time_eto = time - 59 * 60;
-
-  if (time < last_weather_time_eto + 60 * 60) return;
-
-  // use temp buffer to construct get command
-  BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE);
-  bf.emit_p(PSTR("$D?loc=$O&wto=$O&fwv=$D"),
-								WEATHER_METHOD_ETO,
-								SOPT_LOCATION,
-								SOPT_WEATHER_OPTS,
-								(int)os.iopts[IOPT_FW_VERSION]);
-  
-  urlEncode(tmp_buffer);
-
-  strcpy(ether_buffer, "GET /");
-  strcat(ether_buffer, tmp_buffer);
-  // because dst is part of tmp_buffer,
-  // must load weather url AFTER dst is copied to ether_buffer
-
-  // load weather url to tmp_buffer
-  char *host = tmp_buffer;
-  os.sopt_load(SOPT_WEATHERURL, host);
-
-  strcat(ether_buffer, " HTTP/1.0\r\nHOST: ");
-  strcat(ether_buffer, host);
-  strcat(ether_buffer, "\r\nUser-Agent: ");
-	strcat(ether_buffer, user_agent_string);
-	strcat(ether_buffer, "\r\n\r\n");
-
-  DEBUG_PRINTLN(F("GetSensorWeather"));
-  DEBUG_PRINTLN(ether_buffer);
-
-  last_weather_time_eto = time;
-  int ret = os.send_http_request(host, ether_buffer);
-  if (ret == HTTP_RQT_SUCCESS) {
-    DEBUG_PRINTLN(ether_buffer);
-
-    char buf[20];
-    char *s = strstr(ether_buffer, "\"eto\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      current_eto = atof(buf) * 25.4;  // convert to mm
-    }
-    s = strstr(ether_buffer, "\"radiation\":");
-    if (s && extract(s, buf, sizeof(buf))) {
-      current_radiation = atof(buf);
-    }
-    current_weather_eto_ok = true;
-  } else {
-    current_weather_eto_ok = false;
-  }
-}
-
-void SensorUrl_load() {
-  sensorUrls = NULL;
-  DEBUG_PRINTLN("SensorUrl_load1");
-  if (!file_exists(SENSORURL_FILENAME)) return;
-
-  DEBUG_PRINTLN("SensorUrl_load2");
-  ulong pos = 0;
-  SensorUrl_t *last = NULL;
-  while (true) {
-    SensorUrl_t *sensorUrl = new SensorUrl_t;
-    memset(sensorUrl, 0, sizeof(SensorUrl_t));
-    if (file_read_block(SENSORURL_FILENAME, sensorUrl, pos,
-                        SENSORURL_STORE_SIZE) < SENSORURL_STORE_SIZE) {
-      delete sensorUrl;
-      break;
-    }
-    sensorUrl->urlstr = (char *)malloc(sensorUrl->length + 1);
-    pos += SENSORURL_STORE_SIZE;
-    ulong result = file_read_block(SENSORURL_FILENAME, sensorUrl->urlstr, pos,
-                    sensorUrl->length);
-    if (result != sensorUrl->length) {
-      free(sensorUrl->urlstr);
-      delete sensorUrl;
-      break;
-    }
-                
-    sensorUrl->urlstr[sensorUrl->length] = 0;
-    pos += sensorUrl->length;
-
-    DEBUG_PRINT(sensorUrl->nr);
-    DEBUG_PRINT("/");
-    DEBUG_PRINT(sensorUrl->type);
-    DEBUG_PRINT(": ");
-    DEBUG_PRINTLN(sensorUrl->urlstr);
-
-    if (!last)
-      sensorUrls = sensorUrl;
-    else
-      last->next = sensorUrl;
-    last = sensorUrl;
-    sensorUrl->next = NULL;
-  }
-  DEBUG_PRINTLN("SensorUrl_load3");
-}
-
-void SensorUrl_save() {
-  if (!apiInit) return;
-  if (file_exists(SENSORURL_FILENAME)) remove_file(SENSORURL_FILENAME);
-
-  ulong pos = 0;
-  SensorUrl_t *sensorUrl = sensorUrls;
-  while (sensorUrl) {
-    file_write_block(SENSORURL_FILENAME, sensorUrl, pos, SENSORURL_STORE_SIZE);
-    pos += SENSORURL_STORE_SIZE;
-    file_write_block(SENSORURL_FILENAME, sensorUrl->urlstr, pos,
-                     sensorUrl->length);
-    pos += sensorUrl->length;
-
-    sensorUrl = sensorUrl->next;
-  }
-}
-
-bool SensorUrl_delete(uint nr, uint type) {
-  SensorUrl_t *sensorUrl = sensorUrls;
-  SensorUrl_t *last = NULL;
-  while (sensorUrl) {
-    if (sensorUrl->nr == nr && sensorUrl->type == type) {
-      if (last)
-        last->next = sensorUrl->next;
-      else
-        sensorUrls = sensorUrl->next;
-
-      sensor_mqtt_unsubscribe(nr, type, sensorUrl->urlstr);
-
-      free(sensorUrl->urlstr);
-      delete sensorUrl;
-      SensorUrl_save();
-      return true;
-    }
-    last = sensorUrl;
-    sensorUrl = sensorUrl->next;
-  }
-  return false;
-}
-
-bool SensorUrl_add(uint nr, uint type, const char *urlstr) {
-  if (!urlstr || !strlen(urlstr)) {  // empty string? delete!
-    return SensorUrl_delete(nr, type);
-  }
-  SensorUrl_t *sensorUrl = sensorUrls;
-  while (sensorUrl) {
-    if (sensorUrl->nr == nr && sensorUrl->type == type) {  // replace existing
-      sensor_mqtt_unsubscribe(nr, type, sensorUrl->urlstr);
-      free(sensorUrl->urlstr);
-      sensorUrl->length = strlen(urlstr);
-      sensorUrl->urlstr = strdup(urlstr);
-      SensorUrl_save();
-      sensor_mqtt_subscribe(nr, type, urlstr);
-      return true;
-    }
-    sensorUrl = sensorUrl->next;
-  }
-
-  // Add new:
-  sensorUrl = new SensorUrl_t;
-  memset(sensorUrl, 0, sizeof(SensorUrl_t));
-  sensorUrl->nr = nr;
-  sensorUrl->type = type;
-  sensorUrl->length = strlen(urlstr);
-  sensorUrl->urlstr = strdup(urlstr);
-  sensorUrl->next = sensorUrls;
-  sensorUrls = sensorUrl;
-  SensorUrl_save();
-
-  sensor_mqtt_subscribe(nr, type, urlstr);
-
-  return true;
-}
-
-char *SensorUrl_get(uint nr, uint type) {
-  SensorUrl_t *sensorUrl = sensorUrls;
-  while (sensorUrl) {
-    if (sensorUrl->nr == nr && sensorUrl->type == type)  // replace existing
-      return sensorUrl->urlstr;
-    sensorUrl = sensorUrl->next;
-  }
-  return NULL;
+unsigned char getSensorUnitId(SensorBase *sensor) {
+  if (!sensor) return UNIT_NONE;
+  return sensor->getUnitId();
 }
 
 /**
@@ -2489,7 +1795,7 @@ char *SensorUrl_get(uint nr, uint type) {
  * @param sensor 
  * @param log 
  */
-void add_influx_data(Sensor_t *sensor) {
+void add_influx_data(SensorBase *sensor) {
   if (!os.influxdb.isEnabled())
     return;
 
@@ -2545,130 +1851,270 @@ influxdb_cpp::builder()
 
 
 //Value Monitoring
+
+/**
+ * @brief Serialize Monitor to JSON
+ */
+void Monitor::toJson(ArduinoJson::JsonObject obj) const {
+  obj["nr"] = nr;
+  obj["type"] = type;
+  obj["sensor"] = sensor;
+  obj["prog"] = prog;
+  obj["zone"] = zone;
+  obj["active"] = active;
+  obj["time"] = time;
+  obj["name"] = name;
+  obj["maxRuntime"] = maxRuntime;
+  obj["prio"] = prio;
+  obj["reset_seconds"] = reset_seconds;
+  
+  // Serialize Monitor_Union based on type
+  ArduinoJson::JsonObject mObj = obj["m"].to<ArduinoJson::JsonObject>();
+  switch(type) {
+    case MONITOR_MIN:
+    case MONITOR_MAX:
+      mObj["value1"] = m.minmax.value1;
+      mObj["value2"] = m.minmax.value2;
+      break;
+    case MONITOR_SENSOR12:
+      mObj["sensor12"] = m.sensor12.sensor12;
+      mObj["invers"] = m.sensor12.invers;
+      break;
+    case MONITOR_SET_SENSOR12:
+      mObj["monitor"] = m.set_sensor12.monitor;
+      mObj["sensor12"] = m.set_sensor12.sensor12;
+      break;
+    case MONITOR_AND:
+    case MONITOR_OR:
+    case MONITOR_XOR:
+      mObj["monitor1"] = m.andorxor.monitor1;
+      mObj["monitor2"] = m.andorxor.monitor2;
+      mObj["monitor3"] = m.andorxor.monitor3;
+      mObj["monitor4"] = m.andorxor.monitor4;
+      mObj["invers1"] = m.andorxor.invers1;
+      mObj["invers2"] = m.andorxor.invers2;
+      mObj["invers3"] = m.andorxor.invers3;
+      mObj["invers4"] = m.andorxor.invers4;
+      break;
+    case MONITOR_NOT:
+      mObj["monitor"] = m.mnot.monitor;
+      break;
+    case MONITOR_TIME:
+      mObj["time_from"] = m.mtime.time_from;
+      mObj["time_to"] = m.mtime.time_to;
+      mObj["weekdays"] = m.mtime.weekdays;
+      break;
+    case MONITOR_REMOTE:
+      mObj["rmonitor"] = m.remote.rmonitor;
+      mObj["ip"] = m.remote.ip;
+      mObj["port"] = m.remote.port;
+      break;
+  }
+}
+
+/**
+ * @brief Deserialize Monitor from JSON
+ */
+void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
+  nr = obj["nr"] | 0;
+  type = obj["type"] | 0;
+  sensor = obj["sensor"] | 0;
+  prog = obj["prog"] | 0;
+  zone = obj["zone"] | 0;
+  active = obj["active"] | false;
+  time = obj["time"] | 0;
+  strncpy(name, obj["name"] | "", sizeof(name) - 1);
+  name[sizeof(name) - 1] = '\0';
+  maxRuntime = obj["maxRuntime"] | 0;
+  prio = obj["prio"] | 0;
+  reset_seconds = obj["reset_seconds"] | 0;
+  reset_time = 0;
+  
+  // Deserialize Monitor_Union based on type
+  memset(&m, 0, sizeof(Monitor_Union_t));
+  ArduinoJson::JsonVariantConst mVar = obj["m"];
+  if (!mVar.isNull()) {
+    switch(type) {
+      case MONITOR_MIN:
+      case MONITOR_MAX:
+        m.minmax.value1 = mVar["value1"] | 0.0;
+        m.minmax.value2 = mVar["value2"] | 0.0;
+        break;
+      case MONITOR_SENSOR12:
+        m.sensor12.sensor12 = mVar["sensor12"] | 0;
+        m.sensor12.invers = mVar["invers"] | false;
+        break;
+      case MONITOR_SET_SENSOR12:
+        m.set_sensor12.monitor = mVar["monitor"] | 0;
+        m.set_sensor12.sensor12 = mVar["sensor12"] | 0;
+        break;
+      case MONITOR_AND:
+      case MONITOR_OR:
+      case MONITOR_XOR:
+        m.andorxor.monitor1 = mVar["monitor1"] | 0;
+        m.andorxor.monitor2 = mVar["monitor2"] | 0;
+        m.andorxor.monitor3 = mVar["monitor3"] | 0;
+        m.andorxor.monitor4 = mVar["monitor4"] | 0;
+        m.andorxor.invers1 = mVar["invers1"] | false;
+        m.andorxor.invers2 = mVar["invers2"] | false;
+        m.andorxor.invers3 = mVar["invers3"] | false;
+        m.andorxor.invers4 = mVar["invers4"] | false;
+        break;
+      case MONITOR_NOT:
+        m.mnot.monitor = mVar["monitor"] | 0;
+        break;
+      case MONITOR_TIME:
+        m.mtime.time_from = mVar["time_from"] | 0;
+        m.mtime.time_to = mVar["time_to"] | 0;
+        m.mtime.weekdays = mVar["weekdays"] | 0;
+        break;
+      case MONITOR_REMOTE:
+        m.remote.rmonitor = mVar["rmonitor"] | 0;
+        m.remote.ip = mVar["ip"] | 0;
+        m.remote.port = mVar["port"] | 0;
+        break;
+    }
+  }
+}
+
 void monitor_load() {
   DEBUG_PRINTLN(F("monitor_load"));
-  monitors = NULL;
-  if (!file_exists(MONITOR_FILENAME)) return;
-  DEBUG_PRINT(F("monitor_load_size: "));
-  DEBUG_PRINTLN(file_size(MONITOR_FILENAME));
-  DEBUG_PRINT(F("monitor_load_store_size: "));
-  DEBUG_PRINTLN(MONITOR_STORE_SIZE);
-  if (file_size(MONITOR_FILENAME) % MONITOR_STORE_SIZE != 0) return;
   
-  ulong pos = 0;
-  Monitor_t *last = NULL;
-  while (true) {
+  // Clean up existing map
+  for (auto &kv : monitorsMap) {
+    delete kv.second;
+  }
+  monitorsMap.clear();
+  
+  // Check if JSON file exists
+  if (!file_exists(MONITOR_FILENAME)) {
+    DEBUG_PRINTLN(F("monitor JSON file not found, checking for legacy"));
+    // Try to load legacy binary format
+    if (monitor_load_legacy(monitorsMap)) {
+      DEBUG_PRINTLN(F("monitor loaded from legacy binary format"));
+      return;
+    }
+    DEBUG_PRINTLN(F("No monitor data found"));
+    return;
+  }
+  
+  // Read JSON from file using FileReader
+  FileReader reader(MONITOR_FILENAME);
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, reader);
+  
+  if (error) {
+    DEBUG_PRINT(F("monitor_load deserializeJson() failed: "));
+    DEBUG_PRINTLN(error.c_str());
+    return;
+  }
+  
+  // Parse JSON array
+  if (!doc.is<ArduinoJson::JsonArray>()) {
+    DEBUG_PRINTLN(F("monitor JSON is not an array"));
+    return;
+  }
+  
+  ArduinoJson::JsonArray array = doc.as<ArduinoJson::JsonArray>();
+  
+  for (ArduinoJson::JsonVariantConst v : array) {
     Monitor_t *mon = new Monitor_t;
-    memset(mon, 0, sizeof(Monitor_t));
-    file_read_block(MONITOR_FILENAME, mon, pos, MONITOR_STORE_SIZE);
+    mon->fromJson(v);
+    
+    // Skip invalid entries
     if (!mon->nr || !mon->type) {
       delete mon;
-      break;
+      continue;
     }
-    if (!last)
-      monitors = mon;
-    else
-      last->next = mon;
-    last = mon;
-    mon->next = NULL;
-    pos += MONITOR_STORE_SIZE;
+    
+    // Add to map
+    monitorsMap[mon->nr] = mon;
   }
+  
+  DEBUG_PRINT(F("Loaded "));
+  DEBUG_PRINT(monitor_count());
+  DEBUG_PRINTLN(F(" monitors"));
 }
 
 void monitor_save() {
   if (!apiInit) return;
-  if (file_exists(MONITOR_FILENAME)) remove_file(MONITOR_FILENAME);
-
-  ulong pos = 0;
-  Monitor_t *mon = monitors;
-  while (mon) {
-    file_write_block(MONITOR_FILENAME, mon, pos, MONITOR_STORE_SIZE);
-    mon = mon->next;
-    pos += MONITOR_STORE_SIZE;
+  
+  DEBUG_PRINTLN(F("monitor_save"));
+  
+  // Delete old file if exists
+  if (file_exists(MONITOR_FILENAME)) {
+    remove_file(MONITOR_FILENAME);
   }
+  
+  // Create JSON document
+  ArduinoJson::JsonDocument doc;
+  ArduinoJson::JsonArray array = doc.to<ArduinoJson::JsonArray>();
+  
+  // Serialize all monitors
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
+    if (mon) {
+      ArduinoJson::JsonObject obj = array.add<ArduinoJson::JsonObject>();
+      mon->toJson(obj);
+    }
+  }
+  
+  // Write to file using FileWriter for buffered writing
+  FileWriter writer(MONITOR_FILENAME);
+  ArduinoJson::serializeJson(doc, writer);
 }
 
 int monitor_count() {
-  int count = 0;
-  Monitor_t *mon = monitors;
-  while (mon) {
-    mon = mon->next;
-    count++;
-  }
-  return count;
+  return monitorsMap.size();
 }
 
 int monitor_delete(uint nr) {
-  Monitor_t *p = monitors;
-
-  Monitor_t *last = NULL;
-
-  while (p) {
-    if (p->nr == nr) {
-      if (last)
-        last->next = p->next;
-      else
-        monitors = p->next;
-      delete p;
-      monitor_save();
-      return HTTP_RQT_SUCCESS;
-    }
-    last = p;
-    p = p->next;
+  auto it = monitorsMap.find(nr);
+  if (it != monitorsMap.end()) {
+    delete it->second;
+    monitorsMap.erase(it);
+    monitor_save();
+    return HTTP_RQT_SUCCESS;
   }
   return HTTP_RQT_NOT_RECEIVED;
 }
 
 bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds) {
-  Monitor_t *p = monitors;
-
-  Monitor_t *last = NULL;
-
-  while (p) {
-    if (p->nr == nr) {
-      p->type = type;
-      p->sensor = sensor;
-      p->prog = prog;
-      p->zone = zone;
-      p->m = m;
-      //p->active = false;
-      p->maxRuntime = maxRuntime;
-      p->prio = prio;
-      p->reset_time = 0;
-      p->reset_seconds = reset_seconds;
-
-      strncpy(p->name, name, sizeof(p->name)-1);
-      monitor_save();
-      check_monitors();
-      return HTTP_RQT_SUCCESS;
-    }
-
-    if (p->nr > nr) break;
-
-    last = p;
-    p = p->next;
-  }
-
-  p = new Monitor_t;
-  p->nr = nr;
-  p->type = type;
-  p->sensor = sensor;
-  p->prog = prog;
-  p->zone = zone;
-  p->m = m;
-  p->active = false;
-  p->maxRuntime = maxRuntime;
-  p->prio = prio;
-  p->reset_time = 0;
-  p->reset_seconds = reset_seconds;
-
-  strncpy(p->name, name, sizeof(p->name)-1);
-  if (last) {
-    p->next = last->next;
-    last->next = p;
+  // Find or create monitor
+  auto it = monitorsMap.find(nr);
+  Monitor_t *p;
+  
+  if (it != monitorsMap.end()) {
+    // Update existing monitor
+    p = it->second;
+    p->type = type;
+    p->sensor = sensor;
+    p->prog = prog;
+    p->zone = zone;
+    p->m = m;
+    //p->active = false;
+    p->maxRuntime = maxRuntime;
+    p->prio = prio;
+    p->reset_time = 0;
+    p->reset_seconds = reset_seconds;
+    strncpy(p->name, name, sizeof(p->name)-1);
   } else {
-    p->next = monitors;
-    monitors = p;
+    // Create new monitor
+    p = new Monitor_t;
+    p->nr = nr;
+    p->type = type;
+    p->sensor = sensor;
+    p->prog = prog;
+    p->zone = zone;
+    p->m = m;
+    p->active = false;
+    p->maxRuntime = maxRuntime;
+    p->prio = prio;
+    p->reset_time = 0;
+    p->reset_seconds = reset_seconds;
+    strncpy(p->name, name, sizeof(p->name)-1);
+    
+    monitorsMap[nr] = p;
   }
 
   monitor_save();
@@ -2677,22 +2123,19 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
 }
 
 Monitor_t *monitor_by_nr(uint nr) {
-  Monitor_t *mon = monitors;
-  while (mon) {
-    if (mon->nr == nr) return mon;
-    mon = mon->next;
+  auto it = monitorsMap.find(nr);
+  if (it != monitorsMap.end()) {
+    return it->second;
   }
   return NULL;
 }
 
 Monitor_t *monitor_by_idx(uint idx) {
-  Monitor_t *mon = monitors;
-  uint idxCounter = 0;
-  while (mon) {
-    if (idxCounter++ == idx) return mon;
-    mon = mon->next;
-  }
-  return NULL;
+  if (idx >= monitorsMap.size()) return NULL;
+  
+  auto it = monitorsMap.begin();
+  std::advance(it, idx);
+  return it->second;
 }
 
 void manual_start_program(unsigned char, unsigned char);
@@ -2809,7 +2252,7 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
 
     char buf[20];
     char *s = strstr(p, "\"time\":");
-    if (s && extract(s, buf, sizeof(buf))) {
+    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
       ulong time = strtoul(buf, NULL, 0);
       if (time == 0 || time == mon->time) {
         return defaultBool;
@@ -2819,7 +2262,7 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
     }
 
     s = strstr(p, "\"active\":");
-    if (s && extract(s, buf, sizeof(buf))) {
+    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
       return strtoul(buf, NULL, 0);
     }
 
@@ -2832,9 +2275,9 @@ void check_monitors() {
   //DEBUG_PRINTLN(F("check_monitors"));
   time_os_t timeNow = os.now_tz();
 
-  Monitor_t *mon = monitors;
   int monidx = 0;
-  while (mon) {
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
     uint nr = mon->nr;
 
     bool wasActive = mon->active;
@@ -2843,7 +2286,7 @@ void check_monitors() {
     switch(mon->type) {
       case MONITOR_MIN: 
       case MONITOR_MAX: {
-       Sensor_t * sensor = sensor_by_nr(mon->sensor);
+       SensorBase * sensor = sensor_by_nr(mon->sensor);
         if (sensor && sensor->flags.data_ok) {
           value = sensor->last_data;
 
@@ -2954,14 +2397,13 @@ void check_monitors() {
       }
     }
 
-    mon = mon->next;
     monidx++;
   }
 }
 
 void replace_pid(uint old_pid, uint new_pid) {
-  Monitor_t *mon = monitors;
-  while (mon) {
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
     if (mon->prog == old_pid) {
       DEBUG_PRINT(F("replace_pid: "));
       DEBUG_PRINT(old_pid);
@@ -2969,18 +2411,16 @@ void replace_pid(uint old_pid, uint new_pid) {
       DEBUG_PRINTLN(new_pid);
       mon->prog = new_pid;
     }
-    mon = mon->next;
   }
-  ProgSensorAdjust_t *psa = progSensorAdjusts;
-  while (psa) {
-    if (psa->prog == old_pid) {
+  for (auto &kv : progSensorAdjustsMap) {
+    ProgSensorAdjust_t *psa = kv.second;
+    if (psa && psa->prog == old_pid) {
       DEBUG_PRINT(F("replace_pid psa: "));
       DEBUG_PRINT(old_pid);
       DEBUG_PRINT(F(" with "));
       DEBUG_PRINTLN(new_pid);
       psa->prog = new_pid;
     }
-    psa = psa->next;
   }
   sensor_save_all();
 }

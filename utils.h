@@ -26,14 +26,42 @@
 
 #if defined(ARDUINO)
 	#include <Arduino.h>
-#else // headers for RPI/LINUX
+#else // headers for RPI/LINUX (guard with __has_include so Windows builds don't fail)
 	#include <stdio.h>
 	#include <limits.h>
 	#include <sys/time.h>
-	#include <arpa/inet.h>
-	#include <sys/socket.h>
-	#include <ifaddrs.h>
-	#include <net/route.h>
+	#if defined(__has_include)
+		#if __has_include(<arpa/inet.h>)
+			#include <arpa/inet.h>
+			#define _UTILS_HAVE_ARPA_INET
+		#endif
+		#if __has_include(<sys/socket.h>)
+			#include <sys/socket.h>
+			#define _UTILS_HAVE_SYS_SOCKET
+		#endif
+		#if __has_include(<ifaddrs.h>)
+			#include <ifaddrs.h>
+			#define _UTILS_HAVE_IFADDRS
+		#endif
+		#if __has_include(<net/route.h>)
+			#include <net/route.h>
+			#define _UTILS_HAVE_NET_ROUTE
+		#endif
+	#else
+		#include <arpa/inet.h>
+		#include <sys/socket.h>
+		#include <ifaddrs.h>
+		#include <net/route.h>
+		#define _UTILS_HAVE_ARPA_INET
+		#define _UTILS_HAVE_SYS_SOCKET
+		#define _UTILS_HAVE_IFADDRS
+		#define _UTILS_HAVE_NET_ROUTE
+	#endif
+
+	#ifndef _UTILS_HAVE_ARPA_INET
+		#include <stdint.h>
+		typedef uint32_t in_addr_t; /* fallback for platforms without <arpa/inet.h> */
+	#endif
 #endif
 #include "defines.h"
 

@@ -56,22 +56,17 @@ void sensor_truebner_rs485_free() {
   memset(i2c_rs485_allocated, 0, sizeof(i2c_rs485_allocated));
 }
 
-/**
- * @brief Truebner RS485 Interface
- *
- * @param sensor
- * @return int
- */
-int read_sensor_truebner_rs485(Sensor_t *sensor) {
-  int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || (get_asb_detected_boards() & (RS485_TRUEBNER1 << device)) == 0) 
+// C++ class methods
+int TruebnerRS485Sensor::read(unsigned long /*time*/) {
+  int device = port;
+  if (device >= MAX_RS485_DEVICES || (get_asb_detected_boards() & (RS485_TRUEBNER1 << device)) == 0)
     return HTTP_RQT_NOT_RECEIVED;
 
-  if (i2c_rs485_allocated[device] > 0 && i2c_rs485_allocated[device] != sensor->nr) {
-    sensor->repeat_read = 1000;
+  if (i2c_rs485_allocated[device] > 0 && i2c_rs485_allocated[device] != nr) {
+    repeat_read = 1000;
     DEBUG_PRINT(F("cant' read, allocated by sensor "));
     DEBUG_PRINTLN(i2c_rs485_allocated[device]);
-    Sensor_t *t = sensor_by_nr(i2c_rs485_allocated[device]);
+    SensorBase *t = sensor_by_nr(i2c_rs485_allocated[device]);
     if (!t || !t->flags.enable)
       i2c_rs485_allocated[device] = 0; //breakout
     return HTTP_RQT_NOT_RECEIVED;
@@ -79,19 +74,19 @@ int read_sensor_truebner_rs485(Sensor_t *sensor) {
 
   DEBUG_PRINTLN(F("read_sensor_rs485: check-ok"));
 
-  bool isTemp = sensor->type == SENSOR_SMT100_TEMP || sensor->type == SENSOR_TH100_TEMP;
-  bool isMois = sensor->type == SENSOR_SMT100_MOIS || sensor->type == SENSOR_TH100_MOIS;
-  uint8_t type = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
-  
-  if (sensor->repeat_read == 0 || sensor->repeat_read == 1000) {
+  bool isTemp = type == SENSOR_SMT100_TEMP || type == SENSOR_TH100_TEMP;
+  bool isMois = type == SENSOR_SMT100_MOIS || type == SENSOR_TH100_MOIS;
+  uint8_t senstype = isTemp ? 0x00 : isMois ? 0x01 : 0x02;
+
+  if (repeat_read == 0 || repeat_read == 1000) {
     Wire.beginTransmission(RS485_TRUEBNER1_ADDR + device);
-    Wire.write((uint8_t)sensor->id);
-    Wire.write(type);
+    Wire.write((uint8_t)id);
+    Wire.write(senstype);
     if (Wire.endTransmission() == 0) {
-      DEBUG_PRINTF("read_sensor_rs485: request send: %d - %d\n", sensor->id,
-                   type);
-      sensor->repeat_read = 1;
-      i2c_rs485_allocated[device] = sensor->nr;
+      DEBUG_PRINTF("read_sensor_rs485: request send: %d - %d\n", id,
+                   senstype);
+      repeat_read = 1;
+      i2c_rs485_allocated[device] = nr;
     }
     return HTTP_RQT_NOT_RECEIVED;
     // delay(500);
@@ -103,27 +98,27 @@ int read_sensor_truebner_rs485(Sensor_t *sensor) {
     uint8_t reg = Wire.read();
     uint8_t low_byte = Wire.read();
     uint8_t high_byte = Wire.read();
-    if (addr == sensor->id && reg == type) {
+    if (addr == id && reg == senstype) {
       uint16_t data = (high_byte << 8) | low_byte;
-      DEBUG_PRINTF("read_sensor_rs485: result: %d - %d (%d %d)\n", sensor->id,
+      DEBUG_PRINTF("read_sensor_rs485: result: %d - %d (%d %d)\n", id,
                    data, low_byte, high_byte);
       double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
-      sensor->last_native_data = data;
-      sensor->last_data = value;
-      DEBUG_PRINTLN(sensor->last_data);
+      last_native_data = data;
+      last_data = value;
+      DEBUG_PRINTLN(last_data);
 
-      sensor->flags.data_ok = true;
+      flags.data_ok = true;
 
-      sensor->repeat_read = 0;
+      repeat_read = 0;
       i2c_rs485_allocated[device] = 0;
       return HTTP_RQT_SUCCESS;
     }
   }
 
-  sensor->repeat_read++;
-  if (sensor->repeat_read > 4) {  // timeout
-    sensor->repeat_read = 0;
-    sensor->flags.data_ok = false;
+  repeat_read++;
+  if (repeat_read > 4) {  // timeout
+    repeat_read = 0;
+    flags.data_ok = false;
     i2c_rs485_allocated[device] = 0;
     DEBUG_PRINTLN(F("read_sensor_rs485: timeout"));
   }
@@ -141,16 +136,16 @@ int read_sensor_truebner_rs485(Sensor_t *sensor) {
  * @param new_address
  * @return int
  */
-int set_sensor_address_truebner_rs485(Sensor_t *sensor, uint8_t new_address) {
+int TruebnerRS485Sensor::setAddress(uint8_t new_address) {
   DEBUG_PRINTLN(F("set_sensor_address_rs485"));
-  int device = sensor->port;
-  if (device >= MAX_RS485_DEVICES || (get_asb_detected_boards() & (RS485_TRUEBNER1 << device)) == 0) 
+  int device = port;
+  if (device >= MAX_RS485_DEVICES || (get_asb_detected_boards() & (RS485_TRUEBNER1 << device)) == 0)
     return HTTP_RQT_NOT_RECEIVED;
 
   if (i2c_rs485_allocated[device] > 0) {
     DEBUG_PRINT(F("sensor currently allocated by "));
     DEBUG_PRINTLN(i2c_rs485_allocated[device]);
-    Sensor_t *t = sensor_by_nr(i2c_rs485_allocated[device]);
+    SensorBase *t = sensor_by_nr(i2c_rs485_allocated[device]);
     if (!t || !t->flags.enable)
       i2c_rs485_allocated[device] = 0; //breakout
     return HTTP_RQT_NOT_RECEIVED;

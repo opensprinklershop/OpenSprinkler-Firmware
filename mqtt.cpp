@@ -512,7 +512,21 @@ void OSMqtt::loop(void) {
 int OSMqtt::_init(void) {
 	Client * client = NULL;
 
+	// Suppress -Wdelete-non-virtual-dtor for PubSubClient (third-party lib without
+	// virtual destructor). Deleting the concrete type is intentional here.
+	#if defined(__clang__)
+	#pragma clang diagnostic push
+	#pragma clang diagnostic ignored "-Wdelete-non-virtual-dtor"
+	#elif defined(__GNUC__)
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wdelete-non-virtual-dtor"
+	#endif
 	if (mqtt_client) { delete mqtt_client; mqtt_client = 0; }
+	#if defined(__clang__)
+	#pragma clang diagnostic pop
+	#elif defined(__GNUC__)
+	#pragma GCC diagnostic pop
+	#endif
 
 	#if defined(ESP8266) || defined(ESP32)
 		client = &wifiClient;

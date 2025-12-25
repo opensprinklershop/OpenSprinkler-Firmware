@@ -180,14 +180,41 @@ unsigned char digitalReadExt(unsigned char pin) {
 #if !defined(LIBGPIOD)	// use classic sysfs
 
 #include <sys/types.h>
-#include <sys/ioctl.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <poll.h>
-#include <pthread.h>
+#if defined(__has_include)
+	#if __has_include(<sys/ioctl.h>)
+		#include <sys/ioctl.h>
+	#endif
+	#if __has_include(<fcntl.h>)
+		#include <fcntl.h>
+	#endif
+	#if __has_include(<stdio.h>)
+		#include <stdio.h>
+	#endif
+	#if __has_include(<stdlib.h>)
+		#include <stdlib.h>
+	#endif
+	#if __has_include(<unistd.h>)
+		#include <unistd.h>
+	#endif
+	#if __has_include(<string.h>)
+		#include <string.h>
+	#endif
+	#if __has_include(<poll.h>)
+		#include <poll.h>
+	#endif
+	#if __has_include(<pthread.h>)
+		#include <pthread.h>
+	#endif
+#else
+	#include <sys/ioctl.h>
+	#include <fcntl.h>
+	#include <stdio.h>
+	#include <stdlib.h>
+	#include <unistd.h>
+	#include <string.h>
+	#include <poll.h>
+	#include <pthread.h>
+#endif
 
 #define BUFFER_MAX 64
 #define GPIO_MAX	 64

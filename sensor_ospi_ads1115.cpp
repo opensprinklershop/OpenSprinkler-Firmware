@@ -50,7 +50,8 @@ void init_ads1115() {
 /**
 * Read the OSPi 1.6 onboard ADS1115 A2D
 **/
-int read_sensor_ospi(Sensor_t *sensor, ulong time) {
+int OspiAds1115Sensor::read(unsigned long time) {
+        SensorBase *sensor = data_;
         if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
 
         uint8_t res;
@@ -128,7 +129,5 @@ int read_sensor_ospi(Sensor_t *sensor, ulong time) {
         }
         return HTTP_RQT_NOT_RECEIVED;
 }
-
-
 
 #endif

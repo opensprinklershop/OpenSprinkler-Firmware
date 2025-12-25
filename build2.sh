@@ -6,7 +6,8 @@
         GPIOLIB=""
 
 	source /etc/os-release
-        if [[ $VERSION_ID -gt 10 ]]; then
+        # Compare version as string, handling decimal versions like 20.04
+        if [[ $(echo "$VERSION_ID >= 10" | bc -l 2>/dev/null || echo "1") -eq 1 ]] || [[ ${VERSION_ID%%.*} -ge 10 ]]; then
                 echo "using libgpiod"
                 USEGPIO="-DLIBGPIOD"
                 GPIOLIB="-lgpiod"
@@ -31,18 +32,46 @@
 
 
         echo "Compiling firmware..."
-        ws=$(ls external/TinyWebsockets/tiny_websockets_lib/src/*.cpp)
-        otf=$(ls external/OpenThings-Framework-Firmware-Library/*.cpp)
-        ifx=$(ls external/influxdb-cpp/*.hpp)
+        # Use workspace libraries if external submodules don't exist
+        if [ -d "external/TinyWebsockets/tiny_websockets_lib/src" ]; then
+            ws=$(ls external/TinyWebsockets/tiny_websockets_lib/src/*.cpp)
+            ws_include="-Iexternal/TinyWebsockets/tiny_websockets_lib/include"
+        elif [ -d "../arduinoWebSockets/src" ]; then
+            ws=$(ls ../arduinoWebSockets/src/*.cpp)
+            ws_include="-I../arduinoWebSockets/src"
+        else
+            ws=""
+            ws_include=""
+        fi
+        
+        if [ -d "external/OpenThings-Framework-Firmware-Library" ]; then
+            otf=$(ls external/OpenThings-Framework-Firmware-Library/*.cpp)
+            otf_include="-Iexternal/OpenThings-Framework-Firmware-Library/"
+        elif [ -d "../OpenThings-Framework-Firmware-Library" ]; then
+            otf=$(ls ../OpenThings-Framework-Firmware-Library/*.cpp)
+            otf_include="-I../OpenThings-Framework-Firmware-Library/"
+        else
+            otf=""
+            otf_include=""
+        fi
+        
+        if [ -d "external/influxdb-cpp" ]; then
+            ifx=$(ls external/influxdb-cpp/*.hpp 2>/dev/null || echo "")
+            ifx_include="-Iexternal/influxdb-cpp/"
+        else
+            ifx=""
+            ifx_include=""
+        fi
+        
         g++ -o OpenSprinkler -DOSPI $USEGPIO $ADS1115 $PCF8591 -DSMTP_OPENSSL $DEBUG -std=c++17 -include string.h main.cpp \
                 OpenSprinkler.cpp program.cpp opensprinkler_server.cpp utils.cpp weather.cpp gpio.cpp mqtt.cpp sunrise.cpp \
                 smtp.c RCSwitch.cpp sensor*.cpp notifier.cpp naett.c \
                 $ADS1115FILES $PCF8591FILES \
-                -Iexternal/TinyWebsockets/tiny_websockets_lib/include \
+                $ws_include \
                 $ws \
-                -Iexternal/OpenThings-Framework-Firmware-Library/ \
+                $otf_include \
                 $otf \
-                $ifx osinfluxdb.cpp -Iexternal/influxdb-cpp/ \
+                $ifx osinfluxdb.cpp $ifx_include \
                 -lpthread -lmosquitto -lssl -lcrypto -lcurl -li2c -lmodbus $GPIOLIB
 
 

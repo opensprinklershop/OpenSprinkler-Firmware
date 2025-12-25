@@ -35,6 +35,7 @@ extern "C" {
 #include <i2c/smbus.h>
 }
 #endif
+#include <map>
 #include "defines.h"
 #include "utils.h"
 #include "notifier.h"
@@ -45,12 +46,11 @@ extern "C" {
 
 // Files
 #if !defined(ESP32)
-#define SENSOR_FILENAME "sensor.dat"      // analog sensor filename
-#define SENSOR_FILENAME_BAK "sensor.bak"  // analog sensor filename backup
-#define PROG_SENSOR_FILENAME "progsensor.dat"  // sensor to program assign filename
+#define SENSOR_FILENAME_JSON "sensors.json"   // sensor configuration (JSON format)
+#define PROG_SENSOR_FILENAME "progsensor.json"  // sensor to program assign filename (JSON format)
 #define SENSORLOG_FILENAME1 "sensorlog.dat"   // analog sensor log filename
 #define SENSORLOG_FILENAME2 "sensorlog2.dat"  // analog sensor log filename2
-#define MONITOR_FILENAME "monitors.dat"
+#define MONITOR_FILENAME "monitors.json"
 
 #define SENSORLOG_FILENAME_WEEK1 \
   "sensorlogW1.dat"  // analog sensor log filename for  week average
@@ -61,14 +61,12 @@ extern "C" {
 #define SENSORLOG_FILENAME_MONTH2 \
   "sensorlogM2.dat"  // analog sensor log filename2 for month average
 
-#define SENSORURL_FILENAME "sensorurl.dat"  // long urls filename
 #else
-#define SENSOR_FILENAME "/sensor.dat"      // analog sensor filename
-#define SENSOR_FILENAME_BAK "/sensor.bak"  // analog sensor filename backup
-#define PROG_SENSOR_FILENAME "/progsensor.dat"  // sensor to program assign filename
+#define SENSOR_FILENAME_JSON "/sensors.json"  // sensor configuration (JSON format)
+#define PROG_SENSOR_FILENAME "/progsensor.json"  // sensor to program assign filename (JSON format)
 #define SENSORLOG_FILENAME1 "/sensorlog.dat"   // analog sensor log filename
 #define SENSORLOG_FILENAME2 "/sensorlog2.dat"  // analog sensor log filename2
-#define MONITOR_FILENAME "/monitors.dat"
+#define MONITOR_FILENAME "/monitors.json"
 
 #define SENSORLOG_FILENAME_WEEK1 \
   "/sensorlogW1.dat"  // analog sensor log filename for  week average
@@ -78,8 +76,6 @@ extern "C" {
   "/sensorlogM1.dat"  // analog sensor log filename for month average
 #define SENSORLOG_FILENAME_MONTH2 \
   "/sensorlogM2.dat"  // analog sensor log filename2 for month average
-
-#define SENSORURL_FILENAME "/sensorurl.dat"  // long urls filename
 
 
 #endif
@@ -193,44 +189,9 @@ typedef struct RS485Flags { // 0 is default
   uint datatype: 3;     // 0=uint16 (2 bytes), 1=int16 (2 bytes) 2=uint32 (4 bytes), 3=int32 (4 bytes), 4=float (4 bytes),5=double (8 bytes)
 } RS485Flags_t;
 
-// Definition of a sensor
-typedef struct Sensor {
-  uint nr;                    // 1..n sensor-nr, 0=deleted
-  char name[30];              // name
-  uint type;                  // 1..n type definition, 0=deleted
-  uint group;                 // group assignment,0=no group
-  uint32_t ip;                // tcp-ip
-  uint port;                  // tcp-port    / ADC: I2C Address 0x48/0x49 or 0/1
-  uint id;                    // modbus id   / ADC: channel
-  uint read_interval;         // seconds
-  uint32_t last_native_data;  // last native sensor data
-  double last_data;           // last converted sensor data
-  SensorFlags_t flags;        // Flags see obove
-  int16_t factor;             // faktor  - for custom sensor
-  int16_t divider;            // divider - for custom sensor
-  char userdef_unit[8];       // unit    - for custom sensor
-  int16_t offset_mv;          // offset millivolt - for custom sensor (before)
-  int16_t offset2;  // offset unit value 1/100 - for custom sensor (after):
-                    //   sensorvalue = (read_value-offset_mv/1000) * factor /
-                    //   divider + offset2/100
-  unsigned char assigned_unitid;  // unitid for userdef and mqtt sensors
-  RS485Flags_t rs485_flags;    // RS485 specific flags
-  uint8_t rs485_code;          // RS485 functioncode
-  uint16_t rs485_reg;          // RS485 register address
-  unsigned char undef[11];     // for later
-  // unstored:
-  bool mqtt_init : 1;
-  bool mqtt_push : 1;
-  unsigned char unitid;
-  uint32_t repeat_read;
-  double repeat_data;
-  uint64_t repeat_native;
-  ulong last_read;  // millis
-  double last_logged_data;   // last logged sensor data
-  ulong last_logged_time;    // last logged timestamp        /
-  Sensor *next;
-} Sensor_t;
-#define SENSOR_STORE_SIZE 111
+// Sensor persistent storage type is now SensorBase (forward declaration for now, full definition in Sensor.hpp at end of file)
+class SensorBase; // forward
+#define SENSOR_STORE_SIZE 0 // legacy size removed
 
 // Definition of a log data
 typedef struct SensorLog {
@@ -259,7 +220,12 @@ typedef struct SensorLog {
 #define PROG_DIGITAL_MINMAX 4  // under min or over max : factor1 else factor2
 #define PROG_NONE 99           // No adjustment
 
-typedef struct ProgSensorAdjust {
+/**
+ * @brief Program sensor adjustment class
+ * @note Defines how sensor values influence program watering adjustments
+ */
+class ProgSensorAdjust {
+public:
   uint nr;      // adjust-nr 1..x
   uint type;    // PROG_XYZ type=0 -->delete
   uint sensor;  // sensor-nr
@@ -269,25 +235,29 @@ typedef struct ProgSensorAdjust {
   double min;
   double max;
   char name[30];
-  unsigned char undef[2];  // for later
-  ProgSensorAdjust *next;
-} ProgSensorAdjust_t;
-#define PROGSENSOR_STORE_SIZE \
-  (sizeof(ProgSensorAdjust_t) - sizeof(ProgSensorAdjust_t *))
+  
+  /**
+   * @brief Constructor
+   */
+  ProgSensorAdjust() : nr(0), type(0), sensor(0), prog(0), 
+                       factor1(0.0), factor2(0.0), min(0.0), max(0.0) {
+    name[0] = 0;
+  }
+  
+  /**
+   * @brief Serialize to JSON
+   * @param obj JSON object to write to
+   */
+  void toJson(ArduinoJson::JsonObject obj) const;
+  
+  /**
+   * @brief Deserialize from JSON
+   * @param obj JSON object to read from
+   */
+  void fromJson(ArduinoJson::JsonVariantConst obj);
+};
 
-#define SENSORURL_TYPE_URL 0     // URL for Host/Path
-#define SENSORURL_TYPE_TOPIC 1   // TOPIC for MQTT
-#define SENSORURL_TYPE_FILTER 2  // JSON Filter for MQTT
-
-typedef struct SensorUrl {
-  uint nr;
-  uint type;  // see SENSORURL_TYPE
-  uint length;
-  char *urlstr;
-  SensorUrl *next;
-} SensorUrl_t;
-#define SENSORURL_STORE_SIZE \
-  (sizeof(SensorUrl_t) - sizeof(char *) - sizeof(SensorUrl_t *))
+typedef ProgSensorAdjust ProgSensorAdjust_t;
 
 #define MONITOR_DELETE 0
 #define MONITOR_MIN 1
@@ -300,6 +270,11 @@ typedef struct SensorUrl {
 #define MONITOR_NOT 13
 #define MONITOR_TIME 14
 #define MONITOR_REMOTE 100
+
+// MQTT sensor configuration types (used in sensor_mqtt_subscribe/unsubscribe)
+#define SENSORURL_TYPE_URL 0     // URL for Host/Path
+#define SENSORURL_TYPE_TOPIC 1   // TOPIC for MQTT
+#define SENSORURL_TYPE_FILTER 2  // JSON Filter for MQTT
 
 typedef struct Monitor_MINMAX { // type = 1+2
   double value1;  // MIN/MAX
@@ -353,7 +328,12 @@ typedef union Monitor_Union {
     Monitor_REMOTE_t remote; //type = 100
 } Monitor_Union_t;
 
-typedef struct Monitor {
+/**
+ * @brief Monitor class for value monitoring
+ * @note Defines conditions that trigger actions based on sensor values, time, or logic
+ */
+class Monitor {
+public:
   uint nr;
   uint type;     // MONITOR_TYPES
   uint sensor;   // sensor-nr
@@ -368,9 +348,33 @@ typedef struct Monitor {
   ulong reset_seconds;
   unsigned char undef[16];  // for later
   ulong reset_time; // time to reset
-  Monitor *next;
-} Monitor_t;
-#define MONITOR_STORE_SIZE (sizeof(Monitor_t) - sizeof(char *) - sizeof(Monitor_t *) - 2*sizeof(ulong))
+  
+  /**
+   * @brief Constructor
+   */
+  Monitor() : nr(0), type(0), sensor(0), prog(0), zone(0), 
+              active(false), time(0), maxRuntime(0), prio(0), 
+              reset_seconds(0), reset_time(0) {
+    memset(&m, 0, sizeof(Monitor_Union_t));
+    memset(undef, 0, sizeof(undef));
+    name[0] = 0;
+  }
+  
+  /**
+   * @brief Serialize to JSON
+   * @param obj JSON object to write to
+   */
+  void toJson(ArduinoJson::JsonObject obj) const;
+  
+  /**
+   * @brief Deserialize from JSON
+   * @param obj JSON object to read from
+   */
+  void fromJson(ArduinoJson::JsonVariantConst obj);
+};
+
+typedef Monitor Monitor_t;
+#define MONITOR_STORE_SIZE (sizeof(Monitor_t) - 2*sizeof(ulong))
 
 #define UNIT_NONE 0
 #define UNIT_PERCENT 1
@@ -403,11 +407,12 @@ void add_asb_detected_boards(uint16_t board);
 void sensor_save_all();
 void sensor_api_free();
 
-Sensor_t *getSensors();
+// Deprecated: prefer sensor_map access
+SensorBase *getSensors();
 const char *getSensorUnit(int unitid);
-const char *getSensorUnit(Sensor_t *sensor);
+const char *getSensorUnit(SensorBase *sensor);
 unsigned char getSensorUnitId(int type);
-unsigned char getSensorUnitId(Sensor_t *sensor);
+unsigned char getSensorUnitId(SensorBase *sensor);
 
 extern char ether_buffer[];
 extern char tmp_buffer[];
@@ -421,26 +426,37 @@ uint16_t CRC16(unsigned char buf[], int len);
 
 // Sensor API functions:
 int sensor_delete(uint nr);
-int sensor_define(uint nr, const char *name, uint type, uint group, uint32_t ip,
-                  uint port, uint id, uint ri, int16_t factor, int16_t divider,
-                  const char *userdef_unit, int16_t offset_mv, int16_t offset2,
-                  SensorFlags_t flags, int16_t assigned_unitid, 
-                  RS485Flags_t rs485_flags, uint8_t rs485_code, uint16_t rs485_reg);
+int sensor_define(ArduinoJson::JsonVariantConst json, bool save = false);
 int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
                           const char *userdef_unit, int16_t offset_mv,
                           int16_t offset2, int16_t sensor_define_userdef);
 void sensor_load();
 void sensor_save();
 uint sensor_count();
-boolean sensor_isgroup(Sensor_t *sensor);
+boolean sensor_isgroup(const SensorBase *sensor);
 void sensor_update_groups();
 
 void read_all_sensors(boolean online);
 
-Sensor_t *sensor_by_nr(uint nr);
-Sensor_t *sensor_by_idx(uint idx);
+SensorBase *sensor_by_nr(uint nr);
+SensorBase *sensor_by_idx(uint idx);
 
-int read_sensor(Sensor_t *sensor,
+// Helper to iterate sensors - call with iterator=NULL to get first, then pass iterator for next
+typedef std::map<uint, SensorBase*>::iterator SensorIterator;
+SensorIterator sensors_iterate_begin();
+SensorBase* sensors_iterate_next(SensorIterator& it);
+
+// Helper to iterate program adjustments
+typedef std::map<uint, ProgSensorAdjust*>::iterator ProgAdjustIterator;
+ProgAdjustIterator prog_adjust_iterate_begin();
+ProgSensorAdjust* prog_adjust_iterate_next(ProgAdjustIterator& it);
+
+// Helper to iterate monitors
+typedef std::map<uint, Monitor*>::iterator MonitorIterator;
+MonitorIterator monitor_iterate_begin();
+Monitor* monitor_iterate_next(MonitorIterator& it);
+
+int read_sensor(SensorBase *sensor,
                 ulong time);  // sensor value goes to last_native_data/last_data
 
 // Sensorlog API functions:
@@ -448,7 +464,7 @@ int read_sensor(Sensor_t *sensor,
 #define LOG_WEEK  1
 #define LOG_MONTH 2
 bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog);
-bool sensorlog_add(uint8_t log, Sensor_t *sensor, ulong time);
+bool sensorlog_add(uint8_t log, SensorBase *sensor, ulong time);
 void sensorlog_clear_all();
 void sensorlog_clear(bool std, bool week, bool month);
 ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
@@ -465,35 +481,33 @@ void checkLogSwitch(uint8_t log);
 void checkLogSwitchAfterWrite(uint8_t log);
 
 //influxdb
-void add_influx_data(Sensor_t *sensor);
+void add_influx_data(SensorBase *sensor);
+
+// MQTT sensor subscription management
+void sensor_mqtt_subscribe(uint nr, uint type, const char *urlstr);
+void sensor_mqtt_unsubscribe(uint nr, uint type, const char *urlstr);
 
 // Set Sensor Address for SMT100:
-int set_sensor_address(Sensor_t *sensor, uint8_t new_address);
+int set_sensor_address(SensorBase *sensor, uint8_t new_address);
 
 // Calc watering adjustment:
+int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save = true);
 int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
                        double factor1, double factor2, double min, double max, char * name);
 int prog_adjust_delete(uint nr);
 void prog_adjust_save();
 void prog_adjust_load();
 uint prog_adjust_count();
-ProgSensorAdjust_t *prog_adjust_by_nr(uint nr);
-ProgSensorAdjust_t *prog_adjust_by_idx(uint idx);
+ProgSensorAdjust *prog_adjust_by_nr(uint nr);
+ProgSensorAdjust *prog_adjust_by_idx(uint idx);
 double calc_sensor_watering(uint prog);
 double calc_sensor_watering_by_nr(uint nr);
-double calc_sensor_watering_int(ProgSensorAdjust_t *p, double sensorData);
+double calc_sensor_watering_int(ProgSensorAdjust *p, double sensorData);
 
 void GetSensorWeather();
 void GetSensorWeatherEto();
 // PUSH Message to MQTT and others:
-void push_message(Sensor_t *sensor);
-
-// Web URLS Host/Path and MQTT topics:
-void SensorUrl_load();
-void SensorUrl_save();
-bool SensorUrl_delete(uint nr, uint type);
-bool SensorUrl_add(uint nr, uint type, const char *urlstr);
-char *SensorUrl_get(uint nr, uint type);
+void push_message(SensorBase *sensor);
 
 void detect_asb_board();
 

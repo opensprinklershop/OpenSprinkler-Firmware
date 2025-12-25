@@ -26,7 +26,16 @@
 #if defined(ARDUINO)
 	#include <PubSubClient.h>
 #else
-	#include <mosquitto.h>
+	#if defined(__has_include)
+		#if __has_include(<mosquitto.h>)
+			#include <mosquitto.h>
+		#else
+			/* mosquitto library not available on this host; forward-declare minimal type */
+			struct mosquitto;
+		#endif
+	#else
+		#include <mosquitto.h>
+	#endif
 #endif
 
 class OSMqtt {

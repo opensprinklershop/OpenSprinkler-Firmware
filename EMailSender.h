@@ -37,10 +37,44 @@
 
 #include "EMailSenderKey.h"
 
-#if ARDUINO >= 100
-#include "Arduino.h"
+#if defined(ARDUINO)
+  #if ARDUINO >= 100
+    #include "Arduino.h"
+  #else
+    #include "WProgram.h"
+  #endif
 #else
-#include "WProgram.h"
+  /* native build: provide minimal types expected from Arduino headers */
+  #include <stdint.h>
+  #include <stddef.h>
+  #include <cstring>
+  #include <cstdlib>
+  #include <string>
+  #include <cstdint>
+  using std::string;
+  /* Provide Arduino-like aliases for native builds */
+  typedef std::string String;
+  typedef uint8_t byte;
+  /* PROGMEM / pgm_read_byte fallbacks */
+  #ifndef PROGMEM
+    #define PROGMEM
+  #endif
+  #ifndef pgm_read_byte
+    #define pgm_read_byte(x) (*(const unsigned char*)(x))
+  #endif
+  /* F() macro helper used by Arduino to store strings in flash */
+  #ifndef F
+    #define F(x) (x)
+  #endif
+  /* strdup fallback when not available */
+  #ifndef HAVE_STRDUP
+    static inline char* strdup_local(const char* s){ if(!s) return NULL; size_t n = strlen(s)+1; char* d = (char*)malloc(n); if(d) memcpy(d,s,n); return d; }
+    #define strdup strdup_local
+  #endif
+  /* Minimal millis() / watchdog stub for native builds */
+  #include <chrono>
+  static inline unsigned long millis(){ using namespace std::chrono; return (unsigned long)duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count(); }
+  static inline void wdt_reset(){}
 #endif
 
 #if(NETWORK_ESP8266_242 == DEFAULT_EMAIL_NETWORK_TYPE_ESP8266)
@@ -171,18 +205,52 @@
 #define EMAIL_NETWORK_SERVER_CLASS WiFiServer
 
 #elif(EMAIL_NETWORK_TYPE == NETWORK_W5100 || EMAIL_NETWORK_TYPE == NETWORK_ETHERNET_ENC)
+#if defined(ARDUINO)
 
 #include <Ethernet.h>
 #include <SPI.h>
 #define EMAIL_NETWORK_CLASS EthernetClient
 #define EMAIL_NETWORK_SERVER_CLASS EthernetServer
 
+#else
+/* Native build: no Arduino Ethernet available; provide placeholders to allow compilation */
+class EmailNetworkDummy {
+public:
+  bool connect(const char*, uint16_t) { return false; }
+  void flush() {}
+  void stop() {}
+  void println(const String&) {}
+  void println(const char*) {}
+  void println() {}
+  void print(const String&) {}
+  void print(const char*) {}
+  void setInsecure() {}
+  void setBufferSizes(int,int) {}
+  String readStringUntil(char c) { return String(); }
+  int available() { return 0; }
+  int read() { return -1; }
+  void setTimeout(unsigned long) {}
+};
+#define EMAIL_NETWORK_CLASS EmailNetworkDummy
+#define EMAIL_NETWORK_SERVER_CLASS EmailNetworkDummy
+
+#endif
+
 #elif(EMAIL_NETWORK_TYPE == NETWORK_ETHERNET_GENERIC)
+#if defined(ARDUINO)
 
 #include <Ethernet_Generic.h>
 #include <SPI.h>
 #define EMAIL_NETWORK_CLASS EthernetClient
 #define EMAIL_NETWORK_SERVER_CLASS EthernetServer
+
+#else
+/* Native build: placeholder */
+/* EmailNetworkDummy already defined above for native builds */
+#define EMAIL_NETWORK_CLASS EmailNetworkDummy
+#define EMAIL_NETWORK_SERVER_CLASS EmailNetworkDummy
+
+#endif
 
 #elif(EMAIL_NETWORK_TYPE == NETWORK_ENC28J60 || EMAIL_NETWORK_TYPE == NETWORK_UIPETHERNET)
 

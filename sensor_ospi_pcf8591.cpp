@@ -33,7 +33,8 @@
 /**
 * Read the OSPi onboard PCF8591 A2D
 **/
-int read_sensor_ospi(Sensor_t *sensor, ulong time) {
+int OspiPcf8591Sensor::read(unsigned long time) {
+        SensorBase *sensor = data_;
         if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
 
         static pcf8591_handle_t gs_handle;        /**< pcf8591 handle */
@@ -128,8 +129,6 @@ int read_sensor_ospi(Sensor_t *sensor, ulong time) {
         }
         return HTTP_RQT_NOT_RECEIVED;
 }
-
-
 
 
 #endif
