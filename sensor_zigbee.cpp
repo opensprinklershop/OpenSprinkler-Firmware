@@ -104,8 +104,8 @@ void sensor_zigbee_start() {
     );
     
     if (!zb_partition) {
-        DEBUG_PRINTLN("WARNING: zb_storage partition not found - Zigbee disabled");
-        DEBUG_PRINTLN("Please ensure partition table includes zb_storage partition with FAT subtype");
+        DEBUG_PRINTLN(F("WARNING: zb_storage partition not found - Zigbee disabled"));
+        DEBUG_PRINTLN(F("Please ensure partition table includes zb_storage partition with FAT subtype"));
         return;
     }
     
@@ -444,7 +444,7 @@ void sensor_zigbee_loop() {
 bool sensor_zigbee_read_attribute(uint64_t device_ieee, uint8_t endpoint,
                                    uint16_t cluster_id, uint16_t attribute_id) {
     if (!zigbee_initialized) {
-        DEBUG_PRINTLN("ERROR: Zigbee not initialized");
+        DEBUG_PRINTLN(F("ERROR: Zigbee not initialized"));
         return false;
     }
     
@@ -458,7 +458,7 @@ bool sensor_zigbee_read_attribute(uint64_t device_ieee, uint8_t endpoint,
     }
     
     if (short_addr == 0xFFFF) {
-        DEBUG_PRINTLN("ERROR: Device not found in network");
+        DEBUG_PRINTLN(F("ERROR: Device not found in network"));
         return false;
     }
     
@@ -488,7 +488,7 @@ bool sensor_zigbee_read_attribute(uint64_t device_ieee, uint8_t endpoint,
     uint8_t tsn = esp_zb_zcl_read_attr_cmd_req(&read_req);
     
     if (tsn == 0xFF) {
-        DEBUG_PRINTLN("Failed to send read attribute command");
+        DEBUG_PRINTLN(F("Failed to send read attribute command"));
         return false;
     }
     

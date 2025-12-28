@@ -392,8 +392,8 @@ enum {
 	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
 
 	#define PIN_FREE_LIST     {} // no free GPIO pin at the moment
-	#define ETHER_BUFFER_SIZE   4096
-	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE*2)
+	#define ETHER_BUFFER_SIZE   2048
+	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
 
 	/* To accommodate different OS30 versions, we use software defines pins */
 	extern unsigned char PIN_BUTTON_1;

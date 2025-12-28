@@ -3380,12 +3380,12 @@ void OpenSprinkler::lcd_set_brightness(unsigned char value) {
 }
 
 void calc_sunrise_sunset() { // calculate sunrise and sunset time
-	char loc[MAX_SOPTS_SIZE];
 	float latitude, longitude;
-	file_read_block(SOPTS_FILENAME, (char*) loc, SOPT_LOCATION*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+	char location_buffer[MAX_SOPTS_SIZE+1];  // Use local buffer to avoid tmp_buffer conflicts
+	file_read_block(SOPTS_FILENAME, location_buffer, SOPT_LOCATION*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
 	DEBUG_PRINT(F("loc: "));
-	DEBUG_PRINTLN(loc);
-	if (sscanf(loc, "%f,%f", &latitude, &longitude) != 2) return;
+	DEBUG_PRINTLN(location_buffer);
+	if (sscanf(location_buffer, "%f,%f", &latitude, &longitude) != 2) return;
 	DEBUG_PRINT(F("lat/long: "));
 	DEBUG_PRINT(latitude);
 	DEBUG_PRINT(",");

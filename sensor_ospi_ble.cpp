@@ -156,7 +156,7 @@ int sensor_ospi_ble_read_characteristic(
     DEBUG_PRINTLN(mac_address);
     
     // Use gatttool to read characteristic (requires gatttool to be installed)
-    char cmd[256];
+    char cmd[128];
     snprintf(cmd, sizeof(cmd), 
              "timeout 10 gatttool -b %s --char-read -u %s 2>/dev/null",
              mac_address, characteristic_uuid);
@@ -167,7 +167,7 @@ int sensor_ospi_ble_read_characteristic(
         return -1;
     }
     
-    char line[256];
+    char line[128];
     int bytes_read = 0;
     
     // Parse gatttool output: "Characteristic value/descriptor: 01 02 03 04"
@@ -239,12 +239,12 @@ int OspiBLESensor::read(unsigned long time) {
     }
     
     if (!mac_address || strlen(mac_address) == 0) {
-        DEBUG_PRINTLN("ERROR: BLE MAC address not configured in name field");
+        DEBUG_PRINTLN(F("ERROR: BLE MAC address not configured in name field"));
         return HTTP_RQT_NOT_RECEIVED;
     }
     
     if (strlen(characteristic_uuid) == 0) {
-        DEBUG_PRINTLN("ERROR: BLE characteristic UUID not configured in userdef_unit field");
+        DEBUG_PRINTLN(F("ERROR: BLE characteristic UUID not configured in userdef_unit field"));
         return HTTP_RQT_NOT_RECEIVED;
     }
     

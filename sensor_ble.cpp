@@ -243,12 +243,12 @@ int BLESensor::read(unsigned long time) {
     }
     
     if (!mac_address || strlen(mac_address) == 0) {
-        DEBUG_PRINTLN("ERROR: BLE MAC address not configured in name field");
+        DEBUG_PRINTLN(F("ERROR: BLE MAC address not configured in name field"));
         return HTTP_RQT_NOT_RECEIVED;
     }
     
     if (strlen(characteristic_uuid) == 0) {
-        DEBUG_PRINTLN("ERROR: BLE characteristic UUID not configured in userdef_unit field");
+        DEBUG_PRINTLN(F("ERROR: BLE characteristic UUID not configured in userdef_unit field"));
         return HTTP_RQT_NOT_RECEIVED;
     }
     
@@ -263,17 +263,17 @@ int BLESensor::read(unsigned long time) {
     // Connect to BLE device
     BLEClient* pClient = BLEDevice::createClient();
     if (!pClient->connect(bleAddress)) {
-        DEBUG_PRINTLN("Failed to connect to BLE device");
+        DEBUG_PRINTLN(F("Failed to connect to BLE device"));
         delete pClient;
         return HTTP_RQT_NOT_RECEIVED;
     }
     
-    DEBUG_PRINTLN("Connected to BLE device");
+    DEBUG_PRINTLN(F("Connected to BLE device"));
     
     // Get remote service (use generic service if not specified)
     BLERemoteService* pRemoteService = pClient->getService(BLEUUID((uint16_t)0x181A)); // Environmental Sensing
     if (pRemoteService == nullptr) {
-        DEBUG_PRINTLN("Failed to find service, trying primary service...");
+        DEBUG_PRINTLN(F("Failed to find service, trying primary service..."));
         std::map<std::string, BLERemoteService*>* services = pClient->getServices();
         if (services->size() > 0) {
             pRemoteService = services->begin()->second;
@@ -281,7 +281,7 @@ int BLESensor::read(unsigned long time) {
     }
     
     if (pRemoteService == nullptr) {
-        DEBUG_PRINTLN("Failed to find any service");
+        DEBUG_PRINTLN(F("Failed to find any service"));
         pClient->disconnect();
         delete pClient;
         return HTTP_RQT_NOT_RECEIVED;
@@ -290,7 +290,7 @@ int BLESensor::read(unsigned long time) {
     // Get characteristic
     BLERemoteCharacteristic* pRemoteCharacteristic = pRemoteService->getCharacteristic(BLEUUID(characteristic_uuid));
     if (pRemoteCharacteristic == nullptr) {
-        DEBUG_PRINTLN("Failed to find characteristic");
+        DEBUG_PRINTLN(F("Failed to find characteristic"));
         pClient->disconnect();
         delete pClient;
         return HTTP_RQT_NOT_RECEIVED;
@@ -315,7 +315,7 @@ int BLESensor::read(unsigned long time) {
     delete pClient;
     
     if (value_str.length() == 0) {
-        DEBUG_PRINTLN("No data received from BLE device");
+        DEBUG_PRINTLN(F("No data received from BLE device"));
         return HTTP_RQT_NOT_RECEIVED;
     }
     
@@ -323,7 +323,7 @@ int BLESensor::read(unsigned long time) {
     double parsed_value = 0.0;
     
     if (!decode_payload((const uint8_t*)value_str.c_str(), value_str.length(), format, &parsed_value)) {
-        DEBUG_PRINTLN("Failed to decode BLE payload");
+        DEBUG_PRINTLN(F("Failed to decode BLE payload"));
         return HTTP_RQT_NOT_RECEIVED;
     }
     
