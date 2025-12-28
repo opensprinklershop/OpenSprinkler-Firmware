@@ -23,9 +23,6 @@
 #include "sensors.h"
 #include "OpenSprinkler.h"
 #include "opensprinkler_server.h"
-#include <esp_partition.h>
-#include <vector>
-#include "esp_zigbee_core.h"
 
 extern OpenSprinkler os;
 
@@ -35,6 +32,9 @@ extern OpenSprinkler os;
 
 #if defined(ESP32C5)
 
+#include <esp_partition.h>
+#include <vector>
+#include "esp_zigbee_core.h"
 #include "Zigbee.h"
 
 // Zigbee coordinator instance
