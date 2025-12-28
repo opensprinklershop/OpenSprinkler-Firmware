@@ -41,6 +41,9 @@
 #include "program.h"
 #include "Sensor.hpp"
 #include "sensor_mqtt.h"
+#include "sensor_zigbee.h"
+#include "sensor_ble.h"
+#include "sensor_ospi_ble.h"
 #include "sensor_fyta.h"
 #include "sensor_group.h"
 #include "sensor_rs485_i2c.h"
@@ -53,6 +56,7 @@
 #include "sensor_remote.h"
 #ifdef OSPI
 #include "sensor_usbrs485.h"
+#include "sensor_ospi_ble.h"
 #endif
 #include "utils.h"
 #include "weather.h"
@@ -1229,6 +1233,7 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
         return new RS485I2CSensor(type);
       return nullptr; // fallback to existing C implementation
 
+#if defined(ADS1115) || defined(PCF8591)
     // OSPI analog sensors
     case SENSOR_OSPI_ANALOG:
     case SENSOR_OSPI_ANALOG_P:
@@ -1236,10 +1241,9 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
     case SENSOR_OSPI_ANALOG_SMT50_TEMP:
 #ifdef ADS1115
       return new OspiAds1115Sensor(type);
-#elif defined(PCF8591)
-      return new OspiPcf8591Sensor(type);
 #else
-      return nullptr;
+      return new OspiPcf8591Sensor(type);
+#endif
 #endif
 
     // Remote HTTP sensor
@@ -1250,6 +1254,20 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
     case SENSOR_MQTT:
       return new MqttSensor(type);
 
+    // Zigbee sensors
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+    case SENSOR_ZIGBEE:
+      return new ZigbeeSensor(type);
+#endif
+    // BLE sensors
+#if defined(OSPI) || defined(ESP32)
+    case SENSOR_BLE:
+#if defined(OSPI)
+      return new OspiBLESensor(type);
+#else
+      return new BLESensor(type);
+#endif
+#endif
     // Internal system sensors
 #if defined(ESP8266) || defined(ESP32)
     case SENSOR_FREE_MEMORY:

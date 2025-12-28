@@ -304,7 +304,7 @@ void otf_send_result(OTF_PARAMS_DEF, unsigned char code, const char *item = NULL
 	json += F("\"");
 	json += F("}");
 	print_header(OTF_PARAMS, true, json.length());
-	res.writeBodyChunk((char *)"%s",json.c_str());
+	res.writeBodyData(json.c_str(), json.length());
 }
 
 #if defined(ESP8266) || defined(ESP32)
@@ -337,19 +337,21 @@ String get_ap_ssid() {
 static String scanned_ssids;
 
 void on_ap_home(OTF_PARAMS_DEF) {
-	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
-	print_header(OTF_PARAMS, false, strlen_P((char*)ap_home_html));
-	res.writeBodyChunk((char *) "%s", ap_home_html);
+	//if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
+	rewind_ether_buffer();
+	strcpy_P(ether_buffer, ap_home_html);
+	print_header(OTF_PARAMS, false, strlen(ether_buffer));
+	handle_return(HTML_OK);
 }
 
 void on_ap_scan(OTF_PARAMS_DEF) {
-	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
+	//if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
 	print_header(OTF_PARAMS, true, scanned_ssids.length());
-	res.writeBodyChunk((char *)"%s",scanned_ssids.c_str());
+	res.writeBodyData(scanned_ssids.c_str(), scanned_ssids.length());
 }
 
 void on_ap_change_config(OTF_PARAMS_DEF) {
-	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
+	//if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
 	char *ssid = req.getQueryParameter("ssid");
 	if(ssid!=NULL&&strlen(ssid)!=0) {
 		os.wifi_ssid = ssid;
@@ -387,13 +389,13 @@ void on_ap_change_config(OTF_PARAMS_DEF) {
 void reboot_in(uint32_t ms);
 
 void on_ap_try_connect(OTF_PARAMS_DEF) {
-	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
+	//if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
 	String json = "{";
 	json += F("\"ip\":");
 	json += (WiFi.status() == WL_CONNECTED) ? (uint32_t)WiFi.localIP() : 0;
 	json += F("}");
 	print_header(OTF_PARAMS,true,json.length());
-	res.writeBodyChunk((char *)"%s",json.c_str());
+	res.writeBodyData(json.c_str(), json.length());
 	if(WiFi.status() == WL_CONNECTED && WiFi.localIP()) {
 		os.iopts[IOPT_WIFI_MODE] = WIFI_MODE_STA;
 		os.iopts_save();
@@ -439,7 +441,7 @@ boolean check_password(char *p)
 		rewind_ether_buffer();
 		bfill.emit_p(PSTR("{\"$F\":$D}"), iopt_json_names+0, os.iopts[0]);
 		print_header(OTF_PARAMS,true,strlen(ether_buffer));
-		res.writeBodyChunk((char *)"%s",ether_buffer);
+		res.writeBodyData(ether_buffer, strlen(ether_buffer));
 	} else {
 		otf_send_result(OTF_PARAMS, HTML_UNAUTHORIZED);
 	}
@@ -1153,8 +1155,10 @@ void server_json_options_main() {
 	}
 
 	//feature flag Analog Sensor API
-	#if defined(ESP32)
-	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32\""));
+	#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,BLE,ZIGBEE\""));
+	#elif defined(ESP32)
+	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,BLE\""));
 	#else
 	bfill.emit_p(PSTR(",\"feature\":\"ASB\""));
 	#endif
@@ -3677,6 +3681,12 @@ static const int sensor_types[] = {
 	SENSOR_TH100_MOIS,
 	SENSOR_TH100_TEMP,
 	SENSOR_RS485,
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)	
+	SENSOR_ZIGBEE,
+#endif
+#if defined(ESP32)
+	SENSOR_BLE,
+#endif
 #if defined(ESP8266) || defined(ESP32)
 	SENSOR_ANALOG_EXTENSION_BOARD,
 	SENSOR_ANALOG_EXTENSION_BOARD_P,
@@ -3731,6 +3741,12 @@ static const char* sensor_names[] = {
 	"Truebner TH100 RS485 Modbus, humidity mode",
 	"Truebner TH100 RS485 Modbus, temperature mode",
 	"RS485 generic sensor",
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)	
+	"Zigbee sensor",
+#endif
+#if defined(ESP32)
+	"BLE sensor",
+#endif
  #if defined(ESP8266) || defined(ESP32)
 	"ASB - voltage mode 0..5V",
 	"ASB - 0..3.3V to 0..100%",
@@ -4238,6 +4254,199 @@ void server_influx_get_main() {
 	bfill.emit_p(tmp_buffer);
 }
 
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+#include "sensor_zigbee.h"
+
+/**
+ * zd
+ * @brief Get list of discovered Zigbee devices
+ * Returns JSON array of discovered devices
+ */
+void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	ZigbeeDeviceInfo devices[10];
+	int count = sensor_zigbee_get_discovered_devices(devices, 10);
+	
+	bfill.emit_p(PSTR("{\"devices\":["));
+	
+	for (int i = 0; i < count; i++) {
+		if (i > 0) bfill.emit_p(PSTR(","));
+		
+		char ieee_str[20];
+		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX", 
+		         (unsigned long long)devices[i].ieee_addr);
+		
+		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
+		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
+		             ieee_str,
+		             devices[i].short_addr,
+		             devices[i].model_id,
+		             devices[i].manufacturer,
+		             devices[i].endpoint,
+		             devices[i].device_id,
+		             devices[i].is_new ? 1 : 0);
+	}
+	
+	bfill.emit_p(PSTR("],\"count\":$D}"), count);
+	
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * zo
+ * @brief Open Zigbee network for pairing
+ * Parameters: duration (seconds, default 60)
+ */
+void server_zigbee_open_network(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	print_header();
+#endif
+
+	uint16_t duration = 60;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
+		duration = atoi(tmp_buffer);
+		if (duration < 1) duration = 1;
+		if (duration > 600) duration = 600; // Max 10 minutes
+	}
+	
+	sensor_zigbee_open_network(duration);
+	
+	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D}"), duration);
+	
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * zc
+ * @brief Clear new device flags
+ */
+void server_zigbee_clear_flags(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	sensor_zigbee_clear_new_device_flags();
+	
+	bfill.emit_p(PSTR("{\"result\":1}"));
+	
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+#endif // ESP32C5 && ZIGBEE_MODE_ZCZR
+
+#if defined(ESP32)
+#include "sensor_ble.h"
+
+/**
+ * bd
+ * @brief Get list of discovered BLE devices
+ * Returns JSON array of discovered devices
+ */
+void server_ble_discovered_devices(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	BLEDeviceInfo devices[20];
+	int count = sensor_ble_get_discovered_devices(devices, 20);
+	
+	bfill.emit_p(PSTR("{\"devices\":["));
+	
+	for (int i = 0; i < count; i++) {
+		if (i > 0) bfill.emit_p(PSTR(","));
+		
+		char addr_str[18];
+		snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+		         devices[i].address[0], devices[i].address[1], devices[i].address[2],
+		         devices[i].address[3], devices[i].address[4], devices[i].address[5]);
+		
+		bfill.emit_p(PSTR("{\"address\":\"$S\",\"name\":\"$S\",\"rssi\":$D,\"is_new\":$D}"),
+		             addr_str,
+		             devices[i].name,
+		             devices[i].rssi,
+		             devices[i].is_new ? 1 : 0);
+	}
+	
+	bfill.emit_p(PSTR("],\"count\":$D}"), count);
+	
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * bs
+ * @brief Start BLE scanning
+ * Parameters: duration (seconds, default 10)
+ */
+void server_ble_start_scan(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	print_header();
+#endif
+
+	uint16_t duration = 10;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
+		duration = atoi(tmp_buffer);
+		if (duration < 1) duration = 1;
+		if (duration > 300) duration = 300; // Max 5 minutes
+	}
+	
+	sensor_ble_start_scan(duration);
+	
+	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D}"), duration);
+	
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * bc
+ * @brief Clear new device flags
+ */
+void server_ble_clear_flags(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	sensor_ble_clear_new_device_flags();
+	
+	bfill.emit_p(PSTR("{\"result\":1}"));
+	
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+#endif // ESP32
+
 typedef void (*URLHandler)(OTF_PARAMS_DEF);
 
 /* Server function urls
@@ -4292,6 +4501,16 @@ const char _url_keys[] PROGMEM =
 	"mc"
 	"ml"
 	"mt"
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+	"zd"  // Zigbee: get discovered devices
+	"zo"  // Zigbee: open network
+	"zc"  // Zigbee: clear new device flags
+#endif
+#if defined(ESP32)
+	"bd"  // BLE: get discovered devices
+	"bs"  // BLE: start scan
+	"bc"  // BLE: clear new device flags
+#endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	"fy"
 	"fc"
@@ -4348,6 +4567,16 @@ URLHandler urls[] = {
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+	server_zigbee_discovered_devices, // zd
+	server_zigbee_open_network, // zo
+	server_zigbee_clear_flags, // zc
+#endif
+#if defined(ESP32)
+	server_ble_discovered_devices, // bd
+	server_ble_start_scan, // bs
+	server_ble_clear_flags, // bc
+#endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	server_fyta_query_plants, // fy
 	server_fyta_get_credentials, //fc
@@ -4358,15 +4587,19 @@ URLHandler urls[] = {
 // handle Ethernet request
 #if defined(ESP8266) || defined(ESP32)
 void on_ap_update(OTF_PARAMS_DEF) {
-	print_header(OTF_PARAMS, false, strlen_P((char*)ap_update_html));
-	res.writeBodyChunk((char *) "%s", ap_update_html);
+	rewind_ether_buffer();
+	strcpy_P(ether_buffer, ap_update_html);
+	print_header(OTF_PARAMS, false, strlen(ether_buffer));
+	handle_return(HTML_OK);
 }
 
 void on_sta_update(OTF_PARAMS_DEF) {
 	if(req.isCloudRequest()) otf_send_result(OTF_PARAMS, HTML_NOT_PERMITTED, "fw update");
 	else {
-		print_header(OTF_PARAMS, false, strlen_P((char*)sta_update_html));
-		res.writeBodyChunk((char *) "%s", sta_update_html);
+		rewind_ether_buffer();
+		strcpy_P(ether_buffer, sta_update_html);
+		print_header(OTF_PARAMS, false, strlen(ether_buffer));
+		handle_return(HTML_OK);
 	}
 }
 
@@ -4443,6 +4676,8 @@ void start_server_client() {
 			otf->on(uri, urls[i]);
 		}
 		callback_initialized = true;
+		
+		DEBUG_PRINTLN(F("OTF server started"));
 	}
 	update_server->begin();
 }
@@ -4461,6 +4696,8 @@ void start_server_ap() {
 	otf->on("/update", on_ap_update, OTF::HTTP_GET);
 	update_server->on("/update", HTTP_POST, on_ap_upload_fin, on_ap_upload);
 	otf->onMissingPage(on_ap_home);
+	DEBUG_PRINTLN(F("OTF AP server started"));
+	
 	update_server->begin();
 
 	// set up all other handlers
@@ -4482,7 +4719,7 @@ void start_server_ap() {
 
 #endif
 
-#if defined(USE_OTF) && !defined(ARDUINO)
+#if defined(USE_OTF)
 void initialize_otf() {
 	if(!otf) return;
 	static bool callback_initialized = false;
@@ -4496,6 +4733,8 @@ void initialize_otf() {
 		uri[0]='/';
 		uri[3]=0;
 		for(unsigned char i=0;i<sizeof(urls)/sizeof(URLHandler);i++) {
+		
+		DEBUG_PRINTLN(F("OTF server started"));
 			uri[1]=pgm_read_byte(_url_keys+2*i);
 			uri[2]=pgm_read_byte(_url_keys+2*i+1);
 			otf->on(uri, urls[i]);

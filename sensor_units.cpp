@@ -226,3 +226,20 @@ unsigned char InternalSensor::getUnitId() const {
     default: return UNIT_NONE;
   }
 }
+
+/**
+ * @brief Get measurement unit for OSPI BLE sensor
+ * @return Unit ID based on BLE sensor type (DEGREE, PERCENT, PASCAL)
+ * @note Supports temperature, humidity and pressure sensors via BlueZ
+ */
+#ifdef OSPI
+#include "sensor_ospi_ble.h"
+unsigned char OspiBLESensor::getUnitId() const {
+  switch (type) {
+    case SENSOR_BLE_TEMP: return UNIT_DEGREE;
+    case SENSOR_BLE_HUMIDITY: return UNIT_PERCENT;
+    case SENSOR_BLE_PRESSURE: return UNIT_PASCAL;
+    default: return UNIT_NONE;
+  }
+}
+#endif

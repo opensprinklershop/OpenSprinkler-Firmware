@@ -79,7 +79,7 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
 	#endif
 
-	if(WiFi.getMode()!=WIFI_AP_STA) WiFi.mode(WIFI_AP_STA);
+	WiFi.mode(WIFI_AP_STA);
 	WiFi.begin(ssid, pass, channel, bssid);
 }
 
@@ -92,7 +92,7 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	WiFi.setTxPower(WIFI_POWER_19_5dBm); // set tx power to 19.5dBm
 	#endif
 
-	if(WiFi.getMode()!=WIFI_STA) WiFi.mode(WIFI_STA);
+	WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid, pass, channel, bssid);
 }
 #endif

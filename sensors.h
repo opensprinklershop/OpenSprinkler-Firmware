@@ -128,6 +128,9 @@ extern "C" {
  
 #define SENSOR_MQTT                     90  // subscribe to a MQTT server and query a value
 
+#define SENSOR_ZIGBEE                   95  // Zigbee sensor (generic, via Zigbee2MQTT)
+#define SENSOR_BLE                      96  // BLE (Bluetooth Low Energy) sensor
+
 #define SENSOR_REMOTE                   100 // Remote sensor of an remote opensprinkler
 #define SENSOR_WEATHER_TEMP_F           101 // Weather service - temperature (Fahrenheit)
 #define SENSOR_WEATHER_TEMP_C           102 // Weather service - temperature (Celcius)

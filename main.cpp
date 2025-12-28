@@ -38,6 +38,17 @@
 #include <Arduino.h>
 #endif
 
+#if defined(ESP32)
+	#include <ETH.h>
+	#include <SPI.h>
+	#include <gpio.h>
+	#include <esp_partition.h>
+	#include <esp_flash.h>
+	#include <hal/spi_types.h>
+	#include <esp_flash_spi_init.h>
+	#include <esp_core_dump.h>
+#endif
+
 #if defined(ARDUINO)
 	#if defined(ESP8266) 
 		#include <pinger.h>
@@ -53,13 +64,6 @@
 		lwipEth eth;
 		bool useEth = false; // tracks whether we are using WiFi or wired Ether connection
 	#elif defined(ESP32)
-		#include <ETH.h>
-		#include <SPI.h>
-		#include <gpio.h>
-		#include <esp_partition.h>
-		#include <esp_flash.h>
-		#include <hal/spi_types.h>
-		#include <esp_flash_spi_init.h>
 		WebServer *update_server = NULL;
 
 		DNSServer *dns = NULL;
@@ -2294,12 +2298,17 @@ bool register_partition() {
     esp_flash_read_id(ext_flash, &id);
     DEBUG_PRINTF(F("Initialized external Flash, size=%d KB, ID=0x%x\n"), ext_flash->size / 1024, id);
 
+	// Partition layout on external flash:
+	// - LittleFS: Complete external flash
+	
+	// Register littlefs partition (main storage - complete external flash)
 	err = esp_partition_register_external(ext_flash, 0x0000, ext_flash->size, "littlefs_ext",
 		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, NULL);
 	if (err) {
-		DEBUG_PRINTLN(F("Error registering partition"));
+		DEBUG_PRINTLN(F("Error registering LittleFS partition"));
 		return false;
 	}
+	DEBUG_PRINTF(F("LittleFS partition: %d KB (complete external flash)\n"), ext_flash->size / 1024);
 
 	esp_flash_set_chip_write_protect(ext_flash, false);
 	

@@ -51,7 +51,9 @@
 	#if defined(ESP8266) || defined(ESP32) // for ESP8266
 		#include <FS.h>
 		#include <LittleFS.h>
-		#include <OpenThingsFramework.h>
+		#ifdef USE_OTF
+			#include <OpenThingsFramework.h>
+		#endif
 		#include <DNSServer.h>
 		#include <Ticker.h>
 		#include <WiFiClientSecure.h>

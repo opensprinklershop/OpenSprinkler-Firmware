@@ -1,7 +1,9 @@
-# Name,   Type, SubType,  Offset,   Size,  Flags
-nvs, data, nvs, 0x9000, 0x5000
-otadata, data, ota, 0xE000, 0x2000
-ota_0, app, ota_0, 0x10000, 0x1E0000
-ota_1, app, ota_1, 0x1F0000, 0x1E0000
-spiffs, data, spiffs, 0x3D0000, 0x20000
-coredump, data, coredump, 0x3F0000, 0x10000
+# ESP32-C5 Partition Table for 4MB internal Flash (Single App - No OTA)
+# Name,      Type, SubType,  Offset,   Size,    Flags
+nvs,         data, nvs,      0x9000,   0x5000,
+otadata,     data, ota,      0xe000,   0x2000,
+app0,        app,  factory,  0x10000,  0x350000,
+zb_storage,  data, fat,      0x360000, 0x20000,
+zb_fct,      data, fat,      0x380000, 0x1000,
+spiffs,      data, spiffs,   0x381000, 0x6F000,
+coredump,    data, coredump, 0x3F0000, 0x10000,
