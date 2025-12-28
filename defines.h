@@ -32,13 +32,13 @@ typedef unsigned long ulong;
 #define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
 /** Firmware version, hardware version, and maximal values */
-#define OS_FW_VERSION  233  // Firmware version: 220 means 2.2.0
+#define OS_FW_VERSION  234  // Firmware version: 220 means 2.2.0
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      183  // Firmware minor version
+#define OS_FW_MINOR      184  // Firmware minor version
 
-/** Hardware version base numbers */
+/** Harare version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
 #define OSPI_HW_VERSION_BASE 0x40 // OpenSprinkler Pi
 #define SIM_HW_VERSION_BASE  0xC0 // simulation hardware
@@ -289,8 +289,6 @@ enum {
 	IOPT_LATCH_ON_VOLTAGE,
 	IOPT_LATCH_OFF_VOLTAGE,
 	IOPT_NOTIF2_ENABLE,
-	IOPT_RESERVE_4,
-	IOPT_RESERVE_5,
 	IOPT_BELOW_HANDLING,
 	IOPT_BELOW1,
 	IOPT_BELOW2,

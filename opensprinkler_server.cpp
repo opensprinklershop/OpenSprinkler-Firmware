@@ -252,6 +252,15 @@ void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
 	res.writeHeader(F("Connection"), F("close"));
 }
+
+void print_header_compressed_html(OTF_PARAMS_DEF, int len) {
+	res.writeStatus(200, F("OK"));
+	res.writeHeader(F("Content-Type"), F("text/html; charset=utf-8"));
+	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+	res.writeHeader(F("Content-Length"), len);
+	res.writeHeader(F("Vary"), F("Accept-Encoding"));
+	res.writeHeader(F("Content-Encoding"), F("gzip"));
+}
 #else
 void print_header(bool isJson=true)  {
 	bfill.emit_p(PSTR("$F$F$F$F\r\n"), html200OK, isJson?htmlContentJSON:htmlContentHTML, htmlAccessControl, htmlNoCache);
@@ -337,11 +346,9 @@ String get_ap_ssid() {
 static String scanned_ssids;
 
 void on_ap_home(OTF_PARAMS_DEF) {
-	//if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
-	rewind_ether_buffer();
-	strcpy_P(ether_buffer, ap_home_html);
-	print_header(OTF_PARAMS, false, strlen(ether_buffer));
-	handle_return(HTML_OK);
+	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
+	print_header_compressed_html(OTF_PARAMS, ap_home_html_gz_len);
+	res.writeBodyData((const __FlashStringHelper*)ap_home_html_gz, ap_home_html_gz_len);
 }
 
 void on_ap_scan(OTF_PARAMS_DEF) {
@@ -4586,24 +4593,13 @@ URLHandler urls[] = {
 
 // handle Ethernet request
 #if defined(ESP8266) || defined(ESP32)
-void on_ap_update(OTF_PARAMS_DEF) {
-	rewind_ether_buffer();
-	strcpy_P(ether_buffer, ap_update_html);
-	print_header(OTF_PARAMS, false, strlen(ether_buffer));
-	handle_return(HTML_OK);
-}
-
-void on_sta_update(OTF_PARAMS_DEF) {
+void on_firmware_update(OTF_PARAMS_DEF) {
 	if(req.isCloudRequest()) otf_send_result(OTF_PARAMS, HTML_NOT_PERMITTED, "fw update");
-	else {
-		rewind_ether_buffer();
-		strcpy_P(ether_buffer, sta_update_html);
-		print_header(OTF_PARAMS, false, strlen(ether_buffer));
-		handle_return(HTML_OK);
-	}
+	print_header_compressed_html(OTF_PARAMS, update_html_gz_len);
+	res.writeBodyData((const __FlashStringHelper*)update_html_gz, update_html_gz_len);
 }
 
-void on_sta_upload_fin() {
+void on_firmware_upload_fin() {
 	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
 		// don't check password
 	} else if(!(update_server->hasArg("pw") && os.password_verify(update_server->arg("pw").c_str()))) {
@@ -4618,12 +4614,19 @@ void on_sta_upload_fin() {
 	}
 
 	update_server_send_result(HTML_SUCCESS);
+	delay(1000); // so the UI has time to receive the success code
 	os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 }
 
-void on_ap_upload_fin() { on_sta_upload_fin(); }
+void on_update_options() {
+	update_server->sendHeader("Access-Control-Allow-Origin", "*");
+	update_server->sendHeader("Access-Control-Max-Age", "10000");
+	update_server->sendHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
+	update_server->sendHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+	update_server->send(200, "text/plain", "");
+}
 
-void on_sta_upload() {
+void on_firmware_upload() {
 	HTTPUpload& upload = update_server->upload();
 	if(upload.status == UPLOAD_FILE_START){
 		// todo:
@@ -4654,8 +4657,6 @@ void on_sta_upload() {
 	delay(0);
 }
 
-void on_ap_upload() { on_sta_upload(); }
-
 void start_server_client() {
 	if(!otf) return;
 	static bool callback_initialized = false;
@@ -4663,8 +4664,9 @@ void start_server_client() {
 	if(!callback_initialized) {
 		otf->on("/", server_home);  // handle home page
 		otf->on("/index.html", server_home);
-		otf->on("/update", on_sta_update, OTF::HTTP_GET); // handle firmware update
-		update_server->on("/update", HTTP_POST, on_sta_upload_fin, on_sta_upload);
+		otf->on("/update", on_firmware_update, OTF::HTTP_GET); // handle firmware update
+		update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
+		update_server->on("/update", HTTP_OPTIONS, on_update_options);
 
 		// set up all other handlers
 		char uri[4];
@@ -4693,8 +4695,9 @@ void start_server_ap() {
 	otf->on("/jsap", on_ap_scan);
 	otf->on("/ccap", on_ap_change_config);
 	otf->on("/jtap", on_ap_try_connect);
-	otf->on("/update", on_ap_update, OTF::HTTP_GET);
-	update_server->on("/update", HTTP_POST, on_ap_upload_fin, on_ap_upload);
+	otf->on("/update", on_firmware_update, OTF::HTTP_GET);
+	update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
+	update_server->on("/update", HTTP_OPTIONS, on_update_options);
 	otf->onMissingPage(on_ap_home);
 	DEBUG_PRINTLN(F("OTF AP server started"));
 	
