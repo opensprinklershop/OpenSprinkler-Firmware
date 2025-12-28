@@ -1,0 +1,20 @@
+site_name: OpenSprinkler Documentation
+site_url: https://OpenSprinkler.github.io/OpenSprinkler-Firmware/
+repo_url: https://github.com/OpenSprinkler/OpenSprinkler-Firmware
+
+theme: readthedocs
+
+nav:
+  - 'Home': 'index.md'
+  - 'FAQ': 'faq.md'
+  - 'Firmware v2.2.1(4)':
+    - 'User Manual': '2.2.1/221_4_manual.md'
+    - 'API Reference': '2.2.1/221_4_api.md'
+  - 'Troubleshooting': 'troubleshooting.md'
+  - 'Archived':
+    - 'Previous Manuals and API docs': 'archive.md'
+extra_css:
+  - custom.css
+markdown_extensions:
+  - attr_list
+  - admonition

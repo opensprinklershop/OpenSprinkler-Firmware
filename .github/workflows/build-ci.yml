@@ -40,11 +40,19 @@ jobs:
       - name: Install PlatformIO Core
         run: pip install --upgrade platformio
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Or any recent LTS version
+
+      - name: Install html-minifier-terser
+        run: npm install html-minifier-terser
+
       - name: Build PlatformIO Project
-        run: pio run --environment d1_mini
+        run: pio run --environment os3x_esp8266
 
       - name: Move and rename firmware
-        run: mv .pio/build/d1_mini/firmware.bin ./firmware_os_esp8266.bin
+        run: mv .pio/build/os3x_esp8266/firmware.bin ./firmware_os_esp8266.bin
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
@@ -59,6 +67,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Build Script
+        run: sudo ./build.sh -s demo
 
       - name: Build Script
         run: sudo ./build.sh -s demo
@@ -152,11 +163,6 @@ jobs:
         with:
           name: firmware
           path: ./firmware
-
-      - name: Add firmware to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: firmware/*
 
   release-docker:
     name: Release Docker
