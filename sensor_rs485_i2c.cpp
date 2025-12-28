@@ -28,6 +28,7 @@
 
 extern OpenSprinkler os;
 
+uint8_t i2c_rs485_addr = 0;
 int active_i2c_RS485 = 0;
 int active_i2c_RS485_mode = 0;
 int i2c_pending = 0;
@@ -47,14 +48,23 @@ int i2c_pending = 0;
 #define REG_EFCR    0x0F
 
 void sensor_rs485_i2c_init() {
-    if (detect_i2c(ASB_I2C_RS485_ADDR)) {    
-        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
+    if (detect_i2c(ASB_I2C_RS485_ADDR2)) {    
+        i2c_rs485_addr = ASB_I2C_RS485_ADDR2;
+        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR2);
+        add_asb_detected_boards(ASB_I2C_RS485);
+    } else if (detect_i2c(ASB_I2C_RS485_ADDR3)) {    
+        i2c_rs485_addr = ASB_I2C_RS485_ADDR3;
+        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR3);
+        add_asb_detected_boards(ASB_I2C_RS485);
+    } if (detect_i2c(ASB_I2C_RS485_ADDR1)) {    
+        i2c_rs485_addr = ASB_I2C_RS485_ADDR1;
+        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR1);
         add_asb_detected_boards(ASB_I2C_RS485);
     }
 }
 
 void writeSC16Register(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(ASB_I2C_RS485_ADDR); // Wire Lib erwartet 7-bit Adresse
+  Wire.beginTransmission(i2c_rs485_addr); // Wire Lib erwartet 7-bit Adresse
   Wire.write( (reg << 3) | 0x00 ); // Befehlsbyte für Schreibzugriff
   Wire.write(value);
   Wire.endTransmission();
@@ -62,11 +72,11 @@ void writeSC16Register(uint8_t reg, uint8_t value) {
 
 uint8_t readSC16Register(uint8_t reg) {
   uint8_t result =0;
-  Wire.beginTransmission(ASB_I2C_RS485_ADDR);
+  Wire.beginTransmission(i2c_rs485_addr);
   Wire.write( (reg << 3) | 0x80 ); // Befehlsbyte für Lesezugriff
   Wire.endTransmission(false); // Kein Stop, um Re-Start zu senden
 
-  Wire.requestFrom(ASB_I2C_RS485_ADDR, 1);
+  Wire.requestFrom(i2c_rs485_addr, 1);
   if (Wire.available()) {
     result = Wire.read();
   }
