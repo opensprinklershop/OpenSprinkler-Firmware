@@ -32,13 +32,13 @@ typedef unsigned long ulong;
 #define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
 /** Firmware version, hardware version, and maximal values */
-#define OS_FW_VERSION  234  // Firmware version: 220 means 2.2.0
+#define OS_FW_VERSION  233  // Firmware version: 220 means 2.2.0
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
 #define OS_FW_MINOR      184  // Firmware minor version
 
-/** Harare version base numbers */
+/** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
 #define OSPI_HW_VERSION_BASE 0x40 // OpenSprinkler Pi
 #define SIM_HW_VERSION_BASE  0xC0 // simulation hardware
@@ -92,9 +92,23 @@ typedef unsigned long ulong;
 #define NOTIFY_RAINDELAY       0x0080
 #define NOTIFY_STATION_ON      0x0100
 #define NOTIFY_FLOW_ALERT      0x0200
-#define NOTIFY_MONITOR_LOW     0x0400
-#define NOTIFY_MONITOR_MID     0x0800
-#define NOTIFY_MONITOR_HIGH    0x1000
+#define NOTIFY_CURR_ALERT      0x0400
+#define NOTIFY_MONITOR_LOW     0x1000
+#define NOTIFY_MONITOR_MID     0x2000
+#define NOTIFY_MONITOR_HIGH    0x4000
+
+/** Queue Insertion Mode */
+enum {
+	QUEUE_OPTION_APPEND = 0,
+	QUEUE_OPTION_INSERT_FRONT,
+	QUEUE_OPTION_REPLACE
+};
+
+enum {
+	CURR_ALERT_TYPE_UNDER = 0,		// undercurrent when running a station
+	CURR_ALERT_TYPE_OVER_STATION,	// overcurrent when turning on a station
+	CURR_ALERT_TYPE_OVER_SYSTEM		// overcurrent while system is running
+};
 
 /** HTTP request macro defines */
 #define HTTP_RQT_SUCCESS       0
@@ -171,6 +185,12 @@ typedef unsigned long ulong;
 #define DEFAULT_OTC_TOKEN_LENGTH   32
 #define DEFAULT_DEVICE_NAME       "My OpenSprinkler"
 #define DEFAULT_EMPTY_STRING      ""
+#define DEFAULT_UNDERCURRENT_THRESHOLD 100 // in mA
+#define DEFAULT_OVERCURRENT_LIMIT 1200 // in mA
+#define OVERCURRENT_INRUSH_EXTRA   600 // in mA, extra margin for inrush
+#define OVERCURRENT_DC_EXTRA      1200 // in mA, extra margin for DC controller
+#define DEFAULT_LATCH_BOOST_VOLTAGE  9 // default latch boost voltage in volt
+#define DEFAULT_TARGET_PD_VOLTAGE   75 // default target voltage (unit: 100mV, so 75 means 7500mV ot 7.5V)
 
 #if (defined(__AVR_ATmega1284P__) || defined(__AVR_ATmega1284__))
 	#define OS_AVR
@@ -184,7 +204,7 @@ typedef unsigned long ulong;
 enum {
 	WEATHER_METHOD_MANUAL = 0,
 	WEATHER_METHOD_ZIMMERMAN,
-	WEATHER_METHOD_AUTORAINDELY,
+	WEATHER_METHOD_AUTORAINDELAY,
 	WEATHER_METHOD_ETO,
 	WEATHER_METHOD_MONTHLY,
 	NUM_WEATHER_METHODS
@@ -289,11 +309,16 @@ enum {
 	IOPT_LATCH_ON_VOLTAGE,
 	IOPT_LATCH_OFF_VOLTAGE,
 	IOPT_NOTIF2_ENABLE,
+	IOPT_I_MIN_THRESHOLD,
+	IOPT_I_MAX_LIMIT,
+	IOPT_TARGET_PD_VOLTAGE,
+	IOPT_RESERVE_7,
+	IOPT_RESERVE_8,
+	IOPT_WIFI_MODE, //ro
+	IOPT_RESET,     //ro
 	IOPT_BELOW_HANDLING,
 	IOPT_BELOW1,
 	IOPT_BELOW2,
-	IOPT_WIFI_MODE, //ro
-	IOPT_RESET,     //ro
 	NUM_IOPTS // total number of integer options
 };
 
@@ -388,7 +413,10 @@ enum {
 	#define EXP_I2CADDR_BASE 0x24 // base of expander I2C address
 	#define LCD_I2CADDR      0x3C // 128x64 OLED display I2C address
 	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
+	#define CH224_I2CADDR    0x22 // CH224A/Q I2C address
 
+	#define PIN_CURR_SENSE    A0    // current sensing pin
+	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
 	#define PIN_FREE_LIST     {} // no free GPIO pin at the moment
 	#define ETHER_BUFFER_SIZE   2048
 	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
@@ -462,6 +490,7 @@ enum {
 	#define V2_PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
 	#define V2_PIN_SENSOR1       3  // sensor 1
 	#define V2_PIN_SENSOR2       10 // sensor 2
+	#define V2_PIN_BOOST_SEL     IOEXP_PIN+8
 
 	#define PIN_ETHER_CS       16 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
 	#define ETHER_SPI_CLOCK    10000000L // SPI clock for Ethernet (e.g. 10MHz)
@@ -577,32 +606,30 @@ enum {
 
 #if defined(ENABLE_DEBUG) /** Serial debug functions */
 
-	#if defined(ARDUINO)
-		#define DEBUG_BEGIN(x)   {Serial.begin(x);}
-		#define DEBUG_PRINT(x)   {Serial.print(x);}
-		#define DEBUG_PRINTLN(x) {Serial.println(x);}
-		#define DEBUG_PRINTF(msg, ...)    {Serial.printf(msg, ##__VA_ARGS__);}
-	#else
-		#include <stdio.h>
-		#define DEBUG_BEGIN(x)          {}  /** Serial debug functions */
-		inline  void DEBUG_PRINT(int x) {fprintf(stdout, "%d", x);}
-		inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s);}
-		#define DEBUG_PRINTLN(x)        {DEBUG_PRINT(x);fprintf(stdout, "\n");}
-		#define DEBUG_PRINTF(msg, ...)    {fprintf(stdout, msg, ##__VA_ARGS__);}
-	#endif
+#if defined(ARDUINO)
+#define DEBUG_BEGIN(x)   {Serial.begin(x);}
+#define DEBUG_PRINT(x)   {Serial.print(x);}
+#define DEBUG_PRINTLN(x) {Serial.println(x);}
+#define DEBUG_PRINTF(msg, ...)    {Serial.printf(msg, ##__VA_ARGS__);}
+#else
+#include <stdio.h>
+#define DEBUG_BEGIN(x)          {}  /** Serial debug functions */
+inline  void DEBUG_PRINT(int x) {fprintf(stdout, "%d", x);}
+inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s);}
+#define DEBUG_PRINTLN(x)        {DEBUG_PRINT(x);fprintf(stdout, "\n");}
+#define DEBUG_PRINTF(msg, ...)    {fprintf(stdout, msg, ##__VA_ARGS__);}
+#endif
 
 #else
-
-	#if defined(ARDUINO)
-	// work-around for PIN_SENSOR1 on OS3.2 and above
-	#define DEBUG_BEGIN(x)   {Serial.begin(115200); Serial.end();}
-	#else
-	#define DEBUG_BEGIN(x)   {}
-	#endif
-	#define DEBUG_PRINT(x)   {}
-	#define DEBUG_PRINTLN(x) {}
-	#define DEBUG_PRINTF(x, ...)  {}
-
+#if defined(ARDUINO)
+// work-around for PIN_SENSOR1 on OS3.2 and above
+#define DEBUG_BEGIN(x)   {Serial.begin(115200); Serial.end();}
+#else
+#define DEBUG_BEGIN(x)   {}
+#endif
+#define DEBUG_PRINT(x)   {}
+#define DEBUG_PRINTLN(x) {}
+#define DEBUG_PRINTF(x, ...)  {}
 #endif
 
 /** Re-define avr-specific (e.g. PGM) types to use standard types */

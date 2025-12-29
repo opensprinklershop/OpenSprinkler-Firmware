@@ -26,12 +26,20 @@
 
 #else
 
-/* POSIX (Linux) network includes (target is Linux) */
+#if defined(_WIN32) || defined(WIN32)
+# define SMTP_IS_WINDOWS
+#endif /* SMTP_IS_WINDOWS */
+
+#ifdef SMTP_IS_WINDOWS
+# include <winsock2.h>
+# include <ws2tcpip.h>
+#else /* POSIX */
 # include <netinet/in.h>
 # include <sys/select.h>
 # include <sys/socket.h>
 # include <netdb.h>
 # include <unistd.h>
+#endif /* SMTP_IS_WINDOWS */
 
 #include <errno.h>
 #include <limits.h>

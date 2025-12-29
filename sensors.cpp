@@ -22,7 +22,7 @@
 #include "sensors.h"
 #include "Sensor.hpp"
 #include "sensors_util.h"
-
+#include "main.h"
 #include <stdlib.h>
 
 #include "OpenSprinkler.h"
@@ -1369,7 +1369,7 @@ int set_sensor_address(SensorBase *sensor, uint8_t new_address) {
   return sensor->setAddress(new_address);
 }
 
-double calc_linear(ProgSensorAdjust_t *p, double sensorData) {
+double calc_linear(ProgSensorAdjust *p, double sensorData) {
   //   min max  factor1 factor2
   //   10..90 -> 5..1 factor1 > factor2
   //    a   b    c  d
@@ -1394,15 +1394,15 @@ double calc_linear(ProgSensorAdjust_t *p, double sensorData) {
   }
 }
 
-double calc_digital_min(ProgSensorAdjust_t *p, double sensorData) {
+double calc_digital_min(ProgSensorAdjust *p, double sensorData) {
   return sensorData <= p->min ? p->factor1 : p->factor2;
 }
 
-double calc_digital_max(ProgSensorAdjust_t *p, double sensorData) {
+double calc_digital_max(ProgSensorAdjust *p, double sensorData) {
   return sensorData >= p->max ? p->factor2 : p->factor1;
 }
 
-double calc_digital_minmax(ProgSensorAdjust_t *p, double sensorData) {
+double calc_digital_minmax(ProgSensorAdjust *p, double sensorData) {
   if (sensorData <= p->min) return p->factor1;
   if (sensorData >= p->max) return p->factor1;
   return p->factor2;
@@ -1417,7 +1417,7 @@ double calc_sensor_watering(uint prog) {
   double result = 1;
 
   for (auto &kv : progSensorAdjustsMap) {
-    ProgSensorAdjust_t *p = kv.second;
+    ProgSensorAdjust *p = kv.second;
     if (!p) continue;
     if (p->prog - 1 == prog) {
       SensorBase *sensor = sensor_by_nr(p->sensor);
@@ -1433,7 +1433,7 @@ double calc_sensor_watering(uint prog) {
   return result;
 }
 
-double calc_sensor_watering_int(ProgSensorAdjust_t *p, double sensorData) {
+double calc_sensor_watering_int(ProgSensorAdjust *p, double sensorData) {
   double res = 0;
   if (!p) return res;
   switch (p->type) {
@@ -1497,7 +1497,7 @@ double calc_sensor_watering_by_nr(uint nr) {
   
   auto it = progSensorAdjustsMap.find(nr);
   if (it != progSensorAdjustsMap.end()) {
-    ProgSensorAdjust_t *p = it->second;
+    ProgSensorAdjust *p = it->second;
     if (p) {
       SensorBase *sensor = sensor_by_nr(p->sensor);
       if (sensor && sensor->flags.enable && sensor->flags.data_ok) {
@@ -1550,7 +1550,7 @@ int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save) {
   
   // Check if already exists
   auto it = progSensorAdjustsMap.find(nr);
-  ProgSensorAdjust_t *p = nullptr;
+  ProgSensorAdjust *p = nullptr;
   
   if (it != progSensorAdjustsMap.end()) {
     // Update existing
@@ -1558,7 +1558,7 @@ int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save) {
     p->fromJson(json);
   } else {
     // Create new
-    p = new ProgSensorAdjust_t;
+    p = new ProgSensorAdjust;
     p->fromJson(json);
     
     // Validate required fields
@@ -1628,7 +1628,7 @@ void prog_adjust_save() {
   
   // Serialize all prog sensor adjusts
   for (auto &kv : progSensorAdjustsMap) {
-    ProgSensorAdjust_t *pa = kv.second;
+    ProgSensorAdjust *pa = kv.second;
     if (pa) {
       ArduinoJson::JsonObject obj = array.add<ArduinoJson::JsonObject>();
       pa->toJson(obj);
@@ -1681,7 +1681,7 @@ void prog_adjust_load() {
   ArduinoJson::JsonArray array = doc.as<ArduinoJson::JsonArray>();
   
   for (ArduinoJson::JsonVariantConst v : array) {
-    ProgSensorAdjust_t *pa = new ProgSensorAdjust_t;
+    ProgSensorAdjust *pa = new ProgSensorAdjust;
     pa->fromJson(v);
     
     // Skip invalid entries
@@ -1703,7 +1703,7 @@ uint prog_adjust_count() {
   return progSensorAdjustsMap.size();
 }
 
-ProgSensorAdjust_t *prog_adjust_by_nr(uint nr) {
+ProgSensorAdjust *prog_adjust_by_nr(uint nr) {
   auto it = progSensorAdjustsMap.find(nr);
   if (it != progSensorAdjustsMap.end()) {
     return it->second;
@@ -1711,7 +1711,7 @@ ProgSensorAdjust_t *prog_adjust_by_nr(uint nr) {
   return NULL;
 }
 
-ProgSensorAdjust_t *prog_adjust_by_idx(uint idx) {
+ProgSensorAdjust *prog_adjust_by_idx(uint idx) {
   if (idx >= progSensorAdjustsMap.size()) return NULL;
   
   auto it = progSensorAdjustsMap.begin();
@@ -2156,14 +2156,10 @@ Monitor_t *monitor_by_idx(uint idx) {
   return it->second;
 }
 
-void manual_start_program(unsigned char, unsigned char);
-void schedule_all_stations(time_os_t curr_time);
-void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shift=0);
-
 void start_monitor_action(Monitor_t * mon) {
   mon->time = os.now_tz();
   if (mon->prog > 0)
-    manual_start_program(mon->prog, 255);
+    manual_start_program(mon->prog, 255, QUEUE_OPTION_APPEND);
 
   DEBUG_PRINTLN(F("start_monitor_action"));
   DEBUG_PRINT(F("Zone: "));
@@ -2209,7 +2205,8 @@ void stop_monitor_action(Monitor_t * mon) {
     RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
     if (q) {
 		  q->deque_time = mon->time;
-		  turn_off_station(sid, mon->time);
+		  turn_off_station(sid, mon->time, 0);
+      DEBUG_PRINTLN(F("stop_monitor_action: turn_off_station"));
     }
   }
 }
@@ -2431,7 +2428,7 @@ void replace_pid(uint old_pid, uint new_pid) {
     }
   }
   for (auto &kv : progSensorAdjustsMap) {
-    ProgSensorAdjust_t *psa = kv.second;
+    ProgSensorAdjust *psa = kv.second;
     if (psa && psa->prog == old_pid) {
       DEBUG_PRINT(F("replace_pid psa: "));
       DEBUG_PRINT(old_pid);

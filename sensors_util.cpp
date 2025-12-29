@@ -89,7 +89,6 @@ bool sensor_load_legacy(std::map<uint, SensorBase*>& sensorsMap) {
   
   const size_t BASE_SIZE = 111;
   const size_t SENSORURL_STORE_SIZE = 12;  // nr + type + length (without pointers)
-  const size_t RS485_EXT_SIZE = 5;   // flags + code + reg
   
   ulong pos = 0;
   uint imported_count = 0;

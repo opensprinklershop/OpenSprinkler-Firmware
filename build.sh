@@ -11,6 +11,9 @@ function enable_i2c {
     if [[ $(grep -c '^dtparam=i2c_arm=on$' /boot/config.txt) -ge 1 ]] ; then
         echo "Setting the i2c clock speed to 400 kHz, you will have to reboot for this to take effect."
         sudo sed -i -e 's/dtparam=i2c_arm=on$/dtparam=i2c_arm=on,i2c_arm_baudrate=400000/g' /boot/config.txt
+    elif [[ $(grep -c '^dtparam=i2c_arm=on$' /boot/firmware/config.txt) -ge 1 ]] ; then
+        echo "Setting the i2c clock speed to 400 kHz, you will have to reboot for this to take effect."
+        sudo sed -i -e 's/dtparam=i2c_arm=on$/dtparam=i2c_arm=on,i2c_arm_baudrate=400000/g' /boot/firmware/config.txt
     fi
     else
 		echo "Can not automatically enable i2c you might have to do this manually"
@@ -71,14 +74,6 @@ if [ "$1" == "demo" ]; then
     	otf=$(ls external/OpenThings-Framework-Firmware-Library/*.cpp)
     	ifx=$(ls external/influxdb-cpp/*.cpp)
     	g++ -o OpenSprinkler -DDEMO -DSMTP_OPENSSL $DEBUG -std=c++14 -include string.h main.cpp \
-    		OpenSprinkler.cpp program.cpp opensprinkler_server.cpp utils.cpp weather.cpp gpio.cpp \
-    		mqtt.cpp smtp.c RCSwitch.cpp \
-    		-Iexternal/TinyWebsockets/tiny_websockets_lib/include \
-    		$ws \
-    		-Iexternal/OpenThings-Framework-Firmware-Library/ \
-    		$otf \
-    		$ifx \
-    		-lpthread -lmosquitto -lssl -lcrypto
 else
 	echo "Installing required libraries..."
 	apt-get update

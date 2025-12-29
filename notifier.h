@@ -57,5 +57,4 @@ protected:
 };
 
 uint16_t get_notif_enabled();
-
 #endif  // _NOTIFIER_H

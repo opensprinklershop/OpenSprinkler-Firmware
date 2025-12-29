@@ -28,9 +28,10 @@
 
 #if defined(ESP8266) || defined(ESP32)
 
-#define ASB_I2C_RS485_ADDR1 0x50 //0xA2>>1 A0=VCC A1=SCL
+#define ASB_I2C_RS485_ADDR 0x48 //0x90>>1 A0=VCC A1=VCC 
+#define ASB_I2C_RS485_ADDR1 0x50 //0xA2>>1 A0=VCC A1=SCL ?? used By hw_rev=3 EEPROM_I2CADDR
 #define ASB_I2C_RS485_ADDR2 0x51 //0xA2>>1 A0=GND A1=SCL
-#define ASB_I2C_RS485_ADDR3 0x52 //0xA2>>1 A0=SCL A1=SCL
+#define ASB_I2C_RS485_ADDR3 0x52 //0xA2>>1 A0=SCL A1=SCL ?? used by hw_rev=4 EEPROM_I2CADDR+2
 
 /**
  * @brief Initialize I2C-RS485 bridge subsystem
@@ -52,7 +53,7 @@ int send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, bool is
 // C++ wrapper
 /**
  * @brief RS485 sensor over I2C bridge (for ESP platforms)
- * @note Uses I2C-to-RS485 converter at address ASB_I2C_RS485_ADDR (0x48)
+ * @note Uses I2C-to-RS485 converter at address ASB_I2C_RS485_ADDR
  */
 class RS485I2CSensor : public SensorBase {
 public:

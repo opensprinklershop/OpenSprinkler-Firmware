@@ -217,11 +217,7 @@ EMailSender::Response EMailSender::awaitSMTPResponse(SSLClient &client,
 	_serverResponce = client.readStringUntil('\n');
 
 	EMAIL_DEBUG_PRINTLN(_serverResponce);
-	#if defined(ARDUINO)
 	if (resp && _serverResponce.indexOf(resp) == -1){
-	#else
-	if (resp && _serverResponce.find(resp) == String::npos){
-	#endif
 		response.code = resp;
 		response.desc = respDesc +String(" (") + _serverResponce + String(")");
 		response.status = false;
@@ -238,12 +234,6 @@ EMailSender::Response EMailSender::awaitSMTPResponse(EMAIL_NETWORK_CLASS &client
 	EMailSender::Response response;
 	uint32_t ts = millis();
 	while (!client.available()) {
-		#if defined(ESP32)
-			esp_task_wdt_reset();
-		#else
-			wdt_reset();
-		#endif
-		
 		if (millis() > (ts + timeOut)) {
 			response.code = F("1");
 			response.desc = String(respDesc) + "! " + F("SMTP Response TIMEOUT!");
@@ -254,11 +244,7 @@ EMailSender::Response EMailSender::awaitSMTPResponse(EMAIL_NETWORK_CLASS &client
 	_serverResponce = client.readStringUntil('\n');
 
 	EMAIL_DEBUG_PRINTLN(_serverResponce);
-	#if defined(ARDUINO)
 	if (resp && _serverResponce.indexOf(resp) == -1){
-	#else
-	if (resp && _serverResponce.find(resp) == String::npos){
-	#endif
 		response.code = resp;
 		response.desc = respDesc +String(" (") + _serverResponce + String(")");
 		response.status = false;

@@ -235,7 +235,7 @@ void manualRun(char *message){
 }
 
 //handles /mp command
-void manual_start_program(unsigned char, unsigned char);
+void manual_start_program(unsigned char, unsigned char, unsigned char);
 void programStart(char *message){
 	if(!findKeyVal(message, tmp_buffer, TMP_BUFFER_SIZE, PSTR("pid"), true)){
 		DEBUG_LOGF("Program ID missing.\r\n")
@@ -252,9 +252,18 @@ void programStart(char *message){
 		if(tmp_buffer[0]=='1') uwt = 1;
 	}
 
-	reset_all_stations_immediate();
+	unsigned char qo = QUEUE_OPTION_REPLACE;
+	if (findKeyVal(message, tmp_buffer, TMP_BUFFER_SIZE, PSTR("qo"), true)) {
+		qo=(unsigned char)atoi(tmp_buffer);
+	}
 
-	manual_start_program(pid+1, uwt);
+	if (qo == QUEUE_OPTION_REPLACE) {
+		// reset all stations and clear queue
+	reset_all_stations_immediate();
+	}
+
+	manual_start_program(pid+1, uwt, qo);
+
 	return;
 }
 
@@ -274,13 +283,25 @@ void runOnceProgram(char *message){
 	}
 	pv+=3;
 
-	reset_all_stations_immediate();
-
 	unsigned char sid, bid, s;
 	uint16_t dur;
 	boolean match_found = false;
+	unsigned char wl = 100;
+	if(findKeyVal(message,tmp_buffer,TMP_BUFFER_SIZE,PSTR("uwt"),true)){
+		if(tmp_buffer[0]=='1') wl = os.iopts[IOPT_WATER_PERCENTAGE];
+	}
+
+	unsigned char qo = QUEUE_OPTION_REPLACE;
+	if (findKeyVal(message, tmp_buffer, TMP_BUFFER_SIZE, PSTR("qo"), true)) {
+		qo=(unsigned char)atoi(tmp_buffer);
+	}
+	if (qo == QUEUE_OPTION_REPLACE) {
+		// reset all stations and clear queue
+		reset_all_stations_immediate();
+	}
+
 	for(sid = 0; sid < os.nstations; sid++){
-		dur = parse_listdata(&pv);
+		dur = parse_listdata(&pv)*wl/100;
 		bid = sid >> 3;
 		s = sid&0x07;
 
@@ -289,14 +310,14 @@ void runOnceProgram(char *message){
 			if(q){
 				q->st = 0;
 				q->dur = water_time_resolve(dur);
+				q->pid = 254;
 				q->sid = sid;
-				q->pid = 254; // 254 is for run-once program
 				match_found = true;
 			}
 		}
 	}
 	if(match_found){
-		schedule_all_stations(os.now_tz());
+		schedule_all_stations(os.now_tz(), qo);
 		return;
 	}
 	return;
@@ -463,6 +484,7 @@ void OSMqtt::subscribe(void){
 
 // Regularly call the loop function to ensure "keep alive" messages are sent to the broker and to reconnect if needed.
 void OSMqtt::loop(void) {
+	static unsigned long last_reconnect_attempt = 0;
 
 	if (mqtt_client == NULL || !_enabled || os.status.network_fails > 0) return;
 
@@ -512,21 +534,7 @@ void OSMqtt::loop(void) {
 int OSMqtt::_init(void) {
 	Client * client = NULL;
 
-	// Suppress -Wdelete-non-virtual-dtor for PubSubClient (third-party lib without
-	// virtual destructor). Deleting the concrete type is intentional here.
-	#if defined(__clang__)
-	#pragma clang diagnostic push
-	#pragma clang diagnostic ignored "-Wdelete-non-virtual-dtor"
-	#elif defined(__GNUC__)
-	#pragma GCC diagnostic push
-	#pragma GCC diagnostic ignored "-Wdelete-non-virtual-dtor"
-	#endif
 	if (mqtt_client) { delete mqtt_client; mqtt_client = 0; }
-	#if defined(__clang__)
-	#pragma clang diagnostic pop
-	#elif defined(__GNUC__)
-	#pragma GCC diagnostic pop
-	#endif
 
 	#if defined(ESP8266) || defined(ESP32)
 		client = &wifiClient;

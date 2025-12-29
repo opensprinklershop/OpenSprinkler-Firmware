@@ -28,7 +28,7 @@
 
 extern OpenSprinkler os;
 
-uint8_t i2c_rs485_addr = 0;
+int i2c_rs485_addr = 0;
 int active_i2c_RS485 = 0;
 int active_i2c_RS485_mode = 0;
 int i2c_pending = 0;
@@ -48,15 +48,11 @@ int i2c_pending = 0;
 #define REG_EFCR    0x0F
 
 void sensor_rs485_i2c_init() {
-    if (detect_i2c(ASB_I2C_RS485_ADDR2)) {    
-        i2c_rs485_addr = ASB_I2C_RS485_ADDR2;
-        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR2);
+   if (detect_i2c(ASB_I2C_RS485_ADDR)) {    // 0x48
+        i2c_rs485_addr = ASB_I2C_RS485_ADDR;
+        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
         add_asb_detected_boards(ASB_I2C_RS485);
-    } else if (detect_i2c(ASB_I2C_RS485_ADDR3)) {    
-        i2c_rs485_addr = ASB_I2C_RS485_ADDR3;
-        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR3);
-        add_asb_detected_boards(ASB_I2C_RS485);
-    } if (detect_i2c(ASB_I2C_RS485_ADDR1)) {    
+    } else if (os.hw_rev != 3 && detect_i2c(ASB_I2C_RS485_ADDR1)) {    //dev adapters, 0x50 unuseable hw_rev=3 
         i2c_rs485_addr = ASB_I2C_RS485_ADDR1;
         DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR1);
         add_asb_detected_boards(ASB_I2C_RS485);

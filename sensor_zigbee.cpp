@@ -435,10 +435,6 @@ void sensor_zigbee_loop() {
 }
 
 /**
- * @brief PRINTLN("s)");
-}
-
-/**
  * @brief Actively read attribute from Zigbee device
  */
 bool sensor_zigbee_read_attribute(uint64_t device_ieee, uint8_t endpoint,

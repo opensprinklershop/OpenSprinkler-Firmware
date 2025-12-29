@@ -2,7 +2,7 @@ logs/**
 OpenSprinkler
 wtopts.txt
 *.dat
-*.bak
+*.sh
 testmode.h
 build-1284/*
 .vscode
@@ -15,3 +15,8 @@ influx.json
 !updater.sh
 DEADJOE
 build
+*.bak
+node_modules
+*.json
+!package.json
+.DS_Store

@@ -260,7 +260,7 @@ public:
   void fromJson(ArduinoJson::JsonVariantConst obj);
 };
 
-typedef ProgSensorAdjust ProgSensorAdjust_t;
+
 
 #define MONITOR_DELETE 0
 #define MONITOR_MIN 1
