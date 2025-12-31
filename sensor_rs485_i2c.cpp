@@ -123,9 +123,11 @@ void set_RS485_Mode(bool transmitMode) {
     uint8_t ioState = readSC16Register(REG_IOS);
 
     if (transmitMode) {
+      DEBUG_PRINTLN(F("i2c_rs485: POWER ON"));
       // Bei RS485: DE=LOW, RE=HIGH -> Pin muss LOW sein
       ioState &= ~0x80; // Löscht Bit 7 auf LOW
     } else {
+      DEBUG_PRINTLN(F("i2c_rs485: POWER OFF"));
       // Bei RS485: DE=HIGH, RE=LOW -> Pin muss HIGH sein
       ioState |= 0x80; // Setzt Bit 7 auf HIGH
     }
@@ -179,7 +181,7 @@ void init_SC16IS752(uint32_t baudrate, uint8_t use2stopbits, uint parity) {
   writeSC16Register(REG_DLL, baudf); // Set baud rate to 9600 (assuming 8 MHz clock) (0x34=52=9600)
   writeSC16Register(REG_DLH, 0x00); // Set baud rate to 9600
   writeSC16Register(REG_LCR, lcr); // parity+stopbits (0x1B=1 stop bit, parity even, 8 data bits)
-  set_RS485_Mode(true);
+  set_RS485_Mode(false);
   writeSC16Register(REG_EFCR, 0x30); // 0x30 = 00110000 RS485 Mode Enable + RTS Inversion
 }
 /**
@@ -189,7 +191,7 @@ void init_SC16IS752(uint32_t baudrate, uint8_t use2stopbits, uint parity) {
  * @param sensor
  * @return int
  */
-int RS485I2CSensor::read(unsigned long /*time*/) {
+int RS485I2CSensor::read(unsigned long time) {
   if (!(get_asb_detected_boards() & ASB_I2C_RS485)) 
     return HTTP_RQT_NOT_RECEIVED;
 
@@ -224,7 +226,6 @@ int RS485I2CSensor::read(unsigned long /*time*/) {
   } 
 
   if (active_i2c_RS485_mode == 1) {
-    DEBUG_PRINTLN(F("i2c_rs485: POWER ON"));
     set_RS485_Mode(true);
     writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
     writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
@@ -293,6 +294,7 @@ int RS485I2CSensor::read(unsigned long /*time*/) {
       flags.data_ok = false;
       active_i2c_RS485 = 0;
       active_i2c_RS485_mode = 0;
+      last_read = time;
       set_RS485_Mode(false);
       return HTTP_RQT_NOT_RECEIVED;
     }
@@ -363,6 +365,7 @@ int RS485I2CSensor::read(unsigned long /*time*/) {
     flags.data_ok = true;
     repeat_read = 0;
     active_i2c_RS485 = 0;
+    last_read = time;
     if (i2c_pending) {
       active_i2c_RS485_mode = 2;
     } else {
@@ -379,6 +382,7 @@ int RS485I2CSensor::read(unsigned long /*time*/) {
     flags.data_ok = false;
     active_i2c_RS485 = 0;
     active_i2c_RS485_mode = 0;
+    last_read = time;
     set_RS485_Mode(false);
     DEBUG_PRINTLN(F("i2c_rs485: timeout"));
   }
