@@ -36,7 +36,7 @@
 
 	struct PubSubClient *mqtt_client = NULL;
 
-#else
+#elif defined(OSPI)
 	#include <time.h>
 	#include <stdio.h>
 	#include <mosquitto.h>
@@ -44,15 +44,73 @@
 	#include <netpacket/packet.h>
 
 	struct mosquitto *mqtt_client = NULL;
+
+#elif defined(DEMO)
+	// DEMO builds on non-POSIX hosts (e.g. Windows) compile without libmosquitto.
+	#include <stdio.h>
+	struct mosquitto;
+	struct mosquitto *mqtt_client = NULL;
+
+#else
+	#include <time.h>
+	#include <stdio.h>
+	struct mosquitto;
+	struct mosquitto *mqtt_client = NULL;
 #endif
 
-#include "OpenSprinkler.h"
-#include "opensprinkler_server.h"
-#include "main.h"
-#include "program.h"
-#include "types.h"
-#include "mqtt.h"
-#include "ArduinoJson.hpp"
+#if defined(DEMO) && !defined(ARDUINO) && !defined(OSPI)
+
+	#include "mqtt.h"
+
+	// Keep constants aligned with the full implementation.
+	#define MQTT_DEFAULT_PORT   1883
+	#define MQTT_MAX_HOST_LEN   100
+	#define MQTT_MAX_USERNAME_LEN 50
+	#define MQTT_MAX_PASSWORD_LEN 100
+	#define MQTT_MAX_TOPIC_LEN  24
+	#define MQTT_MAX_ID_LEN     16
+
+	char OSMqtt::_id[MQTT_MAX_ID_LEN + 1] = {0};
+	char OSMqtt::_host[MQTT_MAX_HOST_LEN + 1] = {0};
+	char OSMqtt::_username[MQTT_MAX_USERNAME_LEN + 1] = {0};
+	char OSMqtt::_password[MQTT_MAX_PASSWORD_LEN + 1] = {0};
+	int OSMqtt::_port = MQTT_DEFAULT_PORT;
+	bool OSMqtt::_enabled = false;
+	char OSMqtt::_pub_topic[MQTT_MAX_TOPIC_LEN + 1] = {0};
+	char OSMqtt::_sub_topic[MQTT_MAX_TOPIC_LEN + 1] = {0};
+	bool OSMqtt::_done_subscribed = false;
+
+	static int _demo_mqtt_error() { return 1; }
+	int OSMqtt::_init(void) { return _demo_mqtt_error(); }
+	int OSMqtt::_connect(void) { return _demo_mqtt_error(); }
+	int OSMqtt::_disconnect(void) { return 0; }
+	bool OSMqtt::_connected(void) { return false; }
+	int OSMqtt::_publish(const char *topic, const char *payload) {(void)topic; (void)payload; return _demo_mqtt_error(); }
+	int OSMqtt::_subscribe(void) { return _demo_mqtt_error(); }
+	int OSMqtt::_loop(void) { return 0; }
+	const char * OSMqtt::_state_string(int state) {(void)state; return "disabled"; }
+
+	void OSMqtt::init(void) {}
+	void OSMqtt::init(const char * id) {(void)id;}
+	void OSMqtt::begin(void) {}
+	void OSMqtt::publish(const char *topic, const char *payload) {(void)topic; (void)payload;}
+	void OSMqtt::subscribe() {}
+	void OSMqtt::loop(void) {}
+	bool OSMqtt::connected() { return false; }
+	bool OSMqtt::subscribe(const char *topic) {(void)topic; return false;}
+	bool OSMqtt::unsubscribe(const char *topic) {(void)topic; return false;}
+	bool OSMqtt::reconnect() { return false; }
+	void OSMqtt::setCallback(int key, void (*on_message)(struct mosquitto *, void *, const struct mosquitto_message *)) {(void)key; (void)on_message;}
+
+#else
+
+	#include "OpenSprinkler.h"
+	#include "opensprinkler_server.h"
+	#include "main.h"
+	#include "program.h"
+	#include "types.h"
+	#include "mqtt.h"
+	#include "ArduinoJson.hpp"
 
 // Debug routines to help identify any blocking of the event loop for an extended period
 
@@ -923,3 +981,5 @@ const char * OSMqtt::_state_string(int error) {
 }
 
 #endif
+
+#endif // DEMO stub wrapper

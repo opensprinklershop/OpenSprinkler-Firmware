@@ -26,8 +26,10 @@
 
 #if !defined(ARDUINO)
 #include <stdarg.h>
-#include <unistd.h>
 #include <cmath>
+	#if defined(OSPI)
+	#include <unistd.h>
+	#endif
 #else
 #include <math.h>
 #endif

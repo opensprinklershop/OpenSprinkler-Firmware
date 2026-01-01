@@ -68,7 +68,7 @@
 	       #include "LiquidCrystal.h"
        #endif
 
-#else // headers for RPI/LINUX
+#elif defined(OSPI) // headers for RPI/LINUX
 	#include <time.h>
 	#include <string.h>
 	#include <unistd.h>
@@ -78,6 +78,10 @@
 	#include "etherport.h"
     #include "rpitime.h"
 	#include "smtp.h"
+#else // generic native / DEMO builds (e.g. Windows)
+	#include <time.h>
+	#include <string.h>
+	#include <sys/stat.h>
 #endif // end of headers
 
 #if defined(USE_LCD)

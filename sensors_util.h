@@ -25,6 +25,10 @@
 #include "utils.h"
 #include <map>
 
+#ifndef SENSORS_FILE_IO_BUFFER_SIZE
+#define SENSORS_FILE_IO_BUFFER_SIZE 512
+#endif
+
 // Forward declarations
 class ProgSensorAdjust;
 class Monitor;
@@ -37,7 +41,7 @@ class FileWriter {
 private:
   const char* filename;
   size_t filePos;
-  uint8_t buffer[1024];  // Write buffer
+  uint8_t buffer[SENSORS_FILE_IO_BUFFER_SIZE];  // Write buffer
   size_t bufferPos;
   
   /**
@@ -121,7 +125,7 @@ private:
   const char* filename;
   size_t filePos;      // Position in file
   size_t fileSize;
-  uint8_t buffer[1024]; // Read buffer
+  uint8_t buffer[SENSORS_FILE_IO_BUFFER_SIZE]; // Read buffer
   size_t bufferPos;    // Current position in buffer
   size_t bufferLen;    // Valid data in buffer
   

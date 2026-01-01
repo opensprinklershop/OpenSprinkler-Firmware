@@ -25,7 +25,7 @@
 #if defined(ARDUINO)
 #include <Arduino.h>
 #include <sys/stat.h>
-#else  // headers for RPI/BBB
+#elif defined(OSPI)  // headers for RPI/BBB
 #include <stdio.h>
 #include <limits.h>
 #include <sys/time.h>
@@ -34,6 +34,16 @@ extern "C" {
 #include <linux/i2c-dev.h>
 #include <i2c/smbus.h>
 }
+#else  // generic native / DEMO builds (e.g. Windows)
+#include <stdio.h>
+#include <limits.h>
+  #if defined(__has_include)
+    #if __has_include(<sys/time.h>)
+      #include <sys/time.h>
+    #endif
+  #else
+    #include <sys/time.h>
+  #endif
 #endif
 #include <map>
 #include "defines.h"

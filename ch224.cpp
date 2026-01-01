@@ -25,7 +25,7 @@ CH224::CH224(uint8_t address, TwoWire& wire) : _address(address), _wire(&wire) {
 	_avs_apdo_count = 0;
 }
 
-CH224::CH224() : CH224(CH224_I2C_ADR, Wire) {}
+CH224::CH224() : CH224(0x23, Wire) {}
 
 CH224::CH224(uint8_t address) : CH224(address, Wire) {}
 

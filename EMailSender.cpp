@@ -217,7 +217,15 @@ EMailSender::Response EMailSender::awaitSMTPResponse(SSLClient &client,
 	_serverResponce = client.readStringUntil('\n');
 
 	EMAIL_DEBUG_PRINTLN(_serverResponce);
-	if (resp && _serverResponce.indexOf(resp) == -1){
+	auto containsResp = [&](const char* needle) -> bool {
+		if (!needle) return true;
+		#if defined(ARDUINO)
+			return _serverResponce.indexOf(needle) != -1;
+		#else
+			return _serverResponce.find(needle) != String::npos;
+		#endif
+	};
+	if (resp && !containsResp(resp)){
 		response.code = resp;
 		response.desc = respDesc +String(" (") + _serverResponce + String(")");
 		response.status = false;
@@ -244,7 +252,15 @@ EMailSender::Response EMailSender::awaitSMTPResponse(EMAIL_NETWORK_CLASS &client
 	_serverResponce = client.readStringUntil('\n');
 
 	EMAIL_DEBUG_PRINTLN(_serverResponce);
-	if (resp && _serverResponce.indexOf(resp) == -1){
+	auto containsResp = [&](const char* needle) -> bool {
+		if (!needle) return true;
+		#if defined(ARDUINO)
+			return _serverResponce.indexOf(needle) != -1;
+		#else
+			return _serverResponce.find(needle) != String::npos;
+		#endif
+	};
+	if (resp && !containsResp(resp)){
 		response.code = resp;
 		response.desc = respDesc +String(" (") + _serverResponce + String(")");
 		response.status = false;

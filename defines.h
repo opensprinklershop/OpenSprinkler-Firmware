@@ -195,9 +195,12 @@ enum {
 #if (defined(__AVR_ATmega1284P__) || defined(__AVR_ATmega1284__))
 	#define OS_AVR
 #else  // all non-AVR platforms support OTF, EMAIL and HTTPS
-	#define USE_OTF
-	#define SUPPORT_EMAIL
-	#define SUPPORT_HTTPS
+	// DEMO builds on Windows/native may not have OTF/SSL deps; OSPI demo still should.
+	#if !defined(DEMO) || defined(OSPI)
+		#define USE_OTF
+		#define SUPPORT_EMAIL
+		#define SUPPORT_HTTPS
+	#endif
 #endif
 
 /* Weather Adjustment Methods */
@@ -638,8 +641,11 @@ inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s);}
 	#include <stdlib.h>
 	#include <string.h>
 	#include <stddef.h>
-	inline void itoa(int v,char *s,int b)   {sprintf(s,"%d",v);}
-	inline void ultoa(unsigned long v,char *s,int b) {sprintf(s,"%lu",v);}
+	// MinGW provides itoa/ultoa already (different signature). Avoid redefining there.
+	#if !(defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__))
+	inline char* itoa(int v, char *s, int b)   {(void)b; sprintf(s, "%d", v); return s;}
+	inline char* ultoa(unsigned long v, char *s, int b) {(void)b; sprintf(s, "%lu", v); return s;}
+	#endif
 	#define pgm_read_byte(x) *(x)
 	#define PSTR(x)      x
 	#define F(x)         x
@@ -653,7 +659,9 @@ inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s);}
 	using namespace std;
 	#define PROGMEM
 	typedef const char* PGM_P;
+	typedef unsigned int uint;
 	typedef unsigned char   uint8_t;
+	typedef uint8_t byte;
 	typedef short           int16_t;
 	typedef unsigned short  uint16_t;
 	typedef bool boolean;

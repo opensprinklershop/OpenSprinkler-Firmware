@@ -24,20 +24,67 @@
 #ifndef _OSINFLUX_H
 #define _OSINFLUX_H
 #include "ArduinoJson.hpp"
+
+#if defined(DISABLE_INFLUXDB)
+
+// InfluxDB integration is disabled (e.g. for demo/native builds without deps).
+class OSInfluxDB {
+private:
+    bool enabled = false;
+    bool initialized = true;
+
+public:
+    ~OSInfluxDB() = default;
+    void set_influx_config(int enabled, char *url, uint16_t port, char *org, char *bucket, char *token) {
+        (void)enabled; (void)url; (void)port; (void)org; (void)bucket; (void)token;
+        this->enabled = false;
+        this->initialized = true;
+    }
+    void set_influx_config(ArduinoJson::JsonDocument &doc) {
+        (void)doc;
+        enabled = false;
+        initialized = true;
+    }
+    void set_influx_config(const char *json) {
+        (void)json;
+        enabled = false;
+        initialized = true;
+    }
+    void get_influx_config(ArduinoJson::JsonDocument &doc) {
+        doc["en"] = 0;
+    }
+    void get_influx_config(char *json) {
+        if (json) {
+            strcpy(json, "{\"en\":0}");
+        }
+    }
+    bool isEnabled() { return false; }
+    void push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
+        (void)type; (void)lval; (void)fval; (void)sval;
+    }
+};
+
+#else
+
 #if defined(ESP8266) || defined(ESP32) 
 #include <InfluxDbClient.h>
 #include <InfluxDbCloud.h>
-#else
+#elif defined(OSPI)
 #include "influxdb.hpp"
-
+#else
+// DEMO / generic native builds (esp. Windows) don't ship influxdb-cpp.
+// The integration is compiled out in osinfluxdb.cpp when DEMO is set.
+struct influxdb_cpp_server_info_stub;
 #endif
 
 class OSInfluxDB {
 private:
     #if defined(ESP8266) || defined(ESP32) 
     InfluxDBClient * client;
-    #else
+    #elif defined(OSPI)
     influxdb_cpp::server_info * client;
+    #else
+    void * client;
     #endif
     bool enabled;
     bool initialized;
@@ -59,9 +106,11 @@ public:
     bool isEnabled();
     #if defined(ESP8266) || defined(ESP32) 
     void write_influx_data(Point &sensor_data);
-    #else
+    #elif defined(OSPI)
     influxdb_cpp::server_info * get_client();
     #endif
     void push_message(uint16_t type, uint32_t lval, float fval, const char* sval);
 };
+
+#endif // DISABLE_INFLUXDB
 #endif

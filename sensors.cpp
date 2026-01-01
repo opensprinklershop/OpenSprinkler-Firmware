@@ -28,35 +28,67 @@
 #include "OpenSprinkler.h"
 #if defined(ESP8266) || defined(ESP32)
 #include "Wire.h"
-#else
+#elif defined(OSPI)
 #include <stdio.h>
 #include <iostream>
 #include <fstream>
 #include <modbus/modbus.h>
 #include <modbus/modbus-rtu.h>
 #include <errno.h>
+#else
+#include <stdio.h>
+#include <iostream>
+#include <fstream>
 #endif
 #include "defines.h"
 #include "opensprinkler_server.h"
 #include "program.h"
 #include "Sensor.hpp"
-#include "sensor_mqtt.h"
-#include "sensor_zigbee.h"
-#include "sensor_ble.h"
-#include "sensor_ospi_ble.h"
-#include "sensor_fyta.h"
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  #include "sensor_mqtt.h"
+#endif
+
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+  #include "sensor_zigbee.h"
+#endif
+
+#if defined(ESP32)
+  #include "sensor_ble.h"
+#endif
+
+#if defined(OSPI)
+  #include "sensor_ospi_ble.h"
+#endif
+
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  #include "sensor_fyta.h"
+#endif
+
 #include "sensor_group.h"
-#include "sensor_rs485_i2c.h"
-#include "sensor_truebner_rs485.h"
-#include "sensor_modbus_rtu.h"
-#include "sensor_asb.h"
-#include "sensor_remote.h"
+#if defined(ESP8266) || defined(ESP32)
+  #include "sensor_rs485_i2c.h"
+  #include "sensor_truebner_rs485.h"
+#endif
+
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  #include "sensor_modbus_rtu.h"
+#endif
+
+#if defined(ESP8266) || defined(ESP32)
+  #include "sensor_asb.h"
+#endif
+
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  #include "sensor_remote.h"
+#endif
+
 #include "sensor_internal.h"
-#include "sensor_weather.h"
-#include "sensor_remote.h"
-#ifdef OSPI
-#include "sensor_usbrs485.h"
-#include "sensor_ospi_ble.h"
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  #include "sensor_weather.h"
+#endif
+
+#if defined(OSPI)
+  #include "sensor_usbrs485.h"
 #endif
 #include "utils.h"
 #include "weather.h"
@@ -212,9 +244,13 @@ void sensor_api_init(boolean detect_boards) {
     detect_asb_board();
   sensor_load();
   prog_adjust_load();
+  #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   sensor_mqtt_init();
+  #endif
   monitor_load();
+  #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   fyta_check_opts();
+  #endif
 #if defined(OSPI)
   //Read rs485 file. Details see below
   std::ifstream file;
@@ -317,8 +353,12 @@ void sensor_api_free() {
   }
   sensorsMap.clear();
 
+  #if defined(ESP8266) || defined(ESP32)
   sensor_truebner_rs485_free();
+  #endif
+  #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   sensor_modbus_rtu_free();
+  #endif
   DEBUG_PRINTLN("sensor_api_free5");
 }
 
@@ -1186,11 +1226,13 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
     case SENSOR_GROUP_SUM:
       return new GroupSensor(type);
 
+    #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
     case SENSOR_FYTA_MOISTURE:
     case SENSOR_FYTA_TEMPERATURE: {
       FytaSensor *s = new FytaSensor(type);
       return s;
     }
+    #endif
 
     // Analog Sensor Board (ASB) sensors
 #if defined(ESP8266) || defined(ESP32)
@@ -1214,7 +1256,13 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
     case SENSOR_TH100_MOIS:
     case SENSOR_TH100_TEMP:
       if (ip_based)
-        return new ModbusRtuSensor(type);
+        {
+          #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+          return new ModbusRtuSensor(type);
+          #else
+          return new GenericSensor(type);
+          #endif
+        }
 #if defined(ESP8266) || defined(ESP32)
       if (get_asb_detected_boards() & ASB_I2C_RS485)
         return new RS485I2CSensor(type);
@@ -1248,11 +1296,19 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
 
     // Remote HTTP sensor
     case SENSOR_REMOTE:
+      #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
       return new RemoteSensor(type);
+      #else
+      return new GenericSensor(type);
+      #endif
 
     // MQTT sensor
     case SENSOR_MQTT:
+      #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
       return new MqttSensor(type);
+      #else
+      return new GenericSensor(type);
+      #endif
 
     // Zigbee sensors
 #if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
@@ -1289,7 +1345,11 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
     case SENSOR_WEATHER_WIND_KMH:
     case SENSOR_WEATHER_ETO:
     case SENSOR_WEATHER_RADIATION:
+      #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
       return new WeatherSensor(type);
+      #else
+      return new GenericSensor(type);
+      #endif
   }
   return new GenericSensor(type);
 }

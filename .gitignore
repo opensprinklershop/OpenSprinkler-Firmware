@@ -10,6 +10,7 @@ build-1284/*
 influx.json
 *~
 *.o
+*.ino.cpp
 !build.sh
 !startOpenSprinkler.sh
 !updater.sh

@@ -856,7 +856,7 @@ void OpenSprinkler::reboot_dev(uint8_t cause) {
 #endif
 }
 
-#else // RPI/LINUX network init functions
+#elif defined(OSPI) // RPI/LINUX network init functions
 
 #include "etherport.h"
 #include <sys/reboot.h>
@@ -940,6 +940,32 @@ void OpenSprinkler::update_dev() {
 	snprintf(cmd, 500, "cd %s && ./updater.sh", get_data_dir());
 	system(cmd);
 }
+
+#else // DEMO / generic native builds (e.g. Windows)
+
+unsigned char OpenSprinkler::start_network() {
+	return 1;
+}
+
+bool OpenSprinkler::network_connected(void) {
+	return true;
+}
+
+bool OpenSprinkler::load_hardware_mac(unsigned char* mac, bool wired) {
+	(void)wired;
+	if (mac) {
+		memset(mac, 0, 6);
+	}
+	return true;
+}
+
+void OpenSprinkler::reboot_dev(uint8_t cause) {
+	(void)cause;
+}
+
+void OpenSprinkler::update_dev() {
+}
+
 #endif // end network init functions
 
 #if defined(USE_DISPLAY)

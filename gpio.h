@@ -115,8 +115,9 @@ unsigned char digitalReadExt(unsigned char pin);
 
 #endif	// ESP8266
 
-#else
+#elif defined(OSPI)
 
+// OSPI/Linux GPIO
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -124,12 +125,7 @@ unsigned char digitalReadExt(unsigned char pin);
 #include "defines.h"
 #define OUTPUT 0
 #define INPUT  1
-
-#if defined(OSPI)
 #define INPUT_PULLUP 2
-#else
-#define INPUT_PULLUP INPUT
-#endif
 
 #define HIGH   1
 #define LOW    0
@@ -142,6 +138,27 @@ void gpio_write(int fd, unsigned char value);
 unsigned char digitalRead(int pin);
 // mode can be any of 'rising', 'falling', 'both'
 void attachInterrupt(int pin, const char* mode, void (*isr)(void));
+
+#else
+
+// Generic native builds (e.g. Windows demo): GPIO is not available.
+// Provide no-op stubs to keep compilation possible.
+#include "defines.h"
+
+#define OUTPUT 0
+#define INPUT  1
+#define INPUT_PULLUP INPUT
+
+#define HIGH   1
+#define LOW    0
+
+inline void pinMode(int pin, unsigned char mode) {(void)pin; (void)mode;}
+inline void digitalWrite(int pin, unsigned char value) {(void)pin; (void)value;}
+inline int gpio_fd_open(int pin, int mode = 0) {(void)pin; (void)mode; return -1;}
+inline void gpio_fd_close(int fd) {(void)fd;}
+inline void gpio_write(int fd, unsigned char value) {(void)fd; (void)value;}
+inline unsigned char digitalRead(int pin) {(void)pin; return LOW;}
+inline void attachInterrupt(int pin, const char* mode, void (*isr)(void)) {(void)pin; (void)mode; (void)isr;}
 
 #endif
 

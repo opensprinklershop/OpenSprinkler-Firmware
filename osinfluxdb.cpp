@@ -22,6 +22,12 @@
  */
 
 #include "osinfluxdb.h"
+
+#if defined(DISABLE_INFLUXDB)
+
+// All methods are inline stubs in the header when DISABLE_INFLUXDB is set.
+
+#else
 #include "utils.h"
 #include "defines.h"
 #include "OpenSprinkler.h"
@@ -50,11 +56,14 @@ void OSInfluxDB::set_influx_config(ArduinoJson::JsonDocument &doc) {
     size_t size = ArduinoJson::serializeJson(doc, tmp_buffer);
     remove_file(INFLUX_CONFIG_FILE);
     file_write_block(INFLUX_CONFIG_FILE, tmp_buffer, 0, size);
-    if (client)
-    {
+    #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+    if (client) {
         delete client;
         client = NULL;
     }
+    #else
+    client = NULL;
+    #endif
     enabled = doc["en"];
     initialized = true;
 }
@@ -65,11 +74,14 @@ void OSInfluxDB::set_influx_config(const char *data) {
     file_write_block(INFLUX_CONFIG_FILE, "{", 0, 1);
     file_write_block(INFLUX_CONFIG_FILE, data, 1, size);
     file_write_block(INFLUX_CONFIG_FILE, "}", size+1, 1);
-    if (client)
-    {
+    #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+    if (client) {
         delete client;
         client = NULL;
     }
+    #else
+    client = NULL;
+    #endif
     enabled = false;
     initialized = false;
 }
@@ -169,7 +181,7 @@ void OSInfluxDB::write_influx_data(Point &sensor_data) {
     }
 }
 
-#else
+#elif defined(OSPI)
 OSInfluxDB::~OSInfluxDB() {
     if (client) delete client;
 }
@@ -187,6 +199,11 @@ influxdb_cpp::server_info *OSInfluxDB::get_client() {
         client = new influxdb_cpp::server_info(doc["url"], doc["port"], doc["bucket"], "", "", "ms", doc["token"]);
     }
     return client;
+}
+
+#else
+OSInfluxDB::~OSInfluxDB() {
+    client = NULL;
 }
 
 #endif
@@ -260,7 +277,7 @@ void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float v
 	write_influx_data(data);
 }
 
-#else
+#elif defined(OSPI)
 
 void OSInfluxDB::influxdb_send_state(const char *name, int state) {
   influxdb_cpp::server_info * client = get_client();
@@ -363,6 +380,16 @@ void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float v
     .timestamp(millis())
     .post_http(*client);
 }
+#else
+
+// DEMO builds compile without influxdb-cpp. Keep the feature disabled.
+void OSInfluxDB::influxdb_send_state(const char *name, int state) {(void)name; (void)state;}
+void OSInfluxDB::influxdb_send_station(const char *name, uint32_t station, int state) {(void)name; (void)station; (void)state;}
+void OSInfluxDB::influxdb_send_program(const char *name, uint32_t nr, float level) {(void)name; (void)nr; (void)level;}
+void OSInfluxDB::influxdb_send_flowsensor(const char *name, uint32_t count, float volume) {(void)name; (void)count; (void)volume;}
+void OSInfluxDB::influxdb_send_flowalert(const char *name, uint32_t station, int f1, int f2, int f3, int f4, int f5) {(void)name; (void)station; (void)f1; (void)f2; (void)f3; (void)f4; (void)f5;}
+void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float value) {(void)name; (void)level; (void)value;}
+
 #endif
 
 void OSInfluxDB::push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
@@ -423,3 +450,5 @@ void OSInfluxDB::push_message(uint16_t type, uint32_t lval, float fval, const ch
 
 	}
 }
+
+#endif // DISABLE_INFLUXDB
