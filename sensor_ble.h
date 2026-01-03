@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Bluetooth LE sensor header file (ESP32 Arduino BLE)
- * 2025 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,7 +24,7 @@
 #define _SENSOR_BLE_H
 
 #include "sensors.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 /**
  * @brief Structure to hold discovered BLE device information
@@ -47,16 +48,14 @@ struct BLEDeviceInfo {
  * - userdef_unit: GATT characteristic UUID (optionally with format: "UUID|format_id")
  *   Example: "00002a1c-0000-1000-8000-00805f9b34fb" or "00002a1c-0000-1000-8000-00805f9b34fb|10"
  * 
- * Supported sensor types:
- * - SENSOR_BLE_TEMP: Temperature sensor
- * - SENSOR_BLE_HUMIDITY: Humidity sensor
- * - SENSOR_BLE_PRESSURE: Pressure sensor
+ * The sensor uses SENSOR_BLE (96) type and automatically decodes payload based on
+ * configured format or auto-detects common GATT characteristic formats.
  */
 class BLESensor : public SensorBase {
 public:
     /**
      * @brief Constructor
-     * @param type Sensor type identifier (SENSOR_BLE_TEMP, SENSOR_BLE_HUMIDITY, SENSOR_BLE_PRESSURE)
+     * @param type Sensor type identifier (SENSOR_BLE)
      */
     explicit BLESensor(uint type) : SensorBase(type) {}
     virtual ~BLESensor() {}
@@ -70,7 +69,7 @@ public:
     
     /**
      * @brief Get measurement unit for this sensor
-     * @return Unit ID (UNIT_DEGREE, UNIT_PERCENT, UNIT_PASCAL)
+     * @return Unit ID from assigned_unitid (configured via sensor setup)
      */
     virtual unsigned char getUnitId() const override;
 };
@@ -79,6 +78,11 @@ public:
  * @brief Initialize BLE sensor subsystem
  */
 void sensor_ble_init();
+
+/**
+ * @brief Stop BLE subsystem (frees RF resources for WiFi)
+ */
+void sensor_ble_stop();
 
 /**
  * @brief Start BLE scanning for devices

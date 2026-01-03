@@ -21,7 +21,7 @@
 
 #include "sensors_util.h"
 #include "sensors.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 #include "ArduinoJson.hpp"
 #include <string.h>
 

@@ -2,7 +2,7 @@
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
  *
  * Sensor Payload Decoder - Common decoding functions for BLE and Zigbee
- * 2025 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

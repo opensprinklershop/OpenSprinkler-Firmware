@@ -39,6 +39,11 @@ String scan_network();
 void start_network_ap(const char *ssid, const char *pass);
 void start_network_sta(const char *ssid, const char *pass, int32_t channel=0, const unsigned char *mac=NULL);
 void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t channel=0, const unsigned char *mac=NULL);
+
+// Zigbee/BLE coexistence management for WiFi SOFTAP mode (ESP32-C5)
+void disable_zigbee_ble_for_softap();
+void reenable_zigbee_ble_after_softap();
+
 #endif
 
 #endif

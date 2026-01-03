@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Group sensor header (MIN/MAX/AVG/SUM)
- * 2024 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  * Stefan Schmaltz (info@opensprinklershop.de)
  *
  * This program is free software: you can redistribute it and/or modify
@@ -24,7 +25,7 @@
 #define _SENSOR_GROUP_H
 
 #include "sensors.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 // Group sensor - aggregates values from member sensors (MIN/MAX/AVG/SUM)
 /**

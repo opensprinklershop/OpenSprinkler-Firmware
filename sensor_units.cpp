@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Sensor unit implementations - type-specific getUnitId() overrides
- * 2024 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  * Stefan Schmaltz (info@opensprinklershop.de)
  *
  * This program is free software: you can redistribute it and/or modify
@@ -232,14 +233,5 @@ unsigned char InternalSensor::getUnitId() const {
  * @return Unit ID based on BLE sensor type (DEGREE, PERCENT, PASCAL)
  * @note Supports temperature, humidity and pressure sensors via BlueZ
  */
-#ifdef OSPI
-#include "sensor_ospi_ble.h"
-unsigned char OspiBLESensor::getUnitId() const {
-  switch (type) {
-    case SENSOR_BLE_TEMP: return UNIT_DEGREE;
-    case SENSOR_BLE_HUMIDITY: return UNIT_PERCENT;
-    case SENSOR_BLE_PRESSURE: return UNIT_PASCAL;
-    default: return UNIT_NONE;
-  }
-}
-#endif
+// Note: BLE sensor units moved to sensor_ble.cpp and sensor_ospi_ble.cpp
+// Using assigned_unitid instead of type-based units

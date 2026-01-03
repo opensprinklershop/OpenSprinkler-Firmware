@@ -53,6 +53,43 @@ For security reasons, all examples in this documentation use the placeholder `<p
 
 ---
 
+## Recent Updates (January 2025)
+
+This documentation has been updated to match the current firmware implementation:
+
+**Sensor Type IDs:**
+- Added missing sensor types: Zigbee (95), BLE (96), FYTA sensors (60-61)
+- Corrected ASB sensor type IDs (10, 11, 15-18, 30-32, 49)
+- Added diagnostic sensor types (10000-10001)
+- Updated sensor group types (1000-1003)
+
+**Unit IDs:**
+- Added new unit types: km/h (9), Level (10), Permittivity/DK (11), Lumen (12), Lux (13)
+- Corrected unit ID numbering scheme (0-13, 99)
+
+**Monitor Types:**
+- Corrected monitor type IDs: AND (10), OR (11), XOR (12), NOT (13), TIME (14), REMOTE (100)
+- Updated monitor type descriptions
+
+**Additional Enhancements:**
+- Added RS485 flags configuration details with bit-level documentation
+- Added sensor group usage examples and explanations
+- Improved MQTT sensor configuration examples
+- Added data type support for RS485 sensors (uint16, int16, uint32, int32, float, double)
+- Added detailed configuration guides for all sensor types:
+  - BLE sensors (ESP32 and OSPI/BlueZ)
+  - Zigbee sensors (via Zigbee2MQTT)
+  - FYTA cloud sensors
+  - Remote OpenSprinkler sensors
+  - Weather service sensors
+  - Internal/diagnostic sensors
+- Added GATT characteristic UUID configuration for BLE
+- Added RF coexistence notes for ESP32 BLE/WiFi
+- Added FYTA API integration details
+- Added weather sensor usage guidelines
+
+---
+
 ## Table of Contents
 - [Sensor Configuration](#sensor-configuration)
 - [Sensor Data Retrieval](#sensor-data-retrieval)
@@ -839,27 +876,27 @@ Or for all logs:
     },
     {
       "name": "AND",
-      "type": 5
+      "type": 10
     },
     {
       "name": "OR",
-      "type": 6
+      "type": 11
     },
     {
       "name": "XOR",
-      "type": 7
+      "type": 12
     },
     {
       "name": "NOT",
-      "type": 8
+      "type": 13
     },
     {
       "name": "TIME",
-      "type": 9
+      "type": 14
     },
     {
       "name": "REMOTE",
-      "type": 10
+      "type": 100
     }
   ]
 }
@@ -951,26 +988,79 @@ Or for all logs:
 
 ### Sensor Types
 Common sensor type constants (use `/sf` endpoint to get complete list for your platform):
+
+**RS485 Sensors (1-9):**
 - `1` - Truebner SMT100 RS485 Modbus (moisture mode)
 - `2` - Truebner SMT100 RS485 Modbus (temperature mode)
-- `20` - Analog Sensor Board (ASB) - voltage mode 0..5V
-- `21` - Analog Sensor Board (ASB) - 0..3.3V to 0..100%
-- `29` - Analog Sensor Board (ASB) - user defined sensor
-- `40` - MQTT subscription
-- `41` - Remote OpenSprinkler sensor
-- `50` - Sensor group with min value
-- `51` - Sensor group with max value
-- `52` - Sensor group with avg value
+- `3` - Truebner SMT100 RS485 Modbus (permittivity mode)
+- `4` - Truebner TH100 RS485 (humidity mode)
+- `5` - Truebner TH100 RS485 (temperature mode)
+- `9` - RS485 generic sensor
+
+**Analog Sensor Board (ASB) Sensors (10-49):**
+- `10` - ASB - voltage mode 0..4V
+- `11` - ASB - percent 0..3.3V to 0..100%
+- `15` - ASB - SMT50 moisture sensor
+- `16` - ASB - SMT50 temperature sensor
+- `17` - ASB - SMT100 analog moisture sensor
+- `18` - ASB - SMT100 analog temperature sensor
+- `30` - ASB - Vegetronix VH400 moisture sensor
+- `31` - ASB - Vegetronix THERM200 temperature sensor
+- `32` - ASB - Vegetronix Aquaplumb sensor
+- `49` - ASB - user defined sensor
+
+**OSPI Sensors (50-59):**
+- `50` - OSPI analog input - voltage mode 0..3.3V
+- `51` - OSPI analog input - percent 0..3.3V to 0..100%
+- `52` - OSPI analog input - SMT50 moisture
+- `53` - OSPI analog input - SMT50 temperature
+- `54` - OSPI internal temperature sensor
+
+**Independent Sensors:**
+- `60` - FYTA moisture sensor
+- `61` - FYTA temperature sensor
+- `90` - MQTT subscription
+- `95` - Zigbee sensor (via Zigbee2MQTT)
+- `96` - BLE (Bluetooth Low Energy) sensor
+
+**Network & Virtual Sensors:**
+- `100` - Remote OpenSprinkler sensor
+- `101` - Weather service - temperature (Fahrenheit)
+- `102` - Weather service - temperature (Celsius)
+- `103` - Weather service - humidity (%)
+- `105` - Weather service - precipitation (inch)
+- `106` - Weather service - precipitation (mm)
+- `107` - Weather service - wind (mph)
+- `108` - Weather service - wind (km/h)
+- `109` - Weather service - ETO
+- `110` - Weather service - radiation
+
+**Sensor Groups (1000-1003):**
+- `1000` - Sensor group with min value
+- `1001` - Sensor group with max value
+- `1002` - Sensor group with avg value
+- `1003` - Sensor group with sum value
+
+**Diagnostic Sensors:**
+- `10000` - Free memory
+- `10001` - Free storage
 
 ### Unit IDs
+- `0` - None
 - `1` - Percent (%)
-- `2` - Volt (V)
-- `3` - Millivolt (mV)
-- `4` - Celsius (°C)
-- `5` - Fahrenheit (°F)
-- `6` - Permittivity (ε)
-- `7` - Kilopascal (kPa)
-- `8` - Centibar (cbar)
+- `2` - Degree Celsius (°C)
+- `3` - Fahrenheit (°F)
+- `4` - Volt (V)
+- `5` - Humidity Percent (%rH)
+- `6` - Inch (in)
+- `7` - Millimeter (mm)
+- `8` - Miles per hour (mph)
+- `9` - Kilometers per hour (km/h)
+- `10` - Level
+- `11` - Permittivity (DK/ε)
+- `12` - Lumen (lm)
+- `13` - Lux (lx)
+- `99` - User-defined unit
 
 ### Adjustment Types
 - `0` - No adjustment
@@ -982,14 +1072,14 @@ Common sensor type constants (use `/sf` endpoint to get complete list for your p
 ### Monitor Types
 - `1` - MIN (trigger below minimum)
 - `2` - MAX (trigger above maximum)
-- `3` - SENSOR12 (compare two sensors)
-- `4` - SET_SENSOR12 (set sensor based on monitor state)
-- `5` - AND (logical AND of monitors)
-- `6` - OR (logical OR of monitors)
-- `7` - XOR (logical XOR of monitors)
-- `8` - NOT (logical NOT of monitor)
-- `9` - TIME (time window condition)
-- `10` - REMOTE (remote monitor query)
+- `3` - SENSOR12 (read digital OS sensors rain/soil moisture)
+- `4` - SET_SENSOR12 (write digital OS sensors rain/soil moisture)
+- `10` - AND (logical AND of monitors)
+- `11` - OR (logical OR of monitors)
+- `12` - XOR (logical XOR of monitors)
+- `13` - NOT (logical NOT of monitor)
+- `14` - TIME (time window condition)
+- `100` - REMOTE (remote monitor query)
 
 ---
 
@@ -1018,6 +1108,34 @@ IP addresses are encoded as 32-bit unsigned integers in network byte order:
 192.168.1.100 = (192 << 24) | (168 << 16) | (1 << 8) | 100 = 3232235876
 ```
 
+### RS485 Flags Configuration
+The `rs485flags` parameter is a bitmask that configures RS485 communication settings:
+
+**Bit Structure:**
+- **Bits 0-1:** Parity (0=none, 1=even, 2=odd)
+- **Bit 2:** Stop bits (0=1 stop bit, 1=2 stop bits)
+- **Bits 3-5:** Speed (0=9600, 1=19200, 2=38400, 3=57600, 4=115200)
+- **Bit 6:** Byte order (0=big endian, 1=little endian/swapped)
+- **Bits 7-9:** Data type (0=uint16, 1=int16, 2=uint32, 3=int32, 4=float, 5=double)
+
+**Example Configurations:**
+```
+// 9600 baud, no parity, 1 stop bit, big endian, uint16
+rs485flags = 0
+
+// 9600 baud, even parity, 1 stop bit, big endian, uint16
+rs485flags = 1
+
+// 19200 baud, no parity, 1 stop bit, big endian, uint16
+rs485flags = 8  // (1 << 3)
+
+// 9600 baud, no parity, 1 stop bit, little endian, uint16
+rs485flags = 64  // (1 << 6)
+
+// 9600 baud, no parity, 1 stop bit, big endian, float
+rs485flags = 512  // (4 << 7)
+```
+
 ### URL Encoding
 String parameters (names, units, topics, URLs) must be URL-encoded:
 - Spaces: `%20`
@@ -1037,11 +1155,291 @@ The `wdays` parameter is a bitmask where:
 Example: Monday-Friday = 1+2+4+8+16 = 31
 
 ### MQTT Configuration
-For MQTT sensors (type 40):
+For MQTT sensors (type 90):
 1. Configure the sensor with basic parameters using `/sc`
 2. Set MQTT broker URL using `/sk` with `type=0`
 3. Set MQTT topic using `/sk` with `type=1`
 4. Optionally set JSON filter path using `/sk` with `type=2`
+
+**Example:**
+```
+# Step 1: Create MQTT sensor
+/sc?pw=<passwordhash>&nr=3&type=90&group=0&name=MQTT%20Temp&ip=0&port=0&id=0&ri=60&enable=1&log=1
+
+# Step 2: Set broker URL
+/sk?pw=<passwordhash>&nr=3&type=0&value=mqtt%3A%2F%2F192.168.1.50%3A1883
+
+# Step 3: Set topic
+/sk?pw=<passwordhash>&nr=3&type=1&value=home%2Fgarden%2Ftemperature
+
+# Step 4: Set JSON filter (if the MQTT message is JSON)
+/sk?pw=<passwordhash>&nr=3&type=2&value=temperature
+```
+
+### MQTT Configuration
+For MQTT sensors (type 90):
+1. Configure the sensor with basic parameters using `/sc`
+2. Set MQTT broker URL using `/sk` with `type=0`
+3. Set MQTT topic using `/sk` with `type=1`
+4. Optionally set JSON filter path using `/sk` with `type=2`
+
+**Example:**
+```
+# Step 1: Create MQTT sensor
+/sc?pw=<passwordhash>&nr=3&type=90&group=0&name=MQTT%20Temp&ip=0&port=0&id=0&ri=60&enable=1&log=1
+
+# Step 2: Set broker URL
+/sk?pw=<passwordhash>&nr=3&type=0&value=mqtt%3A%2F%2F192.168.1.50%3A1883
+
+# Step 3: Set topic
+/sk?pw=<passwordhash>&nr=3&type=1&value=home%2Fgarden%2Ftemperature
+
+# Step 4: Set JSON filter (if the MQTT message is JSON)
+/sk?pw=<passwordhash>&nr=3&type=2&value=temperature
+```
+
+**MQTT Message Formats:**
+- **Plain value:** `24.5` (directly parsed as sensor value)
+- **JSON with filter:** `{"temperature":24.5,"humidity":65}` (use filter: `temperature`)
+- **JSON nested:** `{"sensor":{"temp":24.5}}` (use filter: `sensor.temp`)
+
+### Remote Sensors
+Remote sensors (type 100) allow reading sensor values from another OpenSprinkler device on your network:
+- Query sensors from remote OpenSprinkler devices via HTTP
+- Useful for distributed sensor networks
+- Supports all sensor types available on the remote device
+
+**Configuration:**
+```
+# Remote sensor configuration
+# ip = IP address of remote OpenSprinkler (as 32-bit integer)
+# port = HTTP port of remote device (default: 80)
+# id = Sensor number on remote device
+/sc?pw=<passwordhash>&nr=7&type=100&group=0&name=Remote%20Moisture&ip=3232235876&port=80&id=1&ri=300&enable=1&log=1
+```
+
+**Example:**
+```
+# Read sensor #5 from OpenSprinkler at 192.168.1.200
+# IP encoding: (192<<24)|(168<<16)|(1<<8)|200 = 3232235976
+/sc?pw=<passwordhash>&nr=8&type=100&group=0&name=Remote%20Sensor&ip=3232235976&port=80&id=5&ri=300
+```
+
+**Notes:**
+- Remote device must be accessible via network
+- Both devices should use the same password for security
+- Network latency affects read intervals
+- Use for centralized monitoring of distributed sensors
+
+### FYTA Sensors
+FYTA sensors (types 60-61) connect to FYTA plant monitoring devices via cloud API:
+- **Type 60:** FYTA moisture sensor
+- **Type 61:** FYTA temperature sensor
+- Requires FYTA account and plant configuration in FYTA app
+- Cloud-based data retrieval
+
+**Prerequisites:**
+1. FYTA plant sensor device
+2. FYTA account (email/password)
+3. Plant configured in FYTA mobile app
+
+**Configuration:**
+First, configure FYTA credentials in OpenSprinkler system options:
+```
+# Set FYTA email and password in system settings
+# (via web interface or options API)
+```
+
+Then create FYTA sensors:
+```
+# FYTA moisture sensor
+# id = FYTA plant ID from FYTA app
+/sc?pw=<passwordhash>&nr=9&type=60&group=0&name=FYTA%20Moisture&ip=0&port=0&id=12345&ri=600&enable=1&log=1
+
+# FYTA temperature sensor for same plant
+/sc?pw=<passwordhash>&nr=10&type=61&group=0&name=FYTA%20Temp&ip=0&port=0&id=12345&ri=600&enable=1&log=1
+```
+
+**Notes:**
+- Requires internet connection
+- Read intervals should be >= 300 seconds (API rate limits)
+- Plant ID can be found in FYTA app or via FYTA API
+- ESP8266 uses HTTP, ESP32/OSPI use HTTPS for FYTA API
+
+### Weather Sensors
+Weather sensors (types 101-110) integrate weather service data:
+- Temperature (Fahrenheit/Celsius)
+- Humidity
+- Precipitation (inch/mm)
+- Wind speed (mph/km/h)
+- ETO (Evapotranspiration)
+- Solar radiation
+
+**Configuration:**
+Weather sensors use the configured weather service in OpenSprinkler system options.
+
+```
+# Weather temperature sensor (Celsius)
+/sc?pw=<passwordhash>&nr=11&type=102&group=0&name=Weather%20Temp&ip=0&port=0&id=0&ri=3600&enable=1&log=1
+
+# Weather humidity sensor
+/sc?pw=<passwordhash>&nr=12&type=103&group=0&name=Weather%20Humidity&ip=0&port=0&id=0&ri=3600&enable=1&log=1
+
+# Weather precipitation (mm)
+/sc?pw=<passwordhash>&nr=13&type=106&group=0&name=Weather%20Rain&ip=0&port=0&id=0&ri=3600&enable=1&log=1
+```
+
+**Notes:**
+- Requires weather service configuration in OpenSprinkler
+- Read intervals should be >= 3600 seconds (1 hour)
+- Weather data updates based on service provider limits
+- Use for watering adjustments based on weather conditions
+
+### Internal/Diagnostic Sensors
+Internal sensors (types 10000-10001) provide system health monitoring:
+- **Type 10000:** Free memory (RAM) in bytes
+- **Type 10001:** Free storage (filesystem) in bytes
+
+**Configuration:**
+```
+# Free memory sensor
+/sc?pw=<passwordhash>&nr=20&type=10000&group=0&name=Free%20RAM&ip=0&port=0&id=0&ri=60&enable=1&log=1
+
+# Free storage sensor
+/sc?pw=<passwordhash>&nr=21&type=10001&group=0&name=Free%20Storage&ip=0&port=0&id=0&ri=60&enable=1&log=1
+```
+
+**Use Cases:**
+- Monitor system health
+- Debug memory leaks
+- Track storage usage
+- Trigger alerts on low resources
+
+### Zigbee Sensors
+Zigbee sensors (type 95) connect via Zigbee2MQTT:
+- Requires a Zigbee coordinator (e.g., CC2652, ConBee II) connected to your network
+- Uses MQTT as transport protocol
+- Supports various Zigbee sensors (temperature, humidity, moisture, etc.)
+
+**Configuration:**
+1. Configure the Zigbee sensor using `/sc` with type 95
+2. Set MQTT broker URL using `/sk` with `type=0`
+3. Set Zigbee2MQTT topic using `/sk` with `type=1` (typically `zigbee2mqtt/[device_name]`)
+4. Set JSON filter path using `/sk` with `type=2` to extract the desired value
+
+**Example:**
+```
+# Step 1: Create Zigbee temperature sensor
+/sc?pw=<passwordhash>&nr=5&type=95&group=0&name=Zigbee%20Temp&ip=0&port=0&id=0&ri=60&enable=1&log=1
+
+# Step 2: Set MQTT broker
+/sk?pw=<passwordhash>&nr=5&type=0&value=mqtt%3A%2F%2F192.168.1.50%3A1883
+
+# Step 3: Set Zigbee2MQTT topic
+/sk?pw=<passwordhash>&nr=5&type=1&value=zigbee2mqtt%2Fgarden_sensor
+
+# Step 4: Set JSON filter (e.g., for temperature field)
+/sk?pw=<passwordhash>&nr=5&type=2&value=temperature
+```
+
+**Supported Zigbee Devices:**
+- Temperature/Humidity sensors (Xiaomi Aqara, Sonoff)
+- Soil moisture sensors
+- Contact sensors
+- Motion sensors with temperature readings
+- Custom Zigbee devices reporting numeric values
+
+### BLE Sensors
+BLE (Bluetooth Low Energy) sensors (type 96) provide wireless sensor connectivity:
+- **ESP32:** Native BLE support for scanning and reading BLE advertisements and GATT characteristics
+- **OSPI:** Requires BlueZ stack on Linux (Raspberry Pi)
+- Automatically discovers and connects to nearby BLE sensors
+- Low power consumption for battery-operated sensors
+- **Single type (96)** with flexible payload decoding (similar to Zigbee sensors)
+
+**Supported BLE Sensors:**
+- Xiaomi Mi Flora (plant sensors) - moisture, temperature, light, fertility
+- Xiaomi Mi Temperature & Humidity sensors (LYWSD03MMC, MHO-C401)
+- RuuviTag environmental sensors
+- Generic BLE GATT sensors broadcasting standard characteristics:
+  - Temperature (0x2A1C) 
+  - Humidity (0x2A6F)
+  - Pressure (0x2A6D)
+  - Battery Level (0x2A19)
+
+**Configuration for ESP32:**
+```
+# Step 1: Create BLE sensor
+# The 'name' field contains the BLE MAC address
+# The 'unitid' defines the measurement unit
+/sc?pw=<passwordhash>&nr=6&type=96&group=0&name=AA:BB:CC:DD:EE:FF&ip=0&port=0&id=0&ri=300&enable=1&log=1&unitid=2
+
+# Step 2: Set GATT characteristic UUID
+# The 'unit' field in /si contains the UUID (optionally with format specifier)
+# Format IDs: 10=temperature, 11=humidity, 12=pressure (see sensor_payload_decoder.h)
+/si?pw=<passwordhash>&nr=6&unit=00002a1c-0000-1000-8000-00805f9b34fb|10
+```
+
+**Configuration for OSPI (Raspberry Pi):**
+```
+# Step 1: Create BLE sensor using BlueZ D-Bus API
+# MAC address in 'name' field, unitid for measurement unit
+/sc?pw=<passwordhash>&nr=6&type=96&group=0&name=AA:BB:CC:DD:EE:FF&ip=0&port=0&id=0&ri=300&enable=1&log=1&unitid=2
+
+# Step 2: Set GATT service UUID (optional, auto-discover if not set)
+/sk?pw=<passwordhash>&nr=6&type=0&value=0000180a-0000-1000-8000-00805f9b34fb
+
+# Step 3: Set GATT characteristic UUID to read
+/sk?pw=<passwordhash>&nr=6&type=1&value=00002a1c-0000-1000-8000-00805f9b34fb
+
+# Step 4: Set data parsing mode (raw, int16, uint16, float, temperature, humidity, pressure)
+/sk?pw=<passwordhash>&nr=6&type=2&value=temperature
+```
+
+**Common GATT Characteristics:**
+- **Temperature:** `00002a1c-0000-1000-8000-00805f9b34fb` (Unit: °C, unitid=2)
+- **Humidity:** `00002a6f-0000-1000-8000-00805f9b34fb` (Unit: %, unitid=1)
+- **Pressure:** `00002a6d-0000-1000-8000-00805f9b34fb` (Unit: Pa, unitid depends on sensor)
+- **Battery Level:** `00002a19-0000-1000-8000-00805f9b34fb` (Unit: %, unitid=1)
+
+**Payload Decoding:**
+The sensor automatically decodes BLE GATT characteristic values using:
+- Auto-detection for standard formats (default)
+- Manual format specification via format ID (|10, |11, etc.)
+- Custom parsing modes (raw, int16, uint16, float)
+
+**BLE Scanning API (ESP32 only):**
+The firmware can scan for nearby BLE devices. Use the web interface or query endpoints to discover BLE MAC addresses for configuration.
+
+**Notes:**
+- BLE sensors require close proximity (typically < 10 meters)
+- ESP32 can handle multiple BLE sensors simultaneously
+- Read intervals should be >= 60 seconds to conserve battery
+- Some BLE sensors require pairing or encryption keys (currently not supported)
+- **RF Coexistence:** BLE cannot be used when ESP32 is in WiFi AP mode (RF conflict)
+- Use Ethernet mode or WiFi Station mode for BLE functionality
+- **Power Saving:** ESP32 BLE is turned on only during sensor reads, then off to free RF resources
+
+### Sensor Groups
+Sensor groups (types 1000-1003) allow you to combine multiple sensors:
+- **Type 1000 (MIN):** Returns the minimum value from all sensors in the group
+- **Type 1001 (MAX):** Returns the maximum value from all sensors in the group
+- **Type 1002 (AVG):** Returns the average value from all sensors in the group
+- **Type 1003 (SUM):** Returns the sum of all sensor values in the group
+
+**Creating a Sensor Group:**
+The `group` parameter in `/sc` specifies which sensor group a sensor belongs to. Sensors with the same `group` value (> 0) are automatically grouped together.
+
+**Example:**
+```
+# Create three moisture sensors in group 1
+/sc?pw=<passwordhash>&nr=1&type=1&group=1&name=Bed%201&ip=3232235876&port=502&id=1&ri=300
+/sc?pw=<passwordhash>&nr=2&type=1&group=1&name=Bed%202&ip=3232235876&port=502&id=2&ri=300
+/sc?pw=<passwordhash>&nr=3&type=1&group=1&name=Bed%203&ip=3232235876&port=502&id=3&ri=300
+
+# Create average sensor for group 1
+/sc?pw=<passwordhash>&nr=10&type=1002&group=1&name=Average%20Moisture&ip=0&port=0&id=0&ri=60
+```
 
 ### Data Conversion Formula
 Sensor values are converted using:
@@ -1075,7 +1473,7 @@ Where:
 
 #### 3. Configure MQTT Sensor
 ```
-/sc?pw=<passwordhash>&nr=3&type=40&group=0&name=MQTT%20Temp&ip=0&port=0&id=0&ri=60&enable=1&log=1
+/sc?pw=<passwordhash>&nr=3&type=90&group=0&name=MQTT%20Temp&ip=0&port=0&id=0&ri=60&enable=1&log=1
 /sk?pw=<passwordhash>&nr=3&type=0&value=mqtt%3A%2F%2F192.168.1.50%3A1883
 /sk?pw=<passwordhash>&nr=3&type=1&value=home%2Fgarden%2Ftemperature
 /sk?pw=<passwordhash>&nr=3&type=2&value=temp

@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Zigbee sensor header file (ESP32-C5 native Zigbee)
- * 2025 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -37,15 +38,21 @@ struct ZigbeeDeviceInfo {
     bool is_new;                  // Flag for newly discovered device
 };
 
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR) && !defined(ENABLE_MATTER)
 
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 /**
  * @brief Actually start Zigbee coordinator (called after WiFi is connected)
  * @note This should be called after WiFi is fully connected to avoid interference
  */
 void sensor_zigbee_start();
+
+/**
+ * @brief Stop Zigbee coordinator (to free RF resources for WiFi)
+ * @note Use this to temporarily disable Zigbee when WiFi has problems
+ */
+void sensor_zigbee_stop();
 
 /**
  * @brief Bind to a Zigbee device
@@ -128,6 +135,12 @@ public:
     uint8_t endpoint = 1;             // Zigbee endpoint (usually 1)
     uint16_t cluster_id = 0x0408;     // Cluster ID (0x0408=soil moisture, 0x0402=temperature)
     uint16_t attribute_id = 0x0000;   // Attribute ID (0x0000=MeasuredValue)
+    
+    // User-defined conversion parameters (like AsbSensor SENSOR_USERDEF)
+    int32_t factor = 0;               // Multiplication factor for value conversion
+    int32_t divider = 0;              // Division factor for value conversion
+    int32_t offset_mv = 0;            // Zero-point offset in millivolts (applied before factor/divider)
+    int32_t offset2 = 0;              // Offset in 0.01 unit (applied after factor/divider)
     
     // Runtime state
     bool device_bound = false;        // Track binding state

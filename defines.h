@@ -26,6 +26,11 @@
 
 //#define ENABLE_DEBUG  // enable serial debug
 
+// Build-time validation: Matter and Zigbee are mutually exclusive (RF conflicts)
+#if defined(ENABLE_MATTER) && defined(ZIGBEE_MODE_ZCZR)
+  #error "Cannot enable both Matter (ENABLE_MATTER) and Zigbee (ZIGBEE_MODE_ZCZR) simultaneously. Both use 2.4GHz RF and will conflict. Please build with only one enabled."
+#endif
+
 typedef unsigned long ulong;
 
 #define TMP_BUFFER_SIZE      320   // scratch buffer size

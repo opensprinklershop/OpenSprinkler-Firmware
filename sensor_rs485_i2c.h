@@ -1,9 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * sensors header file
- * 2024 @ OpenSprinklerShop
- * Stefan Schmaltz (info@opensprinklershop.de)
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,7 +24,7 @@
 #define _SENSOR_RS485_I2C_H
 
 #include "sensors.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 #if defined(ESP8266) || defined(ESP32)
 

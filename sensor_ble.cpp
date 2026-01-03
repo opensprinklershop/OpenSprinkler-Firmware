@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Bluetooth LE sensor implementation - Arduino ESP32 BLE
- * 2025 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -112,6 +113,13 @@ void sensor_ble_init() {
         return;
     }
     
+    // CRITICAL: Do NOT start BLE in WiFi SOFTAP mode (RF coexistence conflict)
+    // Exception: Ethernet mode (no WiFi RF usage)
+    if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
+        DEBUG_PRINTLN("ERROR: Cannot start BLE in SOFTAP mode (RF conflict)");
+        return;
+    }
+    
     DEBUG_PRINTLN("Initializing BLE scanner...");
     
     // Initialize BLE
@@ -127,6 +135,32 @@ void sensor_ble_init() {
     DEBUG_PRINTLN("BLE scanner initialized");
     
     ble_initialized = true;
+}
+
+/**
+ * @brief Stop BLE subsystem (frees RF resources)
+ */
+void sensor_ble_stop() {
+    if (!ble_initialized) {
+        DEBUG_PRINTLN("BLE not running, nothing to stop");
+        return;
+    }
+    
+    DEBUG_PRINTLN("Stopping BLE to free RF resources...");
+    
+    // Stop scanning if active
+    if (scanning_active && pBLEScan && pBLEScan->isScanning()) {
+        pBLEScan->stop();
+        scanning_active = false;
+    }
+    
+    // Deinitialize BLE
+    BLEDevice::deinit(false);
+    
+    ble_initialized = false;
+    pBLEScan = nullptr;
+    
+    DEBUG_PRINTLN("BLE stopped - RF resources freed for WiFi");
 }
 
 /**
@@ -209,13 +243,35 @@ void sensor_ble_clear_new_device_flags() {
 
 /**
  * @brief Read value from BLE sensor
+ * Power-saving mode: BLE is turned on/off dynamically
+ * First call (repeat_read == 0): Turn on BLE, read data, set repeat_read = 1
+ * Second call (repeat_read == 1): Return data, set repeat_read = 0, turn off BLE
  */
 int BLESensor::read(unsigned long time) {
     if (!flags.enable) return HTTP_RQT_NOT_RECEIVED;
     
-    if (!ble_initialized) {
-        sensor_ble_init();
+    // CRITICAL: Do NOT use BLE in WiFi SOFTAP mode (RF coexistence conflict)
+    // Exception: Ethernet mode (no WiFi RF usage)
+    if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
+        DEBUG_PRINTLN("BLE disabled in SOFTAP mode (WiFi setup)");
+        flags.data_ok = false;
+        return HTTP_RQT_NOT_RECEIVED;
     }
+    
+    if (repeat_read == 0) {
+        // First call: Turn on BLE and read data
+        DEBUG_PRINT("BLE sensor read (turn on): ");
+        DEBUG_PRINTLN(name);
+        
+        // Start BLE if not running
+        if (!ble_initialized) {
+            sensor_ble_init();
+            if (!ble_initialized) {
+                DEBUG_PRINTLN("ERROR: Failed to start BLE");
+                flags.data_ok = false;
+                return HTTP_RQT_NOT_RECEIVED;
+            }
+        }
     
     // Parse sensor configuration from JSON
     // Expected format in name: MAC address (e.g., "AA:BB:CC:DD:EE:FF")
@@ -327,30 +383,49 @@ int BLESensor::read(unsigned long time) {
         return HTTP_RQT_NOT_RECEIVED;
     }
     
-    // Store value
-    flags.data_ok = 1;
-    last_data = (int32_t)(parsed_value * 100.0); // Store as integer with 0.01 precision
-    last_native_data = last_data;
-    last_read = time;
-    
-    // Reset averaging counters
-    repeat_data = last_data;
-    repeat_native = last_native_data;
-    repeat_read = 1;
-    
-    DEBUG_PRINT("BLE sensor value: ");
-    DEBUG_PRINTLN(parsed_value);
-    
-    return HTTP_RQT_SUCCESS;
+        // Store value
+        flags.data_ok = 1;
+        last_data = (int32_t)(parsed_value * 100.0); // Store as integer with 0.01 precision
+        last_native_data = last_data;
+        last_read = time;
+        
+        // Reset averaging counters
+        repeat_data = last_data;
+        repeat_native = last_native_data;
+        repeat_read = 1; // Signal that data is available
+        
+        DEBUG_PRINT("BLE sensor value: ");
+        DEBUG_PRINTLN(parsed_value);
+        
+        // Don't turn off BLE yet - wait for second read() call
+        return HTTP_RQT_NOT_RECEIVED; // Will return data on next call
+        
+    } else {
+        // Second call (repeat_read == 1): Return data and turn off BLE
+        DEBUG_PRINT("BLE sensor read (turn off): ");
+        DEBUG_PRINTLN(name);
+        
+        repeat_read = 0; // Reset for next cycle
+        
+        // Turn off BLE to free RF resources for WiFi
+        sensor_ble_stop();
+        
+        last_read = time;
+        
+        if (flags.data_ok) {
+            return HTTP_RQT_SUCCESS; // Adds data to log
+        } else {
+            return HTTP_RQT_NOT_RECEIVED;
+        }
+    }
 }
 
 /**
  * @brief Get measurement unit for BLE sensor
  */
 unsigned char BLESensor::getUnitId() const {
-    // Unit is configured via sensor JSON userdef field
-    // Return UNIT_NONE here, actual unit will be set during sensor configuration
-    return UNIT_NONE;
+    // Unit is configured via sensor JSON assigned_unitid field
+    return assigned_unitid > 0 ? assigned_unitid : UNIT_USERDEF;
 }
 
 #endif // ESP32

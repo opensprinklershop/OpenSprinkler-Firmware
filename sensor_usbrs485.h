@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * USB RS485 sensor header
- * 2024 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  * Stefan Schmaltz (info@opensprinklershop.de)
  *
  * This program is free software: you can redistribute it and/or modify
@@ -26,7 +27,7 @@
 #if defined(OSPI)
 
 #include "sensors.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 #include <modbus/modbus.h>
 #include <modbus/modbus-rtu.h>

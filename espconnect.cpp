@@ -21,6 +21,52 @@
 
 #include "espconnect.h"
 
+// Forward declarations for Zigbee/BLE coexistence management
+static bool zigbee_was_enabled = false;
+static bool ble_was_enabled = false;
+
+#if defined(ESP32) && defined(ZIGBEE_MODE_ZCZR)
+// Zigbee/BLE coexistence management for ESP32-C5
+// Reference: https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-guides/coexist.html
+// WiFi SOFTAP + Zigbee Router = NOT SUPPORTED (X)
+// Solution: Disable Zigbee/BLE during WiFi setup (SOFTAP mode)
+
+// Include ESP-IDF headers only when Zigbee is enabled
+extern "C" {
+	#if __has_include("esp_bt.h")
+		#include "esp_bt.h"
+	#endif
+	#if __has_include("esp_bt_main.h")
+		#include "esp_bt_main.h"
+	#endif
+	#if __has_include("esp_zigbee_core.h")
+		#include "esp_zigbee_core.h"
+	#endif
+}
+
+void disable_zigbee_ble_for_softap() {
+	// NOTE: This function is now a placeholder
+	// Zigbee/BLE are NOT initialized during SOFTAP mode (see main.cpp)
+	// sensor_api_init() is deferred until WiFi switches to STA mode
+	DEBUG_PRINTLN(F("[COEX] WiFi SOFTAP mode - Zigbee/BLE init deferred"));
+}
+
+void reenable_zigbee_ble_after_softap() {
+	// NOTE: This function is now a placeholder
+	// Zigbee/BLE are initialized when WiFi connects in STA mode (see main.cpp)
+	// sensor_api_init() is called in OS_STATE_CONNECTING -> OS_STATE_CONNECTED
+	DEBUG_PRINTLN(F("[COEX] WiFi STA mode - Zigbee/BLE will be initialized"));
+}
+#else
+// Stub functions for non-Zigbee platforms
+void disable_zigbee_ble_for_softap() {
+	DEBUG_PRINTLN(F("[COEX] Zigbee/BLE management not available on this platform"));
+}
+void reenable_zigbee_ble_after_softap() {
+	DEBUG_PRINTLN(F("[COEX] Zigbee/BLE management not available on this platform"));
+}
+#endif
+
 String scan_network() {
 	#if defined(ESP8266)
 	WiFi.setOutputPower(20.5);
@@ -58,6 +104,11 @@ String scan_network() {
 
 void start_network_ap(const char *ssid, const char *pass) {
 	if(!ssid) return;
+	
+	// CRITICAL: Disable Zigbee/BLE before entering SOFTAP mode
+	// WiFi SOFTAP + Zigbee Router = NOT SUPPORTED on ESP32-C5
+	disable_zigbee_ble_for_softap();
+	
 	#if defined(ESP8266)
 	wifi_set_sleep_type(NONE_SLEEP_T);
 	WiFi.setOutputPower(20.5);
@@ -85,6 +136,10 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 
 void start_network_sta(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
 	if(!ssid || !pass) return;
+	
+	// Re-enable Zigbee/BLE when switching to STA mode (STABLE on ESP32-C5)
+	reenable_zigbee_ble_after_softap();
+	
 	#if defined(ESP8266)
 	wifi_set_sleep_type(NONE_SLEEP_T);
 	WiFi.setOutputPower(20.5);

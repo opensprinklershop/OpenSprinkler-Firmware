@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Zigbee sensor implementation - Arduino Zigbee integration
- * 2025 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,29 +27,44 @@
 
 extern OpenSprinkler os;
 
-#if defined(ESP32C5) && !defined(ZIGBEE_MODE_ZCZR)
+// Zigbee sensor is only available when Zigbee is enabled and Matter is NOT enabled
+#if defined(ESP32C5) && !defined(ZIGBEE_MODE_ZCZR) && !defined(ENABLE_MATTER)
 #error "Zigbee coordinator mode is not selected. Set Zigbee Mode to 'Zigbee ZCZR (coordinator/router)' in platformio.ini"
 #endif
 
-#if defined(ESP32C5)
+#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR) && !defined(ENABLE_MATTER)
 
 #include <esp_partition.h>
 #include <vector>
 #include "esp_zigbee_core.h"
 #include "Zigbee.h"
 
+// WiFi+Zigbee Coexistence API
+extern "C" {
+    #include "esp_coexist.h"
+}
+
 // Zigbee coordinator instance
 static bool zigbee_initialized = false;
+
+// Active Zigbee sensor (prevents concurrent access)
+static int active_zigbee_sensor = 0;
 
 // Discovered devices storage (dynamically allocated)
 static std::vector<ZigbeeDeviceInfo> discovered_devices;
 
-// Zigbee Cluster IDs (ZCL spec)
-#define ZB_ZCL_CLUSTER_ID_BASIC                     0x0000
-#define ZB_ZCL_CLUSTER_ID_POWER_CONFIG              0x0001
-#define ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT          0x0402
-#define ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT  0x0405
-#define ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE             0x0408
+// Zigbee Cluster IDs (ZCL Specification 07-5123-06)
+// See: ZIGBEE_CLUSTER_REFERENCE.md for detailed documentation
+#define ZB_ZCL_CLUSTER_ID_BASIC                     0x0000  // Section 3.2: Basic cluster
+#define ZB_ZCL_CLUSTER_ID_POWER_CONFIG              0x0001  // Section 3.3: Power Configuration
+#define ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT   0x0400  // Section 4.2: Illuminance (Lux)
+#define ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT          0x0402  // Section 4.4: Temperature (0.01°C)
+#define ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT      0x0403  // Section 4.5: Pressure (0.1 kPa)
+#define ZB_ZCL_CLUSTER_ID_FLOW_MEASUREMENT          0x0404  // Section 4.6: Flow (0.1 m³/h)
+#define ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT  0x0405  // Section 4.7: Humidity (0.01% RH)
+#define ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING         0x0406  // Section 4.8: Occupancy/Motion
+#define ZB_ZCL_CLUSTER_ID_LEAF_WETNESS              0x0407  // Section 4.9: Leaf Wetness (%)
+#define ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE             0x0408  // Section 4.10: Soil Moisture (0.01%)
 
 /**
  * @brief Callback for new Zigbee device joining the network
@@ -94,7 +110,24 @@ void sensor_zigbee_start() {
         return;
     }
     
+    // CRITICAL: Do NOT start Zigbee in WiFi SOFTAP mode (RF coexistence conflict)
+    // Exception: Ethernet mode (no WiFi RF usage)
+    if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
+        DEBUG_PRINTLN("ERROR: Cannot start Zigbee in SOFTAP mode (RF conflict)");
+        return;
+    }
+    
     DEBUG_PRINTLN("Starting Zigbee coordinator...");
+    
+    // Enable WiFi+Zigbee coexistence (ESP32-C5 RF sharing)
+    // Reference: https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-guides/coexist.html
+    esp_err_t coex_err = esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    if (coex_err == ESP_OK) {
+        DEBUG_PRINTLN("WiFi+Zigbee coexistence enabled (BALANCE mode)");
+    } else {
+        DEBUG_PRINT("WARNING: Coexistence setup failed: ");
+        DEBUG_PRINTLN(coex_err);
+    }
     
     // Check if zb_storage partition exists (FAT subtype 0x81)
     const esp_partition_t* zb_partition = esp_partition_find_first(
@@ -123,12 +156,29 @@ void sensor_zigbee_start() {
     Zigbee.start();
     DEBUG_PRINTLN("Zigbee network started");
     
-    
-    // Open network for joining (60 seconds initially)
-    Zigbee.openNetwork(60);
-    DEBUG_PRINTLN("Zigbee network open for joining (60s)");
+    // Note: Network is kept closed for security
+    // Use sensor_zigbee_open_network() API to allow new devices to join
     
     zigbee_initialized = true;
+}
+
+/**
+ * @brief Stop Zigbee coordinator (frees RF resources)
+ * @note Called when WiFi needs full RF access (e.g., connection problems)
+ */
+void sensor_zigbee_stop() {
+    if (!zigbee_initialized) {
+        DEBUG_PRINTLN("Zigbee not running, nothing to stop");
+        return;
+    }
+    
+    DEBUG_PRINTLN("Stopping Zigbee coordinator to free RF resources...");
+    
+    // Stop Zigbee stack
+    Zigbee.stop();
+    
+    zigbee_initialized = false;
+    DEBUG_PRINTLN("Zigbee stopped - RF resources freed for WiFi");
 }
 
 /**
@@ -154,16 +204,74 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
             DEBUG_PRINT("Updating sensor: ");
             DEBUG_PRINTLN(sensor->name);
             
+            // Convert raw Zigbee value according to ZCL Specification 07-5123-06
+            // See ZIGBEE_CLUSTER_REFERENCE.md for conversion formulas
+            zb_sensor->last_native_data = value; // Store raw value
+            double converted_value = (double)value;
+            
+            // Apply ZCL standard conversions for known clusters
+            if (cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE && attr_id == 0x0000) {
+                // ZCL 4.10: Soil Moisture MeasuredValue (uint16, 0-10000 = 0-100%)
+                converted_value = value / 100.0;
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT && attr_id == 0x0000) {
+                // ZCL 4.4: Temperature MeasuredValue (int16, 0.01°C resolution)
+                converted_value = value / 100.0;
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT && attr_id == 0x0000) {
+                // ZCL 4.7: Humidity MeasuredValue (uint16, 0-10000 = 0-100% RH)
+                converted_value = value / 100.0;
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT && attr_id == 0x0000) {
+                // ZCL 4.5: Pressure MeasuredValue (int16, 0.1 kPa resolution)
+                converted_value = value / 10.0;
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_FLOW_MEASUREMENT && attr_id == 0x0000) {
+                // ZCL 4.6: Flow MeasuredValue (uint16, 0.1 m³/h resolution)
+                converted_value = value / 10.0;
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT && attr_id == 0x0000) {
+                // ZCL 4.2: Illuminance MeasuredValue (uint16, logarithmic: 10^((value-1)/10000) Lux)
+                if (value > 0 && value <= 65534) {
+                    converted_value = pow(10.0, (value - 1.0) / 10000.0);
+                } else {
+                    converted_value = 0.0; // Invalid/unknown
+                }
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_LEAF_WETNESS && attr_id == 0x0000) {
+                // ZCL 4.9: Leaf Wetness (uint16, 0-100%)
+                converted_value = (double)value; // Direct value
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING && attr_id == 0x0000) {
+                // ZCL 4.8: Occupancy bitmap (bit 0 = occupied)
+                converted_value = (value & 0x01) ? 1.0 : 0.0;
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && attr_id == 0x0021) {
+                // ZCL 3.3: Battery Percentage Remaining (uint8, 0-200 = 0-100%, 0.5% per unit)
+                converted_value = value / 2.0;
+                zb_sensor->last_battery = (uint32_t)converted_value;
+            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && attr_id == 0x0020) {
+                // ZCL 3.3: Battery Voltage (uint8, 0.1V resolution)
+                converted_value = value / 10.0;
+            }
+            
+            // Apply user-defined factor/divider/offset (like SENSOR_USERDEF)
+            // offset_mv: adjust zero-point offset in millivolt (applied before factor/divider)
+            // factor/divider: multiplication/division for scaling
+            // offset2: offset in 0.01 unit (applied after factor/divider)
+            converted_value -= (double)zb_sensor->offset_mv / 1000.0;
+            
+            if (zb_sensor->factor && zb_sensor->divider)
+                converted_value *= (double)zb_sensor->factor / (double)zb_sensor->divider;
+            else if (zb_sensor->divider)
+                converted_value /= (double)zb_sensor->divider;
+            else if (zb_sensor->factor)
+                converted_value *= (double)zb_sensor->factor;
+            
+            converted_value += zb_sensor->offset2 / 100.0;
+            
             // Update sensor data
-            zb_sensor->last_data = value;
+            zb_sensor->last_data = converted_value;
             zb_sensor->last_lqi = lqi;
             zb_sensor->flags.data_ok = true;
             zb_sensor->repeat_read = 1;  // Signal that new data is available
             
-            // Battery level (cluster 0x0001, attribute 0x0021)
-            if (cluster_id == 0x0001 && attr_id == 0x0021) {
-                zb_sensor->last_battery = value / 2;  // Battery percentage
-            }
+            DEBUG_PRINT("Raw value: ");
+            DEBUG_PRINT(value);
+            DEBUG_PRINT(" -> Converted: ");
+            DEBUG_PRINTLN(converted_value);
             
             break;
         }
@@ -230,6 +338,20 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     if (obj.containsKey("poll_interval")) {
         poll_interval = obj["poll_interval"].as<uint32_t>();
     }
+    
+    // User-defined conversion parameters (like AsbSensor SENSOR_USERDEF)
+    if (obj.containsKey("factor")) {
+        factor = obj["factor"].as<int32_t>();
+    }
+    if (obj.containsKey("divider")) {
+        divider = obj["divider"].as<int32_t>();
+    }
+    if (obj.containsKey("offset_mv")) {
+        offset_mv = obj["offset_mv"].as<int32_t>();
+    }
+    if (obj.containsKey("offset2")) {
+        offset2 = obj["offset2"].as<int32_t>();
+    }
 }
 
 void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
@@ -246,21 +368,22 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     if (poll_interval != 60000) obj["poll_interval"] = poll_interval;
     if (last_battery < 100) obj["battery"] = last_battery;
     if (last_lqi > 0) obj["lqi"] = last_lqi;
+    
+    // User-defined conversion parameters
+    if (factor != 0) obj["factor"] = factor;
+    if (divider != 0) obj["divider"] = divider;
+    if (offset_mv != 0) obj["offset_mv"] = offset_mv;
+    if (offset2 != 0) obj["offset2"] = offset2;
 }
 
 bool ZigbeeSensor::init() {
     DEBUG_PRINTLN("ZigbeeSensor::init()");
-    // Start Zigbee coordinator now
-    if (!zigbee_initialized)
-        sensor_zigbee_start();
+    
+    // Do NOT start Zigbee here - it will be started on-demand in read()
+    // This prevents RF interference when no sensors are configured
     
     if (device_ieee == 0) {
         DEBUG_PRINTLN("ZigbeeSensor: No device IEEE address configured");
-        return false;
-    }
-    
-    if (!zigbee_initialized) {
-        DEBUG_PRINTLN("ZigbeeSensor: Zigbee stack not initialized");
         return false;
     }
     
@@ -273,6 +396,7 @@ bool ZigbeeSensor::init() {
     Serial.println(cluster_id, HEX);
     DEBUG_PRINT("  Attribute: 0x");
     Serial.println(attribute_id, HEX);
+    DEBUG_PRINTLN("  NOTE: Zigbee will be started on-demand during first read()");
     
     device_bound = true;
     return true;
@@ -286,40 +410,114 @@ void ZigbeeSensor::deinit() {
 }
 
 int ZigbeeSensor::read(unsigned long time) {
-    if (!zigbee_initialized) {
+    // Power-saving mode: Zigbee is turned on/off dynamically
+    // First call (repeat_read == 0): Turn on Zigbee, request data, set repeat_read = 1
+    // Second call (repeat_read == 1): Return data, set repeat_read = 0, turn off Zigbee
+    
+    // CRITICAL: Do NOT use Zigbee in WiFi SOFTAP mode (RF coexistence conflict)
+    // Exception: Ethernet mode (no WiFi RF usage)
+    if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
+        DEBUG_PRINTLN("Zigbee disabled in SOFTAP mode (WiFi setup)");
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
     
-    // If data was received via Zigbee callback (passive report)
-    if (repeat_read > 0) {
-        DEBUG_PRINT("read_sensor_zigbee: push data for ");
-        DEBUG_PRINTLN(name);
-        repeat_read = 0;
-        return HTTP_RQT_SUCCESS; // Adds data to log
+    // Prevent concurrent access from multiple Zigbee sensors (like sensor_rs485_i2c)
+    if (active_zigbee_sensor > 0 && active_zigbee_sensor != (int)nr) {
+        repeat_read = 1;  // Will be reset when sensor gets its turn
+        SensorBase *t = sensor_by_nr(active_zigbee_sensor);
+        if (!t || !t->flags.enable) {
+            active_zigbee_sensor = 0; // Breakout if active sensor is gone
+        }
+        return HTTP_RQT_NOT_RECEIVED;
     }
     
-    // Active polling: check if poll interval has elapsed
-    if (poll_interval > 0 && device_ieee != 0) {
-        uint32_t elapsed = time - last_poll_time;
-        if (last_poll_time == 0 || elapsed >= poll_interval) {
-            DEBUG_PRINT("Active polling sensor: ");
-            DEBUG_PRINTLN(name);
+    if (repeat_read == 0) {
+        // Claim ownership
+        if (active_zigbee_sensor != (int)nr) {
+            active_zigbee_sensor = nr;
+        }
+        
+        // First call: Turn on Zigbee and request data
+        DEBUG_PRINT("Zigbee sensor read (turn on): ");
+        DEBUG_PRINTLN(name);
+        
+        // CRITICAL: Check device_ieee BEFORE starting Zigbee
+        // This prevents Zigbee from starting but never stopping on configuration errors
+        if (device_ieee == 0) {
+            DEBUG_PRINT("ERROR: Zigbee sensor '");
+            DEBUG_PRINT(name);
+            DEBUG_PRINTLN("' has no IEEE address configured!");
+            DEBUG_PRINTLN("Please configure device_ieee via web interface (e.g., 0x00124B001F8E5678)");
+            DEBUG_PRINTLN("Sensor will be disabled to prevent repeated errors.");
             
-            // Send read attribute request
-            if (sensor_zigbee_read_attribute(device_ieee, endpoint, cluster_id, attribute_id)) {
-                last_poll_time = time;
-                // Response will arrive via zigbee_attribute_callback
-            } else {
-                DEBUG_PRINTLN("Failed to send read request");
+            // Disable sensor permanently to prevent spam in log
+            flags.enable = false;
+            flags.data_ok = false;
+            active_zigbee_sensor = 0; // Release ownership
+            
+            // Stop Zigbee if it's running (cleanup from previous valid sensor)
+            if (zigbee_initialized) {
+                DEBUG_PRINTLN("Stopping Zigbee due to invalid configuration");
+                sensor_zigbee_stop();
+            }
+            
+            return HTTP_RQT_NOT_RECEIVED;
+        }
+        
+        // Start Zigbee if not running
+        if (!zigbee_initialized) {
+            sensor_zigbee_start();
+            if (!zigbee_initialized) {
+                DEBUG_PRINTLN("ERROR: Failed to start Zigbee");
+                flags.data_ok = false;
+                active_zigbee_sensor = 0; // Release ownership
+                return HTTP_RQT_NOT_RECEIVED;
             }
         }
+        
+        // Send read attribute request
+        if (device_ieee != 0) {
+            if (sensor_zigbee_read_attribute(device_ieee, endpoint, cluster_id, attribute_id)) {
+                last_poll_time = time;
+                last_read = time;
+                // Response will arrive via zigbee_attribute_callback which sets repeat_read = 1
+                DEBUG_PRINTLN("Read request sent, waiting for response...");
+                return HTTP_RQT_NOT_RECEIVED; // Wait for callback
+            } else {
+                DEBUG_PRINTLN("Failed to send read request");
+                flags.data_ok = false;
+                flags.data_ok = false;
+                active_zigbee_sensor = 0; // Release ownership on error
+                return HTTP_RQT_NOT_RECEIVED;
+            }
+        } else {
+            // This should never happen due to earlier check, but keep as safety
+            DEBUG_PRINTLN("ERROR: No device IEEE address configured");
+            flags.data_ok = false;
+            active_zigbee_sensor = 0; // Release ownership
+            return HTTP_RQT_NOT_RECEIVED;
+        }
+        
+    } else {
+        // Second call (repeat_read == 1): Data received, return it and turn off Zigbee
+        DEBUG_PRINT("Zigbee sensor read (turn off): ");
+        DEBUG_PRINTLN(name);
+        
+        repeat_read = 0; // Reset for next cycle
+        active_zigbee_sensor = 0; // Release ownership
+        
+        // Turn off Zigbee to free RF resources for WiFi
+        sensor_zigbee_stop();
+        
+        last_read = time;
+        
+        if (flags.data_ok) {
+            return HTTP_RQT_SUCCESS; // Adds data to log
+        } else {
+            return HTTP_RQT_NOT_RECEIVED;
+        }
     }
-    
-    last_read = time;
-    
-    // Return NOT_RECEIVED - actual data comes via callback
-    return HTTP_RQT_NOT_RECEIVED;
 }
 
 void sensor_zigbee_bind_device(uint nr, const char *device_ieee_str) {
@@ -504,16 +702,33 @@ void ZigbeeSensor::emitJson(BufferFiller& bfill) const {
 }
 
 unsigned char ZigbeeSensor::getUnitId() const {
-    // Determine unit based on cluster type
-    if (cluster_id == 0x0408 || cluster_id == 0x0405) { // Soil moisture or humidity
-        return UNIT_PERCENT;
-    } else if (cluster_id == 0x0402) { // Temperature
-        return UNIT_DEGREE;
-    } else if (cluster_id == 0x0001) { // Power/battery
-        return UNIT_PERCENT;
+    // Determine unit based on ZCL cluster type (auto-assignment)
+    switch(cluster_id) {
+        case ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE:       // 0x0408
+        case ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT:  // 0x0405
+        case ZB_ZCL_CLUSTER_ID_LEAF_WETNESS:        // 0x0407
+            return UNIT_PERCENT;  // % (1)
+            
+        case ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT:    // 0x0402
+            return UNIT_DEGREE;   // °C (2)
+            
+        case ZB_ZCL_CLUSTER_ID_POWER_CONFIG:        // 0x0001
+            return UNIT_PERCENT;  // % (1) for battery
+            
+        case ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT:  // 0x0400
+            return UNIT_LX;       // Lux (13)
+            
+        case ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT:     // 0x0403
+            return UNIT_USERDEF;  // kPa (custom, 99)
+            
+        case ZB_ZCL_CLUSTER_ID_FLOW_MEASUREMENT:         // 0x0404
+            return UNIT_USERDEF;  // m³/h (custom, 99)
+            
+        case ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING:        // 0x0406
+            return UNIT_LEVEL;    // Boolean/Level (10)
     }
     
-    // Default to assigned unit if specified
+    // Default to user-assigned unit if specified
     if (assigned_unitid > 0) {
         return assigned_unitid;
     }

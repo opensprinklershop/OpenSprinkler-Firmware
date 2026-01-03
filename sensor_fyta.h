@@ -107,7 +107,7 @@ private:
 };
 
 // New C++ wrapper class for FYTA sensors (incremental migration)
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 /**
  * @brief FYTA plant sensor integration

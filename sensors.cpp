@@ -1,5 +1,6 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Utility functions
  * Sep 2022 @ OpenSprinklerShop
@@ -20,7 +21,7 @@
  */
 
 #include "sensors.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 #include "sensors_util.h"
 #include "main.h"
 #include <stdlib.h>
@@ -43,7 +44,7 @@
 #include "defines.h"
 #include "opensprinkler_server.h"
 #include "program.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   #include "sensor_mqtt.h"
 #endif
@@ -1215,7 +1216,7 @@ boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t
 /**
  * read a sensor
  */
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 SensorBase* sensor_make_obj(uint type, boolean ip_based) {
   switch (type) {
@@ -1316,7 +1317,7 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
       return new ZigbeeSensor(type);
 #endif
     // BLE sensors
-#if defined(OSPI) || defined(ESP32)
+#if (defined(OSPI) || defined(ESP32)) && !defined(ENABLE_MATTER)
     case SENSOR_BLE:
 #if defined(OSPI)
       return new OspiBLESensor(type);

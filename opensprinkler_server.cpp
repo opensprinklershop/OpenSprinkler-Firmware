@@ -78,6 +78,102 @@
 
 using ArduinoJson::JsonDocument;
 using ArduinoJson::DeserializationError;
+
+// Simple session management
+#if defined(USE_OTF)
+struct Session {
+	uint32_t id;
+	uint32_t timestamp;
+};
+static Session active_sessions[4] = {{0,0},{0,0},{0,0},{0,0}};  // Max 4 concurrent sessions
+
+// Generate random session ID
+static uint32_t generate_session_id() {
+	return (uint32_t)esp_random();
+}
+
+// Create new session and return session ID
+static uint32_t create_session() {
+	uint32_t now = millis() / 1000;
+	uint32_t session_id = generate_session_id();
+	
+	DEBUG_PRINTF("Cookie: Creating session ID: 0x%08lX\n", (unsigned long)session_id);
+	
+	// Find empty slot or oldest session
+	int slot = 0;
+	uint32_t oldest = active_sessions[0].timestamp;
+	for(int i = 1; i < 4; i++) {
+		if(active_sessions[i].id == 0) {  // Empty slot
+			slot = i;
+			break;
+		}
+		if(active_sessions[i].timestamp < oldest) {
+			oldest = active_sessions[i].timestamp;
+			slot = i;
+		}
+	}
+	
+	active_sessions[slot].id = session_id;
+	active_sessions[slot].timestamp = now;
+	DEBUG_PRINTF("Cookie: Session stored in slot %d\n", slot);
+	return session_id;
+}
+
+// Validate session ID (15 minute timeout)
+static bool validate_session(uint32_t session_id) {
+	if(session_id == 0) {
+		DEBUG_PRINTLN("Cookie: Session validation failed - ID is 0");
+		return false;
+	}
+	
+	uint32_t now = millis() / 1000;
+	for(int i = 0; i < 4; i++) {
+		if(active_sessions[i].id == session_id) {
+			// Check if session expired (15 minutes = 900 seconds)
+			if((now - active_sessions[i].timestamp) < 900) {
+				active_sessions[i].timestamp = now;  // Refresh session
+				DEBUG_PRINTF("Cookie: Session 0x%08lX validated and refreshed (slot %d)\n", 
+				            (unsigned long)session_id, i);
+				return true;
+			} else {
+				active_sessions[i].id = 0;  // Expire session
+				DEBUG_PRINTF("Cookie: Session 0x%08lX expired (slot %d)\n", 
+				            (unsigned long)session_id, i);
+				return false;
+			}
+		}
+	}
+	DEBUG_PRINTF("Cookie: Session 0x%08lX not found in active sessions\n", 
+	            (unsigned long)session_id);
+	return false;
+}
+
+// Extract session ID from Cookie header
+static uint32_t get_session_from_cookie(const OTF::Request &req) {
+	const char *cookie = req.getHeader("cookie");
+	if(!cookie) {
+		DEBUG_PRINTLN("Cookie: No Cookie header found");
+		return 0;
+	}
+	
+	DEBUG_PRINTF("Cookie: Header received: %s\n", cookie);
+	
+	// Look for "SID=xxxxxxxx" in cookie string
+	const char *sid = strstr(cookie, "SID=");
+	if(!sid) {
+		DEBUG_PRINTLN("Cookie: No SID= found in cookie");
+		return 0;
+	}
+	
+	uint32_t session_id = strtoul(sid + 4, NULL, 16);  // Parse hex session ID
+	DEBUG_PRINTF("Cookie: Parsed session ID: 0x%08lX\n", (unsigned long)session_id);
+	return session_id;
+}
+
+// Pending session cookie (0 = no cookie to set)
+static uint32_t pending_session_cookie = 0;
+static bool pending_cookie_is_https = false;
+#endif
 using ArduinoJson::JsonArray;
 using ArduinoJson::JsonVariant;
 
@@ -251,6 +347,27 @@ void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
 	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
 	res.writeHeader(F("Connection"), F("close"));
+	
+	// Set session cookie if password was just verified
+	if(pending_session_cookie != 0) {
+		char cookie_value[96];
+		if(pending_cookie_is_https) {
+			// HTTPS: Set Secure flag, use SameSite=Lax for same-site requests
+			sprintf(cookie_value, "SID=%08lX; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax", 
+			        (unsigned long)pending_session_cookie);
+			DEBUG_PRINTF("Cookie: Setting HTTPS cookie: %s\n", cookie_value);
+		} else {
+			// HTTP: No Secure flag, use SameSite=Lax
+			sprintf(cookie_value, "SID=%08lX; Path=/; Max-Age=900; HttpOnly; SameSite=Lax", 
+			        (unsigned long)pending_session_cookie);
+			DEBUG_PRINTF("Cookie: Setting HTTP cookie: %s\n", cookie_value);
+		}
+		res.writeHeader(F("Set-Cookie"), cookie_value);
+		pending_session_cookie = 0;  // Clear pending cookie
+		pending_cookie_is_https = false;
+	} else {
+		DEBUG_PRINTLN("Cookie: No pending cookie to set");
+	}
 }
 
 void print_header_compressed_html(OTF_PARAMS_DEF, int len) {
@@ -441,8 +558,25 @@ boolean check_password(char *p)
 	/*if(req.isCloudRequest()){ // password is not required if this is coming from cloud connection
 		return true;
 	}*/
+	
+	// First check if valid session cookie exists
+	uint32_t session_id = get_session_from_cookie(req);
+	if(validate_session(session_id)) {
+		DEBUG_PRINTLN("Cookie: Authentication via session cookie successful");
+		return true;  // Valid session - no password needed
+	}
+	
+	// No valid session - check password
 	const char *pw = req.getQueryParameter("pw");
-	if(pw != NULL && os.password_verify(pw)) return true;
+	if(pw != NULL && os.password_verify(pw)) {
+		// Password correct - create new session
+		pending_session_cookie = create_session();
+		// Use OTF framework to determine if request is HTTPS
+		pending_cookie_is_https = otf->getServer()->isCurrentRequestHttps();
+		DEBUG_PRINTF("Cookie: Password verified, pending cookie=0x%08lX, is_https=%d\n", 
+		            (unsigned long)pending_session_cookie, pending_cookie_is_https);
+		return true;
+	}
 
 	/* if fwv_on_fail is true, output fwv if password check has failed */
 	if(fwv_on_fail) {
@@ -4446,9 +4580,12 @@ void server_zigbee_clear_flags(OTF_PARAMS_DEF) {
 }
 #endif // ESP32C5 && ZIGBEE_MODE_ZCZR
 
-#if defined(ESP32)
+#if defined(ESP32) && !defined(ENABLE_MATTER)
 #include "sensor_ble.h"
+#define ENABLE_BLE_SENSOR
+#endif
 
+#ifdef ENABLE_BLE_SENSOR
 /**
  * bd
  * @brief Get list of discovered BLE devices
@@ -4539,7 +4676,7 @@ void server_ble_clear_flags(OTF_PARAMS_DEF) {
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
-#endif // ESP32
+#endif // ENABLE_BLE_SENSOR
 
 typedef void (*URLHandler)(OTF_PARAMS_DEF);
 
@@ -4666,7 +4803,7 @@ URLHandler urls[] = {
 	server_zigbee_open_network, // zo
 	server_zigbee_clear_flags, // zc
 #endif
-#if defined(ESP32)
+#ifdef ENABLE_BLE_SENSOR
 	server_ble_discovered_devices, // bd
 	server_ble_start_scan, // bs
 	server_ble_clear_flags, // bc

@@ -1,5 +1,5 @@
 """
-PlatformIO build script to fix RISC-V LTO linker issues.
+PlatformIO build script to fix RISC-V LTO linker issues and remove OpenThread library for Zigbee builds.
 Forces the use of GCC wrapper (riscv32-esp-elf-gcc) instead of ld for linking.
 This ensures LTO plugins are loaded correctly.
 """
@@ -23,5 +23,32 @@ def fix_linker_command(env):
         
         print(f"Linker set to: {env['LINK']}")
 
-# Execute the fix before building
+# Remove OpenThread library from link command when Zigbee is enabled
+def remove_openthread_lib(env):
+    # Check if this is a Zigbee build (not Matter)
+    build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
+    is_zigbee = any("ZIGBEE_MODE_ZCZR" in flag for flag in build_flags)
+    is_matter = any("ENABLE_MATTER" in flag for flag in build_flags)
+    
+    if is_zigbee and not is_matter:
+        print("Removing OpenThread library to prevent conflicts with Zigbee...")
+        
+        # Filter out OpenThread library from LIBS
+        libs = env.get("LIBS", [])
+        filtered_libs = [lib for lib in libs if "openthread" not in str(lib).lower()]
+        env.Replace(LIBS=filtered_libs)
+        
+        # Also filter from LIBPATH
+        libpath = env.get("LIBPATH", [])
+        # Don't remove the path, just the library reference
+        
+        # Add explicit linker flag to ignore OpenThread symbols
+        env.Append(LINKFLAGS=[
+            "-Wl,--allow-multiple-definition",  # Allow Zigbee to override OpenThread symbols
+        ])
+        
+        print("OpenThread library handling configured for Zigbee build")
+
+# Execute the fixes before building
 fix_linker_command(env)
+remove_openthread_lib(env)

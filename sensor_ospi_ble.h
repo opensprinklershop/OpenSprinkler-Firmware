@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Bluetooth LE sensor header file - OSPI (Raspberry Pi with BlueZ)
- * 2025 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +26,7 @@
 #ifdef OSPI
 
 #include "sensors.h"
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 /**
  * @brief BLE sensor for OSPI platform using BlueZ
@@ -37,10 +38,8 @@
  * - "characteristic": GATT characteristic UUID to read
  * - "parse": Data parsing mode ("raw", "int16", "uint16", "float", "temperature", "humidity")
  * 
- * Supported sensor types:
- * - SENSOR_BLE_TEMP: Temperature sensor (expects float or int16 in 0.01°C units)
- * - SENSOR_BLE_HUMIDITY: Humidity sensor (expects uint16 in 0.01% units)
- * - SENSOR_BLE_PRESSURE: Pressure sensor (expects uint16 in Pa)
+ * The sensor uses SENSOR_BLE (96) type and decodes payload based on configured
+ * format or auto-detects common GATT characteristic formats.
  */
 class OspiBLESensor : public SensorBase {
 public:
@@ -61,7 +60,7 @@ public:
     
     /**
      * @brief Get measurement unit for this sensor
-     * @return Unit ID (UNIT_DEGREE, UNIT_PERCENT, UNIT_PASCAL)
+     * @return Unit ID from assigned_unitid (configured via sensor setup)
      */
     virtual unsigned char getUnitId() const override;
 };

@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * sensors header file
- * 2024 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  * Stefan Schmaltz (info@opensprinklershop.de)
  *
  * This program is free software: you can redistribute it and/or modify
@@ -49,7 +50,7 @@ void sensor_mqtt_subscribe(uint nr, uint type, const char *urlstr);
  */
 void sensor_mqtt_unsubscribe(uint nr, uint type, const char *urlstr);
 
-#include "Sensor.hpp"
+#include "SensorBase.hpp"
 
 /**
  * @brief MQTT sensor class for receiving sensor data via MQTT topics

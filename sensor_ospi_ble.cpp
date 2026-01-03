@@ -1,8 +1,9 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
+ * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Bluetooth LE sensor implementation - OSPI (Raspberry Pi with BlueZ)
- * 2025 @ OpenSprinklerShop
+ * 2026 @ OpenSprinklerShop
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -262,39 +263,16 @@ int OspiBLESensor::read(unsigned long time) {
         return HTTP_RQT_NOT_RECEIVED;
     }
     
-    // Parse value based on sensor type
+    // Parse value using configured or auto-detected format
     double parsed_value = 0.0;
     bool parse_ok = false;
     
-    // Decode based on sensor type
-    switch (type) {
-        case SENSOR_BLE_TEMP:
-            if (format != FORMAT_TEMP_001) {
-                parse_ok = decode_payload(value_buffer, bytes_read, format, &parsed_value);
-            } else {
-                parse_ok = auto_decode_sensor(value_buffer, bytes_read, "temperature", &parsed_value);
-            }
-            break;
-            
-        case SENSOR_BLE_HUMIDITY:
-            if (format != FORMAT_TEMP_001) {
-                parse_ok = decode_payload(value_buffer, bytes_read, format, &parsed_value);
-            } else {
-                parse_ok = auto_decode_sensor(value_buffer, bytes_read, "humidity", &parsed_value);
-            }
-            break;
-            
-        case SENSOR_BLE_PRESSURE:
-            if (format != FORMAT_TEMP_001) {
-                parse_ok = decode_payload(value_buffer, bytes_read, format, &parsed_value);
-            } else {
-                parse_ok = auto_decode_sensor(value_buffer, bytes_read, "pressure", &parsed_value);
-            }
-            break;
-            
-        default:
-            DEBUG_PRINTLN("ERROR: Unknown BLE sensor type");
-            return HTTP_RQT_NOT_RECEIVED;
+    // Try to decode with specified format
+    if (format != FORMAT_TEMP_001) {
+        parse_ok = decode_payload(value_buffer, bytes_read, format, &parsed_value);
+    } else {
+        // Auto-detect format (tries multiple decoders)
+        parse_ok = auto_decode_sensor(value_buffer, bytes_read, nullptr, &parsed_value);
     }
     
     if (!parse_ok) {
@@ -334,16 +312,8 @@ int OspiBLESensor::read(unsigned long time) {
  * @brief Get measurement unit for BLE sensor
  */
 unsigned char OspiBLESensor::getUnitId() const {
-    switch (type) {
-        case SENSOR_BLE_TEMP:
-            return UNIT_DEGREE;
-        case SENSOR_BLE_HUMIDITY:
-            return UNIT_PERCENT;
-        case SENSOR_BLE_PRESSURE:
-            return UNIT_PASCAL;
-        default:
-            return UNIT_NONE;
-    }
+    // Unit is configured via sensor JSON assigned_unitid field
+    return assigned_unitid > 0 ? assigned_unitid : UNIT_USERDEF;
 }
 
 #endif // OSPI

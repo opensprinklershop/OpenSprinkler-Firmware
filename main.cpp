@@ -33,6 +33,7 @@
 #include "main.h"
 #include "notifier.h"
 #include "osinfluxdb.h"
+#include "opensprinkler_matter.h"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -47,6 +48,7 @@
 	#include <hal/spi_types.h>
 	#include <esp_flash_spi_init.h>
 	#include <esp_core_dump.h>
+	#include <ArduinoOTA.h>
 #endif
 
 #if defined(ARDUINO)
@@ -528,7 +530,10 @@ void do_setup() {
 
 	os.button_timeout = LCD_BACKLIGHT_TIMEOUT;
 	
-	sensor_api_init(true);
+	// NOTE: sensor_api_init() deferred until WiFi is in STA mode
+	// Reason: WiFi SOFTAP + Zigbee/BLE = RF coexistence conflict (ESP32-C5)
+	// See: https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-guides/coexist.html
+	// sensor_api_init() will be called in OS_STATE_CONNECTED when WiFi mode == STA
 }
 
 // Arduino software reset function
@@ -579,6 +584,42 @@ void do_setup() {
 	sensor_api_init(true);
 
 	initialize_otf();
+	
+#if defined(ESP32)
+	// ArduinoOTA für Network-Updates aktivieren
+	ArduinoOTA.setHostname(os.sopt_load(SOPT_NAME).c_str());
+	ArduinoOTA.setPassword(os.sopt_load(SOPT_PASSWORD).c_str());
+	
+	ArduinoOTA.onStart([]() {
+		DEBUG_PRINTLN("OTA Update gestartet");
+	});
+	
+	ArduinoOTA.onEnd([]() {
+		DEBUG_PRINTLN("\nOTA Update abgeschlossen");
+	});
+	
+	ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+		DEBUG_PRINTF("OTA Progress: %u%%\r", (progress / (total / 100)));
+	});
+	
+	ArduinoOTA.onError([](ota_error_t error) {
+		DEBUG_PRINTF("OTA Error[%u]: ", error);
+		if (error == OTA_AUTH_ERROR) DEBUG_PRINTLN("Auth Failed");
+		else if (error == OTA_BEGIN_ERROR) DEBUG_PRINTLN("Begin Failed");
+		else if (error == OTA_CONNECT_ERROR) DEBUG_PRINTLN("Connect Failed");
+		else if (error == OTA_RECEIVE_ERROR) DEBUG_PRINTLN("Receive Failed");
+		else if (error == OTA_END_ERROR) DEBUG_PRINTLN("End Failed");
+	});
+	
+	ArduinoOTA.begin();
+	DEBUG_PRINTLN("ArduinoOTA aktiviert");
+#endif
+
+#ifdef ENABLE_MATTER
+	// Matter Initialisierung (WiFi-based Smart Home Integration)
+	matter_init();
+	DEBUG_PRINTLN("Matter integration initialized");
+#endif
 }
 
 #endif
@@ -656,6 +697,16 @@ void gratuitousARPTask() {
 /** Main Loop */
 void do_loop()
 {
+#if defined(ESP32)
+	// ArduinoOTA handler für Network-Updates
+	ArduinoOTA.handle();
+#endif
+
+#ifdef ENABLE_MATTER
+	// Matter loop handler
+	matter_loop();
+#endif
+
 	static ulong flowpoll_timeout=0;
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
 	// handle flow sensor using polling. Maximum freq is 1/(2*FLOWPOLL_INTERVAL)
@@ -709,12 +760,22 @@ void do_loop()
 			start_server_client();
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
+			
+			// Initialize sensors when using Ethernet (no RF coexistence issues)
+			sensor_api_init(true);
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
 			start_server_ap();
 			dns->setErrorReplyCode(DNSReplyCode::NoError);
+			dns->setTTL(300);
+			// Captive Portal: Redirect ALL DNS requests to AP IP (192.168.4.1)
+			// This handles msftconnecttest.com, connectivitycheck.gstatic.com, etc.
 			dns->start(53, "*", WiFi.softAPIP());
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
+			
+			// NOTE: sensor_api_init() NOT called in SOFTAP mode
+			// Zigbee/BLE init deferred until WiFi switches to STA mode
+			// WiFi SOFTAP + Zigbee Router = NOT SUPPORTED (RF conflict)
 		} else {
 			led_blink_ms = LED_SLOW_BLINK;
 			if(os.sopt_load(SOPT_STA_BSSID_CHL).length()>0 && os.wifi_channel<255) {
@@ -752,6 +813,9 @@ void do_loop()
 			start_server_client();
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
+			
+			// DO NOT initialize sensors here - WiFi may not be fully ready
+			// Will initialize in OS_STATE_CONNECTED after verifying gateway
 		} else {
 			if((long)(millis()-connecting_timeout)>0) {
 				os.state = OS_STATE_INITIAL;
@@ -787,6 +851,19 @@ void do_loop()
 				update_server->handleClient();
 				otf->loop();
 				connecting_timeout = 0;
+				
+				// Initialize sensors ONCE after WiFi/Ethernet is fully connected
+				// Use static flag to ensure one-time initialization
+				static bool sensors_initialized = false;
+				if (!sensors_initialized) {
+					// Verify WiFi is really ready (has valid gateway) before enabling Zigbee/BLE
+					IPAddress gw = WiFi.gatewayIP();
+					if (useEth || (gw && gw != IPAddress(0,0,0,0))) {
+						DEBUG_PRINTLN(F("[COEX] WiFi/Ethernet fully connected - initializing sensors"));
+						sensor_api_init(true);
+						sensors_initialized = true;
+					}
+				}
 			} else {
 				// WiFi disconnected, ESP8266 will handle re-connect
 			}
@@ -1389,6 +1466,9 @@ void turn_on_station(unsigned char sid, ulong duration) {
 
 	if (os.set_station_bit(sid, 1, duration)) {
 		notif.add(NOTIFY_STATION_ON, sid, duration);
+#ifdef ENABLE_MATTER
+		matter_update_station_status(sid, true);
+#endif
 	}
 }
 
@@ -1487,6 +1567,10 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	#endif
 
 	os.set_station_bit(sid, 0);
+
+#ifdef ENABLE_MATTER
+	matter_update_station_status(sid, false);
+#endif
 
 	// RAH implementation of flow sensor
 	if (flow_sid == sid) {
