@@ -38,21 +38,27 @@ struct ZigbeeDeviceInfo {
     bool is_new;                  // Flag for newly discovered device
 };
 
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR) && !defined(ENABLE_MATTER)
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 
 #include "SensorBase.hpp"
 
 /**
  * @brief Actually start Zigbee coordinator (called after WiFi is connected)
  * @note This should be called after WiFi is fully connected to avoid interference
+ * @note Zigbee stays active permanently - WiFi-Zigbee coexistence handles RF coordination
  */
 void sensor_zigbee_start();
 
 /**
- * @brief Stop Zigbee coordinator (to free RF resources for WiFi)
- * @note Use this to temporarily disable Zigbee when WiFi has problems
+ * @brief Returns true if Zigbee coordinator is currently active
  */
-void sensor_zigbee_stop();
+bool sensor_zigbee_is_active();
+
+/**
+ * @brief Start Zigbee coordinator if needed (best-effort)
+ * @return true if Zigbee is active after the call
+ */
+bool sensor_zigbee_ensure_started();
 
 /**
  * @brief Bind to a Zigbee device
@@ -238,6 +244,6 @@ public:
     static uint64_t parseIeeeAddress(const char* ieee_str);
 };
 
-#endif // ESP32C5
+#endif // ESP32C5 && OS_ENABLE_ZIGBEE
 
 #endif // _SENSOR_ZIGBEE_H

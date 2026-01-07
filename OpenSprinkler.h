@@ -56,7 +56,6 @@
 	       #include <DNSServer.h>
 	       #include <Ticker.h>
 	       #include <WiFiClientSecure.h>
-	       #include "SSD1306Display.h"
 	       #include "espconnect.h"
 	       #include "EMailSender.h"
 		#if defined(ESP8266)	       

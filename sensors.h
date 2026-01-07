@@ -415,6 +415,8 @@ typedef Monitor Monitor_t;
 #define ASB_BOARD_ADDR2b 0x4B
 
 void sensor_api_init(boolean detect_boards);
+void sensor_api_connect();     // Start BLE/Zigbee if needed
+void sensor_api_loop();        // Sensor maintenance loop (BLE/Zigbee auto-stop, etc.)
 uint16_t get_asb_detected_boards();
 boolean sensor_type_supported(int type);
 void add_asb_detected_boards(uint16_t board);

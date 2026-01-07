@@ -190,14 +190,7 @@ void sensor_mqtt_subscribe(uint nr, uint type, const char *urlstr) {
 }
 
 void MqttSensor::emitJson(BufferFiller& bfill) const {
-  ArduinoJson::JsonDocument doc;
-  ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
-  toJson(obj);
-  
-  // Serialize to string and output
-  String jsonStr;
-  ArduinoJson::serializeJson(doc, jsonStr);
-  bfill.emit_p(PSTR("$S"), jsonStr.c_str());
+	SensorBase::emitJson(bfill);
 }
 
 void sensor_mqtt_unsubscribe(uint nr, uint type, const char *urlstr) {

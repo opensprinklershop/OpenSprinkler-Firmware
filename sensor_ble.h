@@ -23,6 +23,8 @@
 #ifndef _SENSOR_BLE_H
 #define _SENSOR_BLE_H
 
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
+
 #include "sensors.h"
 #include "SensorBase.hpp"
 
@@ -37,7 +39,6 @@ struct BLEDeviceInfo {
     uint32_t last_seen;           // Timestamp of last advertisement
 };
 
-#if defined(ESP32)
 
 /**
  * @brief BLE sensor class for ESP32 Arduino
@@ -94,6 +95,11 @@ void sensor_ble_start_scan(uint16_t duration = 5);
  * @brief BLE maintenance loop (call periodically from main loop)
  */
 void sensor_ble_loop();
+
+/**
+ * @brief Returns true if BLE subsystem is currently active
+ */
+bool sensor_ble_is_active();
 
 /**
  * @brief Get list of discovered BLE devices

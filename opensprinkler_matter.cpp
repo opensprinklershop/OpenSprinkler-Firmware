@@ -207,6 +207,7 @@ void matter_init() {
  * Matter main loop handler
  */
 void matter_loop() {
+	if (!matter_initialized) return;
 	// Arduino Matter SDK handles processing in background tasks
 	// No explicit loop processing needed
 	

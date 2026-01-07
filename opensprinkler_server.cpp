@@ -34,13 +34,22 @@
 #include "sensor_fyta.h"
 #include "sensor_mqtt.h"
 
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
+#include "sensor_ble.h"
+#endif
+
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+#include "sensor_zigbee.h"
+#endif
+
+
 // External variables defined in main ion file
 #if defined(USE_OTF)
 	extern OTF::OpenThingsFramework *otf;
 	#define OTF_PARAMS_DEF const OTF::Request &req,OTF::Response &res
 	#define OTF_PARAMS req,res
 	#define FKV_SOURCE req
-	#define handle_return(x) {if(x==HTML_OK) res.writeBodyData(ether_buffer, strlen(ether_buffer)); else otf_send_result(req,res,x); return;}
+	#define handle_return(x) {if(x==HTML_OK) res.writeBodyData(ether_buffer, (int)bfill.position()); else otf_send_result(req,res,x); return;}
 #else
 	extern EthernetClient *m_client;
 	#define OTF_PARAMS_DEF
@@ -79,100 +88,7 @@
 using ArduinoJson::JsonDocument;
 using ArduinoJson::DeserializationError;
 
-// Simple session management
 #if defined(USE_OTF)
-struct Session {
-	uint32_t id;
-	uint32_t timestamp;
-};
-static Session active_sessions[4] = {{0,0},{0,0},{0,0},{0,0}};  // Max 4 concurrent sessions
-
-// Generate random session ID
-static uint32_t generate_session_id() {
-	return (uint32_t)esp_random();
-}
-
-// Create new session and return session ID
-static uint32_t create_session() {
-	uint32_t now = millis() / 1000;
-	uint32_t session_id = generate_session_id();
-	
-	DEBUG_PRINTF("Cookie: Creating session ID: 0x%08lX\n", (unsigned long)session_id);
-	
-	// Find empty slot or oldest session
-	int slot = 0;
-	uint32_t oldest = active_sessions[0].timestamp;
-	for(int i = 1; i < 4; i++) {
-		if(active_sessions[i].id == 0) {  // Empty slot
-			slot = i;
-			break;
-		}
-		if(active_sessions[i].timestamp < oldest) {
-			oldest = active_sessions[i].timestamp;
-			slot = i;
-		}
-	}
-	
-	active_sessions[slot].id = session_id;
-	active_sessions[slot].timestamp = now;
-	DEBUG_PRINTF("Cookie: Session stored in slot %d\n", slot);
-	return session_id;
-}
-
-// Validate session ID (15 minute timeout)
-static bool validate_session(uint32_t session_id) {
-	if(session_id == 0) {
-		DEBUG_PRINTLN("Cookie: Session validation failed - ID is 0");
-		return false;
-	}
-	
-	uint32_t now = millis() / 1000;
-	for(int i = 0; i < 4; i++) {
-		if(active_sessions[i].id == session_id) {
-			// Check if session expired (15 minutes = 900 seconds)
-			if((now - active_sessions[i].timestamp) < 900) {
-				active_sessions[i].timestamp = now;  // Refresh session
-				DEBUG_PRINTF("Cookie: Session 0x%08lX validated and refreshed (slot %d)\n", 
-				            (unsigned long)session_id, i);
-				return true;
-			} else {
-				active_sessions[i].id = 0;  // Expire session
-				DEBUG_PRINTF("Cookie: Session 0x%08lX expired (slot %d)\n", 
-				            (unsigned long)session_id, i);
-				return false;
-			}
-		}
-	}
-	DEBUG_PRINTF("Cookie: Session 0x%08lX not found in active sessions\n", 
-	            (unsigned long)session_id);
-	return false;
-}
-
-// Extract session ID from Cookie header
-static uint32_t get_session_from_cookie(const OTF::Request &req) {
-	const char *cookie = req.getHeader("cookie");
-	if(!cookie) {
-		DEBUG_PRINTLN("Cookie: No Cookie header found");
-		return 0;
-	}
-	
-	DEBUG_PRINTF("Cookie: Header received: %s\n", cookie);
-	
-	// Look for "SID=xxxxxxxx" in cookie string
-	const char *sid = strstr(cookie, "SID=");
-	if(!sid) {
-		DEBUG_PRINTLN("Cookie: No SID= found in cookie");
-		return 0;
-	}
-	
-	uint32_t session_id = strtoul(sid + 4, NULL, 16);  // Parse hex session ID
-	DEBUG_PRINTF("Cookie: Parsed session ID: 0x%08lX\n", (unsigned long)session_id);
-	return session_id;
-}
-
-// Pending session cookie (0 = no cookie to set)
-static uint32_t pending_session_cookie = 0;
-static bool pending_cookie_is_https = false;
 #endif
 using ArduinoJson::JsonArray;
 using ArduinoJson::JsonVariant;
@@ -326,9 +242,18 @@ void rewind_ether_buffer() {
 
 void send_packet(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
-	res.writeBodyData(ether_buffer, strlen(ether_buffer));
+	int len = (int)bfill.position();
+	if (len > 0) {
+		res.writeBodyData(ether_buffer, len);
+	}
+	if (otf != nullptr) {
+		otf->pollCloud();
+	}
 #else
-	m_client->write((const uint8_t *)ether_buffer, strlen(ether_buffer));
+	int len = (int)bfill.position();
+	if (len > 0 && m_client) {
+		m_client->write((const uint8_t *)ether_buffer, len);
+	}
 #endif
 	rewind_ether_buffer();
 }
@@ -347,27 +272,6 @@ void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
 	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
 	res.writeHeader(F("Connection"), F("close"));
-	
-	// Set session cookie if password was just verified
-	if(pending_session_cookie != 0) {
-		char cookie_value[96];
-		if(pending_cookie_is_https) {
-			// HTTPS: Set Secure flag, use SameSite=Lax for same-site requests
-			sprintf(cookie_value, "SID=%08lX; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax", 
-			        (unsigned long)pending_session_cookie);
-			DEBUG_PRINTF("Cookie: Setting HTTPS cookie: %s\n", cookie_value);
-		} else {
-			// HTTP: No Secure flag, use SameSite=Lax
-			sprintf(cookie_value, "SID=%08lX; Path=/; Max-Age=900; HttpOnly; SameSite=Lax", 
-			        (unsigned long)pending_session_cookie);
-			DEBUG_PRINTF("Cookie: Setting HTTP cookie: %s\n", cookie_value);
-		}
-		res.writeHeader(F("Set-Cookie"), cookie_value);
-		pending_session_cookie = 0;  // Clear pending cookie
-		pending_cookie_is_https = false;
-	} else {
-		DEBUG_PRINTLN("Cookie: No pending cookie to set");
-	}
 }
 
 void print_header_compressed_html(OTF_PARAMS_DEF, int len) {
@@ -471,6 +375,8 @@ void on_ap_home(OTF_PARAMS_DEF) {
 
 void on_ap_scan(OTF_PARAMS_DEF) {
 	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
+	// Perform scan on-demand so AP/DHCP can come up first.
+	scanned_ssids = scan_network();
 	print_header(OTF_PARAMS, true, scanned_ssids.length());
 	res.writeBodyData(scanned_ssids.c_str(), scanned_ssids.length());
 }
@@ -559,22 +465,9 @@ boolean check_password(char *p)
 		return true;
 	}*/
 	
-	// First check if valid session cookie exists
-	uint32_t session_id = get_session_from_cookie(req);
-	if(validate_session(session_id)) {
-		DEBUG_PRINTLN("Cookie: Authentication via session cookie successful");
-		return true;  // Valid session - no password needed
-	}
-	
-	// No valid session - check password
+	// Check password parameter
 	const char *pw = req.getQueryParameter("pw");
 	if(pw != NULL && os.password_verify(pw)) {
-		// Password correct - create new session
-		pending_session_cookie = create_session();
-		// Use OTF framework to determine if request is HTTPS
-		pending_cookie_is_https = otf->getServer()->isCurrentRequestHttps();
-		DEBUG_PRINTF("Cookie: Password verified, pending cookie=0x%08lX, is_https=%d\n", 
-		            (unsigned long)pending_session_cookie, pending_cookie_is_https);
 		return true;
 	}
 
@@ -1341,8 +1234,10 @@ void server_json_options_main() {
 	}
 
 	//feature flag Analog Sensor API
-	#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,BLE,ZIGBEE\""));
+	#elif defined(ENABLE_MATTER)
+	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,MATTER\""));
 	#elif defined(ESP32)
 	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,BLE\""));
 	#else
@@ -3910,7 +3805,7 @@ static const int sensor_types[] = {
 	SENSOR_TH100_MOIS,
 	SENSOR_TH100_TEMP,
 	SENSOR_RS485,
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)	
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)	
 	SENSOR_ZIGBEE,
 #endif
 #if defined(ESP32)
@@ -3970,7 +3865,7 @@ static const char* sensor_names[] = {
 	"Truebner TH100 RS485 Modbus, humidity mode",
 	"Truebner TH100 RS485 Modbus, temperature mode",
 	"RS485 generic sensor",
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)	
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)	
 	"Zigbee sensor",
 #endif
 #if defined(ESP32)
@@ -4482,8 +4377,7 @@ void server_influx_get_main() {
 	bfill.emit_p(tmp_buffer);
 }
 
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
-#include "sensor_zigbee.h"
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 
 /**
  * zd
@@ -4578,14 +4472,10 @@ void server_zigbee_clear_flags(OTF_PARAMS_DEF) {
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
-#endif // ESP32C5 && ZIGBEE_MODE_ZCZR
 
-#if defined(ESP32) && !defined(ENABLE_MATTER)
-#include "sensor_ble.h"
-#define ENABLE_BLE_SENSOR
-#endif
+#endif // ESP32C5 && OS_ENABLE_ZIGBEE
 
-#ifdef ENABLE_BLE_SENSOR
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
 /**
  * bd
  * @brief Get list of discovered BLE devices
@@ -4732,12 +4622,12 @@ const char _url_keys[] PROGMEM =
 	"mc"
 	"ml"
 	"mt"
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	"zd"  // Zigbee: get discovered devices
 	"zo"  // Zigbee: open network
 	"zc"  // Zigbee: clear new device flags
 #endif
-#if defined(ESP32)
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
 	"bd"  // BLE: get discovered devices
 	"bs"  // BLE: start scan
 	"bc"  // BLE: clear new device flags
@@ -4798,12 +4688,12 @@ URLHandler urls[] = {
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	server_zigbee_discovered_devices, // zd
 	server_zigbee_open_network, // zo
 	server_zigbee_clear_flags, // zc
 #endif
-#ifdef ENABLE_BLE_SENSOR
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
 	server_ble_discovered_devices, // bd
 	server_ble_start_scan, // bs
 	server_ble_clear_flags, // bc
@@ -4884,13 +4774,20 @@ void on_firmware_upload() {
 }
 
 void start_server_client() {
+	// In some build variants (ESP32-C5 Matter coexistence), we intentionally
+	// defer OTF/HTTPS allocation until WiFi is fully up to prevent esp_wifi_init OOM.
+	if(!otf) {
+		if (useEth || WiFi.status() == WL_CONNECTED) {
+			os.start_network();
+		}
+	}
 	if(!otf) return;
 	static bool callback_initialized = false;
 
 	if(!callback_initialized) {
 		otf->on("/", server_home);  // handle home page
 		otf->on("/index.html", server_home);
-		otf->on("/update", on_firmware_update, OTF::HTTP_GET); // handle firmware update
+		otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET); // handle firmware update
 		update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
 		update_server->on("/update", HTTP_OPTIONS, on_update_options);
 
@@ -4909,17 +4806,27 @@ void start_server_client() {
 }
 
 void start_server_ap() {
-	if(!otf) return;
-
+	// Bring up WiFi first. Starting OTF/HTTPS (TLS parsing) before esp_wifi_init()
+	// can fail with ESP_ERR_NO_MEM on ESP32-C5 Matter coexistence builds.
 	scanned_ssids = scan_network();
+
 	String ap_ssid = get_ap_ssid();
+
 	start_network_ap(ap_ssid.c_str(), NULL);
+	
 	delay(500);
+
+	// Now that WiFi is initialized, start OTF + update server.
+	if(!otf) {
+		os.start_network();
+	}
+	if(!otf) return;
+	
 	otf->on("/", on_ap_home);
 	otf->on("/jsap", on_ap_scan);
 	otf->on("/ccap", on_ap_change_config);
 	otf->on("/jtap", on_ap_try_connect);
-	otf->on("/update", on_firmware_update, OTF::HTTP_GET);
+	otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET);
 	update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
 	update_server->on("/update", HTTP_OPTIONS, on_update_options);
 	otf->onMissingPage(on_ap_home);

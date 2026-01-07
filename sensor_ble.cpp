@@ -20,6 +20,8 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+ #if defined(ESP32) && defined(OS_ENABLE_BLE)
+
 #include "sensor_ble.h"
 #include "sensors.h"
 #include "OpenSprinkler.h"
@@ -27,8 +29,6 @@
 #include <vector>
 
 extern OpenSprinkler os;
-
-#if defined(ESP32)
 
 #include <BLEDevice.h>
 #include <BLEUtils.h>
@@ -40,6 +40,10 @@ static bool ble_initialized = false;
 static BLEScan* pBLEScan = nullptr;
 static uint32_t scan_end_time = 0;
 static bool scanning_active = false;
+
+// Auto-stop timer for discovery mode (to free WiFi RF resources)
+static unsigned long ble_auto_stop_time = 0;
+static bool ble_discovery_mode = false;
 
 // Discovered devices storage (dynamically allocated)
 static std::vector<BLEDeviceInfo> discovered_ble_devices;
@@ -97,42 +101,32 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             new_dev.last_seen = millis();
             
             discovered_ble_devices.push_back(new_dev);
-            
+
             DEBUG_PRINT("New BLE device added: ");
             DEBUG_PRINTLN(new_dev.name);
         }
     }
 };
 
+static MyAdvertisedDeviceCallbacks ble_scan_callbacks;
+
 /**
  * @brief Initialize BLE sensor subsystem
  */
 void sensor_ble_init() {
     if (ble_initialized) {
-        DEBUG_PRINTLN("BLE already initialized");
         return;
     }
     
-    // CRITICAL: Do NOT start BLE in WiFi SOFTAP mode (RF coexistence conflict)
-    // Exception: Ethernet mode (no WiFi RF usage)
-    if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
-        DEBUG_PRINTLN("ERROR: Cannot start BLE in SOFTAP mode (RF conflict)");
-        return;
-    }
-    
-    DEBUG_PRINTLN("Initializing BLE scanner...");
+    // Note: WiFi mode check removed from init - will be checked in read() instead
+    // This prevents exceptions when sensor_api_init() is called before WiFi is started
+
+    DEBUG_PRINTLN("Initializing BLE...");
     
     // Initialize BLE
     BLEDevice::init("OpenSprinkler");
-    
-    // Create BLE scan instance
-    pBLEScan = BLEDevice::getScan();
-    pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-    pBLEScan->setActiveScan(true); // Active scan uses more power but gets more info
-    pBLEScan->setInterval(100);
-    pBLEScan->setWindow(99);
-    
-    DEBUG_PRINTLN("BLE scanner initialized");
+
+    DEBUG_PRINTLN("BLE initialized");
     
     ble_initialized = true;
 }
@@ -142,10 +136,8 @@ void sensor_ble_init() {
  */
 void sensor_ble_stop() {
     if (!ble_initialized) {
-        DEBUG_PRINTLN("BLE not running, nothing to stop");
         return;
     }
-    
     DEBUG_PRINTLN("Stopping BLE to free RF resources...");
     
     // Stop scanning if active
@@ -159,7 +151,7 @@ void sensor_ble_stop() {
     
     ble_initialized = false;
     pBLEScan = nullptr;
-    
+
     DEBUG_PRINTLN("BLE stopped - RF resources freed for WiFi");
 }
 
@@ -169,24 +161,43 @@ void sensor_ble_stop() {
 void sensor_ble_start_scan(uint16_t duration) {
     if (!ble_initialized) {
         sensor_ble_init();
+        if (!ble_initialized) {
+            return;
+        }
+    }
+
+    if (!pBLEScan) {
+        // Configure scan only when discovery is requested.
+        pBLEScan = BLEDevice::getScan();
+        pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
+        pBLEScan->setActiveScan(true); // Active scan uses more power but gets more info
+        pBLEScan->setInterval(100);
+        pBLEScan->setWindow(99);
     }
     
     if (scanning_active) {
-        DEBUG_PRINTLN("BLE scan already in progress");
         return;
     }
     
+    // Limit discovery time to max 10 seconds to minimize WiFi interference
+    const uint16_t MAX_DISCOVERY_TIME = 10;
+    uint16_t actual_duration = (duration > MAX_DISCOVERY_TIME) ? MAX_DISCOVERY_TIME : duration;
+
     DEBUG_PRINT("Starting BLE scan for ");
-    DEBUG_PRINT(duration);
-    DEBUG_PRINTLN(" seconds...");
+    DEBUG_PRINT(actual_duration);
+    DEBUG_PRINTLN(" seconds (will auto-stop to free WiFi RF)...");
     
     // Clear old scan results
     pBLEScan->clearResults();
     
     // Start scan (non-blocking)
-    pBLEScan->start(duration, false);
+    pBLEScan->start(actual_duration, false);
     scanning_active = true;
-    scan_end_time = millis() + (duration * 1000);
+    scan_end_time = millis() + (actual_duration * 1000);
+    
+    // Set auto-stop timer
+    ble_discovery_mode = true;
+    ble_auto_stop_time = millis() + (actual_duration * 1000UL);
 }
 
 /**
@@ -197,8 +208,22 @@ void sensor_ble_loop() {
         return;
     }
     
+    uint32_t now = millis();
+    
+    // Check if discovery mode auto-stop timer expired
+    if (ble_discovery_mode && ble_auto_stop_time > 0) {
+        if (now >= ble_auto_stop_time) {
+            DEBUG_PRINTLN("BLE discovery time expired - stopping BLE to free WiFi RF");
+            sensor_ble_stop();
+            ble_discovery_mode = false;
+            ble_auto_stop_time = 0;
+            scanning_active = false;
+            return; // Exit early since we just stopped
+        }
+    }
+    
     // Check if scan has completed
-    if (scanning_active && millis() >= scan_end_time) {
+    if (scanning_active && now >= scan_end_time) {
         if (pBLEScan->isScanning()) {
             pBLEScan->stop();
         }
@@ -209,7 +234,6 @@ void sensor_ble_loop() {
     }
     
     // Remove stale devices (not seen in 5 minutes)
-    uint32_t now = millis();
     discovered_ble_devices.erase(
         std::remove_if(discovered_ble_devices.begin(), discovered_ble_devices.end(),
             [now](const BLEDeviceInfo& dev) {
@@ -217,6 +241,10 @@ void sensor_ble_loop() {
             }),
         discovered_ble_devices.end()
     );
+}
+
+bool sensor_ble_is_active() {
+    return ble_initialized;
 }
 
 /**
@@ -253,7 +281,6 @@ int BLESensor::read(unsigned long time) {
     // CRITICAL: Do NOT use BLE in WiFi SOFTAP mode (RF coexistence conflict)
     // Exception: Ethernet mode (no WiFi RF usage)
     if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
-        DEBUG_PRINTLN("BLE disabled in SOFTAP mode (WiFi setup)");
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
@@ -267,7 +294,6 @@ int BLESensor::read(unsigned long time) {
         if (!ble_initialized) {
             sensor_ble_init();
             if (!ble_initialized) {
-                DEBUG_PRINTLN("ERROR: Failed to start BLE");
                 flags.data_ok = false;
                 return HTTP_RQT_NOT_RECEIVED;
             }

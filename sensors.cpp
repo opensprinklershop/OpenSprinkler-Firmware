@@ -49,7 +49,7 @@
   #include "sensor_mqtt.h"
 #endif
 
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
   #include "sensor_zigbee.h"
 #endif
 
@@ -240,18 +240,27 @@ boolean sensor_type_supported(int type) {
  * init sensor api and load data
  */
 void sensor_api_init(boolean detect_boards) {
+  DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_init() started"));
   apiInit = true;
-  if (detect_boards)
+  if (detect_boards) {
+    DEBUG_PRINTLN(F("[SENSOR_API] Detecting ASB boards..."));
     detect_asb_board();
+  }
+  DEBUG_PRINTLN(F("[SENSOR_API] Loading sensors..."));
   sensor_load();
+  DEBUG_PRINTLN(F("[SENSOR_API] Loading prog_adjust..."));
   prog_adjust_load();
   #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  DEBUG_PRINTLN(F("[SENSOR_API] Initializing MQTT..."));
   sensor_mqtt_init();
   #endif
+  DEBUG_PRINTLN(F("[SENSOR_API] Loading monitors..."));
   monitor_load();
   #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
   fyta_check_opts();
   #endif
+
 #if defined(OSPI)
   //Read rs485 file. Details see below
   std::ifstream file;
@@ -304,6 +313,37 @@ void sensor_api_init(boolean detect_boards) {
     DEBUG_PRINT(F("Found "));
     DEBUG_PRINT(n);
     DEBUG_PRINTLN(F(" RS485 Adapters"));
+  }
+#endif
+}
+
+void sensor_api_connect() {
+  #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+  sensor_zigbee_start();
+  #endif
+
+  #if defined(ESP32) && defined(OS_ENABLE_BLE)
+  sensor_ble_init();
+  #endif
+}
+// Note: sensor_api_connect()/sensor_api_disconnect() were removed.
+// Zigbee/BLE are started on-demand by their respective operations (scan/read/open-network)
+// and their maintenance loops are gated by sensor_*_is_active().
+
+/**
+ * @brief Sensor maintenance loop
+ * @note Calls subsystem-specific loop functions (BLE, Zigbee auto-stop timers, etc.)
+ */
+void sensor_api_loop() {
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+  if (sensor_zigbee_is_active()) {
+    sensor_zigbee_loop();
+  }
+#endif
+
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
+  if (sensor_ble_is_active()) {
+    sensor_ble_loop();
   }
 #endif
 }
@@ -700,24 +740,36 @@ void checkLogSwitchAfterWrite(uint8_t log) {
 
 bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog) {
 #if defined(ESP8266) || defined(ESP32)
-  if (checkDiskFree()) {
-#endif
-    DEBUG_PRINT(F("sensorlog_add "));
-    DEBUG_PRINT(log);
-    checkLogSwitch(log);
-    file_append_block(getlogfile(log), sensorlog, SENSORLOG_STORE_SIZE);
-    checkLogSwitchAfterWrite(log);
-    DEBUG_PRINT(F("="));
-    DEBUG_PRINTLN(sensorlog_filesize(log));
-    return true;
-#if defined(ESP8266) || defined(ESP32)
+  static uint32_t last_error_time = 0;
+  static uint32_t error_count = 0;
+  
+  // If we've had too many errors recently, stop trying
+  if (error_count > 5 && (millis() - last_error_time) < 60000) {
+    return false; // Skip logging for 60 seconds after 5 failures
   }
-  return false;
+  
+  if (!checkDiskFree()) {
+    error_count++;
+    last_error_time = millis();
+    return false;
+  }
+  
+  // Reset error counter on success
+  error_count = 0;
 #endif
+  
+  DEBUG_PRINT(F("sensorlog_add "));
+  DEBUG_PRINT(log);
+  checkLogSwitch(log);
+  file_append_block(getlogfile(log), sensorlog, SENSORLOG_STORE_SIZE);
+  checkLogSwitchAfterWrite(log);
+  DEBUG_PRINT(F("="));
+  DEBUG_PRINTLN(sensorlog_filesize(log));
+  
+  return true;
 }
 
 bool sensorlog_add(uint8_t log, SensorBase *sensor, ulong time) {
-
   if (sensor->flags.data_ok && sensor->flags.log && time > 1000) {
 
     // Write to log file only if necessary
@@ -1312,16 +1364,17 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
       #endif
 
     // Zigbee sensors
-#if defined(ESP32C5) && defined(ZIGBEE_MODE_ZCZR)
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
     case SENSOR_ZIGBEE:
       return new ZigbeeSensor(type);
 #endif
     // BLE sensors
-#if (defined(OSPI) || defined(ESP32)) && !defined(ENABLE_MATTER)
+#if (defined(OSPI) || defined(ESP32))
     case SENSOR_BLE:
 #if defined(OSPI)
       return new OspiBLESensor(type);
-#else
+#endif
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
       return new BLESensor(type);
 #endif
 #endif
@@ -1805,11 +1858,12 @@ void SensorBase::emitJson(BufferFiller& bfill) const {
   ArduinoJson::JsonDocument doc;
   ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
   toJson(obj);
-  
-  // Serialize to string and output
-  String jsonStr;
-  ArduinoJson::serializeJson(doc, jsonStr);
-  bfill.emit_p(PSTR("$S"), jsonStr.c_str());
+
+  // Serialize direkt in den Zielbuffer (vermeidet Heap-String-Allokationen)
+  const size_t cap = bfill.avail() + 1; // +1 für Nullterminator
+  char* out = bfill.cursor();
+  const size_t written = ArduinoJson::serializeJson(doc, out, cap);
+  bfill.advance(written);
 }
 
 // SensorBase default implementation for getUnitId()
@@ -1875,6 +1929,10 @@ unsigned char getSensorUnitId(SensorBase *sensor) {
  * @param log 
  */
 void add_influx_data(SensorBase *sensor) {
+#if defined(DISABLE_INFLUXDB)
+  (void)sensor;
+  return;
+#else
   if (!os.influxdb.isEnabled())
     return;
 
@@ -1926,6 +1984,7 @@ influxdb_cpp::builder()
     .post_http(*client);
 
   #endif
+#endif // DISABLE_INFLUXDB
 }
 
 

@@ -59,7 +59,7 @@ int UsbRs485Sensor::read(unsigned long time) {
   modbus_set_slave(modbusDevs[device], this->id);
   if (modbus_read_registers(modbusDevs[device], type, 2, tab_reg) > 0) {
     uint16_t data = tab_reg[0];
-    DEBUG_PRINTF("UsbRs485Sensor::read result: %d - %d\n", this->id, data);
+    DEBUG_PRINTF(F("UsbRs485Sensor::read result: %d - %d\n"), this->id, data);
     double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
     this->last_native_data = data;
     this->last_data = value;

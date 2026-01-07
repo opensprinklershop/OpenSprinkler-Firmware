@@ -29,6 +29,11 @@
 #include "ArduinoJson.hpp"
 #include "sunrise.h"
 
+#if defined(ESP32)
+#include <esp_system.h>
+#include <esp_mac.h>
+#endif
+
 /** Declare static data members */
 OSMqtt OpenSprinkler::mqtt;
 NVConData OpenSprinkler::nvdata;
@@ -542,30 +547,46 @@ unsigned char OpenSprinkler::start_network() {
 
 #if defined(ESP8266) || defined(ESP32)
 
-	if (start_ether()) {
-		useEth = true;
-		WiFi.mode(WIFI_OFF);
-	} else {
+	// On WiFi AP setups, do not probe wired Ethernet or turn WiFi off.
+	// Probing W5500/ENC can fail (or be absent) and TLS startup before WiFi init
+	// can cause esp_wifi_init() to fail with ESP_ERR_NO_MEM on ESP32-C5 Matter builds.
+	if (get_wifi_mode() == WIFI_MODE_AP) {
 		useEth = false;
+	} else {
+		if (start_ether()) {
+			useEth = true;
+			WiFi.mode(WIFI_OFF);
+		} else {
+			useEth = false;
+		}
 	}
 
 	bool ssl = otc.port == 443;
-	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
-		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, ssl, ether_buffer, ETHER_BUFFER_SIZE);
-		DEBUG_PRINTLN(F("Started OTF with remote connection"));
-	} else {
-		otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
-		DEBUG_PRINTLN(F("Started OTF with just local connection"));
+	// IMPORTANT: Don't start OTF/HTTPS before the network stack is actually ready.
+	// On ESP32-C5 (and especially with coexistence builds), early TLS/server startup can
+	// trip asserts / memory issues if WiFi isn't initialized yet.
+	const bool sta_ready = (get_wifi_mode() == WIFI_MODE_STA) && (WiFi.status() == WL_CONNECTED) && (uint32_t)WiFi.localIP();
+	const bool ap_ready  = (get_wifi_mode() == WIFI_MODE_AP) && (uint32_t)WiFi.softAPIP();
+	const bool can_start_services = useEth || sta_ready || ap_ready;
+
+	if(can_start_services) {
+		if((useEth || sta_ready) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
+			otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, ssl, ether_buffer, ETHER_BUFFER_SIZE);
+			DEBUG_PRINTLN(F("Started OTF with remote connection"));
+		} else {
+			otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
+			DEBUG_PRINTLN(F("Started OTF with just local connection"));
+		}
+		extern DNSServer *dns;
+		if(ap_ready) dns = new DNSServer();
+		if(update_server) { delete update_server; update_server = NULL; }
+		#if defined(ESP8266) 
+		update_server = new ESP8266WebServer(8080);
+		#elif defined(ESP32)
+		update_server = new WebServer(8080);
+		#endif
+		DEBUG_PRINTLN(F("Started update server"));
 	}
-	extern DNSServer *dns;
-	if(get_wifi_mode() == WIFI_MODE_AP) dns = new DNSServer();
-	if(update_server) { delete update_server; update_server = NULL; }
-	#if defined(ESP8266) 
-	update_server = new ESP8266WebServer(8080);
-	#elif defined(ESP32)
-	update_server = new WebServer(8080);
-	#endif
-	DEBUG_PRINTLN(F("Started update server"));
 	return 1;
 
 #else
@@ -1003,6 +1024,12 @@ void OpenSprinkler::lcd_start() {
 void OpenSprinkler::begin() {
 
 #if defined(ARDUINO)
+	#if defined(ESP32)
+	// ESP32-C5 (Matter/Zigbee builds) can be very tight on heap during early boot.
+	// Our I2C usage is small (mostly register reads/writes), so a smaller Wire buffer
+	// avoids allocation failures that otherwise break all I2C transactions.
+	Wire.setBufferSize(64);
+	#endif
 	Wire.begin(); // init I2C
 #endif
 

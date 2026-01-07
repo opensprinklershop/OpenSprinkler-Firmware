@@ -193,8 +193,11 @@ void init_SC16IS752(uint32_t baudrate, uint8_t use2stopbits, uint parity) {
  * @return int
  */
 int RS485I2CSensor::read(unsigned long time) {
-  if (!(get_asb_detected_boards() & ASB_I2C_RS485)) 
+  if (!(get_asb_detected_boards() & ASB_I2C_RS485)) {
+    DEBUG_PRINTLN(F("RS485 board not detected, skipping read"));
+    flags.data_ok = false;
     return HTTP_RQT_NOT_RECEIVED;
+  }
 
   if (active_i2c_RS485 > 0 && active_i2c_RS485 != (int)nr) {
     repeat_read = 1;
@@ -303,7 +306,7 @@ int RS485I2CSensor::read(unsigned long time) {
     //Extract Data
     if (!isGeneric) { // Truebner Sensor Data Extraction
       uint16_t data = (response[3] << 8) | response[4];
-      DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n", id,
+      DEBUG_PRINTF(F("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n"), id,
                    data, response[3], response[4]);
       double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
       last_native_data = data;
@@ -319,7 +322,7 @@ int RS485I2CSensor::read(unsigned long time) {
           data |= response[3 + i];
         }
       }
-      DEBUG_PRINTF("read_sensor_i2c_rs485: result: %d - %llx\n", id, data);
+      DEBUG_PRINTF(F("read_sensor_i2c_rs485: result: %d - %llx\n"), id, data);
       last_native_data = data; // raw data - only 32bit
       double value = 0.0;
       switch (rs485_flags.datatype) {
@@ -534,14 +537,7 @@ void RS485I2CSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
 }
 
 void RS485I2CSensor::emitJson(BufferFiller& bfill) const {
-  ArduinoJson::JsonDocument doc;
-  ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
-  toJson(obj);
-  
-  // Serialize to string and output
-  String jsonStr;
-  ArduinoJson::serializeJson(doc, jsonStr);
-  bfill.emit_p(PSTR("$S"), jsonStr.c_str());
+	SensorBase::emitJson(bfill);
 }
 
 // Backwards-compatible wrapper

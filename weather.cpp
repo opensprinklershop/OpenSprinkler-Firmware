@@ -292,14 +292,14 @@ unsigned char parseMdScalesArray (const char* input) {
 	if (*p != '[') return 0;   // must start with [
 	++p;                       // skip '['
 
-	DEBUG_PRINT("parseing md_scales:[");
+	DEBUG_PRINT(F("parseing md_scales:["));
 	int count = 0;
 	while (*p && *p != ']' && count < MAX_N_MD_SCALES) {
 		char* endptr;
 		long val = strtol(p, &endptr, 10);   // parse number
 		md_scales[count] = static_cast<unsigned char>(val);
 		DEBUG_PRINT(md_scales[count]);
-		DEBUG_PRINT(",");
+		DEBUG_PRINT(F(","));
 		count++;
 		p = endptr;
 		if (*p == ',') {
@@ -307,7 +307,7 @@ unsigned char parseMdScalesArray (const char* input) {
 		}
 	}
 	md_N = count;
-	DEBUG_PRINT("],total=");
+	DEBUG_PRINT(F("],total="));
 	DEBUG_PRINTLN(md_N);
 	return count;
 }

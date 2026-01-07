@@ -36,7 +36,10 @@ uint8_t I2CRTC::addr = 0;
 
 I2CRTC::I2CRTC()
 {
-	Wire.begin();
+	// Do not call Wire.begin() from a global/static constructor.
+	// On ESP32 (especially ESP32-C5 Matter/Zigbee builds) this can run before setup()
+	// and before the firmware has a chance to tune Wire buffer sizes, which can
+	// lead to early-boot allocation failures.
 }
 
 bool I2CRTC::exists() {

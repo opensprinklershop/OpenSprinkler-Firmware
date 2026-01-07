@@ -518,9 +518,19 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 		//		  client.setInsecure();
 		//	  }
 			#ifndef ARDUINO_ARCH_RP2040
-				#include <core_version.h>
-				#if ((!defined(ARDUINO_ESP32_RELEASE_1_0_4)) && (!defined(ARDUINO_ESP32_RELEASE_1_0_3)) && (!defined(ARDUINO_ESP32_RELEASE_1_0_2)))
-					  client.setInsecure();
+				#if defined(__has_include)
+					#if __has_include(<core_version.h>)
+						#include <core_version.h>
+						#if ((!defined(ARDUINO_ESP32_RELEASE_1_0_4)) && (!defined(ARDUINO_ESP32_RELEASE_1_0_3)) && (!defined(ARDUINO_ESP32_RELEASE_1_0_2)))
+							  client.setInsecure();
+						#endif
+					#else
+						// Newer Arduino-ESP32 cores may not ship core_version.h.
+						client.setInsecure();
+					#endif
+				#else
+					// Toolchain doesn't support __has_include
+					client.setInsecure();
 				#endif
 			#else
 			    client.setInsecure();

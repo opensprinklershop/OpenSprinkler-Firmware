@@ -1,13 +1,7 @@
-# ESP32-C5 Partition Table for Matter (4MB internal Flash)
-# Matter requires more app space, so OTA is disabled and partitions are optimized
-# Name,         Type, SubType,  Offset,   Size,     Flags
-nvs,            data, nvs,      0x9000,   0x6000,   
-# Matter Factory Data partition (must be readonly for size < 0x3000)
+nvs,            data, nvs,      0x9000,   0x6000,
 matter_fct,     data, nvs,      0xF000,   0x1000,   readonly
-app0,           app,  factory,  0x10000,  0x280000,
-# Matter Key-Value Store 128KB
-matter_kvs,     data, nvs,      0x290000, 0x20000,
-# 1.2MB for web files (Zigbee storage removed for Matter build)
-spiffs,         data, spiffs,   0x2B0000, 0x140000,
-# 64KB for coredump
-coredump,       data, coredump, 0x3F0000, 0x10000,
+app0,           app,  factory,  0x10000,  0x3C6000,
+matter_kvs,     data, nvs,      0x3D6000, 0x10000,
+zb_storage,     data, fat,      0x3E6000, 0x10000,
+zb_fct,         data, fat,      0x3F6000, 0x1000,
+littlefs,       data, littlefs, 0x3F7000, 0x8000,

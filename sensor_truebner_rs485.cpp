@@ -84,7 +84,7 @@ int TruebnerRS485Sensor::read(unsigned long /*time*/) {
     Wire.write((uint8_t)id);
     Wire.write(senstype);
     if (Wire.endTransmission() == 0) {
-      DEBUG_PRINTF("read_sensor_rs485: request send: %d - %d\n", id,
+      DEBUG_PRINTF(F("read_sensor_rs485: request send: %d - %d\n"), id,
                    senstype);
       repeat_read = 1;
       i2c_rs485_allocated[device] = nr;
@@ -101,7 +101,7 @@ int TruebnerRS485Sensor::read(unsigned long /*time*/) {
     uint8_t high_byte = Wire.read();
     if (addr == id && reg == senstype) {
       uint16_t data = (high_byte << 8) | low_byte;
-      DEBUG_PRINTF("read_sensor_rs485: result: %d - %d (%d %d)\n", id,
+      DEBUG_PRINTF(F("read_sensor_rs485: result: %d - %d (%d %d)\n"), id,
                    data, low_byte, high_byte);
       double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
       last_native_data = data;
