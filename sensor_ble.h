@@ -27,6 +27,7 @@
 
 #include "sensors.h"
 #include "SensorBase.hpp"
+#include "sensor_payload_decoder.h"
 
 /**
  * @brief Structure to hold discovered BLE device information
@@ -37,7 +38,19 @@ struct BLEDeviceInfo {
     int16_t rssi;                 // Signal strength
     bool is_new;                  // Flag for newly discovered device
     uint32_t last_seen;           // Timestamp of last advertisement
+
+    // Optional: advertised primary service UUID (if present in the advertisement)
+    // Stored as canonical string (e.g. "0000180a-0000-1000-8000-00805f9b34fb")
+    char service_uuid[40];
 };
+
+/**
+ * @brief Convert a BLE UUID to a human-readable name (best-effort)
+ * @param uuid UUID string, e.g. "180A", "0x180A", or "0000180a-0000-1000-8000-00805f9b34fb".
+ *            If the string contains a suffix like "|10" it will be ignored.
+ * @return Pointer to a constant name string. Returns "Unknown" if not recognized.
+ */
+const char* ble_uuid_to_name(const char* uuid);
 
 
 /**
@@ -54,12 +67,19 @@ struct BLEDeviceInfo {
  */
 class BLESensor : public SensorBase {
 public:
+    // BLE-specific persistent fields (stored in sensors.json via toJson/fromJson)
+    char characteristic_uuid_cfg[40] = {0};
+    uint8_t payload_format_cfg = (uint8_t)FORMAT_TEMP_001;
+
     /**
      * @brief Constructor
      * @param type Sensor type identifier (SENSOR_BLE)
      */
     explicit BLESensor(uint type) : SensorBase(type) {}
     virtual ~BLESensor() {}
+
+    virtual void fromJson(ArduinoJson::JsonVariantConst obj) override;
+    virtual void toJson(ArduinoJson::JsonObject obj) const override;
     
     /**
      * @brief Read value from BLE device

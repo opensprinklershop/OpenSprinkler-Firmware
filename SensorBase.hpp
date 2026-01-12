@@ -31,8 +31,6 @@ public:
   unsigned char assigned_unitid = 0;  // unitid for userdef and mqtt sensors
   
   /* runtime-only fields not persisted */
-  bool mqtt_init = false;
-  bool mqtt_push = false;
   unsigned char unitid = 0;
   uint32_t repeat_read = 0;
   double repeat_data = 0.0;

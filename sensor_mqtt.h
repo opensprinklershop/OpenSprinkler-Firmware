@@ -63,6 +63,10 @@ public:
     char topic[200] = {0};          // MQTT topic
     char filter[200] = {0};         // JSON filter for MQTT
 
+    // runtime-only fields (MQTT sensor specific)
+    bool mqtt_init = false;
+    bool mqtt_push = false;
+
     /**
      * @brief Constructor
      * @param type Sensor type identifier

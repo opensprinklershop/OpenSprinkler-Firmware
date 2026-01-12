@@ -124,6 +124,7 @@ void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosqui
 	SensorBase *sensor = sensors_iterate_next(it);
 	while (sensor) {
 		if (sensor->type == SENSOR_MQTT && sensor->last_read != now) {
+			MqttSensor* mqtt = static_cast<MqttSensor*>(sensor);
 			// Use toJson to get MQTT-specific fields
 			ArduinoJson::JsonDocument doc;
 			ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
@@ -141,7 +142,7 @@ void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosqui
 					sensor->last_data = value;
 					sensor->flags.data_ok = true;
 					sensor->last_read = now;	
-					sensor->mqtt_push = true;
+					mqtt->mqtt_push = true;
 					sensor->repeat_read = 1; //This will call read_sensor_mqtt
 					DEBUG_PRINTLN("sensor_mqtt_callback2");
 				}
@@ -179,13 +180,14 @@ int MqttSensor::read(unsigned long time) {
 void sensor_mqtt_subscribe(uint nr, uint type, const char *urlstr) {
     SensorBase* sensor = sensor_by_nr(nr);
     if (urlstr && urlstr[0] && type == SENSORURL_TYPE_TOPIC && sensor && sensor->type == SENSOR_MQTT) {
+		MqttSensor* mqtt = static_cast<MqttSensor*>(sensor);
 	    DEBUG_PRINT("sensor_mqtt_subscribe1: ");
 		DEBUG_PRINTLN(sensor->name);
         DEBUG_PRINT("subscribe: ");
         DEBUG_PRINTLN(urlstr);
 		if (!os.mqtt.subscribe(urlstr))
 			DEBUG_PRINTLN("error subscribe!!");
-	    sensor->mqtt_init = true;
+	    mqtt->mqtt_init = true;
     }
 }
 
@@ -196,12 +198,13 @@ void MqttSensor::emitJson(BufferFiller& bfill) const {
 void sensor_mqtt_unsubscribe(uint nr, uint type, const char *urlstr) {
     SensorBase* sensor = sensor_by_nr(nr);
     if (urlstr && urlstr[0] && type == SENSORURL_TYPE_TOPIC && sensor && sensor->type == SENSOR_MQTT) {
+		MqttSensor* mqtt = static_cast<MqttSensor*>(sensor);
 	    DEBUG_PRINT("sensor_mqtt_unsubscribe1: ");
 		DEBUG_PRINTLN(sensor->name);
         DEBUG_PRINT("unsubscribe: ");
         DEBUG_PRINTLN(urlstr);
 		if (!os.mqtt.unsubscribe(urlstr))
 			DEBUG_PRINTLN("error unsubscribe!!");
-		sensor->mqtt_init = false;
+		mqtt->mqtt_init = false;
     }
 }

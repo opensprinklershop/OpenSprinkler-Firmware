@@ -4503,11 +4503,20 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 		         devices[i].address[0], devices[i].address[1], devices[i].address[2],
 		         devices[i].address[3], devices[i].address[4], devices[i].address[5]);
 		
-		bfill.emit_p(PSTR("{\"address\":\"$S\",\"name\":\"$S\",\"rssi\":$D,\"is_new\":$D}"),
+		const char* svc_uuid = devices[i].service_uuid;
+		if (!svc_uuid) svc_uuid = "";
+		const char* svc_name = "";
+		if (svc_uuid[0]) {
+			svc_name = ble_uuid_to_name(svc_uuid);
+		}
+
+		bfill.emit_p(PSTR("{\"address\":\"$S\",\"name\":\"$S\",\"rssi\":$D,\"is_new\":$D,\"service_uuid\":\"$S\",\"service_name\":\"$S\"}"),
 		             addr_str,
 		             devices[i].name,
 		             devices[i].rssi,
-		             devices[i].is_new ? 1 : 0);
+		             devices[i].is_new ? 1 : 0,
+		             svc_uuid,
+		             svc_name);
 	}
 	
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);
