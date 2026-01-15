@@ -53,10 +53,6 @@ void sensor_rs485_i2c_init() {
         i2c_rs485_addr = ASB_I2C_RS485_ADDR;
         DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
         add_asb_detected_boards(ASB_I2C_RS485);
-    } else if (os.hw_rev != 3 && detect_i2c(ASB_I2C_RS485_ADDR1)) {    //dev adapters, 0x50 unuseable hw_rev=3 
-        i2c_rs485_addr = ASB_I2C_RS485_ADDR1;
-        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR1);
-        add_asb_detected_boards(ASB_I2C_RS485);
     }
 }
 

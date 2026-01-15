@@ -511,8 +511,21 @@ bool detect_i2c(int addr) {
 /** read hardware MAC into tmp_buffer */
 #define MAC_CTRL_ID 0x50
 bool OpenSprinkler::load_hardware_mac(unsigned char* buffer, bool wired) {
-#if defined(ESP8266) || defined(ESP32)
+#if defined(ESP8266)
 	WiFi.macAddress((unsigned char*)buffer);
+	// if requesting wired Ethernet MAC, flip the last byte to create a modified MAC
+	if(wired) buffer[5] = ~buffer[5];
+	return true;
+#elif defined(ESP32)
+	// WiFi.macAddress() can be 00:00:00:00:00:00 before WiFi is initialized (seen on ESP32-C5).
+	// Use the eFuse MAC which is always available.
+	uint64_t efuse_mac = ESP.getEfuseMac();
+	buffer[0] = (efuse_mac >> 40) & 0xFF;
+	buffer[1] = (efuse_mac >> 32) & 0xFF;
+	buffer[2] = (efuse_mac >> 24) & 0xFF;
+	buffer[3] = (efuse_mac >> 16) & 0xFF;
+	buffer[4] = (efuse_mac >> 8) & 0xFF;
+	buffer[5] = (efuse_mac >> 0) & 0xFF;
 	// if requesting wired Ethernet MAC, flip the last byte to create a modified MAC
 	if(wired) buffer[5] = ~buffer[5];
 	return true;
@@ -2305,6 +2318,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		}
 	#elif defined(ESP32)
 		if(usessl) {
+			free_tmp_memory();
 			WiFiClientSecure *_c = new WiFiClientSecure();
 			_c->setInsecure();
 			client = _c;
@@ -2332,7 +2346,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINTLN(F("failed."));
 		client->stop();
 		delete client;
+		#if defined(ESP8266) || defined(ESP32)
 		if (usessl) restore_tmp_memory();
+		#endif
 		return HTTP_RQT_CONNECT_ERR;
 	}
 #else
@@ -2396,9 +2412,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	ether_buffer[pos]=0; // properly end buffer with 0
 	client->stop();
 	delete client;
-#if defined(ESP8266)
+	#if defined(ESP8266) || defined(ESP32)
 	if (usessl) restore_tmp_memory();
-#endif
+	#endif
 	if(strlen(ether_buffer)==0) return HTTP_RQT_EMPTY_RETURN;
 	if(callback) callback(ether_buffer);
 	return HTTP_RQT_SUCCESS;
@@ -2790,7 +2806,7 @@ void OpenSprinkler::options_setup() {
 		unsigned char hwv = iopts[IOPT_HW_VERSION];
 		lcd.print((char)('0'+(hwv/10)));
 		lcd.print('.');
-		#if defined(ESP8266) || defined(ESP32)
+		#if defined(ESP8266)
 		lcd.print(hw_rev);
 		#else
 		lcd.print((char)('0'+(hwv%10)));
@@ -3019,11 +3035,10 @@ void OpenSprinkler::lcd_print_time(time_os_t t)
 
 	lcd_print_pgm(PSTR(" "));
 
-	lcd_print_pgm(months_str+4*(month(t)-1));
-
-	lcd_print_pgm(PSTR("-"));
-
+	// EU date format on display: DD-MMM (instead of MMM-DD)
 	lcd_print_2digit(day(t));
+	lcd_print_pgm(PSTR("-"));
+	lcd_print_pgm(months_str+4*(month(t)-1));
 #if defined(USE_SSD1306)
 	lcd.display();
 	lcd.setAutoDisplay(true);

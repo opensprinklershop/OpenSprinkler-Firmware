@@ -28,6 +28,9 @@
 #include "program.h"
 #include "weather.h"
 #include "opensprinkler_server.h"
+#if defined(ARDUINO) && (defined(ESP8266) || defined(ESP32))
+#include "espconnect.h"
+#endif
 #include "mqtt.h"
 #include "sensors.h"
 #include "main.h"
@@ -345,7 +348,23 @@ void ui_state_machine() {
 				#if defined(ARDUINO)
 				#if defined(ESP8266) || defined(ESP32)
 				if (useEth) { os.lcd.print(eth.localIP()); }
-				else { os.lcd.print(WiFi.localIP()); }
+				else {
+					// In pure AP mode, localIP() can be 0.0.0.0; show the AP interface IP instead.
+					uint8_t mode = (uint8_t)WiFi.getMode();
+					#if defined(ESP32)
+					if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+						os.lcd.print(WiFi.softAPIP());
+					} else {
+						os.lcd.print(WiFi.localIP());
+					}
+					#else
+					if (mode == WIFI_AP || mode == WIFI_AP_STA) {
+						os.lcd.print(WiFi.softAPIP());
+					} else {
+						os.lcd.print(WiFi.localIP());
+					}
+					#endif
+				}
 				#else
 				{ os.lcd.print(Ethernet.localIP()); }
 				#endif
@@ -691,6 +710,10 @@ void gratuitousARPTask() {
 /** Main Loop */
 void do_loop()
 {
+	#if defined(ARDUINO) && (defined(ESP8266) || defined(ESP32))
+	handle_arduino_ota();
+	#endif
+
 	static ulong flowpoll_timeout=0;
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
 	// handle flow sensor using polling. Maximum freq is 1/(2*FLOWPOLL_INTERVAL)

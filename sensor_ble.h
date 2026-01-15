@@ -69,6 +69,7 @@ class BLESensor : public SensorBase {
 public:
     // BLE-specific persistent fields (stored in sensors.json via toJson/fromJson)
     char characteristic_uuid_cfg[40] = {0};
+    char mac_address_cfg[24] = {0};
     uint8_t payload_format_cfg = (uint8_t)FORMAT_TEMP_001;
 
     /**

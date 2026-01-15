@@ -29,9 +29,6 @@
 #if defined(ESP8266) || defined(ESP32)
 
 #define ASB_I2C_RS485_ADDR 0x48 //0x90>>1 A0=VCC A1=VCC 
-#define ASB_I2C_RS485_ADDR1 0x50 //0xA2>>1 A0=VCC A1=SCL ?? used By hw_rev=3 EEPROM_I2CADDR
-#define ASB_I2C_RS485_ADDR2 0x51 //0xA2>>1 A0=GND A1=SCL
-#define ASB_I2C_RS485_ADDR3 0x52 //0xA2>>1 A0=SCL A1=SCL ?? used by hw_rev=4 EEPROM_I2CADDR+2
 
 /**
  * @brief Initialize I2C-RS485 bridge subsystem

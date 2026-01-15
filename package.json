@@ -4,6 +4,7 @@
   "description": "There are three methods to compile the firmware. You can choose any of them.",
   "main": "index.js",
   "directories": {
+    "doc": "docs",
     "example": "examples"
   },
   "scripts": {
@@ -13,6 +14,15 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "html-minifier-terser": "^7.2.0"
-  }
+    "html-minifier-terser": "^7.2.0",
+    "pako": "^2.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opensprinklershop/OpenSprinkler-Firmware.git"
+  },
+  "bugs": {
+    "url": "https://github.com/opensprinklershop/OpenSprinkler-Firmware/issues"
+  },
+  "homepage": "https://github.com/opensprinklershop/OpenSprinkler-Firmware#readme"
 }

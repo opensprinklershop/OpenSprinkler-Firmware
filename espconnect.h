@@ -40,6 +40,10 @@ void start_network_ap(const char *ssid, const char *pass);
 void start_network_sta(const char *ssid, const char *pass, int32_t channel=0, const unsigned char *mac=NULL);
 void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t channel=0, const unsigned char *mac=NULL);
 
+// Arduino OTA support (requires regular handle() calls from main loop)
+void start_arduino_ota(const char *hostname=NULL);
+void handle_arduino_ota();
+
 #endif
 
 #endif

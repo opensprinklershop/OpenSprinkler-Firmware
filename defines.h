@@ -405,9 +405,14 @@ enum {
 
 	#define USE_DISPLAY
 	#define USE_LCD
-#elif defined(ESP8266) || defined(ESP32) // for ESP8266
+#elif defined(ESP8266) || defined(ESP32) // for ESP8266 / ESP32
 
-	#define OS_HW_VERSION    (OS_HW_VERSION_BASE+30)
+	#if defined(ESP32)
+		// ESP32 variant should report OpenSprinkler hardware version 4.0
+		#define OS_HW_VERSION    (OS_HW_VERSION_BASE+40)
+	#else
+		#define OS_HW_VERSION    (OS_HW_VERSION_BASE+30)
+	#endif
 	#define IOEXP_PIN        0x80 // base for pins on main IO expander
 	#define MAIN_I2CADDR     0x20 // main IO expander I2C address
 	#define ACDR_I2CADDR     0x21 // ac driver I2C address

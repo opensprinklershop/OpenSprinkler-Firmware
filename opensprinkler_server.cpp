@@ -33,9 +33,14 @@
 #include "ArduinoJson.hpp"
 #include "sensor_fyta.h"
 #include "sensor_mqtt.h"
+#include "LinkedMap.h"
 
 #if defined(ESP32) && defined(OS_ENABLE_BLE)
 #include "sensor_ble.h"
+#endif
+
+#if defined(ESP32)
+	#include <esp_mac.h>
 #endif
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
@@ -353,19 +358,53 @@ void update_server_send_result(unsigned char code, const char* item = NULL) {
 
 String get_ap_ssid() {
 	static String ap_ssid;
+	auto is_all_zero_mac = [](const unsigned char* m) -> bool {
+		for (unsigned char i = 0; i < 6; i++) {
+			if (m[i] != 0) return false;
+		}
+		return true;
+	};
+
+	// Build once, but never cache an all-zero MAC result (would stick as OS_000000).
 	if(!ap_ssid.length()) {
-		unsigned char mac[6];
-		WiFi.macAddress(mac);
-		ap_ssid = "OS_";
-		for(unsigned char i=3;i<6;i++) {
-			ap_ssid += dec2hexchar((mac[i]>>4)&0x0F);
-			ap_ssid += dec2hexchar(mac[i]&0x0F);
+		unsigned char mac[6] = {0};
+
+		#if defined(ARDUINO)
+			// Use controller helper: on ESP32 this is eFuse-based and works before WiFi init.
+			os.load_hardware_mac(mac, false);
+		#endif
+
+		#if defined(ESP32)
+			if (is_all_zero_mac(mac)) {
+				// Prefer IDF MAC read; works even before WiFi is fully initialized.
+				esp_read_mac((uint8_t*)mac, ESP_MAC_WIFI_SOFTAP);
+			}
+			if (is_all_zero_mac(mac)) {
+				uint64_t efuse_mac = ESP.getEfuseMac();
+				mac[0] = (efuse_mac >> 40) & 0xFF;
+				mac[1] = (efuse_mac >> 32) & 0xFF;
+				mac[2] = (efuse_mac >> 24) & 0xFF;
+				mac[3] = (efuse_mac >> 16) & 0xFF;
+				mac[4] = (efuse_mac >> 8) & 0xFF;
+				mac[5] = (efuse_mac >> 0) & 0xFF;
+			}
+			if (is_all_zero_mac(mac)) {
+				WiFi.macAddress(mac);
+			}
+		#else
+			WiFi.macAddress(mac);
+		#endif
+
+		if (!is_all_zero_mac(mac)) {
+			ap_ssid = "OS_";
+			for(unsigned char i=3;i<6;i++) {
+				ap_ssid += dec2hexchar((mac[i]>>4)&0x0F);
+				ap_ssid += dec2hexchar(mac[i]&0x0F);
+			}
 		}
 	}
 	return ap_ssid;
 }
-
-static String scanned_ssids;
 
 void on_ap_home(OTF_PARAMS_DEF) {
 	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
@@ -375,10 +414,9 @@ void on_ap_home(OTF_PARAMS_DEF) {
 
 void on_ap_scan(OTF_PARAMS_DEF) {
 	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
-	// Perform scan on-demand so AP/DHCP can come up first.
-	scanned_ssids = scan_network();
-	print_header(OTF_PARAMS, true, scanned_ssids.length());
-	res.writeBodyData(scanned_ssids.c_str(), scanned_ssids.length());
+	String scanned = scan_network();
+	print_header(OTF_PARAMS, true, scanned.length());
+	res.writeBodyData(scanned.c_str(), scanned.length());
 }
 
 void on_ap_change_config(OTF_PARAMS_DEF) {
@@ -1203,7 +1241,7 @@ void server_json_options_main() {
 		if (oid==IOPT_BOOST_TIME || oid==IOPT_I_MIN_THRESHOLD || oid==IOPT_I_MAX_LIMIT || oid==IOPT_LATCH_ON_VOLTAGE || oid==IOPT_LATCH_OFF_VOLTAGE || oid==IOPT_TARGET_PD_VOLTAGE) continue;
 		#endif
 
-		#if defined(ESP8266) || defined(ESP32)
+		#if defined(ESP8266)
 		if (oid==IOPT_HW_VERSION) {
 			v+=os.hw_rev;	// for OS3.x, add hardware revision number
 		}
@@ -2583,147 +2621,24 @@ void server_sensor_config(OTF_PARAMS_DEF)
 
 	DEBUG_PRINTLN(F("server_sensor_config2"));
 
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("group"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint group = strtoul(tmp_buffer, NULL, 0); // Sensor group
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("name"), true))
-		handle_return(HTML_DATA_MISSING);
-	char name[30];
-	strncpy(name, urlDecodeAndUnescape(tmp_buffer), sizeof(name)-1); // Sensor name
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ip"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint32_t ip = strtoul(tmp_buffer, NULL, 0); // Sensor ip
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("port"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint port = strtoul(tmp_buffer, NULL, 0); // Sensor port
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("id"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint id = strtoul(tmp_buffer, NULL, 0); // Sensor modbus id
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ri"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint ri = strtoul(tmp_buffer, NULL, 0); // Read Interval (s)
-
-	int16_t factor = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("fac"), true))
-		factor = strtol(tmp_buffer, NULL, 0); // factor
-
-	int16_t divider = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("div"), true))
-		divider = strtol(tmp_buffer, NULL, 0); // divider
-
-	DEBUG_PRINTLN(F("server_sensor_config3"));
-
-	char userdef_unit[8];
-	memset(userdef_unit, 0, sizeof(userdef_unit));
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("unit"), true)) {
-		DEBUG_PRINTLN(tmp_buffer)
-		urlDecodeAndUnescape(tmp_buffer);
-		DEBUG_PRINTLN(tmp_buffer)
-		strncpy(userdef_unit, tmp_buffer, sizeof(userdef_unit)-1); // unit
-	}
-	int16_t assigned_unitid = -1;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("unitid"), true))
-		assigned_unitid = strtol(tmp_buffer, NULL, 0); // divider
-
-	int16_t offset_mv = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("offset"), true))
-		offset_mv = strtol(tmp_buffer, NULL, 0); // offset in millivolt
-
-	int16_t offset2 = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("offset2"), true))
-		offset2 = strtol(tmp_buffer, NULL, 0); // offset2
-
-	uint enable = 1;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("enable"), true))
-		enable = strtoul(tmp_buffer, NULL, 0); // 1=enable/0=disable
-
-	uint log = 1;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("log"), true))
-		log = strtoul(tmp_buffer, NULL, 0); // 1=logging enabled/0=logging disabled
-
-	uint show = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("show"), true))
-		show = strtoul(tmp_buffer, NULL, 0); // 1=show enabled/0=show disabled
-	
-	//mqtt and other:
-	char* url = NULL;
-	uint8_t url_found = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("url"), true, &url_found))
-		url = strdup(urlDecodeAndUnescape(tmp_buffer));
-	char* topic = NULL;
-	uint8_t topic_found = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("topic"), true, &topic_found)) {
-		DEBUG_PRINTLN(tmp_buffer)
-		urlDecodeAndUnescape(tmp_buffer);
-		DEBUG_PRINTLN(tmp_buffer)
-		topic = strdup(tmp_buffer);
-	}
-	char* filter = NULL;
-	uint8_t filter_found = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("filter"), true, &filter_found))
-		filter = strdup(urlDecodeAndUnescape(tmp_buffer));
-
-	uint16_t rs485_flags = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485flags"), true))
-		rs485_flags = strtol(tmp_buffer, NULL, 0); // RS485 flags
-	uint8_t rs485_code = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485code"), true))
-		rs485_code = strtol(tmp_buffer, NULL, 0); // RS485 code
-	uint16_t rs485_reg = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs485reg"), true))
-		rs485_reg = strtol(tmp_buffer, NULL, 0); // RS485 register	
-
-	DEBUG_PRINTLN(F("server_sensor_config4"));
-
 	// Build JSON configuration
 	JsonDocument doc;
 	JsonObject config = doc.to<JsonObject>();
 	
-	config["nr"] = nr;
-	config["name"] = name;
-	config["type"] = type;
-	config["group"] = group;
-	config["ip"] = ip;
-	config["port"] = port;
-	config["id"] = id;
-	config["ri"] = ri;
-	config["fac"] = factor;
-	config["div"] = divider;
-	config["unit"] = userdef_unit;
-	config["offset"] = offset_mv;
-	config["offset2"] = offset2;
-	config["unitid"] = assigned_unitid;
-	config["enable"] = enable;
-	config["log"] = log;
-	config["show"] = show;
-	
-	// RS485 flags
-	config["rs485flags"] = rs485_flags;
-	config["rs485code"] = rs485_code;
-	config["rs485reg"] = rs485_reg;
-	
-	// MQTT/URL fields
-	if (url_found && url) {
-		config["url"] = url;
+	const OTF::LinkedMapNode<char *> * qp = FKV_SOURCE.getQueryParameters();
+	while (qp) {
+		const char* key = qp->key;
+		const char* value = qp->value;
+		if (key && value) {
+			char decoded_value[TMP_BUFFER_SIZE];
+			strncpy(decoded_value, value, TMP_BUFFER_SIZE-1);
+			urlDecodeAndUnescape(decoded_value);
+			config[key] = decoded_value;
+		}
+		qp = qp->next;
 	}
-	if (topic_found && topic) {
-		config["topic"] = topic;
-	}
-	if (filter_found && filter) {
-		config["filter"] = filter;
-	}
-	
 	// Call sensor_define with JSON
 	int ret = sensor_define(config, true);  // save=true
-	
-	if (url) free(url);
-	if (topic) free(topic);
-	if (filter) free(filter);
 	
 	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
@@ -4733,7 +4648,8 @@ void on_firmware_upload_fin() {
 	// finish update and check error
 	if(!Update.end(true) || Update.hasError()) {
 		update_server_send_result(HTML_UPLOAD_FAILED);
-		//handle_return(HTML_UPLOAD_FAILED);
+		delay(250); // allow UI to receive the error code
+		return;
 	}
 
 	update_server_send_result(HTML_SUCCESS);
@@ -4817,8 +4733,6 @@ void start_server_client() {
 void start_server_ap() {
 	// Bring up WiFi first. Starting OTF/HTTPS (TLS parsing) before esp_wifi_init()
 	// can fail with ESP_ERR_NO_MEM on ESP32-C5 Matter coexistence builds.
-	scanned_ssids = scan_network();
-
 	String ap_ssid = get_ap_ssid();
 
 	start_network_ap(ap_ssid.c_str(), NULL);

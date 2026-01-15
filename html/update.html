@@ -340,13 +340,15 @@
             if (xhr.readyState === 4 && xhr.status === 200) {
                 try {
                     const jd = JSON.parse(xhr.responseText);
-                    if (jd.result === 1) {
+                    const result = Number(jd.result);
+                    // Historically some builds return 0 (OK) while others return 1 (SUCCESS).
+                    if (result === 1 || result === 0) {
                         show_msg('Update successful! The device is rebooting. You may close this page.', 'green');
                         id('pw').value = ''; // Clear password on success
-                    } else if (jd.result === 2) {
+                    } else if (result === 2) {
                         show_msg('Authentication failed. Check device password and try again.', 'red');
                     } else {
-                        show_msg('Update failed. An unknown error occurred.', 'red');
+                        show_msg('Update failed. Error code: ' + (Number.isFinite(result) ? result : String(jd.result)), 'red');
                     }
                 } catch (e) {
                     show_msg('Update failed. Received an invalid response from the device.', 'red');

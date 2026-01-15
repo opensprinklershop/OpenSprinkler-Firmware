@@ -42,6 +42,15 @@ static BLEScan* pBLEScan = nullptr;
 static uint32_t scan_end_time = 0;
 static bool scanning_active = false;
 
+// Reuse a single client instance; do not delete clients manually.
+// Deinit is deferred to the BLE maintenance loop to avoid heap corruption.
+static BLEClient* ble_client = nullptr;
+static bool ble_in_read = false;
+static bool ble_stop_requested = false;
+static uint32_t ble_stop_request_time = 0;
+
+static const uint32_t BLE_CONNECT_TIMEOUT_MS = 400; // keep BLE reads short
+
 // Auto-stop timer for discovery mode (to free WiFi RF resources)
 static unsigned long ble_auto_stop_time = 0;
 static bool ble_discovery_mode = false;
@@ -119,16 +128,62 @@ static void ble_parse_uuid_and_format_legacy(const char* unit_str, char* out_uui
     out_uuid[out_uuid_len - 1] = 0;
 }
 
+static bool ble_is_mac_string(const char* s) {
+    if (!s) return false;
+    // Expected form: "AA:BB:CC:DD:EE:FF" (17 chars)
+    if (strlen(s) != 17) return false;
+    for (int i = 0; i < 17; i++) {
+        if ((i % 3) == 2) {
+            if (s[i] != ':') return false;
+        } else {
+            if (!isxdigit((unsigned char)s[i])) return false;
+        }
+    }
+    return true;
+}
+
+static void ble_copy_stripped(char* dst, size_t dst_len, const char* src) {
+    if (!dst || dst_len == 0) return;
+    dst[0] = 0;
+    if (!src) return;
+
+    size_t di = 0;
+    for (size_t si = 0; src[si] != 0 && di < dst_len - 1; si++) {
+        char c = src[si];
+        // Stop at legacy "UUID|fmt" delimiter
+        if (c == '|') break;
+        // Strip whitespace/control characters
+        if (c == '\r' || c == '\n' || c == '\t' || isspace((unsigned char)c)) continue;
+        dst[di++] = c;
+    }
+    dst[di] = 0;
+}
+
 void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     SensorBase::fromJson(obj);
+
+    // Parse MAC address (preferred: "mac" field)
+    if (obj.containsKey("mac")) {
+        const char* m = obj["mac"].as<const char*>();
+        if (m) {
+            ble_copy_stripped(mac_address_cfg, sizeof(mac_address_cfg), m);
+        }
+    } else if (ble_is_mac_string(name)) {
+        // Backward-compat: legacy configs used name as MAC. Copy into dedicated field.
+        ble_copy_stripped(mac_address_cfg, sizeof(mac_address_cfg), name);
+    }
 
     // Optional explicit BLE config (preferred)
     if (obj.containsKey("char_uuid")) {
         const char* u = obj["char_uuid"].as<const char*>();
-        if (u) strncpy(characteristic_uuid_cfg, u, sizeof(characteristic_uuid_cfg) - 1);
+        if (u) {
+            ble_copy_stripped(characteristic_uuid_cfg, sizeof(characteristic_uuid_cfg), u);
+        }
     } else if (obj.containsKey("uuid")) {
         const char* u = obj["uuid"].as<const char*>();
-        if (u) strncpy(characteristic_uuid_cfg, u, sizeof(characteristic_uuid_cfg) - 1);
+        if (u) {
+            ble_copy_stripped(characteristic_uuid_cfg, sizeof(characteristic_uuid_cfg), u);
+        }
     }
 
     if (obj.containsKey("format")) {
@@ -143,6 +198,11 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
         uint8_t fmt = (uint8_t)FORMAT_TEMP_001;
         ble_parse_uuid_and_format_legacy(userdef_unit, characteristic_uuid_cfg, sizeof(characteristic_uuid_cfg), &fmt);
         payload_format_cfg = fmt;
+        // Ensure legacy parsing didn't leave whitespace/control chars
+        char cleaned[sizeof(characteristic_uuid_cfg)] = {0};
+        ble_copy_stripped(cleaned, sizeof(cleaned), characteristic_uuid_cfg);
+        strncpy(characteristic_uuid_cfg, cleaned, sizeof(characteristic_uuid_cfg) - 1);
+        characteristic_uuid_cfg[sizeof(characteristic_uuid_cfg) - 1] = 0;
     }
 }
 
@@ -151,6 +211,7 @@ void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
     if (!obj) return;
 
     // BLE-specific fields
+    if (mac_address_cfg[0]) obj["mac"] = mac_address_cfg;
     if (characteristic_uuid_cfg[0]) obj["char_uuid"] = characteristic_uuid_cfg;
     if (payload_format_cfg != (uint8_t)FORMAT_TEMP_001) obj["format"] = payload_format_cfg;
 }
@@ -366,6 +427,38 @@ void sensor_ble_init() {
     ble_initialized = true;
 }
 
+static BLEClient* ble_get_client() {
+    if (!ble_initialized) return nullptr;
+    if (!ble_client) {
+        ble_client = BLEDevice::createClient();
+    }
+    return ble_client;
+}
+
+static void sensor_ble_stop_now() {
+    if (!ble_initialized) {
+        return;
+    }
+
+    // Stop scanning if active
+    if (scanning_active && pBLEScan && pBLEScan->isScanning()) {
+        pBLEScan->stop();
+        scanning_active = false;
+    }
+
+    // Disconnect client if present (never delete it manually)
+    if (ble_client) {
+        ble_client->disconnect();
+        ble_client = nullptr;
+    }
+
+    BLEDevice::deinit(false);
+    ble_initialized = false;
+    pBLEScan = nullptr;
+
+    DEBUG_PRINTLN("BLE stopped - RF resources freed for WiFi");
+}
+
 /**
  * @brief Stop BLE subsystem (frees RF resources)
  */
@@ -373,21 +466,13 @@ void sensor_ble_stop() {
     if (!ble_initialized) {
         return;
     }
-    DEBUG_PRINTLN("Stopping BLE to free RF resources...");
-    
-    // Stop scanning if active
-    if (scanning_active && pBLEScan && pBLEScan->isScanning()) {
-        pBLEScan->stop();
-        scanning_active = false;
+    // Avoid deinit/free from within BLE callbacks or immediately after connect failures.
+    // Defer stop to the maintenance loop.
+    if (!ble_stop_requested) {
+        DEBUG_PRINTLN("Stopping BLE to free RF resources...");
     }
-    
-    // Deinitialize BLE
-    BLEDevice::deinit(false);
-    
-    ble_initialized = false;
-    pBLEScan = nullptr;
-
-    DEBUG_PRINTLN("BLE stopped - RF resources freed for WiFi");
+    ble_stop_requested = true;
+    ble_stop_request_time = millis();
 }
 
 /**
@@ -444,6 +529,18 @@ void sensor_ble_loop() {
     }
     
     uint32_t now = millis();
+
+    // Deferred stop (avoids heap corruption when deinit happens during/after BLE stack activity)
+    if (ble_stop_requested && !ble_in_read) {
+        if ((uint32_t)(now - ble_stop_request_time) >= 200) {
+            ble_stop_requested = false;
+            sensor_ble_stop_now();
+            ble_discovery_mode = false;
+            ble_auto_stop_time = 0;
+            scanning_active = false;
+            return;
+        }
+    }
     
     // Check if discovery mode auto-stop timer expired
     if (ble_discovery_mode && ble_auto_stop_time > 0) {
@@ -517,10 +614,34 @@ int BLESensor::read(unsigned long time) {
     // Exception: Ethernet mode (no WiFi RF usage)
     if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
         flags.data_ok = false;
+        last_read = time;
         return HTTP_RQT_NOT_RECEIVED;
     }
     
     if (repeat_read == 0) {
+        ble_in_read = true;
+
+        auto fail = [&](BLEClient* client, bool stop_ble) -> int {
+            flags.data_ok = false;
+            last_read = time;
+            if (client) client->disconnect();
+            if (stop_ble) sensor_ble_stop();
+            ble_in_read = false;
+            return HTTP_RQT_NOT_RECEIVED;
+        };
+
+        auto fail_no_cleanup = [&]() -> int {
+            flags.data_ok = false;
+            last_read = time;
+            return HTTP_RQT_NOT_RECEIVED;
+        };
+
+        auto cleanup = [&](BLEClient* client) {
+            if (client) client->disconnect();
+            sensor_ble_stop();
+            ble_in_read = false;
+        };
+
         // First call: Turn on BLE and read data
         DEBUG_PRINT("BLE sensor read (turn on): ");
         DEBUG_PRINTLN(name);
@@ -529,117 +650,120 @@ int BLESensor::read(unsigned long time) {
         if (!ble_initialized) {
             sensor_ble_init();
             if (!ble_initialized) {
-                flags.data_ok = false;
-                return HTTP_RQT_NOT_RECEIVED;
+                return fail(nullptr, false);
             }
         }
     
-    // Parse sensor configuration from JSON
-    // Expected format in name: MAC address (e.g., "AA:BB:CC:DD:EE:FF")
-    // Expected format in userdef_unit: Characteristic UUID (optionally with format: "UUID|format_id")
-    //   Example: "00002a1c-0000-1000-8000-00805f9b34fb" or "00002a1c-0000-1000-8000-00805f9b34fb|10"
-    
-    const char* mac_address = name; // Use name field for MAC
-    char characteristic_uuid[128] = {0};
-    PayloadFormat format = (PayloadFormat)payload_format_cfg;
-
-    // Preferred: explicit BLE config fields
-    if (characteristic_uuid_cfg[0]) {
-        strncpy(characteristic_uuid, characteristic_uuid_cfg, sizeof(characteristic_uuid) - 1);
-    } else if (userdef_unit && strlen(userdef_unit) > 0) {
-        // Backward-compat: parse legacy userdef_unit field: "UUID" or "UUID|format"
-        uint8_t fmt = (uint8_t)FORMAT_TEMP_001;
-        ble_parse_uuid_and_format_legacy(userdef_unit, characteristic_uuid, sizeof(characteristic_uuid), &fmt);
-        format = (PayloadFormat)fmt;
-    }
-    
-    if (!mac_address || strlen(mac_address) == 0) {
-        DEBUG_PRINTLN(F("ERROR: BLE MAC address not configured in name field"));
-        return HTTP_RQT_NOT_RECEIVED;
-    }
-    
-    if (strlen(characteristic_uuid) == 0) {
-        DEBUG_PRINTLN(F("ERROR: BLE characteristic UUID not configured (char_uuid/uuid or legacy unit)"));
-        return HTTP_RQT_NOT_RECEIVED;
-    }
-    
-    DEBUG_PRINT("Reading BLE sensor: ");
-    DEBUG_PRINT(mac_address);
-    DEBUG_PRINT(" characteristic: ");
-    DEBUG_PRINT(characteristic_uuid);
-    DEBUG_PRINT(" (");
-    DEBUG_PRINT(ble_uuid_to_name(characteristic_uuid));
-    DEBUG_PRINTLN(")");
-    
-    // Parse MAC address
-    BLEAddress bleAddress(mac_address);
-    
-    // Connect to BLE device
-    BLEClient* pClient = BLEDevice::createClient();
-    if (!pClient->connect(bleAddress)) {
-        DEBUG_PRINTLN(F("Failed to connect to BLE device"));
-        delete pClient;
-        return HTTP_RQT_NOT_RECEIVED;
-    }
-    
-    DEBUG_PRINTLN(F("Connected to BLE device"));
-    
-    // Get remote service (use generic service if not specified)
-    BLERemoteService* pRemoteService = pClient->getService(BLEUUID((uint16_t)0x181A)); // Environmental Sensing
-    if (pRemoteService == nullptr) {
-        DEBUG_PRINTLN(F("Failed to find service, trying primary service..."));
-        std::map<std::string, BLERemoteService*>* services = pClient->getServices();
-        if (services->size() > 0) {
-            pRemoteService = services->begin()->second;
+        // Parse sensor configuration from JSON
+        // Expected format in mac_address_cfg: MAC address (e.g., "AA:BB:CC:DD:EE:FF")
+        // Expected format in userdef_unit: Characteristic UUID (optionally with format: "UUID|format_id")
+        //   Example: "00002a1c-0000-1000-8000-00805f9b34fb" or "00002a1c-0000-1000-8000-00805f9b34fb|10"
+        
+        const char* mac_address = mac_address_cfg;
+        if ((!mac_address || mac_address[0] == 0) && ble_is_mac_string(name)) {
+            // Legacy fallback only if name is actually a MAC
+            mac_address = name;
         }
-    }
-    
-    if (pRemoteService == nullptr) {
-        DEBUG_PRINTLN(F("Failed to find any service"));
-        pClient->disconnect();
-        delete pClient;
-        return HTTP_RQT_NOT_RECEIVED;
-    }
-    
-    // Get characteristic
-    BLERemoteCharacteristic* pRemoteCharacteristic = pRemoteService->getCharacteristic(BLEUUID(characteristic_uuid));
-    if (pRemoteCharacteristic == nullptr) {
-        DEBUG_PRINTLN(F("Failed to find characteristic"));
-        pClient->disconnect();
-        delete pClient;
-        return HTTP_RQT_NOT_RECEIVED;
-    }
-    
-    // Read value
-    if (!pRemoteCharacteristic->canRead()) {
-        DEBUG_PRINTLN("Characteristic is not readable");
-        pClient->disconnect();
-        delete pClient;
-        return HTTP_RQT_NOT_RECEIVED;
-    }
-    
-    String value_str = pRemoteCharacteristic->readValue().c_str();
-    
-    DEBUG_PRINT("Read ");
-    DEBUG_PRINT(value_str.length());
-    DEBUG_PRINTLN(" bytes from BLE characteristic");
-    
-    // Disconnect
-    pClient->disconnect();
-    delete pClient;
-    
-    if (value_str.length() == 0) {
-        DEBUG_PRINTLN(F("No data received from BLE device"));
-        return HTTP_RQT_NOT_RECEIVED;
-    }
-    
-    // Parse payload using decoder
-    double parsed_value = 0.0;
-    
-    if (!decode_payload((const uint8_t*)value_str.c_str(), value_str.length(), format, &parsed_value)) {
-        DEBUG_PRINTLN(F("Failed to decode BLE payload"));
-        return HTTP_RQT_NOT_RECEIVED;
-    }
+        
+        char characteristic_uuid[128] = {0};
+        PayloadFormat format = (PayloadFormat)payload_format_cfg;
+
+        // Preferred: explicit BLE config fields
+        if (characteristic_uuid_cfg[0]) {
+            ble_copy_stripped(characteristic_uuid, sizeof(characteristic_uuid), characteristic_uuid_cfg);
+        } else if (userdef_unit && strlen(userdef_unit) > 0) {
+            // Backward-compat: parse legacy userdef_unit field: "UUID" or "UUID|format"
+            uint8_t fmt = (uint8_t)FORMAT_TEMP_001;
+            ble_parse_uuid_and_format_legacy(userdef_unit, characteristic_uuid, sizeof(characteristic_uuid), &fmt);
+            format = (PayloadFormat)fmt;
+        }
+        
+        if (!mac_address || mac_address[0] == 0 || !ble_is_mac_string(mac_address)) {
+            DEBUG_PRINTLN(F("ERROR: BLE MAC address not configured/invalid (mac field)"));
+            flags.enable = false;
+            return fail(nullptr, true);
+        }
+        
+        if (strlen(characteristic_uuid) == 0) {
+            DEBUG_PRINTLN(F("ERROR: BLE characteristic UUID not configured (char_uuid/uuid or legacy unit)"));
+            flags.enable = false;
+            return fail(nullptr, true);
+        }
+        
+        DEBUG_PRINT("Reading BLE sensor: ");
+        DEBUG_PRINT(mac_address);
+        DEBUG_PRINT(" characteristic: ");
+        DEBUG_PRINT(characteristic_uuid);
+        DEBUG_PRINT(" (");
+        DEBUG_PRINT(ble_uuid_to_name(characteristic_uuid));
+        DEBUG_PRINTLN(")");
+        
+        // Parse MAC address
+        BLEAddress bleAddress(mac_address);
+        
+        // Connect to BLE device (short timeout; client is reused, not deleted)
+        BLEClient* pClient = ble_get_client();
+        if (!pClient) {
+            return fail(nullptr, false);
+        }
+        if (!pClient->connect(bleAddress, 0, BLE_CONNECT_TIMEOUT_MS)) {
+            DEBUG_PRINTLN(F("Failed to connect to BLE device"));
+            return fail(nullptr, true);
+        }
+        
+        DEBUG_PRINTLN(F("Connected to BLE device"));
+        
+        // Get remote service (use generic service if not specified)
+        BLERemoteService* pRemoteService = pClient->getService(BLEUUID((uint16_t)0x181A)); // Environmental Sensing
+        if (pRemoteService == nullptr) {
+            DEBUG_PRINTLN(F("Failed to find service, trying primary service..."));
+            std::map<std::string, BLERemoteService*>* services = pClient->getServices();
+            if (services->size() > 0) {
+                pRemoteService = services->begin()->second;
+            }
+        }
+        
+        if (pRemoteService == nullptr) {
+            DEBUG_PRINTLN(F("Failed to find any service"));
+            return fail(pClient, true);
+        }
+        
+        // Get characteristic (sanitize UUID to avoid BLEUUID length errors)
+        char characteristic_uuid_clean[128] = {0};
+        ble_copy_stripped(characteristic_uuid_clean, sizeof(characteristic_uuid_clean), characteristic_uuid);
+        BLERemoteCharacteristic* pRemoteCharacteristic = pRemoteService->getCharacteristic(BLEUUID(characteristic_uuid_clean));
+        if (pRemoteCharacteristic == nullptr) {
+            DEBUG_PRINTLN(F("Failed to find characteristic"));
+            return fail(pClient, true);
+        }
+        
+        // Read value
+        if (!pRemoteCharacteristic->canRead()) {
+            DEBUG_PRINTLN("Characteristic is not readable");
+            return fail(pClient, true);
+        }
+        
+        String value_str = pRemoteCharacteristic->readValue().c_str();
+        
+        DEBUG_PRINT("Read ");
+        DEBUG_PRINT(value_str.length());
+        DEBUG_PRINTLN(" bytes from BLE characteristic");
+        
+        // Disconnect
+        cleanup(pClient);
+        
+        if (value_str.length() == 0) {
+            DEBUG_PRINTLN(F("No data received from BLE device"));
+            return fail_no_cleanup();
+        }
+        
+        // Parse payload using decoder
+        double parsed_value = 0.0;
+        
+        if (!decode_payload((const uint8_t*)value_str.c_str(), value_str.length(), format, &parsed_value)) {
+            DEBUG_PRINTLN(F("Failed to decode BLE payload"));
+            return fail_no_cleanup();
+        }
     
         // Store value
         flags.data_ok = 1;
@@ -664,12 +788,7 @@ int BLESensor::read(unsigned long time) {
         DEBUG_PRINTLN(name);
         
         repeat_read = 0; // Reset for next cycle
-        
-        // Turn off BLE to free RF resources for WiFi
-        sensor_ble_stop();
-        
         last_read = time;
-        
         if (flags.data_ok) {
             return HTTP_RQT_SUCCESS; // Adds data to log
         } else {

@@ -183,6 +183,7 @@
 function id(s) {return document.getElementById(s);}
 function sel(i) {id('ssid').value=ssids[i][0];id('bssid').value=ssids[i][1];id('channel').value=ssids[i][3];}
 var tci, ssids;
+var scanTries = 0;
 function tryConnect() {
   var xhr=new XMLHttpRequest();
   xhr.onreadystatechange=function() {
@@ -231,15 +232,27 @@ function loadSSIDs() {
   xhr.onreadystatechange=function() {
     if(xhr.readyState==4 && xhr.status==200) {
       var jd=JSON.parse(xhr.responseText), i;
-      if(typeof jd.scanned !== 'object') return;
-      ssids = jd.scanned;
-      ssids.sort((a,b) => {return b[2]-a[2];}); // sort by signal strength
-      var tableBody = document.querySelector("#rd tbody");
-      tableBody.innerHTML = ''; // Clear the '(Scanning...)' message
-      if (!ssids || ssids.length === 0) {
-          tableBody.innerHTML = "<tr><td colspan='4'>No networks found.</td></tr>";
-          return;
-      }
+            if(!Array.isArray(jd.scanned)) {
+                // Keep the initial (Scanning...) row and retry.
+                scanTries++;
+                if(scanTries < 20) { setTimeout(loadSSIDs, 1000); }
+                return;
+            }
+            ssids = jd.scanned;
+            if (!ssids || ssids.length === 0) {
+                // Scan may still be running (async). Keep scanning UI and retry for ~20s.
+                scanTries++;
+                if(scanTries < 20) { setTimeout(loadSSIDs, 1000); }
+                else {
+                    var tableBody0 = document.querySelector("#rd tbody");
+                    tableBody0.innerHTML = "<tr><td colspan='4'>No networks found.</td></tr>";
+                }
+                return;
+            }
+            scanTries = 0;
+            ssids.sort((a,b) => {return b[2]-a[2];}); // sort by signal strength
+            var tableBody = document.querySelector("#rd tbody");
+            tableBody.innerHTML = ''; // Clear the '(Scanning...)' message
       for(i=0;i<ssids.length;i++) {
         var strength= ssids[i][2]>-71?'Ok':(ssids[i][2]>-81?'Weak':'Poor');
         var row=tableBody.insertRow(-1);
