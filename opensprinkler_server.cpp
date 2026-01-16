@@ -1347,17 +1347,28 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #else
 	os.load_hardware_mac(mac, true);
 #endif
-	char mqtt_opt[MAX_SOPTS_SIZE];
-	os.sopt_load(SOPT_MQTT_OPTS, mqtt_opt);
-	//DEBUG_PRINTLN(mqtt_opt);
-
-	//Test for invalid mqtt options:
-	int l = strlen(mqtt_opt);
-	if (l > 0 && mqtt_opt[l-1] != '"') { //first+last char
-		mqtt_opt[l] = '"';
-		mqtt_opt[l+1] = 0;
+	String mqtt_opt = os.sopt_load(SOPT_MQTT_OPTS);
+	// mqtt_opt is expected to be a JSON object fragment (without outer braces).
+	// Be defensive here: if older/invalid configs stored a plain token, emit valid JSON anyway.
+	mqtt_opt.trim();
+	if (mqtt_opt.length() > 0) {
+		// Accept both "a":1 and {"a":1} storage formats.
+		if (mqtt_opt[0] == '{' && mqtt_opt.endsWith("}")) {
+			mqtt_opt = mqtt_opt.substring(1, mqtt_opt.length() - 1);
+			mqtt_opt.trim();
+		}
+		// Strip trailing commas to keep JSON valid.
+		while (mqtt_opt.length() > 0 && mqtt_opt[mqtt_opt.length() - 1] == ',') {
+			mqtt_opt.remove(mqtt_opt.length() - 1);
+			mqtt_opt.trim();
+		}
+		// If it doesn't look like key:value pairs, wrap it as a raw string.
+		if (mqtt_opt.indexOf(':') < 0) {
+			mqtt_opt.toCharArray(tmp_buffer, TMP_BUFFER_SIZE);
+			strReplaceQuoteBackslash(tmp_buffer);
+			mqtt_opt = String("\"raw\":\"") + tmp_buffer + "\"";
+		}
 	}
-	//DEBUG_PRINTLN(mqtt_opt);
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
@@ -1367,7 +1378,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 							 SOPT_WEATHERURL,
 							 SOPT_WEATHER_OPTS,
 							 SOPT_IFTTT_KEY,
-							 mqtt_opt,
+							 mqtt_opt.c_str(),
 							 strlen(wt_rawData)==0?"{}":wt_rawData,
 							 wt_errCode,
 							 wt_restricted,
@@ -4420,7 +4431,7 @@ void start_server_client() {
 	if(!callback_initialized) {
 		otf->on("/", server_home);  // handle home page
 		otf->on("/index.html", server_home);
-		otf->on("/update", on_firmware_update, OTF::HTTP_GET); // handle firmware update
+		otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET); // handle firmware update
 		update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
 		update_server->on("/update", HTTP_OPTIONS, on_update_options);
 
@@ -4449,7 +4460,7 @@ void start_server_ap() {
 	otf->on("/jsap", on_ap_scan);
 	otf->on("/ccap", on_ap_change_config);
 	otf->on("/jtap", on_ap_try_connect);
-	otf->on("/update", on_firmware_update, OTF::HTTP_GET);
+	otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET);
 	update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
 	update_server->on("/update", HTTP_OPTIONS, on_update_options);
 	otf->onMissingPage(on_ap_home);
