@@ -1329,10 +1329,12 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
       break;
 
     // Generic RS485 sensor (prefer I2C RS485 if available)
-    case SENSOR_RS485:
-      if (get_asb_detected_boards() & ASB_I2C_RS485)
+    case SENSOR_MODBUS_RTU:
+      if (!ip_based && (get_asb_detected_boards() & ASB_I2C_RS485))
         return new RS485I2CSensor(type);
-      return nullptr; // fallback to existing C implementation
+      return new ModbusRtuSensor(type); // fallback to existing C implementation
+      break;
+
 
 #if defined(ADS1115) || defined(PCF8591)
     // OSPI analog sensors

@@ -108,7 +108,7 @@ extern "C" {
 #define SENSOR_SMT100_PMTY              3   // Truebner SMT100 RS485, permittivity mode
 #define SENSOR_TH100_MOIS               4   // Truebner TH100 RS485,  humidity mode
 #define SENSOR_TH100_TEMP               5   // Truebner TH100 RS485,  temperature mode
-#define SENSOR_RS485                    9  // RS485 generic sensor
+#define SENSOR_MODBUS_RTU               9   // Generic Modbus RTU sensor
 
 #define ASB_SENSORS_START               10  // starting id for ASB sensors
 #define ASB_SENSORS_END                 49  // ending id for ASB sensors

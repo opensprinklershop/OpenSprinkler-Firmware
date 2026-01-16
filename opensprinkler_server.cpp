@@ -1431,18 +1431,32 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	os.load_hardware_mac(mac, true);
 #endif
 	String mqtt_opt = os.sopt_load(SOPT_MQTT_OPTS);
-	//DEBUG_PRINTLN(mqtt_opt);
-	//Test for invalid mqtt options:
-	int l = mqtt_opt.length();
-	if (l > 0 && mqtt_opt[l-1] != '"') { //first+last char
-		mqtt_opt += '"';
-	} 
-	//DEBUG_PRINTLN(mqtt_opt);
+	// mqtt_opt is expected to be a JSON object fragment (without outer braces).
+	// Be defensive here: if older/invalid configs stored a plain token, emit valid JSON anyway.
+	mqtt_opt.trim();
+	if (mqtt_opt.length() > 0) {
+		// Accept both "a":1 and {"a":1} storage formats.
+		if (mqtt_opt[0] == '{' && mqtt_opt.endsWith("}")) {
+			mqtt_opt = mqtt_opt.substring(1, mqtt_opt.length() - 1);
+			mqtt_opt.trim();
+		}
+		// Strip trailing commas to keep JSON valid.
+		while (mqtt_opt.length() > 0 && mqtt_opt[mqtt_opt.length() - 1] == ',') {
+			mqtt_opt.remove(mqtt_opt.length() - 1);
+			mqtt_opt.trim();
+		}
+		// If it doesn't look like key:value pairs, wrap it as a raw string.
+		if (mqtt_opt.indexOf(':') < 0) {
+			mqtt_opt.toCharArray(tmp_buffer, TMP_BUFFER_SIZE);
+			strReplaceQuoteBackslash(tmp_buffer);
+			mqtt_opt = String("\"raw\":\"") + tmp_buffer + "\"";
+		}
+	}
 
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$O},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
+	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
 							 SOPT_LOCATION,
 							 SOPT_JAVASCRIPTURL,
 							 SOPT_WEATHERURL,
@@ -3719,7 +3733,7 @@ static const int sensor_types[] = {
 	SENSOR_SMT100_PMTY,
 	SENSOR_TH100_MOIS,
 	SENSOR_TH100_TEMP,
-	SENSOR_RS485,
+	SENSOR_MODBUS_RTU,
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)	
 	SENSOR_ZIGBEE,
 #endif
@@ -3779,7 +3793,7 @@ static const char* sensor_names[] = {
 	"Truebner SMT100 RS485 Modbus, permittivity mode",
 	"Truebner TH100 RS485 Modbus, humidity mode",
 	"Truebner TH100 RS485 Modbus, temperature mode",
-	"RS485 generic sensor",
+	"RS485/MODBUS RTU generic sensor",
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)	
 	"Zigbee sensor",
 #endif
