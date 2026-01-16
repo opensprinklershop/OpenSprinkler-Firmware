@@ -53,7 +53,7 @@ void OSInfluxDB::set_influx_config(int enabled, char *url, uint16_t port, char *
 }
 
 void OSInfluxDB::set_influx_config(ArduinoJson::JsonDocument &doc) {
-    size_t size = ArduinoJson::serializeJson(doc, tmp_buffer);
+    size_t size = ArduinoJson::serializeJson(doc, (char*)tmp_buffer, TMP_BUFFER_SIZE_L);
     remove_file(INFLUX_CONFIG_FILE);
     file_write_block(INFLUX_CONFIG_FILE, tmp_buffer, 0, size);
     #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
