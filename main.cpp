@@ -519,15 +519,11 @@ void do_setup() {
 #if defined(ESP32)
 	init_external_flash(); // initialize external flash
 #endif
-	DEBUG_PRINTLN(F("begin"));
 	os.begin();          // OpenSprinkler init
-	DEBUG_PRINTLN(F("options_setup"));
 	os.options_setup();  // Setup options
 #if defined(ESP8266)
-	DEBUG_PRINTLN(F("pd_voltage"));
 	os.setup_pd_voltage();
 #endif
-	DEBUG_PRINTLN(F("init"));
 	pd.init();           // ProgramData init
 
 	// set time using RTC if it exists
@@ -574,6 +570,7 @@ void do_setup() {
 	matter_init();
 	DEBUG_PRINTLN("Matter integration initialized");
 #endif
+	DEBUG_PRINTLN(F("Setup complete."));
 }	
 
 
@@ -699,6 +696,8 @@ void overcurrent_monitor() {
 // Gratuitous ARP task for ESP8266 lwIP
 #if defined(ESP8266)
 void gratuitousARPTask() {
+		if (!useEth && os.get_wifi_mode()!=WIFI_MODE_STA) return;
+		DEBUG_PRINTLN(F("gratuiousARPTask"));
         netif *n = netif_list;
         while (n) {
                 etharp_gratuitous(n);
@@ -710,7 +709,7 @@ void gratuitousARPTask() {
 /** Main Loop */
 void do_loop()
 {
-	#if defined(ARDUINO) && (defined(ESP8266) || defined(ESP32))
+	#if defined(ARDUINOOTA)
 	handle_arduino_ota();
 	#endif
 
@@ -860,11 +859,9 @@ void do_loop()
 	if(os.state != state_before) {
 		debug_os_state_transition("do_loop/net", state_before, os.state);
 	}
-
 	#ifdef ESP8266
 	static unsigned long arp_check = 0;
 	if (curr_time && (curr_time > arp_check)) {
-		DEBUG_PRINTLN(F("gratuiousARPTask"));
 		gratuitousARPTask(); // send gratuitous ARP every 5 seconds
 		arp_check = curr_time + ARP_REQUEST_INTERVAL;
 	}

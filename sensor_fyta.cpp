@@ -10,10 +10,11 @@ static bool fyta_init = false;
 #endif
 
 void fyta_check_opts() {
-    file_read_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+    ulong n = file_read_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+    if (n == 0) tmp_buffer[0] = 0;
     if (tmp_buffer[0] != '{') {
-      strcpy(tmp_buffer, "{\"token\":\"\"}");
-      file_write_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+        strcpy(tmp_buffer, "{\"token\":\"\"}");
+        file_write_block(SOPTS_FILENAME, tmp_buffer, SOPT_FYTA_OPTS*MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
     }
 }
 

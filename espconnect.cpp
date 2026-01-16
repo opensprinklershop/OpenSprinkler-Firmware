@@ -46,53 +46,27 @@ String scan_network() {
 		WiFi.mode(WIFI_MODE_STA);
 	}
 	#endif
-
+	WiFi.disconnect();
+	unsigned char n = WiFi.scanNetworks();
 	String json;
-
-	#if defined(ESP32)
-		// Original synchronous scan implementation.
-		int n = WiFi.scanNetworks();
-		if (n < 0) n = 0;
-		if (n > 40) n = 40;
-		json = "{\"ssids\":[";
-		for (int i = 0; i < n; i++) {
-			json += "\"";
-			json += WiFi.SSID(i);
-			json += "\"";
-			if (i < n - 1) json += ",";
-		}
-		json += "],";
-		json += "\"scanned\":[";
-		for (int i = 0; i < n; i++) {
-			json += "[\"" + WiFi.SSID(i) + "\",";
-			json += "\"" + WiFi.BSSIDstr(i) + "\",";
-			json += String(WiFi.RSSI(i)) + ",";
-			json += String(WiFi.channel(i)) + "]";
-			if (i < n - 1) json += ",";
-		}
-		json += "]}";
-	#else
-		// ESP8266 uses the classic synchronous scan.
-		unsigned char n = WiFi.scanNetworks();
-		if (n > 40) n = 40;
-		json = "{\"ssids\":[";
-		for(int i=0;i<n;i++) {
-			json += "\"";
-			json += WiFi.SSID(i);
-			json += "\"";
-			if(i<n-1) json += ",";
-		}
-		json += "],";
-		json += "\"scanned\":[";
-		for(int i=0;i<n;i++) {
-			json += "[\"" + WiFi.SSID(i) + "\",";
-			json += "\"" + WiFi.BSSIDstr(i) + "\",";
-			json += String(WiFi.RSSI(i))+",",
-			json += String(WiFi.channel(i))+"]";
-			if(i<n-1) json += ",";
-		}
-		json += "]}";
-	#endif
+	if (n > 40) n = 40;
+	json = "{\"ssids\":[";
+	for(int i=0;i<n;i++) {
+		json += "\"";
+		json += WiFi.SSID(i);
+		json += "\"";
+		if(i<n-1) json += ",";
+	}
+	json += "],";
+	json += "\"scanned\":[";
+	for(int i=0;i<n;i++) {
+		json += "[\"" + WiFi.SSID(i) + "\",";
+		json += "\"" + WiFi.BSSIDstr(i) + "\",";
+		json += String(WiFi.RSSI(i))+",",
+		json += String(WiFi.channel(i))+"]";
+		if(i<n-1) json += ",";
+	}
+	json += "]}";
 	#if defined(ESP32)
 	// Restore original mode (best-effort) after scan.
 	if (WiFi.getMode() != prev_mode) {
@@ -102,6 +76,7 @@ String scan_network() {
 	return json;
 }
 
+#if defined(ARDUINOOTA)
 static bool arduino_ota_started = false;
 
 static String default_ota_hostname() {
@@ -144,6 +119,7 @@ void handle_arduino_ota() {
 	if (!arduino_ota_started) return;
 	ArduinoOTA.handle();
 }
+#endif
 
 void start_network_ap(const char *ssid, const char *pass) {
 	DEBUG_PRINTLN("Starting AP mode");
@@ -165,7 +141,9 @@ void start_network_ap(const char *ssid, const char *pass) {
 	WiFi.softAPConfig(ap_ip, ap_gw, ap_sn);
 
 	WiFi.softAP(ssid, pass);
+	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
+	#endif
 }
 
 void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
@@ -182,7 +160,9 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 	WiFi.mode(WIFI_MODE_APSTA);
 	#endif
 	WiFi.begin(ssid, pass, channel, bssid);
+	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
+	#endif
 }
 
 void start_network_sta(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
@@ -199,6 +179,8 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	WiFi.mode(WIFI_MODE_STA);
 	#endif
 	WiFi.begin(ssid, pass, channel, bssid);
+	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
+	#endif
 }
 #endif

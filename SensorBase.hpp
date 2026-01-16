@@ -100,8 +100,8 @@ public:
     obj["div"] = divider;
     obj["offset"] = offset_mv;
     obj["offset2"] = offset2;
-    obj["unit"] = userdef_unit;
-    obj["unitid"] = assigned_unitid;
+    obj["unit"] = getUnit();  // Use virtual method to get correct unit label
+    obj["unitid"] = getUnitId();  // Use virtual method for consistency
     obj["enable"] = (uint)flags.enable;
     obj["log"] = (uint)flags.log;
     obj["show"] = (uint)flags.show;

@@ -129,6 +129,7 @@ static std::map<uint, ProgSensorAdjust*> progSensorAdjustsMap;
 // Monitor data (HashMap for efficient lookup by nr)
 static std::map<uint, Monitor*> monitorsMap;
 
+static const unsigned char MAX_SENSOR_UNITNAMES = 14;
 const char *sensor_unitNames[]{
     "",  "%", "°C", "°F", "V", "%", "in", "mm", "mph", "kmh", "%", "DK", "LM", "LX"
     //0   1     2     3    4    5    6     7      8      9     10,  11,   12,   13
@@ -315,6 +316,7 @@ void sensor_api_init(boolean detect_boards) {
     DEBUG_PRINTLN(F(" RS485 Adapters"));
   }
 #endif
+  DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_init() completed"));
 }
 
 void sensor_api_connect() {
@@ -1873,13 +1875,13 @@ void SensorBase::emitJson(BufferFiller& bfill) const {
 unsigned char SensorBase::getUnitId() const {
   // Default fallback for unknown types
   // Group sensors have their own override in GroupSensor class
-  return UNIT_NONE;
+  return assigned_unitid;
 }
 
 const char* SensorBase::getUnit() const {
   int unitid = getUnitId();
   if (unitid == UNIT_USERDEF) return userdef_unit;
-  if (unitid < 0 || (uint16_t)unitid >= sizeof(sensor_unitNames))
+  if (unitid < 0 || unitid >= MAX_SENSOR_UNITNAMES)
     return sensor_unitNames[0];
   return sensor_unitNames[unitid];
 }
@@ -1887,7 +1889,7 @@ const char* SensorBase::getUnit() const {
 // Wrapper functions for backward compatibility
 const char *getSensorUnit(int unitid) {
   if (unitid == UNIT_USERDEF) return "?";
-  if (unitid < 0 || (uint16_t)unitid >= sizeof(sensor_unitNames))
+  if (unitid < 0 || unitid >= MAX_SENSOR_UNITNAMES)
     return sensor_unitNames[0];
   return sensor_unitNames[unitid];
 }

@@ -406,6 +406,8 @@ String get_ap_ssid() {
 	return ap_ssid;
 }
 
+static String scanned_ssids;
+
 void on_ap_home(OTF_PARAMS_DEF) {
 	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
 	print_header_compressed_html(OTF_PARAMS, ap_home_html_gz_len);
@@ -414,9 +416,8 @@ void on_ap_home(OTF_PARAMS_DEF) {
 
 void on_ap_scan(OTF_PARAMS_DEF) {
 	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
-	String scanned = scan_network();
-	print_header(OTF_PARAMS, true, scanned.length());
-	res.writeBodyData(scanned.c_str(), scanned.length());
+	print_header(OTF_PARAMS, true, scanned_ssids.length());
+	res.writeBodyData(scanned_ssids.c_str(), scanned_ssids.length());
 }
 
 void on_ap_change_config(OTF_PARAMS_DEF) {
@@ -2448,163 +2449,6 @@ char* urlDecodeAndUnescape(char *buf) {
 }
 
 /**
- * si
- * Sensor config User Defined
- * {"nr":1,"fac":100,"div":1,"unit":"bar"}
- */
-void server_sensor_config_userdef(OTF_PARAMS_DEF)
-{
-#if defined(USE_OTF)
-	if(!process_password(OTF_PARAMS)) return;
-#else
-	char *p = get_buffer;
-#endif
-
-	DEBUG_PRINTLN(F("server_sensor_config userdef"));
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint nr = strtoul(tmp_buffer, NULL, 0); // Sensor nr
-	if (nr == 0) handle_return(HTML_DATA_MISSING);
-
-	int16_t factor = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("fac"), true))
-		factor = strtol(tmp_buffer, NULL, 0); // factor
-
-	int16_t divider = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("div"), true))
-		divider = strtol(tmp_buffer, NULL, 0); // divider
-
-	char userdef_unit[8];
-	memset(userdef_unit, 0, sizeof(userdef_unit));
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("unit"), true)) {
-		strncpy(userdef_unit, urlDecodeAndUnescape(tmp_buffer), sizeof(userdef_unit)-1); // unit
-	}
-	int16_t assigned_unitid = -1;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("unitid"), true))
-		assigned_unitid = strtol(tmp_buffer, NULL, 0); // divider
-
-	int16_t offset_mv = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("offset"), true))
-		offset_mv = strtol(tmp_buffer, NULL, 0); // offset in millivolt
-	int16_t offset2 = 0;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("offset2"), true))
-		offset2 = strtol(tmp_buffer, NULL, 0); // offset unit value
-
-	// Build JSON configuration
-	JsonDocument doc;
-	JsonObject config = doc.to<JsonObject>();
-	
-	config["nr"] = nr;
-	config["fac"] = factor;
-	config["div"] = divider;
-	config["unit"] = userdef_unit;
-	config["offset"] = offset_mv;
-	config["offset2"] = offset2;
-	config["unitid"] = assigned_unitid;
-	
-	int ret = sensor_define(config, true);  // save=true
-	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
-	handle_return(ret);
-}
-
-/**
- * sj
- * get sensorurl
- * {"nr":1,"type":1}
- * return { "value": "text"}
- */
-void server_sensorurl_get(OTF_PARAMS_DEF)
-{
-#if defined(USE_OTF)
-	if(!process_password(OTF_PARAMS)) return;
-#else
-	char *p = get_buffer;
-#endif
-	DEBUG_PRINTLN(F("sensorUrl_get"));
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint nr = strtoul(tmp_buffer, NULL, 0); // Sensor nr
-	if (nr == 0) handle_return(HTML_DATA_MISSING);
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("type"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint type = strtoul(tmp_buffer, NULL, 0); // Sensor type
-
-	SensorBase *sensor = sensor_by_nr(nr);
-	char value[200] = {0};
-	if (sensor && sensor->type == SENSOR_MQTT) {
-		// Use toJson to get MQTT-specific fields
-		ArduinoJson::JsonDocument doc;
-		ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
-		sensor->toJson(obj);
-		
-		if (type == SENSORURL_TYPE_URL && obj.containsKey("url"))
-			strncpy(value, obj["url"] | "", sizeof(value)-1);
-		else if (type == SENSORURL_TYPE_TOPIC && obj.containsKey("topic"))
-			strncpy(value, obj["topic"] | "", sizeof(value)-1);
-		else if (type == SENSORURL_TYPE_FILTER && obj.containsKey("filter"))
-			strncpy(value, obj["filter"] | "", sizeof(value)-1);
-	}
-	bfill.emit_p(PSTR("{\"value\":\"$S\"}"), value[0] ? value : "");
-	handle_return(HTML_OK);
-}
-
-/**
- * sk
- * MQTT and other URL configuration
- * type = 0 URL, 1=MQTT Subscription, 2=JSON Filter
- * {"nr":1,"type":1,"value":abc}
- */
-void server_sensorurl_config(OTF_PARAMS_DEF)
-{
-#if defined(USE_OTF)
-	if(!process_password(OTF_PARAMS)) return;
-#else
-	char *p = get_buffer;
-#endif
-	DEBUG_PRINTLN(F("serverUrl_config"));
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint nr = strtoul(tmp_buffer, NULL, 0); // Sensor nr
-	if (nr == 0) handle_return(HTML_DATA_MISSING);
-
-	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("type"), true))
-		handle_return(HTML_DATA_MISSING);
-	uint type = strtoul(tmp_buffer, NULL, 0); // Sensor type
-
-	uint8_t value_found = 0;
-	findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("value"), true, &value_found);
-	if (!value_found)
-		handle_return(HTML_DATA_MISSING);
-	DEBUG_PRINTLN(tmp_buffer);
-	urlDecodeAndUnescape(tmp_buffer);
-	DEBUG_PRINTLN(tmp_buffer);
-
-	SensorBase *sensor = sensor_by_nr(nr);
-	bool ok = false;
-	if (sensor && sensor->type == SENSOR_MQTT) {
-		MqttSensor *mqtt = static_cast<MqttSensor*>(sensor);
-		if (type == SENSORURL_TYPE_URL) {
-			strncpy(mqtt->url, tmp_buffer, sizeof(mqtt->url)-1);
-			ok = true;
-		} else if (type == SENSORURL_TYPE_TOPIC) {
-			strncpy(mqtt->topic, tmp_buffer, sizeof(mqtt->topic)-1);
-			ok = true;
-		} else if (type == SENSORURL_TYPE_FILTER) {
-			strncpy(mqtt->filter, tmp_buffer, sizeof(mqtt->filter)-1);
-			ok = true;
-		}
-		if (ok) {
-			sensor_mqtt_subscribe(nr, type, tmp_buffer);
-		}
-	}
-	handle_return(ok?HTML_SUCCESS:HTML_DATA_MISSING);
-}
-
-/**
  * sc
  * Sensor config
  * {"nr":1,"type":1,"group":0,"name":"myname","ip":123456789,"port":3000,"id":1,"ri":1000,"enable":1,"log":1}
@@ -4537,9 +4381,6 @@ const char _url_keys[] PROGMEM =
 	"cu"
 	"ja"
 	"pq"
-	"si"
-	"sj"
-	"sk"
 	"sc"
 	"sl"
 	"sg"
@@ -4603,9 +4444,6 @@ URLHandler urls[] = {
 	server_change_scripturl,// cu
 	server_json_all,        // ja
 	server_pause_queue,     // pq
-	server_sensor_config_userdef,//si
-	server_sensorurl_get,//sj
-	server_sensorurl_config,//sk
 	server_sensor_config,//sc
 	server_sensor_list,//sl
 	server_sensor_get,//sg
@@ -4713,13 +4551,6 @@ void on_firmware_upload() {
 }
 
 void start_server_client() {
-	// In some build variants (ESP32-C5 Matter coexistence), we intentionally
-	// defer OTF/HTTPS allocation until WiFi is fully up to prevent esp_wifi_init OOM.
-	if(!otf) {
-		if (useEth || WiFi.status() == WL_CONNECTED) {
-			os.start_network();
-		}
-	}
 	if(!otf) return;
 	static bool callback_initialized = false;
 
@@ -4745,20 +4576,12 @@ void start_server_client() {
 }
 
 void start_server_ap() {
-	// Bring up WiFi first. Starting OTF/HTTPS (TLS parsing) before esp_wifi_init()
-	// can fail with ESP_ERR_NO_MEM on ESP32-C5 Matter coexistence builds.
-	String ap_ssid = get_ap_ssid();
-
-	start_network_ap(ap_ssid.c_str(), NULL);
-	
-	delay(500);
-
-	// Now that WiFi is initialized, start OTF + update server.
-	if(!otf) {
-		os.start_network();
-	}
 	if(!otf) return;
-	
+
+	scanned_ssids = scan_network();
+	String ap_ssid = get_ap_ssid();
+	start_network_ap(ap_ssid.c_str(), NULL);
+	delay(500);
 	otf->on("/", on_ap_home);
 	otf->on("/jsap", on_ap_scan);
 	otf->on("/ccap", on_ap_change_config);

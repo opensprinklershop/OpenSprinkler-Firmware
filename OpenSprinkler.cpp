@@ -560,46 +560,29 @@ unsigned char OpenSprinkler::start_network() {
 
 #if defined(ESP8266) || defined(ESP32)
 
-	// On WiFi AP setups, do not probe wired Ethernet or turn WiFi off.
-	// Probing W5500/ENC can fail (or be absent) and TLS startup before WiFi init
-	// can cause esp_wifi_init() to fail with ESP_ERR_NO_MEM on ESP32-C5 Matter builds.
-	if (get_wifi_mode() == WIFI_MODE_AP) {
-		useEth = false;
+	if (start_ether()) {
+		useEth = true;
+		WiFi.mode(WIFI_OFF);
 	} else {
-		if (start_ether()) {
-			useEth = true;
-			WiFi.mode(WIFI_OFF);
-		} else {
-			useEth = false;
-		}
+		useEth = false;
 	}
 
-	bool ssl = otc.port == 443;
-	// IMPORTANT: Don't start OTF/HTTPS before the network stack is actually ready.
-	// On ESP32-C5 (and especially with coexistence builds), early TLS/server startup can
-	// trip asserts / memory issues if WiFi isn't initialized yet.
-	const bool sta_ready = (get_wifi_mode() == WIFI_MODE_STA) && (WiFi.status() == WL_CONNECTED) && (uint32_t)WiFi.localIP();
-	const bool ap_ready  = (get_wifi_mode() == WIFI_MODE_AP) && (uint32_t)WiFi.softAPIP();
-	const bool can_start_services = useEth || sta_ready || ap_ready;
-
-	if(can_start_services) {
-		if((useEth || sta_ready) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
-			otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, ssl, ether_buffer, ETHER_BUFFER_SIZE);
-			DEBUG_PRINTLN(F("Started OTF with remote connection"));
-		} else {
-			otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
-			DEBUG_PRINTLN(F("Started OTF with just local connection"));
-		}
-		extern DNSServer *dns;
-		if(ap_ready) dns = new DNSServer();
-		if(update_server) { delete update_server; update_server = NULL; }
-		#if defined(ESP8266) 
-		update_server = new ESP8266WebServer(8080);
-		#elif defined(ESP32)
-		update_server = new WebServer(8080);
-		#endif
-		DEBUG_PRINTLN(F("Started update server"));
+	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
+		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, false, ether_buffer, ETHER_BUFFER_SIZE);
+		DEBUG_PRINTLN(F("Started OTF with remote connection"));
+	} else {
+		otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
+		DEBUG_PRINTLN(F("Started OTF with just local connection"));
 	}
+	extern DNSServer *dns;
+	if(get_wifi_mode() == WIFI_MODE_AP) dns = new DNSServer();
+	if(update_server) { delete update_server; update_server = NULL; }
+	#if defined(ESP8266)
+	update_server = new ESP8266WebServer(8080);
+	#else
+	update_server = new WebServer(8080);
+	#endif
+	DEBUG_PRINT(F("Started update server"));
 	return 1;
 
 #else
@@ -1329,10 +1312,16 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 		lcd.setCursor(0,1);
 		#if defined(ESP8266) 
 		if(!LittleFS.begin()) {
-			// !!! flash init failed, stall as we cannot proceed
-			lcd.setCursor(0, 0);
-			lcd_print_pgm(PSTR("Error Code: 0x2D"));
-			delay(5000);
+			// After an "erase flash", LittleFS may be unformatted.
+			// Try formatting once, then stall if we still can't mount.
+			DEBUG_PRINTLN(F("LittleFS.begin() failed; formatting..."));
+			LittleFS.format();
+			if(!LittleFS.begin()) {
+				// !!! flash init failed, stall as we cannot proceed
+				lcd.setCursor(0, 0);
+				lcd_print_pgm(PSTR("Error Code: 0x2D"));
+				while(1) { delay(1000); }
+			}
 		}
 		#else
 		if(!LittleFS.begin(true, "/littlefs", 10, "littlefs_ext")) {
@@ -2311,6 +2300,17 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	#if defined(ESP8266)
 		if(usessl) {
 			free_tmp_memory();
+			// BearSSL/HTTPS can easily OOM on low-heap ESP8266 builds.
+			// Be defensive: if heap is too low, fail gracefully instead of rebooting.
+			const size_t min_heap_for_https = 24000;
+			size_t heap_now = freeMemory();
+			if (heap_now < min_heap_for_https) {
+				DEBUG_PRINTF("HTTPS skipped (low heap=%u)\n", (unsigned)heap_now);
+				restore_tmp_memory();
+				usessl = false;
+			}
+		}
+		if (usessl) {
 			WiFiClientSecure *_c = new WiFiClientSecure();
 			_c->setInsecure();
   			bool mfln = _c->probeMaxFragmentLength(server, port, 512);
@@ -2318,7 +2318,13 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
   			if (mfln) {
 				_c->setBufferSizes(512, 512); 
 			} else {
-				_c->setBufferSizes(2048, 2048);
+				// Use smaller buffers when heap is tight.
+				size_t heap_now = freeMemory();
+				if (heap_now < 32000) {
+					_c->setBufferSizes(1024, 1024);
+				} else {
+					_c->setBufferSizes(2048, 2048);
+				}
 			}
 			client = _c;
 		} else {

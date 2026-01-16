@@ -30,6 +30,25 @@
 #include "sensor_payload_decoder.h"
 
 /**
+ * @brief Known BLE sensor types (for discovery filtering)
+ */
+enum BLESensorType : uint8_t {
+    BLE_TYPE_UNKNOWN = 0,
+    BLE_TYPE_GOVEE_H5074,    // Govee H5074 (UUID 0xec88, 7 byte mfg data)
+    BLE_TYPE_GOVEE_H5075,    // Govee H5075/H5072/H5100/etc (UUID 0xec88, 6 byte mfg data)
+    BLE_TYPE_GOVEE_H5179,    // Govee H5179 (UUID 0xec88, 9 byte mfg data)
+    BLE_TYPE_GOVEE_H5177,    // Govee H5177/H5174 (Mfg 0x0001, 6 byte data)
+    BLE_TYPE_GOVEE_MEAT,     // Govee meat thermometers (H5181-H5184)
+    BLE_TYPE_XIAOMI,         // Xiaomi LYWSD03MMC etc.
+    BLE_TYPE_GENERIC_GATT,   // Generic GATT-based sensor
+    // BMS (Battery Management System) types - require GATT bidirectional communication
+    BLE_TYPE_BMS_JBD,        // JBD/Xiaoxiang BMS (very common in LiFePO4 batteries)
+    BLE_TYPE_BMS_DALY,       // Daly BMS
+    BLE_TYPE_BMS_ANT,        // ANT BMS
+    BLE_TYPE_BMS_JIKONG,     // JK/Jikong BMS
+};
+
+/**
  * @brief Structure to hold discovered BLE device information
  */
 struct BLEDeviceInfo {
@@ -42,6 +61,24 @@ struct BLEDeviceInfo {
     // Optional: advertised primary service UUID (if present in the advertisement)
     // Stored as canonical string (e.g. "0000180a-0000-1000-8000-00805f9b34fb")
     char service_uuid[40];
+    
+    // Sensor type (for filtering known sensors)
+    BLESensorType sensor_type;
+    
+    // Cached advertisement data for sensors that broadcast readings
+    // (Govee, Xiaomi, etc. - they don't need GATT connection)
+    float adv_temperature;        // Temperature from advertisement
+    float adv_humidity;           // Humidity from advertisement  
+    uint8_t adv_battery;          // Battery % from advertisement
+    bool has_adv_data;            // True if adv_* fields are valid
+    
+    // BMS-specific cached data (requires GATT connection)
+    float bms_voltage;            // Total pack voltage (V)
+    float bms_current;            // Current (A, positive=charging, negative=discharging)
+    uint8_t bms_soc;              // State of charge (%)
+    float bms_temperature;        // Average cell temperature (°C)
+    uint16_t bms_cycles;          // Charge cycles
+    bool has_bms_data;            // True if bms_* fields are valid
 };
 
 /**
@@ -71,6 +108,12 @@ public:
     char characteristic_uuid_cfg[40] = {0};
     char mac_address_cfg[24] = {0};
     uint8_t payload_format_cfg = (uint8_t)FORMAT_TEMP_001;
+    
+    // For advertisement-based sensors (Govee etc.): which value to report
+    // Uses assigned_unitid from base class:
+    // - Unit 2 (°C) or 3 (°F) → temperature
+    // - Unit 5 (%) → humidity  
+    // - Other units → battery
 
     /**
      * @brief Constructor
@@ -88,12 +131,17 @@ public:
      * @return HTTP_RQT_SUCCESS on successful read, HTTP_RQT_NOT_RECEIVED on error
      */
     virtual int read(unsigned long time) override;
-    
-    /**
-     * @brief Get measurement unit for this sensor
-     * @return Unit ID from assigned_unitid (configured via sensor setup)
-     */
+   
+    virtual const char* getUnit() const override;
     virtual unsigned char getUnitId() const override;
+private:
+    /**
+     * @brief Store sensor result and mark data as valid
+     * @param value The measured value (already in correct unit, e.g., 34.59 for °C)
+     * @param time Current timestamp
+     * @note Handles last_data, last_native_data, repeat_data, repeat_native, repeat_read
+     */
+    void store_result(double value, unsigned long time);
 };
 
 /**
@@ -134,6 +182,20 @@ int sensor_ble_get_discovered_devices(BLEDeviceInfo* devices, int max_devices);
  * @brief Clear the "new device" flags
  */
 void sensor_ble_clear_new_device_flags();
+
+/**
+ * @brief Find a cached device by MAC address
+ * @param mac_address MAC address string (e.g. "AA:BB:CC:DD:EE:FF")
+ * @return Pointer to device info or nullptr if not found
+ */
+const BLEDeviceInfo* sensor_ble_find_device(const char* mac_address);
+
+/**
+ * @brief Check if a device has advertisement-based sensor data (Govee etc.)
+ * @param device Pointer to device info
+ * @return true if device broadcasts sensor data via advertisement
+ */
+bool sensor_ble_is_adv_sensor(const BLEDeviceInfo* device);
 
 #endif // ESP32
 

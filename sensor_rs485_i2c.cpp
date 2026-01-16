@@ -213,7 +213,7 @@ int RS485I2CSensor::read(unsigned long time) {
       active_i2c_RS485_mode = 0;
     i2c_pending = 0;
   } 
-  bool isGeneric = type == SENSOR_RS485;
+  bool isGeneric = type == SENSOR_MODBUS_RTU;
 
   //Init chip
   if (active_i2c_RS485_mode == 0) { // Init SC16IS752 for RS485:
