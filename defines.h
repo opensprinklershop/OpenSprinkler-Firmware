@@ -618,7 +618,8 @@ enum {
 #define DEBUG_BEGIN(x)   {Serial.begin(x);}
 #define DEBUG_PRINT(x)   {Serial.print(x);}
 #define DEBUG_PRINTLN(x) {Serial.println(x);}
-#define DEBUG_PRINTF(msg, ...)    {Serial.printf(msg, ##__VA_ARGS__);}
+// Allow passing both plain C strings and F("...") (const __FlashStringHelper*).
+#define DEBUG_PRINTF(msg, ...)    {Serial.printf((const char*)msg, ##__VA_ARGS__);}
 #else
 #include <stdio.h>
 #define DEBUG_BEGIN(x)          {}  /** Serial debug functions */

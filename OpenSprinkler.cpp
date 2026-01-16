@@ -1352,9 +1352,17 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 		}*/
 		#endif
 
-		DEBUG_PRINTF(F("Total space: %lu kB\n"), LittleFS.totalBytes() / 1024);  
-		DEBUG_PRINTF(F("Used space:  %lu kB\n"), LittleFS.usedBytes() / 1024);  
-		DEBUG_PRINTF(F("Free space:  %lu kb\n"), (LittleFS.totalBytes()-LittleFS.usedBytes()) / 1024);  
+		#if defined(ESP8266)
+			FSInfo fs_info;
+			LittleFS.info(fs_info);
+			DEBUG_PRINTF(F("Total space: %lu kB\n"), (unsigned long)(fs_info.totalBytes / 1024));
+			DEBUG_PRINTF(F("Used space:  %lu kB\n"), (unsigned long)(fs_info.usedBytes / 1024));
+			DEBUG_PRINTF(F("Free space:  %lu kb\n"), (unsigned long)((fs_info.totalBytes - fs_info.usedBytes) / 1024));
+		#else
+			DEBUG_PRINTF(F("Total space: %lu kB\n"), (unsigned long)(LittleFS.totalBytes() / 1024));
+			DEBUG_PRINTF(F("Used space:  %lu kB\n"), (unsigned long)(LittleFS.usedBytes() / 1024));
+			DEBUG_PRINTF(F("Free space:  %lu kb\n"), (unsigned long)((LittleFS.totalBytes()-LittleFS.usedBytes()) / 1024));
+		#endif
 
 		state = OS_STATE_INITIAL;
 
