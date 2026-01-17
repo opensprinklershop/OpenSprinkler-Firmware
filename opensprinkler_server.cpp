@@ -1350,6 +1350,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	String mqtt_opt = os.sopt_load(SOPT_MQTT_OPTS);
 	// mqtt_opt is expected to be a JSON object fragment (without outer braces).
 	// Be defensive here: if older/invalid configs stored a plain token, emit valid JSON anyway.
+#if defined(ARSUINO)
 	mqtt_opt.trim();
 	if (mqtt_opt.length() > 0) {
 		// Accept both "a":1 and {"a":1} storage formats.
@@ -1369,7 +1370,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 			mqtt_opt = String("\"raw\":\"") + tmp_buffer + "\"";
 		}
 	}
-
+#endif
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
 	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
