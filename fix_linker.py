@@ -85,38 +85,107 @@ def fix_linker_command(env):
 
         print(f"Linker set to: {gcc_linker}")
 
-# Remove OpenThread library from link command when Zigbee is enabled
-def remove_openthread_lib(env):
+# Add Zigbee libraries and remove OpenThread when Zigbee is enabled
+def configure_zigbee_libs(env):
+    """Configure Zigbee libraries for End Device mode with WiFi coexistence."""
+    
     # Check if this is a Zigbee build
     build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
-    is_zigbee = any("ZIGBEE_MODE_ZCZR" in flag for flag in build_flags)
+    is_zigbee = any("OS_ENABLE_ZIGBEE" in flag for flag in build_flags)
+    is_zigbee_zczr = any("ZIGBEE_MODE_ZCZR" in flag for flag in build_flags)
     is_matter = any("ENABLE_MATTER" in flag for flag in build_flags)
+
+    if not is_zigbee:
+        return
+
+    print("Zigbee build detected - configuring ESP-Zigbee libraries...")
+
+    # Get the ESP32 framework library path
+    lib_path_found = None
+    try:
+        pio_platform = env.PioPlatform()
+        framework_dir = pio_platform.get_package_dir("framework-arduinoespressif32-libs")
+        if framework_dir:
+            # Find the correct library path for ESP32-C5
+            import os
+            mcu = env.BoardConfig().get("build.mcu", "esp32c5")
+            # Try common library paths in order of preference
+            lib_paths = [
+                os.path.join(framework_dir, mcu, "lib"),  # Primary location
+                os.path.join(framework_dir, mcu, "dio_qspi", "lib"),
+                os.path.join(framework_dir, mcu, "dio", "lib"),
+            ]
+            for lib_path in lib_paths:
+                if os.path.isdir(lib_path):
+                    lib_path_found = lib_path
+                    # Check if Zigbee libs exist
+                    zigbee_lib = os.path.join(lib_path, "libespressif__esp-zigbee-lib.a")
+                    if os.path.exists(zigbee_lib):
+                        print(f"Found Zigbee libraries in: {lib_path}")
+                        env.Append(LIBPATH=[lib_path])
+                        break
+                    else:
+                        print(f"Path exists but missing Zigbee lib: {lib_path}")
+    except Exception as e:
+        print(f"Warning: Could not determine framework lib path: {e}")
+
+    # Add the Zigbee stack libraries in correct order (dependencies last)
+    # Library names without 'lib' prefix and without '.a' suffix
+    # 
+    # IMPORTANT: The ESP-Zigbee SDK has these layers:
+    # 1. esp_zb_api.ed/zczr - High-level ESP-IDF Zigbee API (esp_zb_* functions)
+    # 2. zboss_stack.ed/zczr - ZBOSS protocol stack (zb_* functions)
+    # 3. zboss_port.native - Platform abstraction layer
+    # 4. ieee802154 - IEEE 802.15.4 MAC layer
+    # 5. espressif__esp-zigbee-lib - Additional helper functions (small stub)
+    
+    zigbee_libs = [
+        "esp_zb_api.ed",               # ESP-IDF Zigbee API wrapper (esp_zb_* functions)
+        "zboss_stack.ed",              # ZBOSS End Device Stack (WiFi compatible!)
+        "zboss_port.native",           # ZBOSS Port Layer (native, not remote)
+        "ieee802154",                  # IEEE 802.15.4 MAC layer
+        "espressif__esp-zigbee-lib",   # Zigbee helper library
+    ]
+    
+    # Use zczr stack if ZCZR mode is enabled (WARNING: breaks WiFi!)
+    if is_zigbee_zczr:
+        zigbee_libs[0] = "esp_zb_api.zczr"
+        zigbee_libs[1] = "zboss_stack.zczr"
+        print("WARNING: Using ZBOSS Coordinator/Router stack - WiFi will NOT work!")
+    else:
+        print("Using ZBOSS End Device stack (WiFi coexistence compatible)")
+    
+    # Add libraries
+    for lib in zigbee_libs:
+        env.Append(LIBS=[lib])
+    print(f"Added Zigbee libs: {', '.join(zigbee_libs)}")
 
     # NOTE: Zigbee (ZBOSS) and OpenThread both provide IEEE802154 glue on ESP32-C5.
     # If both are linked, the build fails with multiple-definition errors.
     # This project uses Zigbee, and Matter is expected to run over WiFi (not Thread),
     # so we drop OpenThread when Zigbee is enabled.
-    if is_zigbee:
-        if is_matter:
-            print("Zigbee+Matter build detected: removing OpenThread to avoid IEEE802154 symbol conflicts...")
-        else:
-            print("Removing OpenThread library to prevent conflicts with Zigbee...")
-        
-        # Filter out OpenThread library from LIBS
-        libs = env.get("LIBS", [])
-        filtered_libs = [lib for lib in libs if "openthread" not in str(lib).lower()]
-        env.Replace(LIBS=filtered_libs)
-        
-        # Also filter from LIBPATH
-        libpath = env.get("LIBPATH", [])
-        # Don't remove the path, just the library reference
-        
-        # Add explicit linker flag to relax duplicate symbols in mixed stacks
-        env.Append(LINKFLAGS=[
-            "-Wl,--allow-multiple-definition",  # Allow Zigbee to override OpenThread symbols
-        ])
-        
-        print("OpenThread library handling configured for Zigbee build")
+    if is_matter:
+        print("Zigbee+Matter build detected: removing OpenThread to avoid IEEE802154 symbol conflicts...")
+    else:
+        print("Removing OpenThread library to prevent conflicts with Zigbee...")
+    
+    # Filter out OpenThread library from LIBS
+    libs = env.get("LIBS", [])
+    filtered_libs = [lib for lib in libs if "openthread" not in str(lib).lower()]
+    env.Replace(LIBS=filtered_libs)
+    
+    # Add explicit linker flag to relax duplicate symbols in mixed stacks
+    env.Append(LINKFLAGS=[
+        "-Wl,--allow-multiple-definition",  # Allow Zigbee to override OpenThread symbols
+    ])
+    
+    print("Zigbee library configuration complete")
+
+
+# Legacy alias for compatibility
+def remove_openthread_lib(env):
+    """Legacy function - now handled by configure_zigbee_libs."""
+    pass
 
 
 def fix_zigbee_lib_names(env):
@@ -184,6 +253,6 @@ def _register_pre_link_fixes(outer_env):
 # Execute the fixes before building
 ensure_riscv_toolchain_on_path(env)
 fix_linker_command(env)
-remove_openthread_lib(env)
+configure_zigbee_libs(env)
 fix_zigbee_lib_names(env)
 _register_pre_link_fixes(env)

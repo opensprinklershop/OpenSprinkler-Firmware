@@ -43,28 +43,47 @@ struct ZigbeeDeviceInfo {
 #include "SensorBase.hpp"
 
 /**
- * @brief Actually start Zigbee coordinator (called after WiFi is connected)
- * @note This should be called after WiFi is fully connected to avoid interference
- * @note Zigbee stays active permanently - WiFi-Zigbee coexistence handles RF coordination
+ * @brief Start Zigbee as END DEVICE (called after WiFi is connected)
+ * 
+ * IMPORTANT: This runs Zigbee in END DEVICE mode, which is the ONLY mode
+ * that supports WiFi coexistence on ESP32-C5/C6!
+ * 
+ * - Coordinator + WiFi = NOT SUPPORTED (will break WiFi connection)
+ * - Router + WiFi = NOT SUPPORTED  
+ * - End Device + WiFi STA = SUPPORTED (stable performance)
+ * 
+ * The device will join an existing Zigbee network (e.g., Zigbee2MQTT)
+ * and receive attribute reports from other sensors via bindings.
+ * 
+ * @note Call after WiFi STA is fully connected
+ * @note Bindings must be configured via the Zigbee coordinator
  */
 void sensor_zigbee_start();
 
 /**
- * @brief Returns true if Zigbee coordinator is currently active
+ * @brief Returns true if Zigbee End Device is currently active
  */
 bool sensor_zigbee_is_active();
 
 /**
- * @brief Start Zigbee coordinator if needed (best-effort)
+ * @brief Start Zigbee End Device if needed (best-effort)
  * @return true if Zigbee is active after the call
+ * @note Only works in WiFi STA mode, not in SOFTAP mode
  */
 bool sensor_zigbee_ensure_started();
 
 /**
- * @brief Bind to a Zigbee device
+ * @brief Force a factory reset of Zigbee NVRAM on next start
+ * Call this when NVRAM data is corrupted or when switching device modes.
+ * The actual reset happens on the next call to sensor_zigbee_start().
+ */
+void sensor_zigbee_factory_reset();
+
+/**
+ * @brief Configure sensor to receive reports from a Zigbee device
  * @param nr Sensor number
  * @param device_ieee IEEE address of Zigbee device (e.g., "0x00124b001f8e5678")
- * @note Creates binding for device reporting
+ * @note Actual binding must be done via Zigbee coordinator (e.g., Zigbee2MQTT)
  */
 void sensor_zigbee_bind_device(uint nr, const char *device_ieee);
 
@@ -77,9 +96,10 @@ void sensor_zigbee_bind_device(uint nr, const char *device_ieee);
 void sensor_zigbee_unbind_device(uint nr, const char *device_ieee);
 
 /**
- * @brief Open Zigbee network for device pairing
- * @param duration Duration in seconds (default: 60)
- * @note Opens network to allow new devices to join
+ * @brief Open Zigbee network for device pairing (legacy, does nothing in End Device mode)
+ * @param duration Duration in seconds (ignored)
+ * @note In End Device mode, pairing is controlled by the Zigbee coordinator
+ * @note Use Zigbee2MQTT to pair new devices
  */
 void sensor_zigbee_open_network(uint16_t duration = 60);
 

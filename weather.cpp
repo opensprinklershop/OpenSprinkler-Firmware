@@ -259,8 +259,8 @@ void parse_wto(char* wto) {
 					int p=doc["scales"][i];
 					p = (p<0) ? 0 : ((p>250) ? 250 : p); // clamp to [0, 250]
 					wt_monthly[i]=p;
-	}
-}
+				}
+			}
 			if(doc.containsKey("mda")){
 				mda = doc["mda"];
 			}

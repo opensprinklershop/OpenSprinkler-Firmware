@@ -1815,9 +1815,9 @@ void server_change_options(OTF_PARAMS_DEF)
 		urlDecode(tmp_buffer);
 		#endif
 		if (os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer)) {
-			os.sopt_load(SOPT_WEATHER_OPTS, tmp_buffer+1); // make room for the leading '{'
+			strncpy(tmp_buffer+1, tmp_buffer, TMP_BUFFER_SIZE); // make room for leading {
 			parse_wto(tmp_buffer); // parse wto
-				apply_monthly_adjustment(os.now_tz());
+			apply_monthly_adjustment(os.now_tz());
 			weather_change = true;
 		}
 	}
