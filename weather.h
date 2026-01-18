@@ -43,6 +43,6 @@ extern unsigned char md_N; // number of elements in the md_scales array
 extern unsigned char mda;
 extern unsigned char wt_monthly[];
 extern unsigned char wt_restricted;
-void parse_wto(char* wto);
+bool parse_wto(char* wto);
 void apply_monthly_adjustment(time_os_t curr_time);
 #endif  // _WEATHER_H

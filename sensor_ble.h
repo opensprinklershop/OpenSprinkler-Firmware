@@ -114,6 +114,22 @@ public:
     // - Unit 2 (°C) or 3 (°F) → temperature
     // - Unit 5 (%) → humidity  
     // - Other units → battery
+    
+    // Advertisement sensor retry logic (runtime only, not persisted)
+    // Retry interval starts at 10s and doubles on failure up to max 300s
+    // Resets to 10s on successful read
+    uint32_t adv_retry_interval = 10;      // Current retry interval in seconds
+    uint32_t adv_last_attempt = 0;         // Timestamp of last read attempt (millis)
+    uint32_t adv_consecutive_failures = 0; // Count of consecutive failed reads
+    
+    // Persistent: Last successful data reception timestamp (Unix time)
+    // Used for auto-disable after 24h without data
+    uint32_t adv_last_success_time = 0;
+    
+    // Constants for retry behavior
+    static constexpr uint32_t ADV_RETRY_INITIAL = 10;     // Initial retry interval (seconds)
+    static constexpr uint32_t ADV_RETRY_MAX = 300;        // Maximum retry interval (seconds)
+    static constexpr uint32_t ADV_DISABLE_TIMEOUT = 86400; // Auto-disable after 24h (seconds)
 
     /**
      * @brief Constructor

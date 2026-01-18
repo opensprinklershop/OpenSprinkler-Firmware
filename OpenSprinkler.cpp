@@ -2865,7 +2865,7 @@ void OpenSprinkler::nvdata_save() {
 	file_write_block(NVCON_FILENAME, &nvdata, 0, sizeof(NVConData));
 }
 
-void parse_wto(char* wto);
+bool parse_wto(char* wto);
 
 /** Load integer options from file */
 void OpenSprinkler::iopts_load() {
@@ -2887,8 +2887,10 @@ void OpenSprinkler::iopts_load() {
 			iopts[IOPT_NTP_IP4] = 0;
 	}
 	populate_master();
-	sopt_load(SOPT_WEATHER_OPTS, tmp_buffer+1); // Leave room for curly brace
-	parse_wto(tmp_buffer);
+	sopt_load(SOPT_WEATHER_OPTS, tmp_buffer); // Leave room for curly brace
+	if (!parse_wto(tmp_buffer)) {
+		sopt_save(SOPT_WEATHER_OPTS, tmp_buffer); // save back corrected wto if parsing failed
+	}
 	// California restriction is now indicated in wto and no longer by the highest bit of uwt. So we force that bit to 0
 	iopts[IOPT_USE_WEATHER] &= 0x7F;
 }

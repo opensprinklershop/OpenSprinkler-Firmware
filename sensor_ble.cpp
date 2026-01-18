@@ -55,6 +55,11 @@ static const uint32_t BLE_CONNECT_TIMEOUT_MS = 400; // keep BLE reads short
 static unsigned long ble_auto_stop_time = 0;
 static bool ble_discovery_mode = false;
 
+// Hard timeout: Force BLE shutdown if active for more than this time
+// This prevents WiFi from being blocked indefinitely
+static uint32_t ble_init_time = 0;
+static const uint32_t BLE_HARD_TIMEOUT_MS = 30000;  // 30 seconds max
+
 // Discovered devices storage (dynamically allocated)
 static std::vector<BLEDeviceInfo> discovered_ble_devices;
 
@@ -563,6 +568,11 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     // - Unit 2 (°C) or 3 (°F) → temperature
     // - Unit 5 (%) → humidity  
     // - Other units → battery
+    
+    // Restore last successful read time for auto-disable feature
+    if (obj.containsKey("adv_last_ok")) {
+        adv_last_success_time = obj["adv_last_ok"].as<uint32_t>();
+    }
 }
 
 void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
@@ -574,6 +584,9 @@ void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
     if (characteristic_uuid_cfg[0]) obj["char_uuid"] = characteristic_uuid_cfg;
     if (payload_format_cfg != (uint8_t)FORMAT_TEMP_001) obj["format"] = payload_format_cfg;
     // Note: assigned_unitid is handled by SensorBase::toJson
+    
+    // Persist last successful read time for auto-disable feature
+    if (adv_last_success_time > 0) obj["adv_last_ok"] = adv_last_success_time;
 }
 
 static bool ble_uuid_extract_16bit(const char* uuid_in, uint16_t* out_uuid16) {
@@ -885,6 +898,7 @@ void sensor_ble_init() {
     DEBUG_PRINTLN("BLE initialized");
     
     ble_initialized = true;
+    ble_init_time = millis();  // Record init time for hard timeout
 }
 
 static BLEClient* ble_get_client() {
@@ -915,6 +929,7 @@ static void sensor_ble_stop_now() {
     BLEDevice::deinit(false);
     ble_initialized = false;
     pBLEScan = nullptr;
+    ble_init_time = 0;  // Reset init time
 
     DEBUG_PRINTLN("BLE stopped - RF resources freed for WiFi");
 }
@@ -982,6 +997,12 @@ void sensor_ble_start_scan(uint16_t duration) {
 
 /**
  * @brief BLE maintenance loop
+ * CRITICAL: This must be called regularly from the main loop
+ * It handles:
+ * - Deferred BLE shutdown (to avoid heap corruption)
+ * - Auto-stop after discovery timeout
+ * - Hard timeout to prevent WiFi blocking
+ * - Stale device cleanup
  */
 void sensor_ble_loop() {
     if (!ble_initialized) {
@@ -989,6 +1010,33 @@ void sensor_ble_loop() {
     }
     
     uint32_t now = millis();
+
+    // =========================================================================
+    // HARD TIMEOUT: Force stop BLE if it's been active too long
+    // This is a safety net to prevent WiFi from being blocked indefinitely
+    // =========================================================================
+    if (ble_init_time > 0 && !ble_in_read) {
+        uint32_t ble_active_time = now - ble_init_time;
+        if (ble_active_time > BLE_HARD_TIMEOUT_MS) {
+            DEBUG_PRINT(F("BLE HARD TIMEOUT after "));
+            DEBUG_PRINT(ble_active_time / 1000);
+            DEBUG_PRINTLN(F("s - forcing shutdown to restore WiFi"));
+            
+            // Force stop everything
+            if (scanning_active && pBLEScan) {
+                if (pBLEScan->isScanning()) {
+                    pBLEScan->stop();
+                }
+                scanning_active = false;
+            }
+            
+            sensor_ble_stop_now();
+            ble_discovery_mode = false;
+            ble_auto_stop_time = 0;
+            ble_stop_requested = false;
+            return;
+        }
+    }
 
     // Deferred stop (avoids heap corruption when deinit happens during/after BLE stack activity)
     if (ble_stop_requested && !ble_in_read) {
@@ -1016,7 +1064,7 @@ void sensor_ble_loop() {
     
     // Check if scan has completed
     if (scanning_active && now >= scan_end_time) {
-        if (pBLEScan->isScanning()) {
+        if (pBLEScan && pBLEScan->isScanning()) {
             pBLEScan->stop();
         }
         scanning_active = false;
@@ -1189,6 +1237,12 @@ static double ble_select_bms_value(float voltage, float current, uint8_t soc,
  * Power-saving mode: BLE is turned on/off dynamically
  * First call (repeat_read == 0): Turn on BLE, read data, set repeat_read = 1
  * Second call (repeat_read == 1): Return data, set repeat_read = 0, turn off BLE
+ * 
+ * For advertisement sensors: Implements adaptive retry with exponential backoff
+ * - Initial retry: 10 seconds
+ * - Doubles on each failure up to max 300 seconds
+ * - Resets to 10 seconds on success
+ * - Auto-disables sensor after 24h without successful data
  */
 int BLESensor::read(unsigned long time) {
     if (!flags.enable) return HTTP_RQT_NOT_RECEIVED;
@@ -1201,14 +1255,63 @@ int BLESensor::read(unsigned long time) {
         return HTTP_RQT_NOT_RECEIVED;
     }
     
+    // =========================================================================
+    // AUTO-DISABLE CHECK: Disable sensor if no data received for 24 hours
+    // =========================================================================
+    if (adv_last_success_time > 0 && time > adv_last_success_time) {
+        uint32_t time_since_success = time - adv_last_success_time;
+        if (time_since_success > ADV_DISABLE_TIMEOUT) {
+            DEBUG_PRINT(F("BLE sensor auto-disabled after 24h without data: "));
+            DEBUG_PRINTLN(name);
+            flags.enable = false;
+            flags.data_ok = false;
+            // Ensure BLE is stopped
+            if (ble_initialized) {
+                sensor_ble_stop();
+            }
+            return HTTP_RQT_NOT_RECEIVED;
+        }
+    }
+    
     if (repeat_read == 0) {
         ble_in_read = true;
+
+        // Centralized failure handler - ALWAYS stops BLE and cleans up
+        auto fail_adv = [&](const char* reason) -> int {
+            DEBUG_PRINT(F("BLE adv sensor fail: "));
+            DEBUG_PRINTLN(reason);
+            
+            flags.data_ok = false;
+            last_read = time;
+            adv_last_attempt = millis();
+            adv_consecutive_failures++;
+            
+            // Exponential backoff: double interval on each failure, cap at max
+            adv_retry_interval = adv_retry_interval * 2;
+            if (adv_retry_interval > ADV_RETRY_MAX) {
+                adv_retry_interval = ADV_RETRY_MAX;
+            }
+            
+            DEBUG_PRINT(F("  Next retry in "));
+            DEBUG_PRINT(adv_retry_interval);
+            DEBUG_PRINT(F("s (failures: "));
+            DEBUG_PRINT(adv_consecutive_failures);
+            DEBUG_PRINTLN(F(")"));
+            
+            // CRITICAL: Always stop BLE to free WiFi resources
+            sensor_ble_stop();
+            ble_in_read = false;
+            return HTTP_RQT_NOT_RECEIVED;
+        };
 
         auto fail = [&](BLEClient* client, bool stop_ble) -> int {
             flags.data_ok = false;
             last_read = time;
             if (client) client->disconnect();
-            if (stop_ble) sensor_ble_stop();
+            // CRITICAL: Always stop BLE on failure
+            if (stop_ble || ble_initialized) {
+                sensor_ble_stop();
+            }
             ble_in_read = false;
             return HTTP_RQT_NOT_RECEIVED;
         };
@@ -1216,6 +1319,11 @@ int BLESensor::read(unsigned long time) {
         auto fail_no_cleanup = [&]() -> int {
             flags.data_ok = false;
             last_read = time;
+            // Ensure BLE is stopped even in no-cleanup path
+            if (ble_initialized) {
+                sensor_ble_stop();
+            }
+            ble_in_read = false;
             return HTTP_RQT_NOT_RECEIVED;
         };
 
@@ -1223,6 +1331,22 @@ int BLESensor::read(unsigned long time) {
             if (client) client->disconnect();
             sensor_ble_stop();
             ble_in_read = false;
+        };
+
+        // Success handler for advertisement sensors
+        auto success_adv = [&](double value) -> int {
+            store_result(value, time);
+            adv_last_success_time = time;  // Record Unix timestamp of success
+            adv_consecutive_failures = 0;
+            adv_retry_interval = ADV_RETRY_INITIAL;  // Reset retry interval
+            
+            DEBUG_PRINT(F("BLE adv sensor success, retry reset to "));
+            DEBUG_PRINT(adv_retry_interval);
+            DEBUG_PRINTLN(F("s"));
+            
+            sensor_ble_stop();
+            ble_in_read = false;
+            return HTTP_RQT_NOT_RECEIVED; // Will return data on next call
         };
 
         // First call: Turn on BLE and read data
@@ -1270,18 +1394,46 @@ int BLESensor::read(unsigned long time) {
         // =====================================================================
         // ADVERTISEMENT-BASED SENSORS (Govee, Xiaomi, etc.)
         // These sensors broadcast data in their advertisements - no GATT needed
+        // Implements adaptive retry with exponential backoff to minimize WiFi impact
         // =====================================================================
         
         // Check if we have cached advertisement data for this device
         const BLEDeviceInfo* cached_dev = sensor_ble_find_device(mac_address);
         
-        // If device not in cache OR is an adv-type sensor without fresh data, do a scan first
+        // Determine if this is an advertisement-based sensor
+        bool is_adv_sensor = cached_dev && sensor_ble_is_adv_sensor(cached_dev);
+        
+        // For adv sensors: Check if we're within the retry cooldown period
+        if (is_adv_sensor && adv_last_attempt > 0) {
+            uint32_t now_ms = millis();
+            uint32_t elapsed_ms = now_ms - adv_last_attempt;
+            uint32_t required_ms = adv_retry_interval * 1000UL;
+            
+            if (elapsed_ms < required_ms) {
+                // Still in cooldown - don't scan yet, but check if we have fresh cached data
+                if (cached_dev->has_adv_data && (now_ms - cached_dev->last_seen < 300000)) {
+                    // Fresh cached data available - use it
+                    double parsed_value = ble_select_adv_value(cached_dev, assigned_unitid);
+                    return success_adv(parsed_value);
+                }
+                
+                // No fresh data, but still in cooldown - skip this read
+                DEBUG_PRINT(F("BLE adv sensor: retry cooldown, "));
+                DEBUG_PRINT((required_ms - elapsed_ms) / 1000);
+                DEBUG_PRINTLN(F("s remaining"));
+                
+                ble_in_read = false;
+                return HTTP_RQT_NOT_RECEIVED;
+            }
+        }
+        
+        // If device not in cache OR is an adv-type sensor without fresh data, do a scan
         bool needs_scan = false;
         if (!cached_dev) {
             // Device not in cache - need to scan to discover it
             DEBUG_PRINTLN(F("Device not in cache, starting discovery scan..."));
             needs_scan = true;
-        } else if (sensor_ble_is_adv_sensor(cached_dev)) {
+        } else if (is_adv_sensor) {
             // Known advertisement-based sensor - check if data is fresh
             if (!cached_dev->has_adv_data || (millis() - cached_dev->last_seen > 300000)) {
                 DEBUG_PRINTLN(F("Advertisement sensor needs fresh data, starting scan..."));
@@ -1290,18 +1442,34 @@ int BLESensor::read(unsigned long time) {
         }
         
         if (needs_scan) {
+            // Record this attempt for retry timing
+            adv_last_attempt = millis();
+            
             DEBUG_PRINTLN(F("Starting BLE scan for sensor discovery..."));
             sensor_ble_start_scan(5); // 5 second scan
             
             // Wait for scan to complete (blocking, but short)
+            // CRITICAL: Use timeout to prevent indefinite blocking
             uint32_t scan_start = millis();
-            while (scanning_active && (millis() - scan_start < 6000)) {
+            const uint32_t SCAN_TIMEOUT = 7000; // 7 seconds max (5s scan + 2s buffer)
+            while (scanning_active && (millis() - scan_start < SCAN_TIMEOUT)) {
                 delay(100);
                 sensor_ble_loop();
             }
             
+            // Force stop scan if it didn't complete (prevents WiFi blocking)
+            if (scanning_active) {
+                DEBUG_PRINTLN(F("Force stopping BLE scan (timeout)"));
+                if (pBLEScan && pBLEScan->isScanning()) {
+                    pBLEScan->stop();
+                }
+                scanning_active = false;
+            }
+            
             // Re-check cache after scan
             cached_dev = sensor_ble_find_device(mac_address);
+            is_adv_sensor = cached_dev && sensor_ble_is_adv_sensor(cached_dev);
+            
             if (cached_dev) {
                 DEBUG_PRINT(F("Found device after scan: "));
                 DEBUG_PRINT(cached_dev->name);
@@ -1313,7 +1481,7 @@ int BLESensor::read(unsigned long time) {
         }
         
         // Now check if we have usable advertisement data
-        if (cached_dev && sensor_ble_is_adv_sensor(cached_dev) && cached_dev->has_adv_data) {
+        if (cached_dev && is_adv_sensor && cached_dev->has_adv_data) {
             // Use cached advertisement data (Govee etc.)
             DEBUG_PRINT(F("Using advertisement data from: "));
             DEBUG_PRINTLN(cached_dev->name);
@@ -1328,22 +1496,15 @@ int BLESensor::read(unsigned long time) {
             uint32_t now = millis();
             if (now - cached_dev->last_seen < 300000) {
                 double parsed_value = ble_select_adv_value(cached_dev, assigned_unitid);
-                store_result(parsed_value, time);
-                
-                sensor_ble_stop();
-                ble_in_read = false;
-                return HTTP_RQT_NOT_RECEIVED; // Will return data on next call
+                return success_adv(parsed_value);
             } else {
-                DEBUG_PRINTLN(F("Data too old even after scan"));
+                return fail_adv("Data too old even after scan");
             }
         }
         
-        // If it's a known advertisement sensor but we couldn't get data, don't try GATT
-        if (cached_dev && sensor_ble_is_adv_sensor(cached_dev)) {
-            DEBUG_PRINTLN(F("Advertisement sensor - skipping GATT (not supported)"));
-            sensor_ble_stop();
-            ble_in_read = false;
-            return fail(nullptr, false);  // Will retry on next cycle
+        // If it's a known advertisement sensor but we couldn't get data, fail with retry
+        if (is_adv_sensor) {
+            return fail_adv("No advertisement data received");
         }
         
         // =====================================================================

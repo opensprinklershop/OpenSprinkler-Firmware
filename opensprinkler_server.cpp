@@ -245,6 +245,33 @@ void rewind_ether_buffer() {
 	ether_buffer[0] = 0;
 }
 
+#if defined(ARDUINO)
+static String normalize_json_fragment(String fragment, const char* fallback_key) {
+	fragment.trim();
+	if (fragment.length() == 0) {
+		return fragment;
+	}
+	// Accept both "a":1 and {"a":1} storage formats.
+	if (fragment[0] == '{' && fragment.endsWith("}")) {
+		fragment = fragment.substring(1, fragment.length() - 1);
+		fragment.trim();
+	}
+	// Strip trailing commas to keep JSON valid.
+	while (fragment.length() > 0 && fragment[fragment.length() - 1] == ',') {
+		fragment.remove(fragment.length() - 1);
+		fragment.trim();
+	}
+	// If it doesn't look like key:value pairs, wrap it as a raw string.
+	if (fragment.indexOf(':') < 0) {
+		fragment.toCharArray(tmp_buffer, TMP_BUFFER_SIZE);
+		strReplaceQuoteBackslash(tmp_buffer);
+		fragment = String("\"") + fallback_key + "\":\"" + tmp_buffer + "\"";
+	}
+
+	return fragment;
+}
+#endif
+
 void send_packet(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	int len = (int)bfill.position();
@@ -1431,43 +1458,27 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #else
 	os.load_hardware_mac(mac, true);
 #endif
+#if defined(ARDUINO)
 	String mqtt_opt = os.sopt_load(SOPT_MQTT_OPTS);
-	// mqtt_opt is expected to be a JSON object fragment (without outer braces).
-	// Be defensive here: if older/invalid configs stored a plain token, emit valid JSON anyway.
-	mqtt_opt.trim();
-	if (mqtt_opt.length() > 0) {
-		// Accept both "a":1 and {"a":1} storage formats.
-		if (mqtt_opt[0] == '{' && mqtt_opt.endsWith("}")) {
-			mqtt_opt = mqtt_opt.substring(1, mqtt_opt.length() - 1);
-			mqtt_opt.trim();
-		}
-		// Strip trailing commas to keep JSON valid.
-		while (mqtt_opt.length() > 0 && mqtt_opt[mqtt_opt.length() - 1] == ',') {
-			mqtt_opt.remove(mqtt_opt.length() - 1);
-			mqtt_opt.trim();
-		}
-		// If it doesn't look like key:value pairs, wrap it as a raw string.
-		if (mqtt_opt.indexOf(':') < 0) {
-			mqtt_opt.toCharArray(tmp_buffer, TMP_BUFFER_SIZE);
-			strReplaceQuoteBackslash(tmp_buffer);
-			mqtt_opt = String("\"raw\":\"") + tmp_buffer + "\"";
-		}
-	}
-
+	// mqtt_opt and wto_opt are expected to be JSON object fragments (without outer braces).
+	// Normalize to avoid invalid JSON when stored as "{}" or with trailing commas.
+	mqtt_opt = normalize_json_fragment(mqtt_opt, "raw");
+	String wto_opt = normalize_json_fragment(os.sopt_load(SOPT_WEATHER_OPTS), "raw");
+#endif
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
-							 SOPT_LOCATION,
-							 SOPT_JAVASCRIPTURL,
-							 SOPT_WEATHERURL,
-							 SOPT_WEATHER_OPTS,
-							 SOPT_IFTTT_KEY,
-							 mqtt_opt.c_str(),
-							 strlen(wt_rawData)==0?"{}":wt_rawData,
-							 wt_errCode,
-							 wt_restricted,
-							 SOPT_DEVICE_NAME);
+	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
+						 SOPT_LOCATION,
+						 SOPT_JAVASCRIPTURL,
+						 SOPT_WEATHERURL,
+						 wto_opt.c_str(),
+						 SOPT_IFTTT_KEY,
+						 mqtt_opt.c_str(),
+						 strlen(wt_rawData)==0?"{}":wt_rawData,
+						 wt_errCode,
+						 wt_restricted,
+						 SOPT_DEVICE_NAME);
 
 #if defined(SUPPORT_EMAIL)
 	bfill.emit_p(PSTR("\"email\":{$O},"), SOPT_EMAIL_OPTS);
@@ -1815,8 +1826,9 @@ void server_change_options(OTF_PARAMS_DEF)
 		urlDecode(tmp_buffer);
 		#endif
 		if (os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer)) {
-			strncpy(tmp_buffer+1, tmp_buffer, TMP_BUFFER_SIZE); // make room for leading {
-			parse_wto(tmp_buffer); // parse wto
+			if (!parse_wto(tmp_buffer)) { // parse wto
+				os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer); // reset to empty string if parsing failed
+			}
 			apply_monthly_adjustment(os.now_tz());
 			weather_change = true;
 		}

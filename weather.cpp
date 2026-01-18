@@ -236,15 +236,18 @@ void GetWeather() {
 	}
 }
 
-void parse_wto(char* wto) {
+bool parse_wto(char* wto) {
 	// reset variables to default values before parsing
 	mda = 0;
-	if(*(wto+1)){
+	if(wto[0]){
 		// Wrap in curly braces
-		wto[0] = '{';
-		int len = strlen(wto);
-		wto[len] = '}';
-		wto[len+1] = 0;
+		if (wto[0] != '{') {
+			strncpy(wto+1, wto, TMP_BUFFER_SIZE_L-1);
+			wto[0] = '{';
+			int len = strlen(wto);
+			wto[len] = '}';
+			wto[len+1] = 0;
+		}
 
 		ArduinoJson::JsonDocument doc;
 		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, wto);
@@ -253,6 +256,8 @@ void parse_wto(char* wto) {
 		if (error) {
 			DEBUG_PRINT(F("wto: deserializeJson() failed: "));
 			DEBUG_PRINTLN(error.c_str());
+			strcpy(wto, "{}");  // reset wto to empty object
+			return false;
 		} else {
 			if(doc.containsKey("scales")){
 				for(unsigned char i=0;i<12;i++){
@@ -266,6 +271,7 @@ void parse_wto(char* wto) {
 			}
 		}
 	}
+	return true;
 }
 
 void apply_monthly_adjustment(time_os_t curr_time) {

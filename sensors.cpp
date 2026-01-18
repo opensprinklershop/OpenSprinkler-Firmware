@@ -323,10 +323,6 @@ void sensor_api_connect() {
   #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
   sensor_zigbee_start();
   #endif
-
-  #if defined(ESP32) && defined(OS_ENABLE_BLE)
-  sensor_ble_init();
-  #endif
 }
 // Note: sensor_api_connect()/sensor_api_disconnect() were removed.
 // Zigbee/BLE are started on-demand by their respective operations (scan/read/open-network)
