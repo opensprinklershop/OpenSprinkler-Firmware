@@ -242,12 +242,15 @@ bool parse_wto(char* wto) {
 	if(wto[0]){
 		// Wrap in curly braces
 		if (wto[0] != '{') {
-			strncpy(wto+1, wto, TMP_BUFFER_SIZE_L-1);
+			int len = strlen(wto)+2;
+			memmove(wto+1, wto, len);
 			wto[0] = '{';
-			int len = strlen(wto);
-			wto[len] = '}';
-			wto[len+1] = 0;
+			
+			wto[len-1] = '}';
+			wto[len] = 0;
 		}
+		DEBUG_PRINT(F("wto: "));
+		DEBUG_PRINTLN(wto);
 
 		ArduinoJson::JsonDocument doc;
 		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, wto);

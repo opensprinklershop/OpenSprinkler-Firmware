@@ -246,7 +246,7 @@ void rewind_ether_buffer() {
 }
 
 #if defined(ARDUINO)
-static String normalize_json_fragment(String fragment, const char* fallback_key) {
+static String normalize_json_fragment(String fragment) {
 	fragment.trim();
 	if (fragment.length() == 0) {
 		return fragment;
@@ -261,11 +261,9 @@ static String normalize_json_fragment(String fragment, const char* fallback_key)
 		fragment.remove(fragment.length() - 1);
 		fragment.trim();
 	}
-	// If it doesn't look like key:value pairs, wrap it as a raw string.
+	// If it doesn't look like key:value pairs, clear it.
 	if (fragment.indexOf(':') < 0) {
-		fragment.toCharArray(tmp_buffer, TMP_BUFFER_SIZE);
-		strReplaceQuoteBackslash(tmp_buffer);
-		fragment = String("\"") + fallback_key + "\":\"" + tmp_buffer + "\"";
+		fragment = "";
 	}
 
 	return fragment;
@@ -1449,9 +1447,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #endif
 
 #if defined(ARDUINO)
-	String otc_opt = normalize_json_fragment(os.sopt_load(SOPT_OTC_OPTS), "raw");
-	String mqtt_opt = normalize_json_fragment(os.sopt_load(SOPT_MQTT_OPTS), "raw");
-	String wto_opt = normalize_json_fragment(os.sopt_load(SOPT_WEATHER_OPTS), "raw");
+	String otc_opt = normalize_json_fragment(os.sopt_load(SOPT_OTC_OPTS));
+	String mqtt_opt = normalize_json_fragment(os.sopt_load(SOPT_MQTT_OPTS));
+	String wto_opt = normalize_json_fragment(os.sopt_load(SOPT_WEATHER_OPTS));
 #endif
 
 #if defined(USE_OTF)
