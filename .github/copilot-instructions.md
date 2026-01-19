@@ -45,6 +45,9 @@ This file helps AI coding agents get productive quickly in this repository. It f
 ## Commit messages ✅
 - Always write AI-generated commit messages in English.
 
+## documentation & comments 
+-  place for documentation is docs/as_api_docs and for reference docs/docs
+📝
 ## Useful files to inspect 📂
 - `main.cpp` (entry / loops)  
 - `OpenSprinkler.cpp`, `OpenSprinkler.h` (core state & nv data)  
