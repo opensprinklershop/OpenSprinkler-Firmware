@@ -1448,6 +1448,12 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("\"apdv\":$D,"), os.actual_pd_voltage);
 #endif
 
+#if defined(ARDUINO)
+	String otc_opt = normalize_json_fragment(os.sopt_load(SOPT_OTC_OPTS), "raw");
+	String mqtt_opt = normalize_json_fragment(os.sopt_load(SOPT_MQTT_OPTS), "raw");
+	String wto_opt = normalize_json_fragment(os.sopt_load(SOPT_WEATHER_OPTS), "raw");
+#endif
+
 #if defined(USE_OTF)
 	bfill.emit_p(PSTR("\"otc\":{$O},\"otcs\":$D,"), SOPT_OTC_OPTS, otf->getCloudStatus());
 #endif
@@ -1457,13 +1463,6 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	os.load_hardware_mac(mac, useEth);
 #else
 	os.load_hardware_mac(mac, true);
-#endif
-#if defined(ARDUINO)
-	String mqtt_opt = os.sopt_load(SOPT_MQTT_OPTS);
-	// mqtt_opt and wto_opt are expected to be JSON object fragments (without outer braces).
-	// Normalize to avoid invalid JSON when stored as "{}" or with trailing commas.
-	mqtt_opt = normalize_json_fragment(mqtt_opt, "raw");
-	String wto_opt = normalize_json_fragment(os.sopt_load(SOPT_WEATHER_OPTS), "raw");
 #endif
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -1690,6 +1689,7 @@ void string_remove_space(char *src) {
 		src++;
 	}
 }
+
 
 /**
  * Change script url

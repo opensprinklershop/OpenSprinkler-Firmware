@@ -208,7 +208,4 @@ void free_tmp_memory();
 void restore_tmp_memory();
 
 char* urlDecodeAndUnescape(char *buf);
-#if defined(OTF_ENABLED)
-void start_otf();
-#endif
 #endif // _OPENSPRINKLER_SERVER_H

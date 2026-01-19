@@ -42,6 +42,9 @@ This file helps AI coding agents get productive quickly in this repository. It f
 - Avoid changing binary on-disk structures without bumping `OS_FW_VERSION` and documenting migration steps; `build.sh` warns about `sopts.dat` size changes.
 - Hardware testing: many changes must be tested on real hardware (ESP and OSPI). Where possible, add a native-mode unit test or `DEMO` compile as described in `build.sh`.
 
+## Commit messages ✅
+- Always write AI-generated commit messages in English.
+
 ## Useful files to inspect 📂
 - `main.cpp` (entry / loops)  
 - `OpenSprinkler.cpp`, `OpenSprinkler.h` (core state & nv data)  
