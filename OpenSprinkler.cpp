@@ -32,6 +32,7 @@
 #if defined(ESP32)
 #include <esp_system.h>
 #include <esp_mac.h>
+#include <esp_netif.h>
 #endif
 
 /** Declare static data members */
@@ -44,7 +45,7 @@ unsigned char OpenSprinkler::hw_type;
 unsigned char OpenSprinkler::hw_rev;
 unsigned char OpenSprinkler::nboards;
 unsigned char OpenSprinkler::nstations;
-unsigned char OpenSprinkler::station_bits[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::station_bits[MAX_NUM_BOARDS];
 unsigned char OpenSprinkler::engage_booster;
 uint16_t OpenSprinkler::baseline_current;
 
@@ -67,23 +68,22 @@ uint8_t OpenSprinkler::last_reboot_cause = REBOOT_CAUSE_NONE;
 unsigned char    OpenSprinkler::weather_update_flag;
 
 // todo future: the following attribute bytes are for backward compatibility
-unsigned char OpenSprinkler::attrib_mas[MAX_NUM_BOARDS];
-unsigned char OpenSprinkler::attrib_igs[MAX_NUM_BOARDS];
-unsigned char OpenSprinkler::attrib_mas2[MAX_NUM_BOARDS];
-unsigned char OpenSprinkler::attrib_igs2[MAX_NUM_BOARDS];
-unsigned char OpenSprinkler::attrib_igrd[MAX_NUM_BOARDS];
-unsigned char OpenSprinkler::attrib_dis[MAX_NUM_BOARDS];
-unsigned char OpenSprinkler::attrib_spe[MAX_NUM_BOARDS];
-unsigned char OpenSprinkler::attrib_grp[MAX_NUM_STATIONS];
-uint16_t OpenSprinkler::attrib_fas[MAX_NUM_STATIONS];
-uint16_t OpenSprinkler::attrib_favg[MAX_NUM_STATIONS];
-unsigned char OpenSprinkler::masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_mas[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_igs[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_mas2[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_igs2[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_igrd[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_dis[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_spe[MAX_NUM_BOARDS];
+PSRAM_ATTR unsigned char OpenSprinkler::attrib_grp[MAX_NUM_STATIONS];
+PSRAM_ATTR uint16_t OpenSprinkler::attrib_fas[MAX_NUM_STATIONS];
+PSRAM_ATTR uint16_t OpenSprinkler::attrib_favg[MAX_NUM_STATIONS];
+PSRAM_ATTR unsigned char OpenSprinkler::masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
 time_os_t OpenSprinkler::masters_last_on[NUM_MASTER_ZONES];
 RCSwitch OpenSprinkler::rfswitch;
 OSInfluxDB OpenSprinkler::influxdb;
 
-extern char tmp_buffer[];
-extern char ether_buffer[];
+// ether_buffer and tmp_buffer declared in sensors.h
 extern ProgramData pd;
 extern const char* user_agent_string;
 extern unsigned char curr_alert_sid;
@@ -1020,37 +1020,15 @@ void OpenSprinkler::lcd_start() {
 void OpenSprinkler::begin() {
 
 #if defined(ARDUINO)
-	#if defined(ESP32)
-	// ESP32-C5 (Matter/Zigbee builds) can be very tight on heap during early boot.
-	// Our I2C usage is small (mostly register reads/writes), so a smaller Wire buffer
-	// avoids allocation failures that otherwise break all I2C transactions.
-	Wire.setBufferSize(64);
-	#endif
 	Wire.begin(); // init I2C
 #endif
 
 	hw_type = HW_TYPE_UNKNOWN;
 	hw_rev = 0;
 
-#if defined(ESP8266) || defined(ESP32) // ESP8266 specific initializations
+#if defined(ESP8266)  // ESP8266 specific initializations
 
-	/* check hardware type */
-	if(detect_i2c(ACDR_I2CADDR)) hw_type = HW_TYPE_AC;
-	else if(detect_i2c(DCDR_I2CADDR)) hw_type = HW_TYPE_DC;
-	else if(detect_i2c(LADR_I2CADDR)) hw_type = HW_TYPE_LATCH;
-
-	DEBUG_PRINTLN(F("Hardware type: "));
-	if(hw_type==HW_TYPE_AC) {
-		DEBUG_PRINTLN(F("AC"));
-	} else if(hw_type==HW_TYPE_DC) {		
-		DEBUG_PRINTLN(F("DC"));
-	} else if(hw_type==HW_TYPE_LATCH) {
-		DEBUG_PRINTLN(F("LATCH"));
-	} else {
-		DEBUG_PRINTLN(F("UNKNOWN"));
-	}
-	/* detect hardware revision type */
-	#if defined(ESP8266) 
+/* detect hardware revision type */
 	if(detect_i2c(MAIN_I2CADDR)) {	// check if main PCF8574 exists
 		/* assign revision 0 pins */
 		PIN_BUTTON_1 = V0_PIN_BUTTON_1;
@@ -1063,12 +1041,18 @@ void OpenSprinkler::begin() {
 		PIN_SENSOR1 = V0_PIN_SENSOR1;
 		PIN_SENSOR2 = V0_PIN_SENSOR2;
 
-		// on revision 0, main IOEXP and driver IOEXP are two separate PCF8574 chips
-		if(hw_type==HW_TYPE_DC) {
+		/* check hardware type */
+		if(detect_i2c(ACDR_I2CADDR)) {
+			hw_type = HW_TYPE_AC;
+			drio = new PCF8574(ACDR_I2CADDR);
+		} else if(detect_i2c(DCDR_I2CADDR)) {
+			hw_type = HW_TYPE_DC;
 			drio = new PCF8574(DCDR_I2CADDR);
-		} else if(hw_type==HW_TYPE_LATCH) {
+		} else if(detect_i2c(LADR_I2CADDR)) {
+			hw_type = HW_TYPE_LATCH;
 			drio = new PCF8574(LADR_I2CADDR);
 		} else {
+			hw_type = HW_TYPE_UNKNOWN;
 			drio = new PCF8574(ACDR_I2CADDR);
 		}
 
@@ -1083,22 +1067,26 @@ void OpenSprinkler::begin() {
 		digitalWriteExt(PIN_LATCH_COM, LOW);
 
 	} else {
-	#endif
-		
-		if(hw_type==HW_TYPE_DC) {
-			drio = new PCA9555(DCDR_I2CADDR);
-		} else if(hw_type==HW_TYPE_LATCH) {
-			drio = new PCA9555(LADR_I2CADDR);
-		} else {
-			drio = new PCA9555(ACDR_I2CADDR);
-		}
-		mainio = drio;
 
-	#if defined(ESP8266) 
 		pinMode(16, INPUT);
 		if(digitalRead(16)==LOW) {
 			// revision 1
 			hw_rev = 1;
+			if(detect_i2c(ACDR_I2CADDR)) {
+				hw_type = HW_TYPE_AC;
+				drio = new PCA9555(ACDR_I2CADDR);
+			} else if(detect_i2c(DCDR_I2CADDR)) {
+				hw_type = HW_TYPE_DC;
+				drio = new PCA9555(DCDR_I2CADDR);
+			} else if(detect_i2c(LADR_I2CADDR)) {
+				hw_type = HW_TYPE_LATCH;
+				drio = new PCA9555(LADR_I2CADDR);
+			} else {
+				hw_type = HW_TYPE_UNKNOWN;
+				drio = new PCA9555(ACDR_I2CADDR);
+			}
+			mainio = drio;
+
 			mainio->i2c_write(NXP_CONFIG_REG, V1_IO_CONFIG);
 			mainio->i2c_write(NXP_OUTPUT_REG, V1_IO_OUTPUT);
 
@@ -1113,15 +1101,45 @@ void OpenSprinkler::begin() {
 			PIN_LATCH_COM = V1_PIN_LATCH_COM;
 			PIN_SENSOR1 = V1_PIN_SENSOR1;
 			PIN_SENSOR2 = V1_PIN_SENSOR2;
-		} else {
-			// revision 2 and above
-			if(detect_i2c(EEPROM_I2CADDR+2)) { // revision 4 has an I2C EEPROM at this address; skipping +1 due to addr conflict with PCF8563
+		} else { // revision 2 and above
+			// conditions for revision 4:
+			// * has I2C EEPROM @ 0x52? --> OS 3.4 AC (skipping 0x51 due to conflict with PCF8563)
+			// * has CH224A/Q @ both 0x22, 0x23? --> OS 3.4 DC
+			bool has_eeprom_2 = detect_i2c(EEPROM_I2CADDR+2);
+			bool has_ch224_0 = detect_i2c(CH224_I2CADDR);
+			bool has_ch224_1 = detect_i2c(CH224_I2CADDR+1);
+			if(has_eeprom_2 || (has_ch224_0 && has_ch224_1)) {
 				hw_rev = 4;
-			} else if(detect_i2c(EEPROM_I2CADDR)) { // revision 3 has an I2C EEPROM at this address
-				hw_rev = 3;
+				drio = new PCA9555(ACDR_I2CADDR); // all OS 3.4 models have IOEXP at 0x21 due to address conflicts with CH224
+				mainio = drio;
+				if(has_ch224_0 && has_ch224_1) {
+					hw_type = HW_TYPE_DC;
+					usbpd.begin();
+				} else {
+					hw_type = HW_TYPE_AC;
+				}
 			} else {
-				hw_rev = 2;
+				if(detect_i2c(EEPROM_I2CADDR)) { // revision 3 has an I2C EEPROM at this address
+					hw_rev = 3;
+				} else {
+					hw_rev = 2;
+				}
+				if(detect_i2c(ACDR_I2CADDR)) {
+					hw_type = HW_TYPE_AC;
+					drio = new PCA9555(ACDR_I2CADDR);
+				} else if(detect_i2c(DCDR_I2CADDR)) {
+					hw_type = HW_TYPE_DC;
+					drio = new PCA9555(DCDR_I2CADDR);
+				} else if(detect_i2c(LADR_I2CADDR)) {
+					hw_type = HW_TYPE_LATCH;
+					drio = new PCA9555(LADR_I2CADDR);
+				} else {
+					hw_type = HW_TYPE_UNKNOWN;
+					drio = new PCA9555(ACDR_I2CADDR);
+				}
 			}
+			mainio = drio;
+
 			mainio->i2c_write(NXP_CONFIG_REG, V2_IO_CONFIG);
 			mainio->i2c_write(NXP_OUTPUT_REG, V2_IO_OUTPUT);
 
@@ -1136,36 +1154,56 @@ void OpenSprinkler::begin() {
 			PIN_SENSOR1 = V2_PIN_SENSOR1;
 			PIN_SENSOR2 = V2_PIN_SENSOR2;
 		}
-	#elif defined(ESP32)	
-		// ESP32 does not have revision detection
-		hw_rev = 4; // assume revision 4
-		mainio->i2c_write(NXP_CONFIG_REG, ESP32_IO_CONFIG);
-		mainio->i2c_write(NXP_OUTPUT_REG, ESP32_IO_OUTPUT);
-
-		PIN_BUTTON_1 = ESP32_PIN_BUTTON_1;
-		PIN_BUTTON_2 = ESP32_PIN_BUTTON_2;
-		PIN_BUTTON_3 = ESP32_PIN_BUTTON_3;
-		PIN_RFTX = ESP32_PIN_RFTX;
-		PIN_BOOST = ESP32_PIN_BOOST;
-		PIN_BOOST_EN = ESP32_PIN_BOOST_EN;
-		PIN_LATCH_COMK = ESP32_PIN_LATCH_COMK; // os3.2latch uses H-bridge separate cathode and anode design
-		PIN_LATCH_COMA = ESP32_PIN_LATCH_COMA;
-		PIN_SENSOR1 = ESP32_PIN_SENSOR1;
-		PIN_SENSOR2 = ESP32_PIN_SENSOR2;
-
-	#endif
-#if defined(ESP8266) 
 	}
-#endif
-	DEBUG_PRINTLN(F("OpenSprinkler begin1"));
 
 	/* detect expanders */
 	for(unsigned char i=0;i<(MAX_NUM_BOARDS)/2;i++)
 		expanders[i] = NULL;
 	detect_expanders();
 
-	DEBUG_PRINTLN(F("OpenSprinkler begin2"));
 
+	DEBUG_PRINTLN(F("OpenSprinkler begin2"));
+#elif defined(ESP32)
+	// ESP32 does not have revision detection
+	hw_rev = 10; // assume revision 10 for ESP32 builds
+
+	if(detect_i2c(ACDR_I2CADDR)) {
+		DEBUG_PRINTLN(F("AC detected"));
+		hw_type = HW_TYPE_AC;
+		drio = new PCA9555(ACDR_I2CADDR);
+	} else if(detect_i2c(DCDR_I2CADDR)) {
+		DEBUG_PRINTLN(F("DC detected"));
+		hw_type = HW_TYPE_DC;
+		drio = new PCA9555(DCDR_I2CADDR);
+	} else if(detect_i2c(LADR_I2CADDR)) {
+		DEBUG_PRINTLN(F("LATCH detected"));
+		hw_type = HW_TYPE_LATCH;
+		drio = new PCA9555(LADR_I2CADDR);
+	} else {
+		hw_type = HW_TYPE_UNKNOWN;
+		drio = new PCA9555(ACDR_I2CADDR);
+	}
+	mainio = drio;
+	mainio->i2c_write(NXP_CONFIG_REG, ESP32_IO_CONFIG);
+	mainio->i2c_write(NXP_OUTPUT_REG, ESP32_IO_OUTPUT);
+
+	PIN_BUTTON_1 = ESP32_PIN_BUTTON_1;
+	PIN_BUTTON_2 = ESP32_PIN_BUTTON_2;
+	PIN_BUTTON_3 = ESP32_PIN_BUTTON_3;
+	PIN_RFTX = ESP32_PIN_RFTX;
+	PIN_BOOST = ESP32_PIN_BOOST;
+	PIN_BOOST_EN = ESP32_PIN_BOOST_EN;
+	PIN_LATCH_COMK = ESP32_PIN_LATCH_COMK; // os3.2latch uses H-bridge separate cathode and anode design
+	PIN_LATCH_COMA = ESP32_PIN_LATCH_COMA;
+	PIN_SENSOR1 = ESP32_PIN_SENSOR1;
+	PIN_SENSOR2 = ESP32_PIN_SENSOR2;
+
+	/* detect expanders */
+	for(unsigned char i=0;i<(MAX_NUM_BOARDS)/2;i++)
+		expanders[i] = NULL;
+	detect_expanders();
+
+	DEBUG_PRINTLN(F("OpenSprinkler begin2"));		
 #else
 
 	// shift register setup
@@ -1192,9 +1230,9 @@ void OpenSprinkler::begin() {
 #endif
 
 #if defined(OSPI)
-pinModeExt(PIN_BUTTON_1, INPUT_PULLUP);
-pinModeExt(PIN_BUTTON_2, INPUT_PULLUP);
-pinModeExt(PIN_BUTTON_3, INPUT_PULLUP);
+	pinModeExt(PIN_BUTTON_1, INPUT_PULLUP);
+	pinModeExt(PIN_BUTTON_2, INPUT_PULLUP);
+	pinModeExt(PIN_BUTTON_3, INPUT_PULLUP);
 #endif
 
 	// init masters_last_on array
@@ -1420,16 +1458,16 @@ void OpenSprinkler::latch_boost(int8_t volt) {
 		digitalWriteExt(PIN_BOOST, LOW);       // disable boost converter
 	} else {
 		if(volt == 0) volt = DEFAULT_LATCH_BOOST_VOLTAGE;
-    // boost to specified volt, up to time specified by BOOST_TIME
-    uint16_t top = (uint16_t)(volt * 19.25f); // ADC = 1024 * volt * 1.5k / 79.8k
+	    // boost to specified volt, up to time specified by BOOST_TIME
+    	uint16_t top = (uint16_t)(volt * 19.25f); // ADC = 1024 * volt * 1.5k / 79.8k
 		if(analogRead(PIN_CURR_SENSE)>=top) return; // if the voltage has already reached top, return right away
-    uint32_t boost_timeout = millis() + (iopts[IOPT_BOOST_TIME]<<2);
-    digitalWriteExt(PIN_BOOST, HIGH);
-    // boost until either top voltage is reached or boost timeout is reached
+    	uint32_t boost_timeout = millis() + (iopts[IOPT_BOOST_TIME]<<2);
+    	digitalWriteExt(PIN_BOOST, HIGH);
+    	// boost until either top voltage is reached or boost timeout is reached
 		while((long)(millis()-boost_timeout)<0 && analogRead(PIN_CURR_SENSE)<top) { // overflow proof
-      delay(5);
-    }
-    digitalWriteExt(PIN_BOOST, LOW);
+      		delay(5);
+    	}
+    	digitalWriteExt(PIN_BOOST, LOW);
 	}
 }
 
@@ -2345,6 +2383,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 
 	#define HTTP_CONNECT_NTRIES 3
 	unsigned char tries = 0;
+	int conn_result = 0;
 	do {
 		DEBUG_PRINT(server);
 		DEBUG_PRINT(":");
@@ -2352,7 +2391,13 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINT("(");
 		DEBUG_PRINT(tries);
 		DEBUG_PRINTLN(")");
+		#if defined(ESP32)
+		// Connect using direct call - TCPIP locking is handled by Arduino WiFi layer
+		conn_result = client->connect(server, port);
+		if(conn_result == 1) break;
+		#else
 		if(client->connect(server, port)==1) break;
+		#endif
 		tries++;
 	} while(tries<HTTP_CONNECT_NTRIES);
 

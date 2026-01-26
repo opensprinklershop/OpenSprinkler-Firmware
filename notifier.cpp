@@ -35,8 +35,7 @@ unsigned char NotifQueue::nqueue = 0;
 
 extern OpenSprinkler os;
 extern ProgramData pd;
-extern char tmp_buffer[];
-extern char ether_buffer[];
+// ether_buffer and tmp_buffer declared in sensors.h
 extern float flow_last_gpm;
 
 extern const char *user_agent_string;

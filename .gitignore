@@ -7,6 +7,7 @@ testmode.h
 build-1284/*
 .vscode
 .pio
+managed_components
 influx.json
 *~
 *.o

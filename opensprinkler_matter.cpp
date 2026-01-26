@@ -3,7 +3,6 @@
  * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
  *
  * Matter (CHIP) protocol implementation
- *
  * Jan 2026 @ OpenSprinkler.com
  *
  * This program is free software: you can redistribute it and/or modify
@@ -15,13 +14,7 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see
- * <http://www.gnu.org/licenses/>.
  */
-
-#include "opensprinkler_matter.h"
 
 #ifdef ENABLE_MATTER
 
@@ -30,459 +23,416 @@
 #include "main.h"
 #include "sensors.h"
 #include "SensorBase.hpp"
+#include "opensprinkler_matter.h"
+#include <vector>
+#include <unordered_map>
+
+// BT header detection - ESP32-C5 uses NimBLE, not Bluedroid
+#if defined(ESP32)
+  #if __has_include("esp_bt.h")
+    #define HAS_ESP_BT 1
+    #include "esp_bt.h"
+    #if __has_include("esp_bt_main.h")
+      #include "esp_bt_main.h"
+      #define HAS_BLUEDROID 1
+    #else
+      #define HAS_BLUEDROID 0
+    #endif
+  #elif __has_include("nimble/nimble_port.h")
+    // ESP32-C5 with NimBLE stack
+    #define HAS_ESP_BT 1
+    #define HAS_NIMBLE 1
+    #define HAS_BLUEDROID 0
+    #include "nimble/nimble_port.h"
+    #include "host/ble_hs.h"
+  #else
+    #define HAS_ESP_BT 0
+    #define HAS_BLUEDROID 0
+  #endif
+#else
+  #define HAS_ESP_BT 0
+  #define HAS_BLUEDROID 0
+#endif
 
 // Arduino ESP32 Matter SDK - Matter.h includes all endpoint types
 #include <Matter.h>
 
-// Maximum number of sensor endpoints we can create
-#define MAX_NUM_SENSORS 16
-
 extern OpenSprinkler os;
 extern ProgramData pd;
 
-// Matter endpoint instances - direkt als statische Objekte, kein Pointer-Array nötig
-// Für Stationen (als Ventile = On/Off Plugins)
-MatterOnOffPlugin matter_stations[MAX_NUM_STATIONS];
+// Encapsulated Matter integration
+class OSMatterImpl {
+public:
+  // endpoint storage
+  std::unordered_map<unsigned char, std::unique_ptr<MatterOnOffPlugin>> stations;
+  std::vector<MatterTemperatureSensor> temp_sensors;
+  std::vector<MatterHumiditySensor> hum_sensors;
 
-// Für Sensoren - gruppiert nach Typ
-MatterTemperatureSensor matter_temp_sensors[MAX_NUM_SENSORS];
-MatterHumiditySensor matter_hum_sensors[MAX_NUM_SENSORS];
+  bool initialized = false;
+  bool commissioned = false;
+  uint32_t sensor_signature = 0;
 
-static bool matter_initialized = false;
-static bool matter_commissioned = false;
+  struct SensorProfile { uint8_t temp_count=0; uint8_t hum_count=0; uint32_t signature=0; };
 
-// Zähler für tatsächlich verwendete Endpoints pro Typ
-static uint8_t num_temp_sensors = 0;
-static uint8_t num_hum_sensors = 0;
+  static OSMatterImpl& instance() {
+    static OSMatterImpl impl;
+    return impl;
+  }
 
-/**
- * Matter event callback
- * Handles commissioning events, fabric changes, etc.
- */
-static void matter_event_callback(matterEvent_t event, const chip::DeviceLayer::ChipDeviceEvent *eventData) {
-	DEBUG_PRINTF("Matter Event: 0x%04X\n", event);
-	
-	switch(event) {
-		case MATTER_EVENT_COMMISSIONED:
-			matter_commissioned = true;
-			DEBUG_PRINTLN("Matter: Device commissioned");
-			break;
-			
-		case MATTER_EVENT_DECOMMISSIONED:
-			matter_commissioned = false;
-			DEBUG_PRINTLN("Matter: Device decommissioned");
-			break;
-			
-		case MATTER_EVENT_FABRIC_ADDED:
-			DEBUG_PRINTLN("Matter: Fabric added");
-			break;
-			
-		case MATTER_EVENT_FABRIC_REMOVED:
-			DEBUG_PRINTLN("Matter: Fabric removed");
-			break;
-			
-		case MATTER_EVENT_WIFI_CONNECTIVITY_CHANGE:
-			DEBUG_PRINTLN("Matter: WiFi connectivity changed");
-			break;
-			
-		default:
-			break;
-	}
+  static void event_callback(matterEvent_t event, const chip::DeviceLayer::ChipDeviceEvent *eventData) {
+    (void)eventData;
+    DEBUG_PRINTF("Matter Event: 0x%04X\n", event);
+    auto &self = instance();
+    switch(event) {
+      case MATTER_EVENT_COMMISSIONED:
+        self.commissioned = true;
+        DEBUG_PRINTLN("Matter: Device commissioned");
+        break;
+      case MATTER_EVENT_DECOMMISSIONED:
+        self.commissioned = false;
+        DEBUG_PRINTLN("Matter: Device decommissioned");
+        break;
+      case MATTER_EVENT_FABRIC_ADDED:
+        DEBUG_PRINTLN("Matter: Fabric added");
+        break;
+      case MATTER_EVENT_FABRIC_REMOVED:
+        DEBUG_PRINTLN("Matter: Fabric removed");
+        break;
+      case MATTER_EVENT_WIFI_CONNECTIVITY_CHANGE:
+        DEBUG_PRINTLN("Matter: WiFi connectivity changed");
+        break;
+      default:
+        break;
+    }
+  }
+
+  SensorProfile compute_sensor_profile() {
+    SensorProfile profile{};
+    SensorIterator it;
+    SensorBase* sensor;
+    while ((sensor = sensors_iterate_next(it)) != nullptr) {
+      if (!sensor || sensor->type == SENSOR_NONE) continue;
+      profile.signature = (profile.signature * 131u) ^ ((uint32_t)sensor->type << 16) ^ sensor->nr;
+      switch(sensor->type) {
+        case SENSOR_SMT100_TEMP:
+        case SENSOR_SMT50_TEMP:
+        case SENSOR_SMT100_ANALOG_TEMP:
+        case SENSOR_OSPI_ANALOG_SMT50_TEMP:
+        case SENSOR_INTERNAL_TEMP:
+        case SENSOR_TH100_TEMP:
+        case SENSOR_THERM200:
+        case SENSOR_FYTA_TEMPERATURE:
+        case SENSOR_WEATHER_TEMP_C:
+        case SENSOR_WEATHER_TEMP_F:
+          profile.temp_count++;
+          break;
+        case SENSOR_TH100_MOIS:
+        case SENSOR_WEATHER_HUM:
+          profile.hum_count++;
+          break;
+        default:
+          break;
+      }
+    }
+    return profile;
+  }
+
+  void init() {
+    DEBUG_PRINTLN("Matter: Initializing...");
+    if (initialized) { DEBUG_PRINTLN("Matter: Already initialized"); return; }
+
+    stations.clear(); temp_sensors.clear(); hum_sensors.clear(); sensor_signature = 0;
+
+    // ====== Check available heap BEFORE creating endpoints ======
+    uint32_t heap_before_endpoints = ESP.getFreeHeap();
+    DEBUG_PRINTF("Matter: Free heap before endpoint creation: %d bytes (%d KB)\n", 
+                 heap_before_endpoints, heap_before_endpoints/1024);
+    
+    // MEMORY-SAFE: Require minimum heap before proceeding
+    // Matter.begin() needs ~50-80KB for mbedTLS, CHIP stack, etc.
+    // On ESP32-C5 with precompiled libs, mbedTLS uses INTERNAL RAM only!
+    const uint32_t MIN_HEAP_FOR_MATTER = 80000; // 80KB minimum
+    const uint32_t MAX_STATIONS_LOW_MEM = 4;    // Limit stations if low memory
+    
+    if (heap_before_endpoints < MIN_HEAP_FOR_MATTER) {
+      DEBUG_PRINTF("Matter: INSUFFICIENT HEAP (%d KB < %d KB minimum)\n", 
+                   heap_before_endpoints/1024, MIN_HEAP_FOR_MATTER/1024);
+      DEBUG_PRINTLN("Matter: The precompiled Arduino framework uses internal RAM for mbedTLS");
+      DEBUG_PRINTLN("Matter: WiFi/BLE/Zigbee already consumed most internal heap");
+      DEBUG_PRINTLN("Matter: Cannot start Matter with current memory constraints");
+      DEBUG_PRINTLN("Matter: Consider disabling WiFi-heavy features or using fewer stations");
+      return;
+    }
+    
+    uint8_t nstations = os.nstations;
+    uint8_t max_matter_stations = nstations;
+    
+    // Limit stations if heap is tight (between 80-120KB)
+    if (heap_before_endpoints < 120000 && nstations > MAX_STATIONS_LOW_MEM) {
+      max_matter_stations = MAX_STATIONS_LOW_MEM;
+      DEBUG_PRINTF("Matter: LOW MEMORY - limiting to %d stations (of %d total)\n", 
+                   max_matter_stations, nstations);
+    }
+    
+    DEBUG_PRINTF("Matter: Creating valve endpoints for enabled stations (max: %d of %d total)...\n", 
+                 max_matter_stations, nstations);
+    uint8_t created_count = 0;
+    for (unsigned char sid = 0; sid < nstations && created_count < max_matter_stations; sid++) {
+      unsigned char bid = sid >> 3; unsigned char sbit = sid & 0x07;
+      bool is_disabled = (os.attrib_dis[bid] & (1 << sbit)) != 0;
+      if (is_disabled) { DEBUG_PRINTF("Matter: Station %d is disabled, skipping\n", sid); continue; }
+      stations[sid] = std::make_unique<MatterOnOffPlugin>();
+      bool is_on = (os.station_bits[(sid>>3)] >> (sid&0x07)) & 1;
+      if (stations[sid]->begin(is_on)) {
+        stations[sid]->onChange([sid](bool value) {
+          DEBUG_PRINTF("Matter: Station %d OnOff -> %s\n", sid, value ? "ON" : "OFF");
+          if (value) OSMatter::instance().station_on(sid); else OSMatter::instance().station_off(sid);
+          return true;
+        });
+        DEBUG_PRINTF("Matter: Created valve endpoint for station %d\n", sid);
+        created_count++;
+      }
+    }
+    DEBUG_PRINTF("Matter: %zu enabled station endpoints created, sensors will be discovered on first loop\n", stations.size());
+
+    Matter.onEvent(event_callback);
+
+#if !HAS_ESP_BT
+    DEBUG_PRINTLN("Matter: BT/BLE support not available on this build; skipping Matter init");
+    return;
+#elif HAS_NIMBLE
+    // ESP32-C5 uses NimBLE stack - Matter SDK handles BLE initialization
+    DEBUG_PRINTLN("Matter: Using NimBLE stack for BLE commissioning");
+#elif HAS_BLUEDROID
+    // ESP32/ESP32-S3 with Bluedroid stack - manual BT controller init
+    esp_bt_controller_status_t bt_status = esp_bt_controller_get_status();
+    DEBUG_PRINTF("Matter: BT controller status before init: %d\n", bt_status);
+    if (bt_status == ESP_BT_CONTROLLER_STATUS_IDLE) {
+      esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+      esp_err_t init_ret = esp_bt_controller_init(&bt_cfg);
+      DEBUG_PRINTF("Matter: BT controller init ret=%d\n", init_ret);
+      if (init_ret != ESP_OK && init_ret != ESP_ERR_INVALID_STATE) { DEBUG_PRINTF("Matter: BLE controller init failed (%d), skipping Matter init\n", init_ret); return; }
+      bt_status = esp_bt_controller_get_status();
+    }
+    if (bt_status != ESP_BT_CONTROLLER_STATUS_ENABLED) {
+      esp_err_t en_ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+      DEBUG_PRINTF("Matter: BT controller enable ret=%d\n", en_ret);
+      if (en_ret != ESP_OK && en_ret != ESP_ERR_INVALID_STATE) { DEBUG_PRINTF("Matter: BLE controller enable failed (%d), skipping Matter init\n", en_ret); return; }
+      bt_status = esp_bt_controller_get_status();
+    }
+    DEBUG_PRINTF("Matter: BT controller status after init/enable: %d\n", bt_status);
+    if (bt_status != ESP_BT_CONTROLLER_STATUS_ENABLED) { DEBUG_PRINTF("Matter: BLE controller not enabled (status=%d), skipping Matter init\n", bt_status); return; }
+#endif
+
+    // ====== Pre-Matter memory status ======
+    DEBUG_PRINTLN("Matter: ========== PRE-INIT MEMORY STATUS ==========");
+    uint32_t heap_before = ESP.getFreeHeap();
+    uint32_t heap_min_before = ESP.getMinFreeHeap();
+    DEBUG_PRINTF("Matter: Free Heap: %d bytes (%d KB)\n", heap_before, heap_before/1024);
+    DEBUG_PRINTF("Matter: Min Free Heap: %d bytes (%d KB)\n", heap_min_before, heap_min_before/1024);
+    #if defined(BOARD_HAS_PSRAM)
+    uint32_t psram_before = ESP.getFreePsram();
+    DEBUG_PRINTF("Matter: Free PSRAM: %d bytes (%.2f MB)\n", psram_before, psram_before/1048576.0);
+    #endif
+    DEBUG_PRINTLN("Matter: ===============================================");
+    
+    DEBUG_PRINTLN("Matter: Calling Matter.begin()...");
+    Matter.begin();
+    
+    // Check if Matter actually started - give it a moment
+    delay(500);
+    
+    uint32_t heap_after = ESP.getFreeHeap();
+    
+    // ====== Post-Matter memory status ======
+    DEBUG_PRINTLN("Matter: ========== POST-INIT MEMORY STATUS ==========");
+    DEBUG_PRINTF("Matter: Free Heap: %d bytes (%d KB)\n", heap_after, heap_after/1024);
+    DEBUG_PRINTF("Matter: Min Free Heap: %d bytes (%d KB)\n", ESP.getMinFreeHeap(), ESP.getMinFreeHeap()/1024);
+    #if defined(BOARD_HAS_PSRAM)
+    DEBUG_PRINTF("Matter: Free PSRAM: %d bytes (%.2f MB)\n", ESP.getFreePsram(), ESP.getFreePsram()/1048576.0);
+    DEBUG_PRINTF("Matter: PSRAM used: %d bytes\n", psram_before - ESP.getFreePsram());
+    #endif
+    
+    // If Matter failed to start, very little heap was consumed (no CHIP stack allocated)
+    // A successful Matter init typically uses 50-100KB+ of heap
+    uint32_t heap_used = (heap_before > heap_after) ? (heap_before - heap_after) : 0;
+    DEBUG_PRINTF("Matter: Heap used by Matter.begin(): %d bytes (%d KB)\n", heap_used, heap_used/1024);
+    DEBUG_PRINTLN("Matter: ===============================================");
+    
+    // If less than 10KB used, Matter likely failed to initialize the CHIP stack
+    if (heap_used < 10000) {
+      DEBUG_PRINTLN("Matter: CHIP stack initialization likely failed (low memory usage)");
+      DEBUG_PRINTLN("Matter: This usually means mbedTLS or entropy init failed");
+      DEBUG_PRINTLN("Matter: Disabling Matter integration for this session");
+      stations.clear();
+      return;
+    }
+    
+    // Verify that at least one station endpoint is functional
+    // If Matter.begin() failed internally, the endpoints won't work
+    if (stations.empty()) {
+      DEBUG_PRINTLN("Matter: No station endpoints available");
+      return;
+    }
+    
+    // Try to get QR code - if this returns empty, Matter probably failed
+    String qr_url = Matter.getOnboardingQRCodeUrl();
+    String manual_code = Matter.getManualPairingCode();
+    if (qr_url.length() == 0 || manual_code.length() == 0) {
+      DEBUG_PRINTLN("Matter: Failed to initialize - no pairing codes available");
+      stations.clear();
+      return;
+    }
+    
+    if (!Matter.isDeviceCommissioned()) {
+      DEBUG_PRINTLN("Matter: Device not commissioned");
+      DEBUG_PRINTF("Matter: QR Code URL: %s\n", qr_url.c_str());
+      DEBUG_PRINTF("Matter: Manual Code: %s\n", Matter.getManualPairingCode().c_str());
+    } else {
+      commissioned = true;
+      DEBUG_PRINTLN("Matter: Device already commissioned");
+      for (auto& entry : stations) { if (entry.second) entry.second->updateAccessory(); }
+    }
+
+    initialized = true;
+    DEBUG_PRINTLN("Matter: Init complete");
+  }
+
+  void loop() {
+    if (!initialized) return;
+    
+    // Safety check: verify Matter stack is still functional
+    // If heap is critically low, skip processing to avoid crashes
+    if (ESP.getFreeHeap() < 20000) {
+      static bool heap_warning_shown = false;
+      if (!heap_warning_shown) {
+        DEBUG_PRINTLN("Matter: Low heap warning - skipping sensor processing");
+        heap_warning_shown = true;
+      }
+      return;
+    }
+    
+    static bool sensors_initialized = false;
+    if (!sensors_initialized) {
+      sensors_initialized = true;
+      
+      // Extra safety: verify Matter is still initialized and stations are valid
+      if (!initialized || stations.empty()) {
+        DEBUG_PRINTLN("Matter: Not properly initialized - skipping sensor discovery");
+        return;
+      }
+      
+      // Additional safety: check if any station pointer is actually valid
+      bool has_valid_station = false;
+      for (const auto& entry : stations) {
+        if (entry.second && entry.second.get() != nullptr) {
+          has_valid_station = true;
+          break;
+        }
+      }
+      if (!has_valid_station) {
+        DEBUG_PRINTLN("Matter: No valid station endpoints - skipping sensor discovery");
+        return;
+      }
+      
+      SensorIterator it; SensorBase* sensor;
+      DEBUG_PRINTLN("Matter: Discovering sensors...");
+      while ((sensor = sensors_iterate_next(it)) != nullptr) {
+        if (!sensor || sensor->type == SENSOR_NONE) continue;
+        switch(sensor->type) {
+          case SENSOR_SMT100_TEMP: case SENSOR_SMT50_TEMP: case SENSOR_SMT100_ANALOG_TEMP:
+          case SENSOR_OSPI_ANALOG_SMT50_TEMP: case SENSOR_INTERNAL_TEMP: case SENSOR_TH100_TEMP:
+          case SENSOR_THERM200: case SENSOR_FYTA_TEMPERATURE: case SENSOR_WEATHER_TEMP_C:
+          case SENSOR_WEATHER_TEMP_F: {
+            MatterTemperatureSensor temp_sensor; if (temp_sensor.begin()) { temp_sensors.push_back(temp_sensor); DEBUG_PRINTF("Matter: Temp sensor %d -> endpoint %zu\n", sensor->nr, temp_sensors.size()-1); }
+            break; }
+          case SENSOR_TH100_MOIS: case SENSOR_WEATHER_HUM: {
+            MatterHumiditySensor hum_sensor; if (hum_sensor.begin()) { hum_sensors.push_back(hum_sensor); DEBUG_PRINTF("Matter: Humidity sensor %d -> endpoint %zu\n", sensor->nr, hum_sensors.size()-1); }
+            break; }
+          default: break;
+        }
+      }
+      DEBUG_PRINTF("Matter: Found %zu temp, %zu humidity sensors\n", temp_sensors.size(), hum_sensors.size());
+    }
+
+    SensorProfile current_profile = compute_sensor_profile();
+    uint8_t enabled_station_count = 0;
+    for (unsigned char sid = 0; sid < os.nstations; sid++) {
+      unsigned char bid = sid >> 3; unsigned char sbit = sid & 0x07;
+      if ((os.attrib_dis[bid] & (1 << sbit)) == 0) enabled_station_count++;
+    }
+    bool stations_changed = (enabled_station_count != stations.size());
+    bool sensors_changed = (current_profile.signature != sensor_signature) ||
+                           ((uint8_t)current_profile.temp_count != temp_sensors.size()) ||
+                           ((uint8_t)current_profile.hum_count != hum_sensors.size());
+    if (stations_changed || sensors_changed) {
+      DEBUG_PRINTLN("Matter: Topology changed, reinitializing endpoints...");
+      sensors_initialized = false;
+      shutdown();
+      init();
+      return;
+    }
+
+    static unsigned long last_status_check = 0;
+    if (millis() - last_status_check > 60000) {
+      if (!commissioned && Matter.isDeviceCommissioned()) { commissioned = true; DEBUG_PRINTLN("Matter: Device commissioned (detected in loop)"); }
+      last_status_check = millis();
+    }
+  }
+
+  void shutdown() {
+    if (!initialized) return;
+    DEBUG_PRINTLN("Matter: Shutting down...");
+    initialized = false; commissioned = false; sensor_signature = 0;
+    stations.clear(); temp_sensors.clear(); hum_sensors.clear();
+    DEBUG_PRINTLN("Matter: Shutdown complete");
+  }
+
+  void station_on(unsigned char sid) {
+    DEBUG_PRINTF("Matter: Station %d ON requested\n", sid);
+    if (sid >= os.nstations) return;
+    if ((os.status.mas == sid+1) || (os.status.mas2 == sid+1)) return;
+    unsigned char sqi = pd.station_qid[sid]; if (sqi != 0xFF) return;
+    RuntimeQueueStruct *q = pd.enqueue(); if (!q) return;
+    q->st = 0; q->dur = 60; q->sid = sid; q->pid = 99; schedule_all_stations(os.now_tz());
+  }
+
+  void station_off(unsigned char sid) {
+    if (sid >= os.nstations) return;
+    unsigned char ssta = 0; RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
+    q->deque_time = os.now_tz(); turn_off_station(sid, os.now_tz(), ssta);
+  }
+};
+
+// Public OSMatter interface implementation
+OSMatter& OSMatter::instance() {
+  static OSMatter inst;
+  return inst;
 }
 
-/**
- * Initialize Matter stack
- */
-void matter_init() {
-	DEBUG_PRINTLN("Matter: Initializing...");
-	
-	if (matter_initialized) {
-		DEBUG_PRINTLN("Matter: Already initialized");
-		return;
-	}
-	
-	// Reset Zähler
-	num_temp_sensors = 0;
-	num_hum_sensors = 0;
-	
-	// 1. Register event callback
-	Matter.onEvent(matter_event_callback);
-	
-	// 2. Create valve endpoints for each station (als On/Off Plugins)
-	DEBUG_PRINTF("Matter: Creating %d valve endpoints...\n", os.nstations);
-	for (unsigned char sid = 0; sid < os.nstations; sid++) {
-		// Set initial state from current station bits
-		bool is_on = (os.station_bits[(sid>>3)] >> (sid&0x07)) & 1;
-		
-		// Begin endpoint with initial state
-		if (matter_stations[sid].begin(is_on)) {
-			// Register callback using lambda to capture station ID
-			matter_stations[sid].onChange([sid](bool value) {
-				DEBUG_PRINTF("Matter: Station %d OnOff -> %s\n", sid, value ? "ON" : "OFF");
-				if (value) {
-					matter_station_on(sid);
-				} else {
-					matter_station_off(sid);
-				}
-				return true; // Return true to acknowledge the change
-			});
-			DEBUG_PRINTF("Matter: Created valve endpoint %d\n", sid);
-		} else {
-			DEBUG_PRINTF("Matter: Failed to create valve endpoint %d\n", sid);
-		}
-	}
-	
-	// 3. Create sensor endpoints based on configured sensors
-	DEBUG_PRINTLN("Matter: Creating sensor endpoints...");
-	
-	SensorIterator it;
-	SensorBase* sensor;
-	while ((sensor = sensors_iterate_next(it)) != nullptr) {
-		if (!sensor || sensor->type == SENSOR_NONE) continue;
-		
-		// Map sensor types to Matter endpoints
-		switch(sensor->type) {
-			// Temperature sensors
-			case SENSOR_SMT100_TEMP:
-			case SENSOR_SMT50_TEMP:
-			case SENSOR_SMT100_ANALOG_TEMP:
-			case SENSOR_OSPI_ANALOG_SMT50_TEMP:
-			case SENSOR_OSPI_INTERNAL_TEMP:
-			case SENSOR_TH100_TEMP:
-			case SENSOR_THERM200:
-			case SENSOR_FYTA_TEMPERATURE:
-			case SENSOR_WEATHER_TEMP_C:
-			case SENSOR_WEATHER_TEMP_F:
-				if (num_temp_sensors < MAX_NUM_SENSORS) {
-					// Begin mit default Temperatur (20°C = 2000 in centi-degrees)
-					if (matter_temp_sensors[num_temp_sensors].begin()) {
-						DEBUG_PRINTF("Matter: Temp sensor %d -> endpoint %d\n", sensor->nr, num_temp_sensors);
-						num_temp_sensors++;
-					}
-				}
-				break;
-				
-			// Humidity sensors
-			case SENSOR_TH100_MOIS:
-			case SENSOR_WEATHER_HUM:
-				if (num_hum_sensors < MAX_NUM_SENSORS) {
-					// Begin mit default Humidity (50% = 5000 in basis points)
-					if (matter_hum_sensors[num_hum_sensors].begin()) {
-						DEBUG_PRINTF("Matter: Humidity sensor %d -> endpoint %d\n", sensor->nr, num_hum_sensors);
-						num_hum_sensors++;
-					}
-				}
-				break;
-				
-			default:
-				break;
-		}
-	}
-	
-	DEBUG_PRINTF("Matter: Created %d temp, %d humidity sensors\n", 
-		num_temp_sensors, num_hum_sensors);
-	
-	// 4. Start Matter stack - MUST be called after all endpoints are created
-	Matter.begin();
-	
-	// Print commissioning info
-	if (!Matter.isDeviceCommissioned()) {
-		DEBUG_PRINTLN("Matter: Device not commissioned");
-		DEBUG_PRINTF("Matter: QR Code URL: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
-		DEBUG_PRINTF("Matter: Manual Code: %s\n", Matter.getManualPairingCode().c_str());
-	} else {
-		matter_commissioned = true;
-		DEBUG_PRINTLN("Matter: Device already commissioned");
-		// Update all accessories to reflect current state
-		for (unsigned char sid = 0; sid < os.nstations; sid++) {
-			matter_stations[sid].updateAccessory();
-		}
-	}
-	
-	matter_initialized = true;
-	DEBUG_PRINTLN("Matter: Init complete");
-}
+void OSMatter::init() { OSMatterImpl::instance().init(); }
+void OSMatter::loop() { OSMatterImpl::instance().loop(); }
+void OSMatter::shutdown() { OSMatterImpl::instance().shutdown(); }
+void OSMatter::station_on(unsigned char sid) { OSMatterImpl::instance().station_on(sid); }
+void OSMatter::station_off(unsigned char sid) { OSMatterImpl::instance().station_off(sid); }
+void OSMatter::update_station_status(unsigned char sid, bool on) { (void)sid; (void)on; }
+void OSMatter::update_flow_rate(float gpm) { (void)gpm; }
+void OSMatter::update_sensor_value(unsigned char sensor_id, float value) { (void)sensor_id; (void)value; }
+bool OSMatter::is_commissioned() const { return OSMatterImpl::instance().commissioned; }
+uint8_t OSMatter::get_fabric_count() const { return 0; }
+void OSMatter::factory_reset() {}
 
-/**
- * Matter main loop handler
- */
-void matter_loop() {
-	if (!matter_initialized) return;
-	// Arduino Matter SDK handles processing in background tasks
-	// No explicit loop processing needed
-	
-	// Optionally: periodically check commissioning status
-	static unsigned long last_status_check = 0;
-	if (millis() - last_status_check > 60000) { // Every 60 seconds
-		if (!matter_commissioned && Matter.isDeviceCommissioned()) {
-			matter_commissioned = true;
-			DEBUG_PRINTLN("Matter: Device commissioned (detected in loop)");
-		}
-		last_status_check = millis();
-	}
-}
-
-/**
- * Shutdown Matter stack
- */
-void matter_shutdown() {
-	if (!matter_initialized) return;
-	
-	DEBUG_PRINTLN("Matter: Shutting down...");
-	
-	// Note: Arduino Matter SDK endpoints are static objects, no delete needed
-	// Just reset state
-	matter_initialized = false;
-	matter_commissioned = false;
-	num_temp_sensors = 0;
-	num_hum_sensors = 0;
-	
-	DEBUG_PRINTLN("Matter: Shutdown complete");
-}
-
-/**
- * Turn on station via Matter command
- */
-void matter_station_on(unsigned char sid) {
-	DEBUG_PRINTF("Matter: Station %d ON requested\n", sid);
-	
-	if (sid >= os.nstations) {
-		DEBUG_PRINTLN("Matter: Invalid station ID");
-		return;
-	}
-	
-	// Check if station is a master station (cannot be scheduled independently)
-	if ((os.status.mas == sid+1) || (os.status.mas2 == sid+1)) {
-		DEBUG_PRINTLN("Matter: Cannot schedule master station");
-		return;
-	}
-	
-	// Check if station already has a schedule
-	unsigned char sqi = pd.station_qid[sid];
-	if (sqi != 0xFF) {
-		DEBUG_PRINTF("Matter: Station %d already scheduled\n", sid);
-		return;
-	}
-	
-	// Create new queue element
-	RuntimeQueueStruct *q = pd.enqueue();
-	if (!q) {
-		DEBUG_PRINTLN("Matter: Queue full, cannot schedule");
-		return;
-	}
-	
-	// Default timer: 10 minutes (600 seconds)
-	uint16_t timer = 600;
-	
-	// Schedule the station
-	unsigned long curr_time = os.now_tz();
-	q->st = 0;
-	q->dur = timer;
-	q->sid = sid;
-	q->pid = 99; // Matter-controlled stations use program index 99
-	
-	// Schedule all stations (qo=0: append to queue)
-	extern void schedule_all_stations(time_os_t, unsigned char);
-	schedule_all_stations(curr_time, 0);
-	
-	DEBUG_PRINTF("Matter: Station %d scheduled for %d seconds\n", sid, timer);
-}
-
-/**
- * Turn off station via Matter command
- */
-void matter_station_off(unsigned char sid) {
-	DEBUG_PRINTF("Matter: Station %d OFF requested\n", sid);
-	
-	if (sid >= os.nstations) {
-		DEBUG_PRINTLN("Matter: Invalid station ID");
-		return;
-	}
-	
-	// Check if station is in queue
-	if (pd.station_qid[sid] == 255) {
-		DEBUG_PRINTF("Matter: Station %d not running\n", sid);
-		return;
-	}
-	
-	// Mark station for removal and turn off
-	unsigned long curr_time = os.now_tz();
-	RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
-	q->deque_time = curr_time;
-	
-	// Turn off station (ssta=0: no shift remaining stations)
-	extern void turn_off_station(unsigned char, time_os_t, unsigned char);
-	turn_off_station(sid, curr_time, 0);
-	
-	DEBUG_PRINTF("Matter: Station %d stopped\n", sid);
-}
-
-/**
- * Update Matter attribute when station status changes in OpenSprinkler
- */
-void matter_update_station_status(unsigned char sid, bool on) {
-	if (!matter_initialized || !matter_commissioned) return;
-	if (sid >= os.nstations) return;
-	
-	DEBUG_PRINTF("Matter: Update station %d status to %s\n", sid, on ? "ON" : "OFF");
-	
-	// Update OnOff attribute and notify Matter controllers
-	matter_stations[sid].setOnOff(on);
-	matter_stations[sid].updateAccessory();
-}
-
-/**
- * Update flow rate sensor in Matter
- */
-void matter_update_flow_rate(float gpm) {
-	if (!matter_initialized || !matter_commissioned) return;
-	
-	// Convert GPM (Gallons Per Minute) to L/h (Liters Per Hour)
-	// 1 GPM = 3.78541 liters/min = 227.125 liters/hour
-	float lph = gpm * 227.125f;
-	
-	DEBUG_PRINTF("Matter: Update flow rate %.2f GPM (%.2f L/h)\n", gpm, lph);
-	
-	// Note: Arduino Matter SDK doesn't have MatterFlowSensor yet
-	// Flow rate could be exposed as a custom attribute or numeric sensor
-	// For now, just log the value
-	// Future: Implement custom cluster or wait for SDK support
-}
-
-/**
- * Update generic sensor value in Matter
- */
-void matter_update_sensor_value(unsigned char sensor_id, float value) {
-	if (!matter_initialized || !matter_commissioned) return;
-	if (sensor_id >= MAX_NUM_SENSORS) return;
-	
-	DEBUG_PRINTF("Matter: Update sensor %d = %.2f\n", sensor_id, value);
-	
-	// Get sensor object
-	SensorBase* sensor = sensor_by_nr(sensor_id);
-	if (!sensor || sensor->type == SENSOR_NONE) return;
-	
-	// Find sensor in our endpoint arrays by iterating and counting
-	SensorIterator it;
-	SensorBase* s;
-	uint8_t temp_idx = 0, hum_idx = 0, rain_idx = 0;
-	bool found = false;
-	
-	while ((s = sensors_iterate_next(it)) != nullptr && !found) {
-		if (!s || s->type == SENSOR_NONE) continue;
-		
-		// Check if this is the sensor we're looking for
-		if (s->nr == sensor_id) {
-			// Update appropriate Matter endpoint based on sensor type
-			switch(sensor->type) {
-				// Temperature sensors (value is in Celsius)
-				case SENSOR_SMT100_TEMP:
-				case SENSOR_SMT50_TEMP:
-				case SENSOR_SMT100_ANALOG_TEMP:
-				case SENSOR_OSPI_ANALOG_SMT50_TEMP:
-				case SENSOR_OSPI_INTERNAL_TEMP:
-				case SENSOR_TH100_TEMP:
-				case SENSOR_THERM200:
-				case SENSOR_FYTA_TEMPERATURE:
-				case SENSOR_WEATHER_TEMP_C:
-					if (temp_idx < num_temp_sensors) {
-						// Matter expects temperature in Celsius * 100 (for 0.01°C precision)
-						matter_temp_sensors[temp_idx].setTemperature((int16_t)(value * 100));
-						DEBUG_PRINTF("Matter: Updated temp sensor %d: %.2f°C\n", sensor_id, value);
-					}
-					found = true;
-					break;
-					
-				case SENSOR_WEATHER_TEMP_F:
-					if (temp_idx < num_temp_sensors) {
-						// Convert Fahrenheit to Celsius
-						float celsius = (value - 32.0f) * 5.0f / 9.0f;
-						matter_temp_sensors[temp_idx].setTemperature((int16_t)(celsius * 100));
-						DEBUG_PRINTF("Matter: Updated temp sensor %d: %.2f°F (%.2f°C)\n", sensor_id, value, celsius);
-					}
-					found = true;
-					break;
-					
-				// Humidity sensors (value is percentage 0-100)
-				case SENSOR_TH100_MOIS:
-				case SENSOR_WEATHER_HUM:
-					if (hum_idx < num_hum_sensors) {
-						// Matter expects humidity in percent * 100 (for 0.01% precision)
-						matter_hum_sensors[hum_idx].setHumidity((uint16_t)(value * 100));
-						DEBUG_PRINTF("Matter: Updated humidity sensor %d: %.2f%%\n", sensor_id, value);
-					}
-					found = true;
-					break;
-					
-				default:
-					DEBUG_PRINTF("Matter: Sensor type %d not supported\n", sensor->type);
-					found = true; // Stop searching
-					break;
-			}
-		}
-		
-		// Count indices as we iterate (only if not found yet)
-		if (!found) {
-			switch(s->type) {
-				case SENSOR_SMT100_TEMP:
-				case SENSOR_SMT50_TEMP:
-				case SENSOR_SMT100_ANALOG_TEMP:
-				case SENSOR_OSPI_ANALOG_SMT50_TEMP:
-				case SENSOR_OSPI_INTERNAL_TEMP:
-				case SENSOR_TH100_TEMP:
-				case SENSOR_THERM200:
-				case SENSOR_FYTA_TEMPERATURE:
-				case SENSOR_WEATHER_TEMP_C:
-				case SENSOR_WEATHER_TEMP_F:
-					temp_idx++;
-					break;
-				case SENSOR_TH100_MOIS:
-				case SENSOR_WEATHER_HUM:
-					hum_idx++;
-					break;
-				default:
-					break;
-			}
-		}
-	}
-}
-/**
- * Check if device is commissioned
- */
-bool matter_is_commissioned() {
-	return matter_commissioned;
-}
-
-/**
- * Get number of commissioned fabrics
- */
-uint8_t matter_get_fabric_count() {
-	if (!matter_initialized) return 0;
-	
-	// Arduino Matter SDK doesn't expose fabric count directly
-	// Return 1 if commissioned, 0 otherwise
-	return matter_commissioned ? 1 : 0;
-}
-
-/**
- * Factory reset Matter credentials
- */
-void matter_factory_reset() {
-	DEBUG_PRINTLN("Matter: Factory reset requested");
-	
-	if (!matter_initialized) {
-		DEBUG_PRINTLN("Matter: Not initialized, cannot factory reset");
-		return;
-	}
-	
-	// Decommission device (clears all Matter credentials and fabrics)
-	Matter.decommission();
-	
-	matter_commissioned = false;
-	DEBUG_PRINTLN("Matter: Factory reset complete - device decommissioned");
-	DEBUG_PRINTLN("Matter: Device needs to be recommissioned");
-	DEBUG_PRINTF("Matter: QR Code URL: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
-	DEBUG_PRINTF("Matter: Manual Code: %s\n", Matter.getManualPairingCode().c_str());
-}
+// Backward-compatible free-function wrappers
+void matter_init() { OSMatter::instance().init(); }
+void matter_loop() { OSMatter::instance().loop(); }
+void matter_shutdown() { OSMatter::instance().shutdown(); }
+void matter_station_on(unsigned char sid) { OSMatter::instance().station_on(sid); }
+void matter_station_off(unsigned char sid) { OSMatter::instance().station_off(sid); }
+void matter_update_station_status(unsigned char sid, bool on) { OSMatter::instance().update_station_status(sid, on); }
+void matter_update_flow_rate(float gpm) { OSMatter::instance().update_flow_rate(gpm); }
+void matter_update_sensor_value(unsigned char sensor_id, float value) { OSMatter::instance().update_sensor_value(sensor_id, value); }
+bool matter_is_commissioned() { return OSMatter::instance().is_commissioned(); }
+uint8_t matter_get_fabric_count() { return OSMatter::instance().get_fabric_count(); }
+void matter_factory_reset() { OSMatter::instance().factory_reset(); }
 
 #endif // ENABLE_MATTER

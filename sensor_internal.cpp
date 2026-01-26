@@ -74,8 +74,23 @@ int InternalSensor::read(unsigned long time) {
     }
 #endif // defined(ESP8266) || defined(ESP32)
 
+#if defined(ESP32)
+    case SENSOR_INTERNAL_TEMP: {
+      float temp = temperatureRead();
+      int32_t temp_milli = (int32_t)(temp * 1000.0f);
+      if (this->last_native_data == (uint32_t)temp_milli)
+        return HTTP_RQT_NOT_RECEIVED;
+
+      this->last_read = time;
+      this->last_native_data = (uint32_t)temp_milli;
+      this->last_data = temp;
+      this->flags.data_ok = true;
+      return HTTP_RQT_SUCCESS;
+    }
+#endif // defined(ESP32)
+
 #if defined(OSPI)
-    case SENSOR_OSPI_INTERNAL_TEMP: {
+    case SENSOR_INTERNAL_TEMP: {
       char buf[10];
       size_t res = 0;
       FILE *fp = fopen("/sys/class/thermal/thermal_zone0/temp", "r");

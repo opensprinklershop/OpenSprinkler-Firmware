@@ -133,7 +133,7 @@
 
 extern OpenSprinkler os;
 extern ProgramData pd;
-extern char tmp_buffer[];
+// tmp_buffer declared in sensors.h
 static unsigned long last_reconnect_attempt;
 
 #define OS_MQTT_KEEPALIVE      60

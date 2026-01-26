@@ -1,2 +1,0 @@
-lto-wrapper.exe: warning: using serial compilation of 15 LTRANS jobs
-lto-wrapper.exe: note: see the '-flto' option documentation for more information

@@ -47,21 +47,41 @@
 #define MATTER_DEVICE_TYPE_VALVE       0x0042
 #define MATTER_DEVICE_TYPE_FLOW_SENSOR 0x0306
 
-// Matter initialization and management
+// Forward-declared class encapsulating Matter state and behavior
+class OSMatter {
+public:
+	// Singleton accessor
+	static OSMatter& instance();
+
+	// Lifecycle
+	void init();
+	void loop();
+	void shutdown();
+
+	// Station control
+	void station_on(unsigned char sid);
+	void station_off(unsigned char sid);
+	void update_station_status(unsigned char sid, bool on);
+
+	// Sensor integration (placeholders for future use)
+	void update_flow_rate(float gpm);
+	void update_sensor_value(unsigned char sensor_id, float value);
+
+	// Status and diagnostics
+	bool is_commissioned() const;
+	uint8_t get_fabric_count() const; // not implemented yet
+	void factory_reset();             // not implemented yet
+};
+
+// Backward-compatible free-function wrappers
 void matter_init();
 void matter_loop();
 void matter_shutdown();
-
-// Station control callbacks
 void matter_station_on(unsigned char sid);
 void matter_station_off(unsigned char sid);
 void matter_update_station_status(unsigned char sid, bool on);
-
-// Sensor integration
 void matter_update_flow_rate(float gpm);
 void matter_update_sensor_value(unsigned char sensor_id, float value);
-
-// Status and diagnostics
 bool matter_is_commissioned();
 uint8_t matter_get_fabric_count();
 void matter_factory_reset();

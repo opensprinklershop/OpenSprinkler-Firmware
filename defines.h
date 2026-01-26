@@ -28,6 +28,13 @@
 
 typedef unsigned long ulong;
 
+// PSRAM allocation attribute: use PSRAM for large static arrays if available
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+  #define PSRAM_ATTR EXT_RAM_BSS_ATTR
+#else
+  #define PSRAM_ATTR
+#endif
+
 #define TMP_BUFFER_SIZE      320   // scratch buffer size
 #define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
@@ -423,8 +430,10 @@ enum {
 	#define EEPROM_I2CADDR   0x50 // 24C02 EEPROM I2C address
 	#define CH224_I2CADDR    0x22 // CH224A/Q I2C address
 
+	#if !defined(ESP32)
 	#define PIN_CURR_SENSE    A0    // current sensing pin
 	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
+	#endif
 	#define PIN_FREE_LIST     {} // no free GPIO pin at the moment
 	#define ETHER_BUFFER_SIZE   2048
 	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
@@ -533,15 +542,15 @@ enum {
 	#define PIN_ETHER_RESET   -1
 #elif defined(ESP32C5)
 /* OS33 ESP32-C6 pin defines */
-	#define PIN_CURR_SENSE    A0    // current sensing pin
-	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
+	#define PIN_CURR_SENSE    A1    // current sensing pin
+	#define PIN_LATCH_VOLT_SENSE A1 // latch voltage sensing pin
 	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
 	#define ESP32_IO_CONFIG         0x1000 // config bits
 	#define ESP32_IO_OUTPUT         0x1E00 // output bits
-	#define ESP32_PIN_BUTTON_1      15 // button 1 (8266:2)
+	#define ESP32_PIN_BUTTON_1      10 // button 1 (8266:2)
 	#define ESP32_PIN_BUTTON_2      28 // button 2 (8266:0)
 	#define ESP32_PIN_BUTTON_3      IOEXP_PIN+12 // button 3
-	#define ESP32_PIN_RFTX          6 // 8266:15
+	#define ESP32_PIN_RFTX          24 // 8266:15
 	#define ESP32_PIN_BOOST         IOEXP_PIN+13
 	#define ESP32_PIN_BOOST_EN      IOEXP_PIN+14
 	#define ESP32_PIN_LATCH_COMA    IOEXP_PIN+8  // latch COM+ (anode)
@@ -550,16 +559,16 @@ enum {
 	#define V2_PIN_SRDAT            IOEXP_PIN+11 // shift register data
 	#define ESP32_PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
 	#define ESP32_PIN_SENSOR1       12  // sensor 1 (8266:3)
-	#define ESP32_PIN_SENSOR2       10  // sensor 2	(8266:10)
-	#define MIO2                    13  // QIO IO2 for external flash
-	#define MIO3                    14  // QIO IO3 for external flash
+	#define ESP32_PIN_SENSOR2       9   // sensor 2	(8266:10)
+	#define MIO2                    4   // 13  // QIO IO2 for external flash
+	#define MIO3                    23  // 14  // QIO IO3 for external flash
 
-	#define UART_TX_PIN             7   // ethernet pin out
-	#define UART_RX_PIN             8   // ethernet pin out
+	#define UART_TX_PIN             15   // UART pin out
+	#define UART_RX_PIN             27   // UART pin out
 
-	#define PIN_ETHER_CS       2 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
-	#define PIN_EXT_FLASH_CS   9 // external flash CS pin
-	#define PIN_ETHER_IRQ     -1 //
+	#define PIN_ETHER_CS       3  // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
+	#define PIN_EXT_FLASH_CS   5 // external flash CS pin
+	#define PIN_ETHER_IRQ     -1  //
 	#define PIN_ETHER_RESET   -1
 #endif
 
@@ -699,5 +708,17 @@ inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s);}
 #define BUTTON_WAIT_HOLD       2  // wait until button hold time expires
 
 #define DISPLAY_MSG_MS      2000  // message display time (milliseconds)
+
+// ====== Global buffer declarations ======
+// These buffers are defined in main.cpp and used throughout the codebase
+// For PSRAM-enabled ESP32 boards, they are dynamically allocated
+// For other platforms, they are statically allocated
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+  extern char* ether_buffer;
+  extern char* tmp_buffer;
+#else
+  extern char ether_buffer[];
+  extern char tmp_buffer[];
+#endif
 
 #endif  // _DEFINES_H

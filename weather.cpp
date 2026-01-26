@@ -31,8 +31,7 @@
 #include "ArduinoJson.hpp"
 
 extern OpenSprinkler os; // OpenSprinkler object
-extern char tmp_buffer[];
-extern char ether_buffer[];
+// ether_buffer and tmp_buffer declared in sensors.h
 unsigned char md_scales[MAX_N_MD_SCALES];
 unsigned char md_N = 0;
 unsigned char mda = 0;
@@ -160,6 +159,18 @@ static void getweather_callback_with_peel_header(char* buffer) {
 
 void GetWeather() {
 	if(!os.network_connected()) return;
+	
+	// Safety check: Don't attempt network operations with critically low heap
+	// This prevents crashes like "udp_new_ip_type: Required to lock TCPIP core"
+	#if defined(ESP32)
+	uint32_t free_heap = ESP.getFreeHeap();
+	if (free_heap < 10000) {
+		DEBUG_PRINTF("[WEATHER] Skipping - heap too low (%d bytes)\n", free_heap);
+		wt_errCode = HTTP_RQT_NOT_RECEIVED;
+		return;
+	}
+	#endif
+	
 	// use temp buffer to construct get command
 	BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE_L);
 	int method = os.iopts[IOPT_USE_WEATHER];

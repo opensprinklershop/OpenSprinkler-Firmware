@@ -1384,8 +1384,8 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
     case SENSOR_FREE_STORE:
       return new InternalSensor(type);
 #endif
-#if defined(OSPI)
-    case SENSOR_OSPI_INTERNAL_TEMP:
+#if defined(ESP32) || defined(OSPI)
+    case SENSOR_INTERNAL_TEMP:
       return new InternalSensor(type);
 #endif
 

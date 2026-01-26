@@ -222,7 +222,7 @@ unsigned char InternalSensor::getUnitId() const {
     case SENSOR_FREE_STORE: return UNIT_USERDEF;
 #endif
 #if defined(OSPI)
-    case SENSOR_OSPI_INTERNAL_TEMP: return UNIT_DEGREE;
+    case SENSOR_INTERNAL_TEMP: return UNIT_DEGREE;
 #endif
     default: return UNIT_NONE;
   }

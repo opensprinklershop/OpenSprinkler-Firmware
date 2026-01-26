@@ -131,7 +131,7 @@ extern "C" {
 #define SENSOR_OSPI_ANALOG_P            51  // Old OSPi analog input - percent 0..3.3V to 0...100%
 #define SENSOR_OSPI_ANALOG_SMT50_MOIS   52  // Old OSPi analog input - SMT50 VWC [%] = (U * 50) : 3
 #define SENSOR_OSPI_ANALOG_SMT50_TEMP   53  // Old OSPi analog input - SMT50 T [°C] = (U – 0,5) * 100
-#define SENSOR_OSPI_INTERNAL_TEMP       54  // Internal OSPI Temperature
+#define SENSOR_INTERNAL_TEMP            54  // Internal temperature (OSPI/ESP32)
 
 #define INDEPENDENT_SENSORS_START       60  // starting id for independent sensors
 #define SENSOR_FYTA_MOISTURE            60  // FYTA moisture sensor
@@ -430,8 +430,7 @@ const char *getSensorUnit(SensorBase *sensor);
 unsigned char getSensorUnitId(int type);
 unsigned char getSensorUnitId(SensorBase *sensor);
 
-extern char ether_buffer[];
-extern char tmp_buffer[];
+// ether_buffer and tmp_buffer are declared in defines.h
 extern OpenSprinkler os;
 extern ProgramData pd;
 extern NotifQueue notif;

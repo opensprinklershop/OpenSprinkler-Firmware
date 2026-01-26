@@ -34,7 +34,7 @@
 
 extern OpenSprinkler os;
 
-#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE) && !defined(ZIGBEE_MODE_ZCZR)
 
 #include <esp_partition.h>
 #include <vector>
@@ -49,6 +49,7 @@ extern OpenSprinkler os;
 // Zigbee End Device state
 static bool zigbee_initialized = false;
 static bool zigbee_connected = false;
+static unsigned long zigbee_last_use = 0;  // tracks last time Zigbee was needed
 
 // Active Zigbee sensor (prevents concurrent access)
 static int active_zigbee_sensor = 0;
@@ -190,6 +191,7 @@ private:
 
 // Flag to track if we need to reset NVRAM (e.g., after switching modes)
 static bool zigbee_needs_nvram_reset = false;
+static const unsigned long ZIGBEE_IDLE_TIMEOUT_MS = 15000;  // stop Zigbee after 15s idle
 
 /**
  * @brief Force a factory reset of Zigbee NVRAM on next start
@@ -198,6 +200,20 @@ static bool zigbee_needs_nvram_reset = false;
 void sensor_zigbee_factory_reset() {
     zigbee_needs_nvram_reset = true;
     DEBUG_PRINTLN(F("[ZIGBEE] Factory reset scheduled for next start"));
+}
+
+void sensor_zigbee_stop() {
+    if (!zigbee_initialized) return;
+    DEBUG_PRINTLN(F("[ZIGBEE] Stopping Zigbee to free memory"));
+    zigbee_initialized = false;
+    zigbee_connected = false;
+    if (reportReceiver) {
+        delete reportReceiver;
+        reportReceiver = nullptr;
+    }
+    // Deinit Zigbee stack to release heap/PSRAM
+    esp_zb_deinit();
+    esp_coex_wifi_i154_disable();
 }
 
 /**
@@ -237,6 +253,8 @@ void sensor_zigbee_start() {
     if (zigbee_initialized) {
         return;
     }
+
+    zigbee_last_use = millis();
 
     DEBUG_PRINTLN(F("[ZIGBEE] Starting Zigbee END DEVICE..."));
     DEBUG_PRINTLN(F("[ZIGBEE] NOTE: Connect to existing Zigbee network (e.g., Zigbee2MQTT)"));
@@ -348,6 +366,7 @@ bool sensor_zigbee_ensure_started() {
 void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoint,
                                             uint16_t cluster_id, uint16_t attr_id,
                                             int32_t value, uint8_t lqi) {
+    zigbee_last_use = millis();
     DEBUG_PRINTF(F("[ZIGBEE] Attribute callback: cluster=0x%04X, attr=0x%04X, value=%d\n"),
                  cluster_id, attr_id, value);
 
@@ -547,6 +566,7 @@ int ZigbeeSensor::read(unsigned long time) {
             active_zigbee_sensor = 0;
             return HTTP_RQT_NOT_RECEIVED;
         }
+        zigbee_last_use = millis();
         
         // Check if connected to network
         if (!Zigbee.started()) {
@@ -623,6 +643,12 @@ void sensor_zigbee_clear_new_device_flags() {
 
 void sensor_zigbee_loop() {
     if (!zigbee_initialized) return;
+
+    // Stop Zigbee after idle timeout to free memory for TLS/etc.
+    if ((millis() - zigbee_last_use) > ZIGBEE_IDLE_TIMEOUT_MS && active_zigbee_sensor == 0) {
+        sensor_zigbee_stop();
+        return;
+    }
     
     // Check connection status
     static bool last_connected = false;

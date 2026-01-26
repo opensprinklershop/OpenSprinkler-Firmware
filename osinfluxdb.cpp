@@ -32,7 +32,7 @@
 #include "defines.h"
 #include "OpenSprinkler.h"
 
-extern char tmp_buffer[];
+// tmp_buffer declared in sensors.h
 extern OpenSprinkler os;
 
 #if !defined(ESP32)

@@ -144,6 +144,7 @@ void start_network_ap(const char *ssid, const char *pass) {
 	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
 	#endif
+	DEBUG_PRINTLN("Starting AP mode done");
 }
 
 void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {

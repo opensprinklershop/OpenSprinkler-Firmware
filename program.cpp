@@ -34,12 +34,12 @@
 // Declare static data members
 unsigned char ProgramData::nprograms = 0;
 unsigned char ProgramData::nqueue = 0;
-RuntimeQueueStruct ProgramData::queue[RUNTIME_QUEUE_SIZE];
-unsigned char ProgramData::station_qid[MAX_NUM_STATIONS];
+PSRAM_ATTR RuntimeQueueStruct ProgramData::queue[RUNTIME_QUEUE_SIZE];
+PSRAM_ATTR unsigned char ProgramData::station_qid[MAX_NUM_STATIONS];
 LogStruct ProgramData::lastrun;
 time_os_t ProgramData::last_seq_stop_times[NUM_SEQ_GROUPS];
 
-extern char tmp_buffer[];
+// tmp_buffer declared in sensors.h
 
 void ProgramData::init() {
 	reset_runtime();

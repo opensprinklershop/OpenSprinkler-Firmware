@@ -98,8 +98,7 @@ using ArduinoJson::DeserializationError;
 using ArduinoJson::JsonArray;
 using ArduinoJson::JsonVariant;
 
-extern char ether_buffer[];
-extern char tmp_buffer[];
+// ether_buffer and tmp_buffer declared in sensors.h
 extern OpenSprinkler os;
 extern ProgramData pd;
 extern ulong flow_count;
@@ -3612,8 +3611,8 @@ static const int sensor_types[] = {
 	SENSOR_OSPI_ANALOG_SMT50_MOIS,
 	SENSOR_OSPI_ANALOG_SMT50_TEMP,
 #endif
-#if defined(OSPI)
-    SENSOR_OSPI_INTERNAL_TEMP,
+#if defined (OSPI) || defined(ESP32)
+	SENSOR_INTERNAL_TEMP,
 #endif
 
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
@@ -3677,6 +3676,9 @@ static const char* sensor_names[] = {
 #if defined(OSPI)
     "Internal Raspbery Pi temperature",
 #endif
+#if defined(ESP32)
+	"Internal ESP32 temperature",
+#endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	"FYTA moisture sensor",
 	"FYTA temperature sensor",
@@ -3704,7 +3706,7 @@ static const char* sensor_names[] = {
 };
 
 void free_tmp_memory() {
-#if defined(ESP8266) || defined(ESP32)
+#if defined(ESP8266)
 	DEBUG_PRINT(F("freememory start: "));
 	DEBUG_PRINTLN(freeMemory());
 
@@ -3717,7 +3719,7 @@ void free_tmp_memory() {
 }
 
 void restore_tmp_memory() {
-#if defined(ESP8266) || defined(ESP32)
+#if defined(ESP8266)
 	sensor_api_init(false);
 
 	DEBUG_PRINT(F("freememory restore: "));
@@ -4561,10 +4563,16 @@ void on_firmware_upload() {
 }
 
 void start_server_client() {
-	if(!otf) return;
+	DEBUG_PRINTLN(F("[SERVER] start_server_client() called"));
+	if(!otf) {
+		DEBUG_PRINTLN(F("[SERVER] ERROR: otf is NULL!"));
+		return;
+	}
+	DEBUG_PRINTLN(F("[SERVER] otf is valid"));
 	static bool callback_initialized = false;
 
 	if(!callback_initialized) {
+		DEBUG_PRINTLN(F("[SERVER] Registering callbacks..."));
 		otf->on("/", server_home);  // handle home page
 		otf->on("/index.html", server_home);
 		otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET); // handle firmware update
@@ -4581,12 +4589,28 @@ void start_server_client() {
 			otf->on(uri, urls[i]);
 		}
 		callback_initialized = true;
+		
+		// Start HTTP/HTTPS server (WICHTIG: nach Callbacks registrieren!)
+		DEBUG_PRINTLN(F("[SERVER] Calling otf->getServer()->begin()..."));
+		if(otf->getServer()) {
+			otf->getServer()->begin();
+			DEBUG_PRINTLN(F("[SERVER] HTTP/HTTPS server started!"));
+		} else {
+			DEBUG_PRINTLN(F("[SERVER] ERROR: getServer() returned NULL!"));
+		}
 	}
+	DEBUG_PRINTLN(F("[SERVER] Starting update_server..."));
 	update_server->begin();
+	DEBUG_PRINTLN(F("[SERVER] start_server_client() completed"));
 }
 
 void start_server_ap() {
-	if(!otf) return;
+	DEBUG_PRINTLN(F("[SERVER-AP] start_server_ap() called"));
+	if(!otf) {
+		DEBUG_PRINTLN(F("[SERVER-AP] ERROR: otf is NULL!"));
+		return;
+	}
+	DEBUG_PRINTLN(F("[SERVER-AP] otf is valid"));
 
 	scanned_ssids = scan_network();
 	String ap_ssid = get_ap_ssid();
@@ -4612,6 +4636,16 @@ void start_server_ap() {
 		otf->on(uri, urls[i]);
 	}
 
+	// Start HTTP/HTTPS server (WICHTIG: nach Callbacks registrieren!)
+	DEBUG_PRINTLN(F("[SERVER-AP] Calling otf->getServer()->begin()..."));
+	if(otf->getServer()) {
+		otf->getServer()->begin();
+		DEBUG_PRINTLN(F("[SERVER-AP] HTTP/HTTPS server started!"));
+	} else {
+		DEBUG_PRINTLN(F("[SERVER-AP] ERROR: getServer() returned NULL!"));
+	}
+
+	DEBUG_PRINTLN(F("[SERVER-AP] start_server_ap() completed"));
 	os.lcd.setCursor(0, -1);
 	os.lcd.print(F("OSAP:"));
 	os.lcd.print(ap_ssid);
@@ -4733,8 +4767,12 @@ void handle_web_request(char *p) {
 #define NTP_NTRIES 10
 /** NTP sync request */
 #if defined(ESP8266) || defined(ESP32)
-// due to lwip not supporting UDP, we have to use configTime and time() functions
-// othewise, using UDP is much faster for NTP sync
+// Use esp_netif_sntp API for thread-safe SNTP synchronization
+// This is required for ESP32-C5 with Zigbee where TCPIP core locking is needed
+#if defined(ESP32)
+#include "esp_netif_sntp.h"
+#endif
+
 ulong getNtpTime() {
 	static bool configured = false;
 	static char customAddress[16];
@@ -4744,6 +4782,30 @@ ulong getNtpTime() {
 		os.iopts[IOPT_NTP_IP2],
 		os.iopts[IOPT_NTP_IP3],
 		os.iopts[IOPT_NTP_IP4]};	// todo: handle changes to ntpip dynamically
+		
+#if defined(ESP32) && !defined(ESP8266)
+		// Use thread-safe esp_netif_sntp API for ESP32
+		// This properly locks the TCPIP core before making UDP calls
+		if (!os.iopts[IOPT_NTP_IP1] || os.iopts[IOPT_NTP_IP1] == '0') {
+			DEBUG_PRINTLN(F("using default time servers (esp_netif_sntp)"));
+			esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
+				ESP_SNTP_SERVER_LIST("time.google.com", "time.nist.gov", "time.windows.com"));
+			config.start = true;
+			config.smooth_sync = false;
+			esp_netif_sntp_init(&config);
+		} else {
+			DEBUG_PRINTLN(F("using custom time server (esp_netif_sntp)"));
+			String ntp = IPAddress(ntpip[0],ntpip[1],ntpip[2],ntpip[3]).toString();
+			strncpy(customAddress, ntp.c_str(), sizeof customAddress);
+			customAddress[sizeof customAddress - 1] = 0;
+			esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
+				ESP_SNTP_SERVER_LIST(customAddress, "time.google.com", "time.nist.gov"));
+			config.start = true;
+			config.smooth_sync = false;
+			esp_netif_sntp_init(&config);
+		}
+#else
+		// ESP8266 uses configTime
 		if (!os.iopts[IOPT_NTP_IP1] || os.iopts[IOPT_NTP_IP1] == '0') {
 			DEBUG_PRINTLN(F("using default time servers"));
 			configTime(0, 0, "time.google.com", "time.nist.gov", "time.windows.com");
@@ -4754,6 +4816,7 @@ ulong getNtpTime() {
 			customAddress[sizeof customAddress - 1] = 0;
 			configTime(0, 0, customAddress, "time.google.com", "time.nist.gov");
 		}
+#endif
 		configured = true;
 	}
 	unsigned char tries = 0;

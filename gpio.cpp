@@ -59,6 +59,7 @@ void PCA9555::pinMode(uint8_t pin, uint8_t IOMode) {
 
 uint16_t PCA9555::i2c_read(uint8_t reg) {
 	if(address==255)	return 0xFFFF;
+	//DEBUG_PRINTF("I2C read, address=%X reg=%X\n", address, reg);
 	Wire.beginTransmission(address);
 	Wire.write(reg);
 	Wire.endTransmission();
@@ -70,6 +71,7 @@ uint16_t PCA9555::i2c_read(uint8_t reg) {
 
 void PCA9555::i2c_write(uint8_t reg, uint16_t v){
 	if(address==255)	return;
+	//DEBUG_PRINTF("I2C write, address=%X reg=%X value=%X\n", address, reg, v);
 	Wire.beginTransmission(address);
 	Wire.write(reg);
 	Wire.write(v&0xff);

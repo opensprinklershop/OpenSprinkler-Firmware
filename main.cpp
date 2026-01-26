@@ -55,7 +55,7 @@
 #endif
 
 #if defined(ARDUINO)
-	#if defined(ESP8266) 
+	#if defined(ESP8266)
 		#include <pinger.h>
 		#include <lwip/icmp.h>
 		//extern "C" struct netif* eagle_lwip_getif (int netif_index);
@@ -145,9 +145,123 @@ void remote_http_callback(char*);
 #define DHCP_CHECKLEASE_INTERVAL  3600L // DHCP check lease interval (in seconds)
 #define FLOWPOLL_INTERVAL         5     // flow poll interval (in milli-seconds)
 #define CURRPOLL_INTERVAL         20    // current poll interval (in milli-seconds)
-// Define buffers: need them to be sufficiently large to cover string option reading
-char ether_buffer[ETHER_BUFFER_SIZE_L]; // ethernet buffer, make it twice as large to allow overflow
-char tmp_buffer[TMP_BUFFER_SIZE_L]; // scratch buffer, make it twice as large to allow overflow
+
+// ====== PSRAM-aware buffer allocation (8MB PSRAM available) ======
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+  #include "esp_heap_caps.h"
+  
+  // PSRAM-allocated buffers (declared as extern char* in sensors.h)
+  char* ether_buffer = nullptr;
+  char* tmp_buffer = nullptr;
+  
+  // Helper function to allocate in PSRAM with fallback
+  static void* psram_alloc(size_t size, const char* name) {
+    void* ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ptr) {
+      memset(ptr, 0, size);
+      DEBUG_PRINTF("[PSRAM] %s: %d bytes allocated in PSRAM\n", name, size);
+    } else {
+      ptr = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+      if (ptr) {
+        memset(ptr, 0, size);
+        DEBUG_PRINTF("[PSRAM] %s: %d bytes fallback to internal RAM\n", name, size);
+      } else {
+        DEBUG_PRINTF("[PSRAM] ERROR: Failed to allocate %s (%d bytes)\n", name, size);
+      }
+    }
+    return ptr;
+  }
+  
+  void init_psram_buffers() {
+    if (psramFound()) {
+      uint32_t psram_size = ESP.getPsramSize();
+      uint32_t psram_free = ESP.getFreePsram();
+      
+      // ======================================================================
+      // CRITICAL: Enable PSRAM for large malloc() calls
+      // This redirects allocations >= threshold to PSRAM automatically!
+      // Must be called BEFORE WiFi/SSL/Matter initialization.
+      // mbedTLS allocates ~60-80KB for SSL - this will go to PSRAM now.
+      // ======================================================================
+      const size_t EXTMEM_THRESHOLD = 1024;  // Allocations >= 1KB go to PSRAM
+      heap_caps_malloc_extmem_enable(EXTMEM_THRESHOLD);
+      DEBUG_PRINTF("[PSRAM] heap_caps_malloc_extmem_enable(%d) called\n", EXTMEM_THRESHOLD);
+      DEBUG_PRINTLN(F("[PSRAM] Large allocations (>=1KB) will now use PSRAM!"));
+      uint32_t heap_free = ESP.getFreeHeap();
+      uint32_t heap_size = ESP.getHeapSize();
+      
+      DEBUG_PRINTLN(F(""));
+      DEBUG_PRINTLN(F("========== PSRAM/SPIRAM Configuration =========="));
+      DEBUG_PRINTF("[PSRAM] Total PSRAM: %d bytes (%.2f MB)\n", psram_size, psram_size / 1048576.0);
+      DEBUG_PRINTF("[PSRAM] Free PSRAM:  %d bytes (%.2f MB)\n", psram_free, psram_free / 1048576.0);
+      DEBUG_PRINTF("[HEAP]  Total Heap:  %d bytes (%.2f KB)\n", heap_size, heap_size / 1024.0);
+      DEBUG_PRINTF("[HEAP]  Free Heap:   %d bytes (%.2f KB)\n", heap_free, heap_free / 1024.0);
+      
+      // Check if SPIRAM is included in heap (indicates CONFIG_SPIRAM_USE_MALLOC=y worked)
+      if (heap_size > 500000) {
+        DEBUG_PRINTLN(F("[CONFIG] SPIRAM_USE_MALLOC=y appears ACTIVE (heap includes PSRAM)"));
+      } else {
+        DEBUG_PRINTLN(F("[CONFIG] WARNING: SPIRAM_USE_MALLOC appears INACTIVE!"));
+        DEBUG_PRINTLN(F("[CONFIG] malloc() will NOT use PSRAM automatically!"));
+        DEBUG_PRINTLN(F("[CONFIG] sdkconfig.defaults may not be applied correctly"));
+      }
+      
+      // Test PSRAM allocation capability
+      void* test_psram = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
+      if (test_psram) {
+        DEBUG_PRINTLN(F("[CONFIG] heap_caps_malloc(SPIRAM) works - can manually allocate in PSRAM"));
+        heap_caps_free(test_psram);
+      } else {
+        DEBUG_PRINTLN(F("[CONFIG] ERROR: Cannot allocate in PSRAM via heap_caps!"));
+      }
+      
+      // Test internal RAM allocation
+      void* test_internal = heap_caps_malloc(1024, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      if (test_internal) {
+        DEBUG_PRINTF("[CONFIG] Internal RAM allocation works - free internal: %d bytes\n",
+                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        heap_caps_free(test_internal);
+      }
+      
+      DEBUG_PRINTLN(F("================================================="));
+      
+      // Allocate main buffers in PSRAM
+      ether_buffer = (char*)psram_alloc(ETHER_BUFFER_SIZE_L, "ether_buffer");
+      tmp_buffer = (char*)psram_alloc(TMP_BUFFER_SIZE_L, "tmp_buffer");
+      
+      // Report final status
+      DEBUG_PRINTLN(F(""));
+      DEBUG_PRINTF("[PSRAM] After init - PSRAM free: %d bytes, Heap free: %d bytes\n", 
+                   ESP.getFreePsram(), ESP.getFreeHeap());
+      DEBUG_PRINTF("[PSRAM] PSRAM used by buffers: ~%d bytes\n", 
+                   ETHER_BUFFER_SIZE_L + TMP_BUFFER_SIZE_L);
+      DEBUG_PRINTLN(F(""));
+    } else {
+      DEBUG_PRINTLN(F("[PSRAM] WARNING: No PSRAM detected - using internal RAM"));
+      DEBUG_PRINTLN(F("[PSRAM] This may cause memory issues with Matter/Zigbee"));
+      ether_buffer = (char*)malloc(ETHER_BUFFER_SIZE_L);
+      tmp_buffer = (char*)malloc(TMP_BUFFER_SIZE_L);
+      if (ether_buffer) memset(ether_buffer, 0, ETHER_BUFFER_SIZE_L);
+      if (tmp_buffer) memset(tmp_buffer, 0, TMP_BUFFER_SIZE_L);
+    }
+  }
+  
+  // Helper to get PSRAM stats (can be called from other modules)
+  void print_psram_stats() {
+    if (psramFound()) {
+      DEBUG_PRINTF("[PSRAM] Free: %d/%d bytes (%.1f%% used)\n",
+                   ESP.getFreePsram(), ESP.getPsramSize(),
+                   100.0 - (ESP.getFreePsram() * 100.0 / ESP.getPsramSize()));
+      DEBUG_PRINTF("[HEAP]  Free: %d bytes\n", ESP.getFreeHeap());
+    }
+  }
+#else
+  // Non-PSRAM platforms: static allocation
+  char ether_buffer[ETHER_BUFFER_SIZE_L]; // ethernet buffer
+  char tmp_buffer[TMP_BUFFER_SIZE_L]; // scratch buffer
+  void init_psram_buffers() {} // no-op
+  void print_psram_stats() {}
+#endif
 
 // ====== Object defines ======
 OpenSprinkler os; // OpenSprinkler object
@@ -201,7 +315,7 @@ void flow_poll() {
 	flow_count++;
 
 	/* RAH implementation of flow sensor */
-	if (flow_start == 0) { 
+	if (flow_start == 0) {
 		flow_gallons = 0;
 		flow_start = curr;
 	} // if first pulse, record time
@@ -399,7 +513,7 @@ void ui_state_machine() {
 							break;
 					}
 				#endif
-				
+
 				ui_state = UI_STATE_DISP_IP;
 				#if defined(USE_SSD1306)
 					os.lcd.display();
@@ -495,14 +609,17 @@ void ui_state_machine() {
 void do_setup() {
 
 	DEBUG_BEGIN(115200);
+	DEBUG_PRINTLN(F("started"));
 
 #if defined(ESP32)
 	DEBUG_PRINT(F("I2C SDA: "));
 	DEBUG_PRINTLN(SDA);
 	DEBUG_PRINT(F("I2C SCL: "));
 	DEBUG_PRINTLN(SCL);
+	
+	// Initialize PSRAM-based buffers early
+	init_psram_buffers();
 #endif
-
 
 	/* Clear WDT reset flag. */
 #if defined(ESP8266) || defined(ESP32)
@@ -511,9 +628,6 @@ void do_setup() {
 #else
 	MCUSR &= ~(1<<WDRF);
 #endif
-
-	DEBUG_BEGIN(115200);
-	DEBUG_PRINTLN(F("started"));
 
 
 #if defined(ESP32)
@@ -565,13 +679,7 @@ void do_setup() {
 	os.button_timeout = LCD_BACKLIGHT_TIMEOUT;
 
 	sensor_api_init(true);
-#ifdef ENABLE_MATTER
-	// Matter Initialisierung (WiFi-based Smart Home Integration)
-	matter_init();
-	DEBUG_PRINTLN("Matter integration initialized");
-#endif
-	DEBUG_PRINTLN(F("Setup complete."));
-}	
+}
 
 
 // Arduino software reset function
@@ -622,11 +730,9 @@ void do_setup() {
 	sensor_api_init(true);
 
 	initialize_otf();
-#ifdef ENABLE_MATTER
-	// Matter Initialisierung (WiFi-based Smart Home Integration)
-	matter_init();
-	DEBUG_PRINTLN("Matter integration initialized");
-#endif
+	// Delayed initialization: sensor_api_connect at 10s, matter_init at 15s
+	// This prevents boot-time conflicts between Zigbee, BLE, and Matter stacks
+	DEBUG_PRINTLN("Delaying sensor_api_connect and matter_init for stack stabilization");
 }
 
 #endif
@@ -653,10 +759,10 @@ void reboot_in(uint32_t ms) {
 		#if defined(ESP8266)
 		reboot_ticker.once_ms(ms, ESP.restart);
 		#else
-		reboot_ticker.once_ms(ms, [](){ 
+		reboot_ticker.once_ms(ms, [](){
 			digitalWrite(18, LOW); // set BOOT_CONTROL_PIN low to allow normal boot
-			delay(50); 
-			ESP.restart(); 
+			delay(50);
+			ESP.restart();
 		});
 		#endif
 	}
@@ -713,6 +819,59 @@ void do_loop()
 	handle_arduino_ota();
 	#endif
 
+	// ====== Periodic memory debug output (once per second) ======
+	#if defined(ENABLE_DEBUG) && defined(ESP32)
+	static ulong last_mem_print = 0;
+	ulong now_ms = millis();
+	if (now_ms - last_mem_print >= 1000) {
+		last_mem_print = now_ms;
+		uint32_t free_heap = ESP.getFreeHeap();
+		uint32_t min_heap = ESP.getMinFreeHeap();
+		#if defined(BOARD_HAS_PSRAM)
+		uint32_t free_psram = ESP.getFreePsram();
+		uint32_t total_psram = ESP.getPsramSize();
+		DEBUG_PRINTF("[MEM] Heap: %d/%d KB free (min: %d KB) | PSRAM: %.1f/%.1f MB free\n",
+			free_heap/1024, ESP.getHeapSize()/1024, min_heap/1024,
+			free_psram/1048576.0, total_psram/1048576.0);
+		#else
+		DEBUG_PRINTF("[MEM] Heap: %d KB free (min: %d KB)\n", free_heap/1024, min_heap/1024);
+		#endif
+	}
+	#endif
+
+	// Delayed initialization timers (prevent boot conflicts)
+	static ulong boot_time_ms = 0;
+	static bool sensor_api_connected = false;
+	static bool matter_initialized_delayed = false;
+
+	if(boot_time_ms == 0) {
+		boot_time_ms = millis();
+		DEBUG_PRINTLN("[INIT] Boot time reference set");
+	}
+
+	ulong boot_elapsed = millis() - boot_time_ms;
+
+	// Delayed sensor_api_connect at 15 seconds (only if network is available)
+	if(!sensor_api_connected && boot_elapsed >= 15000) {
+		if(os.network_connected()) {
+			DEBUG_PRINTLN("[INIT] Calling sensor_api_connect at 15s");
+			sensor_api_connect();
+			sensor_api_connected = true;
+		} else {
+			DEBUG_PRINTLN("[INIT] Skipping sensor_api_connect (network not connected)");
+		}
+	}
+
+	// Delayed matter_init at 20 seconds
+#ifdef ENABLE_MATTER
+	if(!matter_initialized_delayed && sensor_api_connected && boot_elapsed >= 20000) {
+		DEBUG_PRINTLN("[INIT] Calling matter_init at 20s");
+		matter_init();
+		matter_initialized_delayed = true;
+		DEBUG_PRINTLN("[INIT] Matter integration initialized");
+	}
+#endif
+
 	static ulong flowpoll_timeout=0;
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
 	// handle flow sensor using polling. Maximum freq is 1/(2*FLOWPOLL_INTERVAL)
@@ -765,7 +924,10 @@ void do_loop()
 			os.lcd.clear();
 			os.save_wifi_ip();
 			start_server_client();
-			sensor_api_connect();
+			// Only call sensor_api_connect when Ethernet is available
+			if(os.network_connected()) {
+				sensor_api_connect();
+			}
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
@@ -866,7 +1028,6 @@ void do_loop()
 		arp_check = curr_time + ARP_REQUEST_INTERVAL;
 	}
 	#endif
-
 	#else // AVR
 
 	static unsigned long dhcp_timeout = 0;
@@ -923,7 +1084,6 @@ void do_loop()
 		os.mqtt.subscribe();
 	}
 	os.mqtt.loop();
-
 	// Sensor maintenance loop (BLE/Zigbee auto-stop timers, device discovery)
 	sensor_api_loop();
 
@@ -931,7 +1091,6 @@ void do_loop()
 	// Matter loop handler
 	matter_loop();
 #endif
-
 
 	// The main control loop runs once every second
 	if (curr_time != last_time) {
@@ -945,7 +1104,7 @@ void do_loop()
 
 		last_time = curr_time;
 		if (os.button_timeout) os.button_timeout--;
-		
+
 #if defined(USE_DISPLAY)
 		if (!ui_state)
 			os.lcd_print_time(curr_time);  // print time
@@ -1265,7 +1424,7 @@ void do_loop()
 						}
 					}
 				}
-		
+
 				os.set_station_bit(mas_id - 1, masbit);
 			}
 		}
@@ -1300,7 +1459,6 @@ void do_loop()
 
 		// activate/deactivate valves
 		os.apply_all_station_bits(overcurrent_monitor);
-
 #if defined(USE_DISPLAY)
 		// process LCD display
 		if (!ui_state) { os.lcd_print_screen(ui_anim_chars[(unsigned long)curr_time%3]); }
@@ -1364,7 +1522,7 @@ void do_loop()
 			notif.add(NOTIFY_REBOOT);
 			}
 		}
-		
+
 	#if !defined(ARDUINO)
 		delay(1); // For OSPI/LINUX, sleep 1 ms to minimize CPU usage
 	#endif
@@ -1398,6 +1556,14 @@ void check_weather() {
 	if (os.status.program_busy) return;
 
 	if (!os.network_connected()) return;
+
+	// Delay first weather check after boot to ensure network stack is fully ready
+	// This is especially important for Zigbee builds where lwIP needs time to stabilize
+	#if defined(ESP32)
+	if (os.powerup_lasttime && (os.now_tz() < os.powerup_lasttime + 60)) {
+		return; // Wait at least 60 seconds after boot before first weather check
+	}
+	#endif
 
 	time_os_t ntz = os.now_tz();
 	if (os.checkwt_success_lasttime && (ntz > os.checkwt_success_lasttime + CHECK_WEATHER_SUCCESS_TIMEOUT)) {
@@ -1448,7 +1614,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 					pd.lastrun.station = flow_sid;
 					pd.lastrun.program = q->pid;
 					pd.lastrun.duration = curr_time - q->st;
-					pd.lastrun.endtime = curr_time;		
+					pd.lastrun.endtime = curr_time;
 					write_log(LOGDATA_STATION, curr_time); // LOG_TODO
 					notif.add(NOTIFY_STATION_OFF, flow_sid, pd.lastrun.duration);
 					notif.add(NOTIFY_FLOW_ALERT, flow_sid, pd.lastrun.duration);
@@ -1458,7 +1624,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 	}
 	flow_start=0;
 	//Added flow_gallons reset to station turn on.
-	flow_gallons=0;  
+	flow_gallons=0;
 	flow_sid = sid;
 
 	if (os.set_station_bit(sid, 1, duration)) {
@@ -1903,8 +2069,8 @@ void reset_all_stations(bool running_ones_only) {
 /**
  * @brief Stop zones of a program
  * pid > 0: stop program pid-1
- * 
- * @param pid 
+ *
+ * @param pid
  */
 void stop_program(unsigned char pid) {
 	DEBUG_PRINT("Stopping program ");DEBUG_PRINTLN(pid);
@@ -2234,7 +2400,7 @@ void delete_log(char *name) {
 	if (!os.iopts[IOPT_ENABLE_LOGGING]) return;
 #if defined(ARDUINO)
 
-	#if defined(ESP8266) 
+	#if defined(ESP8266)
 	if (strncmp(name, "all", 3) == 0) {
 		// delete all log files
 		Dir dir = LittleFS.openDir(LOG_PREFIX);
@@ -2260,7 +2426,7 @@ void delete_log(char *name) {
 			LittleFS.remove(dir.name() + String("/") + file.name());
 			file = dir.openNextFile();
 		}
-	} else {	
+	} else {
 		// delete a single log file
 		make_logfile_name(name);
 		if(!LittleFS.exists(tmp_buffer)) return;
@@ -2384,7 +2550,7 @@ static void check_network() {
     			if(response.TotalReceivedResponses > 0) {
       				loss = (response.TotalSentRequests - response.TotalReceivedResponses) * 100 / response.TotalSentRequests;
     			}
-    
+
     			// Print packet trip data
     			Serial.printf("Ping statistics for %s:\r\n",
       			response.DestIPAddress.toString().c_str());
@@ -2403,10 +2569,10 @@ static void check_network() {
         				response.MaxResponseTime,
         				response.AvgResponseTime);
     			}
-    
+
     			// Print host data
     			Serial.printf("Destination host data:\r\n");
-    			Serial.printf("    IP address: %s\r\n", 
+    			Serial.printf("    IP address: %s\r\n",
 					response.DestIPAddress.toString().c_str());
     			if(response.DestMacAddress != nullptr) {
       				Serial.printf("    MAC address: " MACSTR "\r\n",
@@ -2416,7 +2582,7 @@ static void check_network() {
       				Serial.printf("    DNS name: %s\r\n",
         			response.DestHostname.c_str());
     			}
-#endif	
+#endif
 				boolean failed = response.TotalSentRequests > response.TotalReceivedResponses;
 
 				//Idee: If we never received a ping response, then the gateway is blocked.
@@ -2438,7 +2604,7 @@ static void check_network() {
 					os.status.safe_reboot = 1;
 				}
 
-    			return true; 
+    			return true;
 			});
 		}
 		if (useEth && (!eth.connected() || !eth.gatewayIP() || !eth.gatewayIP().isSet())) {
@@ -2449,7 +2615,7 @@ static void check_network() {
 			os.status.network_fails++;
 			return;
 		}
-			
+
 		boolean ping_ok = false;
 		switch(os.status.network_fails % 3) {
 			case 0:
@@ -2480,6 +2646,14 @@ static void perform_ntp_sync() {
 	// do not perform ntp if network is not connected
 	if (!os.network_connected()) return;
 
+	// Delay first NTP sync after boot to ensure network stack is fully ready
+	// This is especially important for Zigbee builds where lwIP needs time to stabilize
+	#if defined(ESP32)
+	if (os.powerup_lasttime && (os.now_tz() < os.powerup_lasttime + 30)) {
+		return; // Wait at least 30 seconds after boot before first NTP sync
+	}
+	#endif
+
 	if (os.status.req_ntpsync) {
 		os.status.req_ntpsync = 0;
 		if (!ui_state) {
@@ -2505,7 +2679,7 @@ static void perform_ntp_sync() {
 	// nothing to do here
 	// Linux will do this for you
 	if (os.status.req_ntpsync) {
-		os.status.req_ntpsync = 0;	
+		os.status.req_ntpsync = 0;
 		calc_sunrise_sunset();
 	}
 #endif
@@ -2545,7 +2719,7 @@ int main(int argc, char *argv[]) {
 size_t last_flash_used() {
   esp_partition_iterator_t it;
   size_t endpt = 0;
-  it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL); 
+  it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL);
   for (; it != NULL; it = esp_partition_next(it)) {
     const esp_partition_t *part = esp_partition_get(it);
     endpt = part->address >= endpt ? part->address + part->size : endpt;
@@ -2578,19 +2752,21 @@ bool register_partition() {
 	esp_flash_spi_device_config_t device_config = {};
 	device_config.host_id = SPI2_HOST;
 	device_config.cs_io_num = PIN_EXT_FLASH_CS;
-	device_config.io_mode = SPI_FLASH_DOUT;
+	device_config.io_mode = SPI_FLASH_DOUT;	
 	device_config.cs_id = 0;
 	device_config.freq_mhz = 60;
 
 	err = spi_bus_add_flash_device(&ext_flash, &device_config);
-	if (err) {
+	if (err) { 
 		DEBUG_PRINTLN(F("Error adding external flash"));
+		DEBUG_PRINT(F("Code: ")); DEBUG_PRINTLN(err);
 		return false;
 	}
 
 	err = esp_flash_init(ext_flash);
 	if (err) {
 		DEBUG_PRINTLN(F("Error initializing external flash"));
+		DEBUG_PRINT(F("Code: ")); DEBUG_PRINTLN(err);
 		return false;
 	}
 
@@ -2600,7 +2776,7 @@ bool register_partition() {
 
 	// Partition layout on external flash:
 	// - LittleFS: Complete external flash
-	
+
 	// Register littlefs partition (main storage - complete external flash)
 	err = esp_partition_register_external(ext_flash, 0x0000, ext_flash->size, "littlefs_ext",
 		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, NULL);
@@ -2611,7 +2787,7 @@ bool register_partition() {
 	DEBUG_PRINTF(F("LittleFS partition: %d KB (complete external flash)\n"), ext_flash->size / 1024);
 
 	esp_flash_set_chip_write_protect(ext_flash, false);
-	
+
 	return true;
 }
 
@@ -2619,9 +2795,10 @@ void init_external_flash() // initialize external flash
 {
 	spi_bus_config_t bus_config = {};
 
-	DEBUG_PRINTLN(F("Initializing external flash..."));		
+	DEBUG_PRINTLN(F("Initializing external flash..."));
 	DEBUG_PRINTF(F("SPI2_HOST=%d\n"), SPI2_HOST);
 	DEBUG_PRINTF(F("MOSI=%d, MISO=%d, SCK=%d, CS=%d\n"), MOSI, MISO, SCK, PIN_EXT_FLASH_CS);
+
 #if defined(ESP32C5)
     bus_config.mosi_io_num = MOSI;
     bus_config.miso_io_num = MISO;
@@ -2644,11 +2821,13 @@ void init_external_flash() // initialize external flash
 	}
 
   if (!register_partition()) {
+	DEBUG_PRINTLN(F("register partition failed, restarting..."));
+	sleep(5);
 	ESP.restart();
   }
 
   list_partitions();
-  	
+
   DEBUG_PRINTLN(F("External Flash partition created"));
 }
 #endif

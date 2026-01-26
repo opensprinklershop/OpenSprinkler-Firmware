@@ -28,8 +28,7 @@
 #include "opensprinkler_server.h"
 
 extern OpenSprinkler os;
-extern char tmp_buffer[];
-extern char ether_buffer[];
+// ether_buffer and tmp_buffer declared in sensors.h
 
 bool RemoteSensor::extract(char *s, char *buf, int maxlen) {
   s = strstr(s, ":");

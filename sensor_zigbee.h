@@ -85,6 +85,8 @@ void sensor_zigbee_factory_reset();
  * @param device_ieee IEEE address of Zigbee device (e.g., "0x00124b001f8e5678")
  * @note Actual binding must be done via Zigbee coordinator (e.g., Zigbee2MQTT)
  */
+// Stop Zigbee stack to release resources (used after idle timeout)
+void sensor_zigbee_stop();
 void sensor_zigbee_bind_device(uint nr, const char *device_ieee);
 
 /**

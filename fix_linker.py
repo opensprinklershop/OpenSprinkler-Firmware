@@ -54,20 +54,15 @@ def ensure_riscv_toolchain_on_path(env):
 
     _prepend_env_path(env, bin_dir)
 
-    # Also set absolute compiler paths so early .ino preprocessing doesn't rely on PATH.
+    # Prefer compiler names with PATH set, to avoid duplicate absolute paths
+    # being constructed by downstream CMake/IDF generators.
     exe_suffix = ".exe" if os.name == "nt" else ""
     gpp = "riscv32-esp-elf-g++" + exe_suffix
     gcc = "riscv32-esp-elf-gcc" + exe_suffix
-    gpp_path = os.path.join(bin_dir, gpp)
-    gcc_path = os.path.join(bin_dir, gcc)
 
     print(f"Using RISC-V toolchain bin: {bin_dir}")
-    if os.path.isfile(gpp_path):
-        env.Replace(CXX=gpp_path)
-    else:
-        print(f"Warning: toolchain bin found but {gpp} is missing: {gpp_path}")
-    if os.path.isfile(gcc_path):
-        env.Replace(CC=gcc_path)
+    env.Replace(CXX=gpp)
+    env.Replace(CC=gcc)
 
 # Replace linker command to use GCC wrapper instead of ld
 def fix_linker_command(env):
