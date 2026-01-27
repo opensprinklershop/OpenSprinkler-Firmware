@@ -51,6 +51,8 @@
 	#include <hal/spi_types.h>
 	#include <esp_flash_spi_init.h>
 	#include <esp_wifi.h>
+	#include <esp_heap_caps.h>
+	#include <esp_heap_trace.h>
 
 #endif
 
@@ -153,89 +155,41 @@ void remote_http_callback(char*);
   // PSRAM-allocated buffers (declared as extern char* in sensors.h)
   char* ether_buffer = nullptr;
   char* tmp_buffer = nullptr;
-  
-  // Helper function to allocate in PSRAM with fallback
-  static void* psram_alloc(size_t size, const char* name) {
-    void* ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (ptr) {
-      memset(ptr, 0, size);
-      DEBUG_PRINTF("[PSRAM] %s: %d bytes allocated in PSRAM\n", name, size);
-    } else {
-      ptr = heap_caps_malloc(size, MALLOC_CAP_8BIT);
-      if (ptr) {
-        memset(ptr, 0, size);
-        DEBUG_PRINTF("[PSRAM] %s: %d bytes fallback to internal RAM\n", name, size);
-      } else {
-        DEBUG_PRINTF("[PSRAM] ERROR: Failed to allocate %s (%d bytes)\n", name, size);
-      }
-    }
-    return ptr;
-  }
-  
+
   void init_psram_buffers() {
     if (psramFound()) {
+      #ifdef ENABLE_MEMORY_DEBUG
+      // Detailed memory analysis (only when debug enabled)
       uint32_t psram_size = ESP.getPsramSize();
       uint32_t psram_free = ESP.getFreePsram();
+      uint32_t heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      uint32_t heap_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      uint32_t heap_spiram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+      uint32_t heap_spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
       
-      // ======================================================================
-      // CRITICAL: Enable PSRAM for large malloc() calls
-      // This redirects allocations >= threshold to PSRAM automatically!
-      // Must be called BEFORE WiFi/SSL/Matter initialization.
-      // mbedTLS allocates ~60-80KB for SSL - this will go to PSRAM now.
-      // ======================================================================
-      const size_t EXTMEM_THRESHOLD = 1024;  // Allocations >= 1KB go to PSRAM
-      heap_caps_malloc_extmem_enable(EXTMEM_THRESHOLD);
-      DEBUG_PRINTF("[PSRAM] heap_caps_malloc_extmem_enable(%d) called\n", EXTMEM_THRESHOLD);
-      DEBUG_PRINTLN(F("[PSRAM] Large allocations (>=1KB) will now use PSRAM!"));
-      uint32_t heap_free = ESP.getFreeHeap();
-      uint32_t heap_size = ESP.getHeapSize();
+      DEBUG_PRINTLN(F("\\n========== MEMORY ANALYSIS =========="));
+      DEBUG_PRINTF("[PSRAM] %d MB total, %d MB free\\n", psram_size/1048576, psram_free/1048576);
+      DEBUG_PRINTF("[HEAP]  Internal: %d KB total, %d KB free (%.1f%% used)\\n",
+                   heap_internal_total/1024, heap_internal_free/1024,
+                   100.0*(heap_internal_total-heap_internal_free)/heap_internal_total);
+      DEBUG_PRINTF("[HEAP]  SPIRAM: %d KB total, %d KB free\\n",
+                   heap_spiram_total/1024, heap_spiram_free/1024);
+      DEBUG_PRINTF("[HP SRAM] ESP32-C5: 384 KB total, %d KB heap, ~%d KB code/stack\\n",
+                   heap_internal_total/1024, 384-heap_internal_total/1024);
+      DEBUG_PRINTLN(F("========================================\\n"));
+      #endif
       
-      DEBUG_PRINTLN(F(""));
-      DEBUG_PRINTLN(F("========== PSRAM/SPIRAM Configuration =========="));
-      DEBUG_PRINTF("[PSRAM] Total PSRAM: %d bytes (%.2f MB)\n", psram_size, psram_size / 1048576.0);
-      DEBUG_PRINTF("[PSRAM] Free PSRAM:  %d bytes (%.2f MB)\n", psram_free, psram_free / 1048576.0);
-      DEBUG_PRINTF("[HEAP]  Total Heap:  %d bytes (%.2f KB)\n", heap_size, heap_size / 1024.0);
-      DEBUG_PRINTF("[HEAP]  Free Heap:   %d bytes (%.2f KB)\n", heap_free, heap_free / 1024.0);
-      
-      // Check if SPIRAM is included in heap (indicates CONFIG_SPIRAM_USE_MALLOC=y worked)
-      if (heap_size > 500000) {
-        DEBUG_PRINTLN(F("[CONFIG] SPIRAM_USE_MALLOC=y appears ACTIVE (heap includes PSRAM)"));
-      } else {
-        DEBUG_PRINTLN(F("[CONFIG] WARNING: SPIRAM_USE_MALLOC appears INACTIVE!"));
-        DEBUG_PRINTLN(F("[CONFIG] malloc() will NOT use PSRAM automatically!"));
-        DEBUG_PRINTLN(F("[CONFIG] sdkconfig.defaults may not be applied correctly"));
+      // Allocate buffers directly from PSRAM (now auto-enabled by framework)
+      ether_buffer = (char*)heap_caps_malloc(ETHER_BUFFER_SIZE_L, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      tmp_buffer = (char*)heap_caps_malloc(TMP_BUFFER_SIZE_L, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (ether_buffer) {
+        memset(ether_buffer, 0, ETHER_BUFFER_SIZE_L);
+        DEBUG_PRINTF("[PSRAM] ether_buffer: %d bytes allocated in PSRAM\n", ETHER_BUFFER_SIZE_L);
       }
-      
-      // Test PSRAM allocation capability
-      void* test_psram = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
-      if (test_psram) {
-        DEBUG_PRINTLN(F("[CONFIG] heap_caps_malloc(SPIRAM) works - can manually allocate in PSRAM"));
-        heap_caps_free(test_psram);
-      } else {
-        DEBUG_PRINTLN(F("[CONFIG] ERROR: Cannot allocate in PSRAM via heap_caps!"));
+      if (tmp_buffer) {
+        memset(tmp_buffer, 0, TMP_BUFFER_SIZE_L);
+        DEBUG_PRINTF("[PSRAM] tmp_buffer: %d bytes allocated in PSRAM\n", TMP_BUFFER_SIZE_L);
       }
-      
-      // Test internal RAM allocation
-      void* test_internal = heap_caps_malloc(1024, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-      if (test_internal) {
-        DEBUG_PRINTF("[CONFIG] Internal RAM allocation works - free internal: %d bytes\n",
-                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        heap_caps_free(test_internal);
-      }
-      
-      DEBUG_PRINTLN(F("================================================="));
-      
-      // Allocate main buffers in PSRAM
-      ether_buffer = (char*)psram_alloc(ETHER_BUFFER_SIZE_L, "ether_buffer");
-      tmp_buffer = (char*)psram_alloc(TMP_BUFFER_SIZE_L, "tmp_buffer");
-      
-      // Report final status
-      DEBUG_PRINTLN(F(""));
-      DEBUG_PRINTF("[PSRAM] After init - PSRAM free: %d bytes, Heap free: %d bytes\n", 
-                   ESP.getFreePsram(), ESP.getFreeHeap());
-      DEBUG_PRINTF("[PSRAM] PSRAM used by buffers: ~%d bytes\n", 
-                   ETHER_BUFFER_SIZE_L + TMP_BUFFER_SIZE_L);
-      DEBUG_PRINTLN(F(""));
     } else {
       DEBUG_PRINTLN(F("[PSRAM] WARNING: No PSRAM detected - using internal RAM"));
       DEBUG_PRINTLN(F("[PSRAM] This may cause memory issues with Matter/Zigbee"));
@@ -612,6 +566,9 @@ void do_setup() {
 	DEBUG_PRINTLN(F("started"));
 
 #if defined(ESP32)
+	// PSRAM malloc threshold now set in framework (esp32-hal-psram.c: threshold=4)
+	// This routes all allocations >=4 bytes to PSRAM for maximum heap preservation
+	
 	DEBUG_PRINT(F("I2C SDA: "));
 	DEBUG_PRINTLN(SDA);
 	DEBUG_PRINT(F("I2C SCL: "));
@@ -858,7 +815,7 @@ void do_loop()
 			sensor_api_connect();
 			sensor_api_connected = true;
 		} else {
-			DEBUG_PRINTLN("[INIT] Skipping sensor_api_connect (network not connected)");
+			//DEBUG_PRINTLN("[INIT] Skipping sensor_api_connect (network not connected)");
 		}
 	}
 

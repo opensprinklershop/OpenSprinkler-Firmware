@@ -149,10 +149,10 @@ public:
                  heap_before_endpoints, heap_before_endpoints/1024);
     
     // MEMORY-SAFE: Require minimum heap before proceeding
-    // Matter.begin() needs ~50-80KB for mbedTLS, CHIP stack, etc.
-    // On ESP32-C5 with precompiled libs, mbedTLS uses INTERNAL RAM only!
-    const uint32_t MIN_HEAP_FOR_MATTER = 80000; // 80KB minimum
-    const uint32_t MAX_STATIONS_LOW_MEM = 4;    // Limit stations if low memory
+    // With aggressive PSRAM routing (threshold=4 in framework) and Matter buffer optimization,
+    // the actual Matter.begin() heap consumption is reduced significantly
+    const uint32_t MIN_HEAP_FOR_MATTER = 40000; // 40KB minimum (reduced from 50KB)
+    const uint32_t MAX_STATIONS_LOW_MEM = 6;     // Increased from 4 (more endpoints with optimized buffers)
     
     if (heap_before_endpoints < MIN_HEAP_FOR_MATTER) {
       DEBUG_PRINTF("Matter: INSUFFICIENT HEAP (%d KB < %d KB minimum)\n", 
@@ -167,8 +167,8 @@ public:
     uint8_t nstations = os.nstations;
     uint8_t max_matter_stations = nstations;
     
-    // Limit stations if heap is tight (between 80-120KB)
-    if (heap_before_endpoints < 120000 && nstations > MAX_STATIONS_LOW_MEM) {
+    // Limit stations if heap is tight (between 60-100KB)
+    if (heap_before_endpoints < 100000 && nstations > MAX_STATIONS_LOW_MEM) {
       max_matter_stations = MAX_STATIONS_LOW_MEM;
       DEBUG_PRINTF("Matter: LOW MEMORY - limiting to %d stations (of %d total)\n", 
                    max_matter_stations, nstations);
