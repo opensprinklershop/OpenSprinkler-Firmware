@@ -1114,7 +1114,7 @@ void OpenSprinkler::begin() {
 				mainio = drio;
 				if(has_ch224_0 && has_ch224_1) {
 					hw_type = HW_TYPE_DC;
-					usbpd.begin();
+					usbpd->begin();
 				} else {
 					hw_type = HW_TYPE_AC;
 				}
