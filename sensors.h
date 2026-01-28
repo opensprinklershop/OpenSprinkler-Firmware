@@ -417,6 +417,20 @@ typedef Monitor Monitor_t;
 void sensor_api_init(boolean detect_boards);
 void sensor_api_connect();     // Start BLE/Zigbee if needed
 void sensor_api_loop();        // Sensor maintenance loop (BLE/Zigbee auto-stop, etc.)
+
+// =====================================================
+// NEW: Lazy-Loading Scheduler API (replaces permanent sensor storage)
+// =====================================================
+// NOTE: sensor_scheduler.h is NOT included here to avoid circular dependency
+// Include sensor_scheduler.h directly in files that need it (e.g., main.cpp)
+// Main entry points - use these instead of legacy functions:
+// - sensor_scheduler_init(bool detect_boards)  // Replaces sensor_api_init
+// - sensor_scheduler_loop()                    // Replaces sensor_api_loop + read_all_sensors
+// - sensor_get_cached_value(uint nr)           // Fast cached value access
+// - sensor_load_single(uint nr)                // On-demand full sensor load
+// - sensor_read_single_now(uint nr)            // Force immediate read
+// =====================================================
+
 uint16_t get_asb_detected_boards();
 boolean sensor_type_supported(int type);
 void add_asb_detected_boards(uint16_t board);

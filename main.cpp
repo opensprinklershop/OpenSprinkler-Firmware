@@ -33,10 +33,12 @@
 #endif
 #include "mqtt.h"
 #include "sensors.h"
+#include "sensor_scheduler.h"
 #include "main.h"
 #include "notifier.h"
 #include "osinfluxdb.h"
 #include "opensprinkler_matter.h"
+#include "psram_utils.h"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -53,7 +55,6 @@
 	#include <esp_wifi.h>
 	#include <esp_heap_caps.h>
 	#include <esp_heap_trace.h>
-
 #endif
 
 #if defined(ARDUINO)
@@ -149,77 +150,8 @@ void remote_http_callback(char*);
 #define CURRPOLL_INTERVAL         20    // current poll interval (in milli-seconds)
 
 // ====== PSRAM-aware buffer allocation (8MB PSRAM available) ======
-#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
-  #include "esp_heap_caps.h"
-  
-  // PSRAM-allocated buffers (declared as extern char* in sensors.h)
-  char* ether_buffer = nullptr;
-  char* tmp_buffer = nullptr;
-
-  void init_psram_buffers() {
-    if (psramFound()) {
-      #ifdef ENABLE_MEMORY_DEBUG
-      // Detailed memory analysis (only when debug enabled)
-      uint32_t psram_size = ESP.getPsramSize();
-      uint32_t psram_free = ESP.getFreePsram();
-      uint32_t heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-      uint32_t heap_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-      uint32_t heap_spiram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-      uint32_t heap_spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-      
-      DEBUG_PRINTLN(F("\\n========== MEMORY ANALYSIS =========="));
-      DEBUG_PRINTF("[PSRAM] %d MB total, %d MB free\\n", psram_size/1048576, psram_free/1048576);
-      DEBUG_PRINTF("[HEAP]  Internal: %d KB total, %d KB free (%.1f%% used)\\n",
-                   heap_internal_total/1024, heap_internal_free/1024,
-                   100.0*(heap_internal_total-heap_internal_free)/heap_internal_total);
-      DEBUG_PRINTF("[HEAP]  SPIRAM: %d KB total, %d KB free\\n",
-                   heap_spiram_total/1024, heap_spiram_free/1024);
-      DEBUG_PRINTF("[HP SRAM] ESP32-C5: 384 KB total, %d KB heap, ~%d KB code/stack\\n",
-                   heap_internal_total/1024, 384-heap_internal_total/1024);
-      DEBUG_PRINTLN(F("========================================\\n"));
-      #endif
-      
-      // Allocate buffers directly from PSRAM (now auto-enabled by framework)
-      ether_buffer = (char*)heap_caps_malloc(ETHER_BUFFER_SIZE_L, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      tmp_buffer = (char*)heap_caps_malloc(TMP_BUFFER_SIZE_L, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (ether_buffer) {
-        memset(ether_buffer, 0, ETHER_BUFFER_SIZE_L);
-        DEBUG_PRINTF("[PSRAM] ether_buffer: %d bytes allocated in PSRAM\n", ETHER_BUFFER_SIZE_L);
-      }
-      if (tmp_buffer) {
-        memset(tmp_buffer, 0, TMP_BUFFER_SIZE_L);
-        DEBUG_PRINTF("[PSRAM] tmp_buffer: %d bytes allocated in PSRAM\n", TMP_BUFFER_SIZE_L);
-      }
-    } else {
-      DEBUG_PRINTLN(F("[PSRAM] WARNING: No PSRAM detected - using internal RAM"));
-      DEBUG_PRINTLN(F("[PSRAM] This may cause memory issues with Matter/Zigbee"));
-      ether_buffer = (char*)malloc(ETHER_BUFFER_SIZE_L);
-      tmp_buffer = (char*)malloc(TMP_BUFFER_SIZE_L);
-      if (ether_buffer) memset(ether_buffer, 0, ETHER_BUFFER_SIZE_L);
-      if (tmp_buffer) memset(tmp_buffer, 0, TMP_BUFFER_SIZE_L);
-    }
-  }
-  
-  // Helper to get PSRAM stats (can be called from other modules)
-  void print_psram_stats() {
-    if (psramFound()) {
-      DEBUG_PRINTF("[PSRAM] Free: %d/%d bytes (%.1f%% used)\n",
-                   ESP.getFreePsram(), ESP.getPsramSize(),
-                   100.0 - (ESP.getFreePsram() * 100.0 / ESP.getPsramSize()));
-      DEBUG_PRINTF("[HEAP]  Free: %d bytes\n", ESP.getFreeHeap());
-    }
-  }
-#else
-  // Non-PSRAM platforms: static allocation
-  char ether_buffer[ETHER_BUFFER_SIZE_L]; // ethernet buffer
-  char tmp_buffer[TMP_BUFFER_SIZE_L]; // scratch buffer
-  void init_psram_buffers() {} // no-op
-  void print_psram_stats() {}
-#endif
-
-// ====== Object defines ======
 OpenSprinkler os; // OpenSprinkler object
-ProgramData pd;   // ProgramdData object
+ProgramData pd;   // ProgramData object
 NotifQueue notif; // NotifQueue object
 
 /* ====== Robert Hillman (RAH)'s implementation of flow sensor ======
@@ -576,6 +508,9 @@ void do_setup() {
 	
 	// Initialize PSRAM-based buffers early
 	init_psram_buffers();
+	
+	// Initialize mbedTLS to use PSRAM for SSL/TLS allocations
+	init_mbedtls_psram();
 #endif
 
 	/* Clear WDT reset flag. */
@@ -635,7 +570,11 @@ void do_setup() {
 
 	os.button_timeout = LCD_BACKLIGHT_TIMEOUT;
 
+	// Initialize legacy sensor API (for prog_adjust, monitors, MQTT subscriptions)
 	sensor_api_init(true);
+	
+	// NEW: Initialize sensor scheduler (lazy-loading metadata only)
+	sensor_scheduler_init(false);  // boards already detected by sensor_api_init
 }
 
 
@@ -684,7 +623,11 @@ void do_setup() {
 	os.mqtt.init();
 	os.status.req_mqtt_restart = true;
 
+	// Initialize legacy sensor API (for prog_adjust, monitors, MQTT subscriptions)
 	sensor_api_init(true);
+	
+	// NEW: Initialize sensor scheduler (lazy-loading metadata only)
+	sensor_scheduler_init(false);  // boards already detected by sensor_api_init
 
 	initialize_otf();
 	// Delayed initialization: sensor_api_connect at 10s, matter_init at 15s
@@ -799,7 +742,7 @@ void do_loop()
 	// Delayed initialization timers (prevent boot conflicts)
 	static ulong boot_time_ms = 0;
 	static bool sensor_api_connected = false;
-	static bool matter_initialized_delayed = false;
+	static bool matter_init_done = false;  // Track Matter initialization
 
 	if(boot_time_ms == 0) {
 		boot_time_ms = millis();
@@ -821,10 +764,10 @@ void do_loop()
 
 	// Delayed matter_init at 20 seconds
 #ifdef ENABLE_MATTER
-	if(!matter_initialized_delayed && sensor_api_connected && boot_elapsed >= 20000) {
+	if(!matter_init_done && sensor_api_connected && boot_elapsed >= 20000) {
 		DEBUG_PRINTLN("[INIT] Calling matter_init at 20s");
-		matter_init();
-		matter_initialized_delayed = true;
+		OSMatter::instance().init();
+		matter_init_done = true;
 		DEBUG_PRINTLN("[INIT] Matter integration initialized");
 	}
 #endif
@@ -1041,12 +984,17 @@ void do_loop()
 		os.mqtt.subscribe();
 	}
 	os.mqtt.loop();
-	// Sensor maintenance loop (BLE/Zigbee auto-stop timers, device discovery)
+	
+	// NEW: Sensor scheduler loop - lazy-loading based sensor reads
+	// Only reads sensors whose scheduled time has arrived
+	sensor_scheduler_loop();
+	
+	// Legacy sensor maintenance loop (BLE/Zigbee auto-stop timers)
 	sensor_api_loop();
 
 #ifdef ENABLE_MATTER
 	// Matter loop handler
-	matter_loop();
+	OSMatter::instance().loop();
 #endif
 
 	// The main control loop runs once every second
@@ -1587,7 +1535,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 	if (os.set_station_bit(sid, 1, duration)) {
 		notif.add(NOTIFY_STATION_ON, sid, duration);
 #ifdef ENABLE_MATTER
-		matter_update_station_status(sid, true);
+		OSMatter::instance().update_station(sid, true);
 #endif
 	}
 }
@@ -1689,7 +1637,7 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	os.set_station_bit(sid, 0);
 
 #ifdef ENABLE_MATTER
-	matter_update_station_status(sid, false);
+	OSMatter::instance().update_station(sid, false);
 #endif
 
 	// RAH implementation of flow sensor

@@ -1114,7 +1114,7 @@ void OpenSprinkler::begin() {
 				mainio = drio;
 				if(has_ch224_0 && has_ch224_1) {
 					hw_type = HW_TYPE_DC;
-					usbpd.begin();
+					usbpd->begin();
 				} else {
 					hw_type = HW_TYPE_AC;
 				}
@@ -2384,6 +2384,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	#define HTTP_CONNECT_NTRIES 3
 	unsigned char tries = 0;
 	int conn_result = 0;
+	(void)conn_result; // Used in DEBUG_PRINT but not in release builds
 	do {
 		DEBUG_PRINT(server);
 		DEBUG_PRINT(":");
