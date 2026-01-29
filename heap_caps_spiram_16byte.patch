@@ -1,0 +1,29 @@
+/**
+ * @file heap_caps_spiram_16byte.patch
+ * @brief Patch for ESP-IDF heap_caps.c to use 16-byte SPIRAM threshold
+ * 
+ * This patch modifies the default malloc_alwaysinternal_limit initialization
+ * to use CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL (16 bytes) instead of 
+ * MALLOC_DISABLE_EXTERNAL_ALLOCS.
+ * 
+ * Apply with:
+ *   cd /data/esp-idf/components/heap
+ *   patch -p1 < /data/OpenSprinkler-Firmware/heap_caps_spiram_16byte.patch
+ */
+
+--- a/components/heap/heap_caps.c
++++ b/components/heap/heap_caps.c
+@@ -94,7 +94,12 @@
+ 
+ #define MALLOC_DISABLE_EXTERNAL_ALLOCS -1
+ //Dual-use: -1 (=MALLOC_DISABLE_EXTERNAL_ALLOCS) disables allocations in external memory, >=0 sets the limit for allocations preferring internal memory.
+-static int malloc_alwaysinternal_limit=MALLOC_DISABLE_EXTERNAL_ALLOCS;
++#ifdef CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL
++// Initialize with configured threshold (typically 16 bytes for aggressive SPIRAM usage)
++static int malloc_alwaysinternal_limit = CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL;
++#else
++static int malloc_alwaysinternal_limit = MALLOC_DISABLE_EXTERNAL_ALLOCS;
++#endif
+ 
+ void heap_caps_malloc_extmem_enable(size_t limit)
+ {
