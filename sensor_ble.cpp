@@ -35,12 +35,72 @@ extern OpenSprinkler os;
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <freertos/semphr.h>
 
 // BLE scan instance
 static bool ble_initialized = false;
 static BLEScan* pBLEScan = nullptr;
 static uint32_t scan_end_time = 0;
 static bool scanning_active = false;
+
+// ============================================================================
+// BLE Thread Safety: Semaphore to prevent simultaneous Matter + Sensor access
+// ============================================================================
+// Protects NimBLE controller from simultaneous access by Matter (CHIPoBLE)
+// and sensor subsystems. Use with timeouts to avoid deadlocks.
+static SemaphoreHandle_t ble_access_semaphore = nullptr;
+static uint8_t ble_lock_depth = 0;
+static bool ble_scan_lock_held = false;
+
+/**
+ * @brief Acquire BLE access for sensor operations (re-entrant)
+ * @param timeout_ms Timeout in milliseconds
+ * @param acquired_new Optional flag set when semaphore was newly acquired
+ * @return true if access acquired, false if timeout
+ */
+static bool ble_sensor_lock_acquire(uint32_t timeout_ms, bool* acquired_new = nullptr) {
+    if (acquired_new) {
+        *acquired_new = false;
+    }
+    if (!ble_access_semaphore) {
+        return false;
+    }
+    if (ble_lock_depth > 0) {
+        ble_lock_depth++;
+        return true;
+    }
+    if (xSemaphoreTake(ble_access_semaphore, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        ble_lock_depth = 1;
+        if (acquired_new) {
+            *acquired_new = true;
+        }
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Release BLE access for sensor operations (re-entrant)
+ */
+static void ble_sensor_lock_release() {
+    if (ble_lock_depth == 0) {
+        return;
+    }
+    ble_lock_depth--;
+    if (ble_lock_depth == 0 && ble_access_semaphore) {
+        xSemaphoreGive(ble_access_semaphore);
+    }
+}
+
+/**
+ * @brief Release scan lock if held
+ */
+static void ble_release_scan_lock_if_needed() {
+    if (ble_scan_lock_held) {
+        ble_scan_lock_held = false;
+        ble_sensor_lock_release();
+    }
+}
 
 // Reuse a single client instance; do not delete clients manually.
 // Deinit is deferred to the BLE maintenance loop to avoid heap corruption.
@@ -49,16 +109,20 @@ static bool ble_in_read = false;
 static bool ble_stop_requested = false;
 static uint32_t ble_stop_request_time = 0;
 
+// BLE init retry control (avoid tight retry loop when controller is busy)
+static bool ble_init_failed = false;
+static uint32_t ble_init_retry_at = 0;
+
 static const uint32_t BLE_CONNECT_TIMEOUT_MS = 400; // keep BLE reads short
 
 // Auto-stop timer for discovery mode (to free WiFi RF resources)
 static unsigned long ble_auto_stop_time = 0;
 static bool ble_discovery_mode = false;
 
-// Hard timeout: Force BLE shutdown if active for more than this time
-// This prevents WiFi from being blocked indefinitely
-static uint32_t ble_init_time = 0;
-static const uint32_t BLE_HARD_TIMEOUT_MS = 30000;  // 30 seconds max
+// Hard timeout: Force BLE scan stop if a scan runs for more than this time
+// This prevents WiFi from being blocked indefinitely by a stuck scan
+static uint32_t ble_scan_start_time = 0;  // Time when current scan started (0 = no active scan)
+static const uint32_t BLE_HARD_TIMEOUT_MS = 30000;  // 30 seconds max per scan
 
 // Discovered devices storage (dynamically allocated)
 static std::vector<BLEDeviceInfo> discovered_ble_devices;
@@ -882,26 +946,44 @@ static MyAdvertisedDeviceCallbacks ble_scan_callbacks;
 /**
  * @brief Initialize BLE sensor subsystem
  */
-void sensor_ble_init() {
-    if (ble_initialized) {
-        return;
+bool sensor_ble_init()
+{
+    // Backoff if previous init failed
+    if (ble_init_failed) {
+        uint32_t now = millis();
+        if ((int32_t)(now - ble_init_retry_at) < 0) {
+            return false;
+        }
     }
-    
-    // Note: WiFi mode check removed from init - will be checked in read() instead
-    // This prevents exceptions when sensor_api_init() is called before WiFi is started
+
+    if (ble_initialized) {
+        return true;
+    }
 
     DEBUG_PRINTLN("Initializing BLE...");
-    
-    // Initialize BLE
-    BLEDevice::init("OpenSprinkler");
 
-    DEBUG_PRINTLN("BLE initialized");
+    ble_initialized = BLEDevice::init("OpenSprinkler");
+    if (!ble_initialized) {
+        DEBUG_PRINTLN("ERROR: BLE initialization failed");
+        ble_init_failed = true;
+        ble_init_retry_at = millis() + 10000; // retry after 10s
+        return false;
+    }
+
+    DEBUG_PRINTLN("BLE initialized successfully");
+    ble_init_failed = false;
     
-    ble_initialized = true;
-    ble_init_time = millis();  // Record init time for hard timeout
+        // Initialize the semaphore for thread-safe access
+        ble_semaphore_init();
+    
+    return true;
 }
 
-static BLEClient* ble_get_client() {
+/**
+ * @brief Get or create BLE client connection
+ */
+static BLEClient* ble_get_client()
+{
     if (!ble_initialized) return nullptr;
     if (!ble_client) {
         ble_client = BLEDevice::createClient();
@@ -918,6 +1000,8 @@ static void sensor_ble_stop_now() {
     if (scanning_active && pBLEScan && pBLEScan->isScanning()) {
         pBLEScan->stop();
         scanning_active = false;
+        ble_scan_start_time = 0;  // Reset timeout timer
+        ble_release_scan_lock_if_needed();
     }
 
     // Disconnect client if present (never delete it manually)
@@ -926,12 +1010,12 @@ static void sensor_ble_stop_now() {
         ble_client = nullptr;
     }
 
-    BLEDevice::deinit(false);
-    ble_initialized = false;
+    // WICHTIG: BLE NICHT deinitialisieren im STA-Modus (bleibt dauerhaft aktiv)
+    // BLEDevice::deinit(false); // ENTFERNT - verursacht Konflikte mit Matter
+    // ble_initialized = false;  // ENTFERNT - bleibt initialisiert
     pBLEScan = nullptr;
-    ble_init_time = 0;  // Reset init time
 
-    DEBUG_PRINTLN("BLE stopped - RF resources freed for WiFi");
+    DEBUG_PRINTLN("BLE scan stopped (BLE bleibt initialisiert)");
 }
 
 /**
@@ -954,12 +1038,19 @@ void sensor_ble_stop() {
  * @brief Start BLE scanning
  */
 void sensor_ble_start_scan(uint16_t duration) {
-    if (!ble_initialized) {
-        sensor_ble_init();
-        if (!ble_initialized) {
-            return;
-        }
+    if (!ble_initialized)
+        return;
+
+    if (!ble_access_semaphore) {
+        ble_semaphore_init();
     }
+
+    bool acquired_new = false;
+    if (!ble_sensor_lock_acquire(200, &acquired_new)) {
+        DEBUG_PRINTLN("[BLE] Scan skipped: semaphore busy");
+        return;
+    }
+    ble_scan_lock_held = true;
 
     if (!pBLEScan) {
         // Configure scan only when discovery is requested.
@@ -971,6 +1062,7 @@ void sensor_ble_start_scan(uint16_t duration) {
     }
     
     if (scanning_active) {
+        ble_release_scan_lock_if_needed();
         return;
     }
     
@@ -988,6 +1080,7 @@ void sensor_ble_start_scan(uint16_t duration) {
     // Start scan (non-blocking)
     pBLEScan->start(actual_duration, false);
     scanning_active = true;
+    ble_scan_start_time = millis();  // Start timeout timer for this scan
     scan_end_time = millis() + (actual_duration * 1000);
     
     // Set auto-stop timer
@@ -1012,25 +1105,26 @@ void sensor_ble_loop() {
     uint32_t now = millis();
 
     // =========================================================================
-    // HARD TIMEOUT: Force stop BLE if it's been active too long
+    // HARD TIMEOUT: Force stop BLE scan if it's been running too long
     // This is a safety net to prevent WiFi from being blocked indefinitely
     // =========================================================================
-    if (ble_init_time > 0 && !ble_in_read) {
-        uint32_t ble_active_time = now - ble_init_time;
-        if (ble_active_time > BLE_HARD_TIMEOUT_MS) {
+    if (ble_scan_start_time > 0 && !ble_in_read) {
+        uint32_t scan_active_time = now - ble_scan_start_time;
+        if (scan_active_time > BLE_HARD_TIMEOUT_MS) {
             DEBUG_PRINT(F("BLE HARD TIMEOUT after "));
-            DEBUG_PRINT(ble_active_time / 1000);
-            DEBUG_PRINTLN(F("s - forcing shutdown to restore WiFi"));
+            DEBUG_PRINT(scan_active_time / 1000);
+            DEBUG_PRINTLN(F("s - forcing scan stop"));
             
-            // Force stop everything
+            // Force stop scan
             if (scanning_active && pBLEScan) {
                 if (pBLEScan->isScanning()) {
                     pBLEScan->stop();
                 }
                 scanning_active = false;
+                ble_release_scan_lock_if_needed();
             }
             
-            sensor_ble_stop_now();
+            ble_scan_start_time = 0;  // Reset timer
             ble_discovery_mode = false;
             ble_auto_stop_time = 0;
             ble_stop_requested = false;
@@ -1040,7 +1134,7 @@ void sensor_ble_loop() {
 
     // Deferred stop (avoids heap corruption when deinit happens during/after BLE stack activity)
     if (ble_stop_requested && !ble_in_read) {
-        if ((uint32_t)(now - ble_stop_request_time) >= 200) {
+        if ((uint32_t)(now - ble_stop_request_time) >= 500) {  // Increased delay to 500ms for stability
             ble_stop_requested = false;
             sensor_ble_stop_now();
             ble_discovery_mode = false;
@@ -1058,6 +1152,7 @@ void sensor_ble_loop() {
             ble_discovery_mode = false;
             ble_auto_stop_time = 0;
             scanning_active = false;
+            ble_release_scan_lock_if_needed();
             return; // Exit early since we just stopped
         }
     }
@@ -1068,6 +1163,8 @@ void sensor_ble_loop() {
             pBLEScan->stop();
         }
         scanning_active = false;
+        ble_scan_start_time = 0;  // Reset timeout timer
+        ble_release_scan_lock_if_needed();
         DEBUG_PRINT("BLE scan completed. Found ");
         DEBUG_PRINT(discovered_ble_devices.size());
         DEBUG_PRINTLN(" devices.");
@@ -1274,7 +1371,19 @@ int BLESensor::read(unsigned long time) {
     }
     
     if (repeat_read == 0) {
+        bool ble_lock_acquired = ble_sensor_lock_acquire(500);
+        if (!ble_lock_acquired) {
+            DEBUG_PRINTLN(F("[BLE] Read skipped: semaphore busy"));
+            flags.data_ok = false;
+            last_read = time;
+            return HTTP_RQT_NOT_RECEIVED;
+        }
+
         ble_in_read = true;
+
+        auto release_lock = [&]() {
+            ble_sensor_lock_release();
+        };
 
         // Centralized failure handler - ALWAYS stops BLE and cleans up
         auto fail_adv = [&](const char* reason) -> int {
@@ -1301,6 +1410,7 @@ int BLESensor::read(unsigned long time) {
             // CRITICAL: Always stop BLE to free WiFi resources
             sensor_ble_stop();
             ble_in_read = false;
+            release_lock();
             return HTTP_RQT_NOT_RECEIVED;
         };
 
@@ -1313,6 +1423,7 @@ int BLESensor::read(unsigned long time) {
                 sensor_ble_stop();
             }
             ble_in_read = false;
+            release_lock();
             return HTTP_RQT_NOT_RECEIVED;
         };
 
@@ -1324,6 +1435,7 @@ int BLESensor::read(unsigned long time) {
                 sensor_ble_stop();
             }
             ble_in_read = false;
+            release_lock();
             return HTTP_RQT_NOT_RECEIVED;
         };
 
@@ -1331,6 +1443,7 @@ int BLESensor::read(unsigned long time) {
             if (client) client->disconnect();
             sensor_ble_stop();
             ble_in_read = false;
+            release_lock();
         };
 
         // Success handler for advertisement sensors
@@ -1346,6 +1459,7 @@ int BLESensor::read(unsigned long time) {
             
             sensor_ble_stop();
             ble_in_read = false;
+            release_lock();
             return HTTP_RQT_NOT_RECEIVED; // Will return data on next call
         };
 
@@ -1355,10 +1469,7 @@ int BLESensor::read(unsigned long time) {
         
         // Start BLE if not running
         if (!ble_initialized) {
-            sensor_ble_init();
-            if (!ble_initialized) {
-                return fail(nullptr, false);
-            }
+            return fail(nullptr, false);
         }
     
         // Parse sensor configuration from JSON
@@ -1423,6 +1534,7 @@ int BLESensor::read(unsigned long time) {
                 DEBUG_PRINTLN(F("s remaining"));
                 
                 ble_in_read = false;
+                release_lock();
                 return HTTP_RQT_NOT_RECEIVED;
             }
         }
@@ -1769,6 +1881,43 @@ const char * BLESensor::getUnit() const {
         return userdef_unit;
     }
     return getSensorUnit(assigned_unitid);
+}
+
+/**
+ * @brief Initialize BLE access semaphore (call during startup)
+ * Creates the semaphore that synchronizes access between Matter and Sensors
+ */
+void ble_semaphore_init() {
+    if (!ble_access_semaphore) {
+        // Create binary semaphore (1 = BLE available, 0 = BLE locked)
+        ble_access_semaphore = xSemaphoreCreateBinary();
+        if (ble_access_semaphore) {
+            // Initial state: BLE is available (semaphore = 1)
+            xSemaphoreGive(ble_access_semaphore);
+            DEBUG_PRINTLN("[BLE] Semaphore initialized");
+        }
+    }
+}
+
+/**
+ * @brief Try to acquire BLE access with timeout
+ * @param timeout_ms Timeout in milliseconds
+ * @return true if semaphore acquired, false if timeout
+ */
+bool sensor_ble_acquire(uint32_t timeout_ms) {
+    if (!ble_access_semaphore) {
+        ble_semaphore_init();
+    }
+    return (xSemaphoreTake(ble_access_semaphore, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+}
+
+/**
+ * @brief Release BLE access (must match a prior acquire)
+ */
+void sensor_ble_release() {
+    if (ble_access_semaphore) {
+        xSemaphoreGive(ble_access_semaphore);
+    }
 }
 
 #endif // ESP32

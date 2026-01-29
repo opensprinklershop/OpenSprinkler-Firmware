@@ -34,6 +34,7 @@
 #include "mqtt.h"
 #include "sensors.h"
 #include "sensor_scheduler.h"
+#include "sensor_ble.h"
 #include "main.h"
 #include "notifier.h"
 #include "osinfluxdb.h"
@@ -742,7 +743,6 @@ void do_loop()
 	// Delayed initialization timers (prevent boot conflicts)
 	static ulong boot_time_ms = 0;
 	static bool sensor_api_connected = false;
-	static bool matter_init_done = false;  // Track Matter initialization
 
 	if(boot_time_ms == 0) {
 		boot_time_ms = millis();
@@ -762,15 +762,8 @@ void do_loop()
 		}
 	}
 
-	// Delayed matter_init at 20 seconds
-#ifdef ENABLE_MATTER
-	if(!matter_init_done && sensor_api_connected && boot_elapsed >= 20000) {
-		DEBUG_PRINTLN("[INIT] Calling matter_init at 20s");
-		OSMatter::instance().init();
-		matter_init_done = true;
-		DEBUG_PRINTLN("[INIT] Matter integration initialized");
-	}
-#endif
+	// BLE und Matter werden jetzt direkt nach WiFi-Verbindung initialisiert (siehe OS_STATE_CONNECTING)
+	// Keine verzögerte Initialisierung mehr nötig
 
 	static ulong flowpoll_timeout=0;
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
@@ -874,6 +867,17 @@ void do_loop()
 			os.lcd.clear();
 			os.save_wifi_ip();
 			start_server_client();
+			
+			// Im STA-Modus: Matter initialisieren (BLE wird nach Matter-Disconnect aktiviert)
+			if(os.get_wifi_mode() == WIFI_MODE_STA) {
+				#ifdef ENABLE_MATTER
+				DEBUG_PRINTLN("[INIT] Initializing Matter after WiFi connected (STA mode)");
+				DEBUG_PRINTLN("[INIT] BLE will be initialized by Matter when safe");
+				
+				OSMatter::instance().init();
+				#endif
+			}
+			
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else {

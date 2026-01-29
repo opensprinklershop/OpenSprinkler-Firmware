@@ -1,12 +1,6 @@
 /* OpenSprinkler Unified (AVR/RPI/BBB/LINUX) Firmware
  * Copyright (C) 2015 by Ray Wang (ray@opensprinkler.com)
  * Analog Sensor API by Stefan Schmaltz (info@opensprinklershop.de)
- *
- * Bluetooth LE sensor header file (ESP32 Arduino BLE)
- * 2026 @ OpenSprinklerShop
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
@@ -163,7 +157,14 @@ private:
 /**
  * @brief Initialize BLE sensor subsystem
  */
-void sensor_ble_init();
+bool sensor_ble_init();
+
+/**
+ * @brief Reinitialize BLE after Matter released it
+ * Called after MATTER_CHIPOBLE_CONNECTION_CLOSED event
+ * Uses light deinit + reinit to avoid full restart
+ */
+bool sensor_ble_reinit_after_matter();
 
 /**
  * @brief Stop BLE subsystem (frees RF resources for WiFi)
@@ -212,6 +213,26 @@ const BLEDeviceInfo* sensor_ble_find_device(const char* mac_address);
  * @return true if device broadcasts sensor data via advertisement
  */
 bool sensor_ble_is_adv_sensor(const BLEDeviceInfo* device);
+/**
+ * @brief Acquire BLE controller access (for Matter/external subsystems)
+ * Blocks until BLE is available or timeout expires
+ * @param timeout_ms Timeout in milliseconds (default: 5000)
+ * @return true if access acquired, false on timeout
+ */
+bool sensor_ble_acquire(uint32_t timeout_ms = 5000);
+
+/**
+ * @brief Release BLE controller access
+ * Must be called when done using BLE
+ */
+void sensor_ble_release();
+/**
+ * @brief Initialize BLE access semaphore
+ * Called during BLE startup (usually from sensor_ble_init)
+ */
+void ble_semaphore_init();
+
+
 
 #endif // ESP32
 

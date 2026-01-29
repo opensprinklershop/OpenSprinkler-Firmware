@@ -16,6 +16,9 @@
 
 #if defined(ESP32)
 #include <Matter.h>
+#ifdef OS_ENABLE_BLE
+#include "sensor_ble.h"
+#endif
 #include <unordered_map>
 #include <MatterEndpoints/MatterOnOffPlugin.h>
 #include <MatterEndpoints/MatterTemperatureSensor.h>
@@ -79,6 +82,9 @@ namespace {
   
   EXT_RAM_BSS_ATTR bool matter_started = false;
   EXT_RAM_BSS_ATTR bool commissioned = false;
+  EXT_RAM_BSS_ATTR bool matter_ble_lock_held = false;
+  EXT_RAM_BSS_ATTR bool ble_init_pending = false;
+  EXT_RAM_BSS_ATTR uint32_t ble_init_at = 0;
   EXT_RAM_BSS_ATTR uint32_t config_signature = 0;
 }
 
@@ -112,9 +118,66 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
       commissioned = true;
       DEBUG_PRINTLN("[Matter] Device commissioned");
       break;
+    case MATTER_COMMISSIONING_SESSION_STARTED:
+    case MATTER_CHIPOBLE_CONNECTION_ESTABLISHED:
+      DEBUG_PRINTLN("[Matter] CHIPoBLE active - acquiring BLE semaphore");
+      #ifdef OS_ENABLE_BLE
+      {
+        // Stop any ongoing sensor BLE activity first
+        sensor_ble_stop();
+
+        // Acquire BLE controller for Matter (CHIPoBLE needs exclusive access)
+        if (sensor_ble_acquire(200)) {
+          matter_ble_lock_held = true;
+          DEBUG_PRINTLN("[Matter] BLE semaphore acquired for CHIPoBLE");
+        } else {
+          DEBUG_PRINTLN("[Matter] TIMEOUT: Could not acquire BLE semaphore!");
+        }
+      }
+      #endif
+      break;
+    case MATTER_COMMISSIONING_COMPLETE:
+      DEBUG_PRINTLN("[Matter] Commissioning complete");
+      #ifdef OS_ENABLE_BLE
+      {
+        // Release BLE semaphore after commissioning completes
+        if (matter_ble_lock_held) {
+          sensor_ble_release();
+          matter_ble_lock_held = false;
+          DEBUG_PRINTLN("[Matter] BLE semaphore released after commissioning");
+        }
+      }
+      #endif
+      break;
+    case MATTER_COMMISSIONING_SESSION_STOPPED:
+    case MATTER_COMMISSIONING_WINDOW_CLOSED:
+      DEBUG_PRINTLN("[Matter] Commissioning session/window closed");
+      #ifdef OS_ENABLE_BLE
+      {
+        // Release BLE semaphore
+        if (matter_ble_lock_held) {
+          sensor_ble_release();
+          matter_ble_lock_held = false;
+          DEBUG_PRINTLN("[Matter] BLE semaphore released");
+        }
+      }
+      #endif
+      break;
     case MATTER_EVENT_DECOMMISSIONED:
       commissioned = false;
       DEBUG_PRINTLN("[Matter] Device decommissioned");
+      break;
+    case MATTER_CHIPOBLE_CONNECTION_CLOSED:
+      DEBUG_PRINTLN("[Matter] CHIPoBLE connection closed - releasing BLE semaphore");
+      // BLE kann jetzt für Sensoren verwendet werden
+      #ifdef OS_ENABLE_BLE
+      // Release the BLE semaphore so sensors can use it
+      if (matter_ble_lock_held) {
+        sensor_ble_release();
+        matter_ble_lock_held = false;
+        DEBUG_PRINTLN("[Matter] BLE semaphore released - sensors can now use BLE");
+      }
+      #endif
       break;
     default:
       break;
@@ -301,7 +364,28 @@ void OSMatter::init() {
   } else {
     commissioned = true;
     DEBUG_PRINTLN("[Matter] Already commissioned");
+    #ifdef OS_ENABLE_BLE
+    // Schedule BLE init after Matter settles (1 second delay)
+    ble_init_pending = true;
+    ble_init_at = millis() + 1000;
+    DEBUG_PRINTLN("[Matter] BLE init scheduled (commissioned device)");
+    #endif
   }
+
+  #ifdef OS_ENABLE_BLE
+  // If BLE commissioning is not enabled, schedule BLE init
+  if (!Matter.isBLECommissioningEnabled()) {
+    ble_init_pending = true;
+    ble_init_at = millis() + 1000;
+    DEBUG_PRINTLN("[Matter] BLE commissioning disabled - BLE init scheduled");
+  }
+  #endif
+
+  #ifdef OS_ENABLE_BLE
+  // Default: BLE will be managed via event system
+  // Do NOT init here - Matter may still be using BLE controller
+  DEBUG_PRINTLN("[Matter] BLE managed via event system");
+  #endif
   
   config_signature = compute_config_signature();
   matter_started = true;
@@ -310,6 +394,15 @@ void OSMatter::init() {
 
 void OSMatter::loop() {
   if(!matter_started) return;
+  
+  #ifdef OS_ENABLE_BLE
+  // Process deferred BLE init
+  if (ble_init_pending && millis() >= ble_init_at) {
+    ble_init_pending = false;
+    DEBUG_PRINTLN("[Matter] Initializing BLE (deferred)");
+    sensor_ble_init();
+  }
+  #endif
   
   // Check config changes
   uint32_t current_sig = compute_config_signature();
