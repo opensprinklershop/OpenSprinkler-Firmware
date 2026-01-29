@@ -51,48 +51,65 @@ static std::vector<ZigbeeDeviceInfo> discovered_devices;
 #define ZB_ZCL_CLUSTER_ID_LEAF_WETNESS              0x0407
 #define ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE             0x0408
 
+// Lazy-loading report cache: stores incoming attribute reports until sensor reads them
+struct ZigbeeAttributeReport {
+    uint64_t ieee_addr;
+    uint8_t endpoint;
+    uint16_t cluster_id;
+    uint16_t attr_id;
+    int32_t value;
+    uint8_t lqi;
+    unsigned long timestamp;
+};
+
+static constexpr size_t MAX_PENDING_REPORTS = 16;
+static ZigbeeAttributeReport pending_reports[MAX_PENDING_REPORTS];
+static size_t pending_report_count = 0;
+static constexpr unsigned long REPORT_VALIDITY_MS = 60000;  // Reports valid for 60 seconds
+
 class ZigbeeReportReceiver;
 static ZigbeeReportReceiver* reportReceiver = nullptr;
 
 class ZigbeeReportReceiver : public ZigbeeEP {
 public:
     ZigbeeReportReceiver(uint8_t endpoint) : ZigbeeEP(endpoint) {
+        // Minimal cluster setup - only what's needed for receiving reports
         _cluster_list = esp_zb_zcl_cluster_list_create();
-
-        esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(NULL);
-        esp_zb_cluster_list_add_basic_cluster(_cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-        esp_zb_attribute_list_t *identify_cluster = esp_zb_identify_cluster_create(NULL);
-        esp_zb_cluster_list_add_identify_cluster(_cluster_list, identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-        esp_zb_attribute_list_t *temp_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
-        esp_zb_cluster_list_add_temperature_meas_cluster(_cluster_list, temp_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-
-        esp_zb_attribute_list_t *humidity_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
-        esp_zb_cluster_list_add_humidity_meas_cluster(_cluster_list, humidity_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-
-        esp_zb_attribute_list_t *soil_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE);
-        esp_zb_cluster_list_add_custom_cluster(_cluster_list, soil_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-
-        esp_zb_attribute_list_t *light_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT);
-        esp_zb_cluster_list_add_illuminance_meas_cluster(_cluster_list, light_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-
-        esp_zb_attribute_list_t *pressure_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT);
-        esp_zb_cluster_list_add_pressure_meas_cluster(_cluster_list, pressure_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-
-        esp_zb_attribute_list_t *power_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
-        esp_zb_cluster_list_add_power_config_cluster(_cluster_list, power_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-
+        
+        if (_cluster_list) {
+            // Basic cluster (mandatory)
+            esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(NULL);
+            if (basic_cluster) {
+                esp_zb_cluster_list_add_basic_cluster(_cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+            }
+            
+            // Identify cluster (mandatory)
+            esp_zb_attribute_list_t *identify_cluster = esp_zb_identify_cluster_create(NULL);
+            if (identify_cluster) {
+                esp_zb_cluster_list_add_identify_cluster(_cluster_list, identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+            }
+        }
+        
         _ep_config.endpoint = endpoint;
         _ep_config.app_profile_id = ESP_ZB_AF_HA_PROFILE_ID;
         _ep_config.app_device_id = ESP_ZB_HA_CONFIGURATION_TOOL_DEVICE_ID;
         _ep_config.app_device_version = 0;
+        
+        DEBUG_PRINTLN(F("[ZIGBEE] Report receiver endpoint created (minimal config)"));
     }
+    
+    virtual ~ZigbeeReportReceiver() = default;
 
+    /**
+     * @brief Callback when attribute report received from Zigbee device
+     * IMPORTANT: This callback just CACHES the report. Sensors are loaded on-demand.
+     * This prevents sensor structures from being accessed during stack callbacks.
+     */
     virtual void zbAttributeRead(uint16_t cluster_id, const esp_zb_zcl_attribute_t *attribute,
                                   uint8_t src_endpoint, esp_zb_zcl_addr_t src_address) override {
         if (!attribute) return;
-
+        
+        // Find IEEE address from short address
         uint64_t ieee_addr = 0;
         for (const auto& dev : discovered_devices) {
             if (dev.short_addr == src_address.u.short_addr) {
@@ -100,19 +117,29 @@ public:
                 break;
             }
         }
-
-        ZigbeeSensor::zigbee_attribute_callback(
-            ieee_addr,
-            src_endpoint,
-            cluster_id,
-            attribute->id,
-            extractAttributeValue(attribute),
-            0);
+        
+        // Store report in cache for lazy-loading by sensor
+        if (pending_report_count < MAX_PENDING_REPORTS) {
+            ZigbeeAttributeReport& report = pending_reports[pending_report_count++];
+            report.ieee_addr = ieee_addr;
+            report.endpoint = src_endpoint;
+            report.cluster_id = cluster_id;
+            report.attr_id = attribute->id;
+            report.value = extractAttributeValue(attribute);
+            report.lqi = 0;
+            report.timestamp = millis();
+            
+            DEBUG_PRINTF(F("[ZIGBEE] Report cached: cluster=0x%04X attr=0x%04X value=%ld\n"),
+                        cluster_id, attribute->id, report.value);
+        } else {
+            DEBUG_PRINTLN(F("[ZIGBEE] Report cache full - dropping report"));
+        }
     }
 
 private:
     int32_t extractAttributeValue(const esp_zb_zcl_attribute_t *attr) {
         if (!attr || !attr->data.value) return 0;
+        
         switch (attr->data.type) {
             case ESP_ZB_ZCL_ATTR_TYPE_S8:  return (int32_t)(*(int8_t*)attr->data.value);
             case ESP_ZB_ZCL_ATTR_TYPE_S16: return (int32_t)(*(int16_t*)attr->data.value);
@@ -120,10 +147,15 @@ private:
             case ESP_ZB_ZCL_ATTR_TYPE_U8:  return (int32_t)(*(uint8_t*)attr->data.value);
             case ESP_ZB_ZCL_ATTR_TYPE_U16: return (int32_t)(*(uint16_t*)attr->data.value);
             case ESP_ZB_ZCL_ATTR_TYPE_U32: return (int32_t)(*(uint32_t*)attr->data.value);
-            default: return 0;
+            default:
+                DEBUG_PRINTF(F("[ZIGBEE] Unknown attribute type: 0x%02X\n"), attr->data.type);
+                return 0;
         }
     }
 };
+
+// Forward declaration
+static void updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttributeReport& report);
 
 static bool erase_zigbee_nvram() {
     const esp_partition_t* zb_partition = esp_partition_find_first(
@@ -168,12 +200,18 @@ void sensor_zigbee_start() {
 
     if (zigbee_initialized) return;
     
-    // Check if Zigbee was already started by another component (e.g., Matter)
+    // Ensure clean state: stop any previous Zigbee instance
     if (Zigbee.started()) {
-        DEBUG_PRINTLN(F("[ZIGBEE] Zigbee already running (started by another component)"));
-        zigbee_initialized = true;
-        return;
+        DEBUG_PRINTLN(F("[ZIGBEE] Stopping previous Zigbee instance..."));
+        Zigbee.stop();
+        if (reportReceiver) {
+            delete reportReceiver;
+            reportReceiver = nullptr;
+        }
     }
+    
+    // Small delay to ensure Zigbee stack cleanup
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     zigbee_last_use = millis();;
 
@@ -189,9 +227,9 @@ void sensor_zigbee_start() {
     Zigbee.setRadioConfig(radio_config);
 
     WiFi.setSleep(false);
-//    (void)esp_wifi_set_ps(WIFI_PS_NONE);
-//    (void)esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-//    (void)esp_coex_wifi_i154_enable();
+    (void)esp_wifi_set_ps(WIFI_PS_NONE);
+    (void)esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+    (void)esp_coex_wifi_i154_enable();
 
     reportReceiver = new ZigbeeReportReceiver(10);
     Zigbee.addEndpoint(reportReceiver);
@@ -225,49 +263,104 @@ bool sensor_zigbee_ensure_started() {
 void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoint,
                                             uint16_t cluster_id, uint16_t attr_id,
                                             int32_t value, uint8_t lqi) {
+    // This callback is called by the Zigbee stack through the report receiver
+    // It now processes any pending reports from the cache
     zigbee_last_use = millis();
-    SensorIterator it = sensors_iterate_begin();
-    SensorBase* sensor;
-    while ((sensor = sensors_iterate_next(it)) != NULL) {
-        if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
-
-        ZigbeeSensor* zb_sensor = static_cast<ZigbeeSensor*>(sensor);
-        bool matches = (zb_sensor->cluster_id == cluster_id && zb_sensor->attribute_id == attr_id);
-        if (zb_sensor->device_ieee != 0 && ieee_addr != 0) {
-            matches = matches && (zb_sensor->device_ieee == ieee_addr);
+    
+    // Process pending reports in cache (lazy-loading of sensors)
+    for (size_t i = 0; i < pending_report_count; i++) {
+        const ZigbeeAttributeReport& report = pending_reports[i];
+        
+        // Skip expired reports
+        if (millis() - report.timestamp > REPORT_VALIDITY_MS) {
+            continue;
         }
-        if (matches) {
-            zb_sensor->last_native_data = value;
-            double converted_value = (double)value;
-            if (cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE && attr_id == 0x0000) {
-                converted_value = value / 100.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT && attr_id == 0x0000) {
-                converted_value = value / 100.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT && attr_id == 0x0000) {
-                converted_value = value / 100.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT && attr_id == 0x0000) {
-                converted_value = value / 10.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && attr_id == 0x0021) {
-                converted_value = value / 2.0;
-                zb_sensor->last_battery = (uint32_t)converted_value;
+        
+        // Find matching sensor and update it (lazy-load if needed)
+        SensorIterator it = sensors_iterate_begin();
+        SensorBase* sensor;
+        bool found = false;
+        
+        while ((sensor = sensors_iterate_next(it)) != NULL) {
+            if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+
+            ZigbeeSensor* zb_sensor = static_cast<ZigbeeSensor*>(sensor);
+            
+            // Check if sensor matches this report
+            bool matches = (zb_sensor->cluster_id == report.cluster_id && 
+                           zb_sensor->attribute_id == report.attr_id);
+            if (zb_sensor->device_ieee != 0 && report.ieee_addr != 0) {
+                matches = matches && (zb_sensor->device_ieee == report.ieee_addr);
             }
-
-            converted_value -= (double)zb_sensor->offset_mv / 1000.0;
-            if (zb_sensor->factor && zb_sensor->divider)
-                converted_value *= (double)zb_sensor->factor / (double)zb_sensor->divider;
-            else if (zb_sensor->divider)
-                converted_value /= (double)zb_sensor->divider;
-            else if (zb_sensor->factor)
-                converted_value *= (double)zb_sensor->factor;
-            converted_value += zb_sensor->offset2 / 100.0;
-
-            zb_sensor->last_data = converted_value;
-            zb_sensor->last_lqi = lqi;
-            zb_sensor->flags.data_ok = true;
-            zb_sensor->repeat_read = 1;
-            break;
+            
+            if (matches) {
+                // Update sensor with cached report value
+                updateSensorFromReport(zb_sensor, report);
+                found = true;
+                break;
+            }
+        }
+        
+        // Also check sensors that might not be loaded yet (lazy-load potential)
+        // by storing report value for next read attempt
+        if (!found) {
+            DEBUG_PRINTF(F("[ZIGBEE] Report cached for lazy-load: cluster=0x%04X attr=0x%04X\n"),
+                        report.cluster_id, report.attr_id);
         }
     }
+    
+    // Clear old reports from cache
+    size_t write_idx = 0;
+    for (size_t read_idx = 0; read_idx < pending_report_count; read_idx++) {
+        if (millis() - pending_reports[read_idx].timestamp <= REPORT_VALIDITY_MS) {
+            pending_reports[write_idx++] = pending_reports[read_idx];
+        }
+    }
+    pending_report_count = write_idx;
+}
+
+/**
+ * @brief Helper function to update sensor from cached report
+ * Applies cluster-specific conversions and calibrations
+ */
+static void updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttributeReport& report) {
+    if (!zb_sensor) return;
+    
+    zb_sensor->last_native_data = report.value;
+    double converted_value = (double)report.value;
+    
+    // Apply cluster-specific conversions
+    if (report.cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE && report.attr_id == 0x0000) {
+        converted_value = report.value / 100.0;
+    } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT && report.attr_id == 0x0000) {
+        converted_value = report.value / 100.0;
+    } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT && report.attr_id == 0x0000) {
+        converted_value = report.value / 100.0;
+    } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT && report.attr_id == 0x0000) {
+        converted_value = report.value / 10.0;
+    } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && report.attr_id == 0x0021) {
+        converted_value = report.value / 2.0;
+        zb_sensor->last_battery = (uint32_t)converted_value;
+    }
+    
+    // Apply sensor-specific calibrations
+    converted_value -= (double)zb_sensor->offset_mv / 1000.0;
+    if (zb_sensor->factor && zb_sensor->divider)
+        converted_value *= (double)zb_sensor->factor / (double)zb_sensor->divider;
+    else if (zb_sensor->divider)
+        converted_value /= (double)zb_sensor->divider;
+    else if (zb_sensor->factor)
+        converted_value *= (double)zb_sensor->factor;
+    converted_value += zb_sensor->offset2 / 100.0;
+    
+    // Update sensor state
+    zb_sensor->last_data = converted_value;
+    zb_sensor->last_lqi = report.lqi;
+    zb_sensor->flags.data_ok = true;
+    zb_sensor->repeat_read = 1;
+    
+    DEBUG_PRINTF(F("[ZIGBEE] Sensor updated: cluster=0x%04X value=%.2f\n"),
+                report.cluster_id, converted_value);
 }
 
 uint64_t ZigbeeSensor::parseIeeeAddress(const char* ieee_str) {
@@ -413,6 +506,12 @@ void sensor_zigbee_clear_new_device_flags() {
 
 void sensor_zigbee_loop() {
     if (!zigbee_initialized) return;
+    
+    // Process pending reports from cache (lazy-loading of sensors)
+    if (pending_report_count > 0) {
+        ZigbeeSensor::zigbee_attribute_callback(0, 0, 0, 0, 0, 0);  // Trigger cache processing
+    }
+    
     static bool last_connected = false;
     bool connected = Zigbee.started() && Zigbee.connected();
     if (connected != last_connected) {

@@ -751,7 +751,7 @@ void do_loop()
 
 	ulong boot_elapsed = millis() - boot_time_ms;
 
-	// Delayed sensor_api_connect at 15 seconds (only if network is available)
+	// Delayed sensor_api_connect at 15 seconds (required for Zigbee/WiFi coexistence)
 	if(!sensor_api_connected && boot_elapsed >= 15000) {
 		if(os.network_connected()) {
 			DEBUG_PRINTLN("[INIT] Calling sensor_api_connect at 15s");
@@ -907,8 +907,9 @@ void do_loop()
 				//os.reboot_dev(REBOOT_CAUSE_WIFIDONE);
 			}
 		} else {
+			sensor_api_connect();
 			if(useEth || WiFi.status() == WL_CONNECTED) {
-				sensor_api_connect();
+				
 				update_server->handleClient();
 				otf->loop();
 				connecting_timeout = 0;
