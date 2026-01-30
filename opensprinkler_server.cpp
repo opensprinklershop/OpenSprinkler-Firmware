@@ -47,6 +47,10 @@
 #include "sensor_zigbee.h"
 #endif
 
+#if defined(ESP32) && defined(ENABLE_MATTER)
+#include "opensprinkler_matter.h"
+#endif
+
 
 // External variables defined in main ion file
 #if defined(USE_OTF)
@@ -2426,6 +2430,44 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
+#if defined(ESP32) && defined(ENABLE_MATTER)
+/** Output Matter pairing information in JSON */
+void server_json_matter(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	bfill.emit_p(PSTR("{"));
+	
+	// Get Matter pairing information
+	String qr_url = OSMatter::instance().get_qr_code_url();
+	String pairing_code = OSMatter::instance().get_manual_pairing_code();
+	bool commissioned = OSMatter::instance().is_commissioned();
+	
+	// Output JSON
+	bfill.emit_p(PSTR("\"commissioned\":$D"), commissioned ? 1 : 0);
+	
+	if (!commissioned && qr_url.length() > 0) {
+		bfill.emit_p(PSTR(",\"qr_url\":\""));
+		bfill.emit_p(qr_url.c_str());
+		bfill.emit_p(PSTR("\""));
+	}
+	
+	if (!commissioned && pairing_code.length() > 0) {
+		bfill.emit_p(PSTR(",\"pairing_code\":\""));
+		bfill.emit_p(pairing_code.c_str());
+		bfill.emit_p(PSTR("\""));
+	}
+	
+	bfill.emit_p(PSTR("}"));
+	handle_return(HTML_OK);
+}
+#endif
+
 /*
 // fill ESP8266 flash with some dummy files
 void server_fill_files(OTF_PARAMS_DEF) {
@@ -4423,6 +4465,9 @@ const char _url_keys[] PROGMEM =
 	"bs"  // BLE: start scan
 	"bc"  // BLE: clear new device flags
 #endif
+#if defined(ESP32) && defined(ENABLE_MATTER)
+	"jm"  // Matter: get pairing information
+#endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	"fy"
 	"fc"
@@ -4485,6 +4530,9 @@ URLHandler urls[] = {
 	server_ble_discovered_devices, // bd
 	server_ble_start_scan, // bs
 	server_ble_clear_flags, // bc
+#endif
+#if defined(ESP32) && defined(ENABLE_MATTER)
+	server_json_matter, // jm
 #endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	server_fyta_query_plants, // fy

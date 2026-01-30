@@ -19,6 +19,10 @@ public:
   void update_station(uint8_t sid, bool is_on);
   bool is_commissioned();
   
+  // Get Matter pairing information
+  String get_qr_code_url();
+  String get_manual_pairing_code();
+  
   // Internal callbacks
   void station_on(unsigned char sid);
   void station_off(unsigned char sid);

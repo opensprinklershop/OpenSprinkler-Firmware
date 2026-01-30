@@ -274,43 +274,43 @@ class OpenSprinkler {
 public:
 
 	// data members
-	static OSInfluxDB influxdb;
+	static OSInfluxDB EXT_RAM_BSS_ATTR influxdb;
 #if defined(USE_SSD1306)
-	static SSD1306Display lcd;  // 128x64 OLED display
+	static SSD1306Display EXT_RAM_BSS_ATTR lcd;  // 128x64 OLED display
 #elif defined(USE_LCD)
-	static LiquidCrystal lcd;   // 16x2 character LCD
+	static LiquidCrystal EXT_RAM_BSS_ATTR lcd;   // 16x2 character LCD
 #endif
 
 #if defined(OSPI)
 	static unsigned char pin_sr_data;  // RPi shift register data pin to handle RPi rev. 1
 #endif
 
-	static OSMqtt mqtt;
+	static OSMqtt EXT_RAM_BSS_ATTR mqtt;
 
-	static NVConData nvdata;
-	static ConStatus status;
-	static ConStatus old_status;
+	static NVConData EXT_RAM_BSS_ATTR nvdata;
+	static ConStatus EXT_RAM_BSS_ATTR status;
+	static ConStatus EXT_RAM_BSS_ATTR old_status;
 	static unsigned char nboards, nstations;
 	static unsigned char hw_type;  // hardware type
 	static unsigned char hw_rev;   // hardware minor
 
-	static unsigned char iopts[]; // integer options
-	static const char*sopts[]; // string options
-	static unsigned char station_bits[];     // station activation bits. each byte corresponds to a board (8 stations)
-																	// first byte-> master controller, second byte-> ext. board 1, and so on
+static unsigned char EXT_RAM_BSS_ATTR iopts[]; // integer options
+	static const char* EXT_RAM_BSS_ATTR sopts[]; // string options
+	static unsigned char EXT_RAM_BSS_ATTR station_bits[];     // station activation bits. each byte corresponds to a board (8 stations)
+																		// first byte-> master controller, second byte-> ext. board 1, and so on
 	// Note: the following attribute bytes are for backward compatibility
-	static unsigned char attrib_mas[];
-	static unsigned char attrib_igs[];
-	static unsigned char attrib_mas2[];
-	static unsigned char attrib_igs2[];
-	static unsigned char attrib_igrd[];
-	static unsigned char attrib_dis[];
-	static unsigned char attrib_spe[];
-	static unsigned char attrib_grp[];
-	static uint16_t attrib_fas[MAX_NUM_STATIONS]; //value*100 flow alert setpoint
-	static uint16_t attrib_favg[MAX_NUM_STATIONS]; //value*100 flow avg values
-	static unsigned char masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
-	static time_os_t masters_last_on[NUM_MASTER_ZONES];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_mas[];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_igs[];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_mas2[];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_igs2[];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_igrd[];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_dis[];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_spe[];
+	static unsigned char EXT_RAM_BSS_ATTR attrib_grp[];
+	static uint16_t EXT_RAM_BSS_ATTR attrib_fas[MAX_NUM_STATIONS]; //value*100 flow alert setpoint
+	static uint16_t EXT_RAM_BSS_ATTR attrib_favg[MAX_NUM_STATIONS]; //value*100 flow avg values
+	static unsigned char EXT_RAM_BSS_ATTR masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
+	static time_os_t EXT_RAM_BSS_ATTR masters_last_on[NUM_MASTER_ZONES];
 
 	// variables for time keeping
 	static time_os_t sensor1_on_timer;  // time when sensor1 is detected on last time
@@ -469,7 +469,7 @@ public:
 
 	#if defined(ESP8266) || defined(ESP32)
 	static IOEXP *mainio, *drio;
-	static IOEXP *expanders[];
+	static IOEXP * EXT_RAM_BSS_ATTR expanders[];
 	#if defined(ESP8266)
 	static CH224* usbpd;
 	#endif
@@ -478,7 +478,7 @@ public:
 	static void detect_expanders();
 	static unsigned char get_wifi_mode() { if (useEth) return WIFI_MODE_STA; else return wifi_testmode ? WIFI_MODE_STA : iopts[IOPT_WIFI_MODE];}
 	static unsigned char wifi_testmode;
-	static String wifi_ssid, wifi_pass;
+	static String EXT_RAM_BSS_ATTR wifi_ssid, EXT_RAM_BSS_ATTR wifi_pass;
 	static unsigned char wifi_bssid[6], wifi_channel;
 	static void config_ip();
 	static void save_wifi_ip();
@@ -513,10 +513,10 @@ private:
 	static void latch_disable_alloutputs_v2(unsigned char expvalue);
 	static void latch_setzoneoutput_v2(unsigned char sid, unsigned char A, unsigned char K);
 	static void latch_apply_all_station_bits();
-	static unsigned char prev_station_bits[];
+	static unsigned char EXT_RAM_BSS_ATTR prev_station_bits[];
 #endif // LCD functions
 	static unsigned char engage_booster;
-	static RCSwitch rfswitch;
+	static RCSwitch EXT_RAM_BSS_ATTR rfswitch;
 
 	#if defined(USE_OTF)
 	static void parse_otc_config();

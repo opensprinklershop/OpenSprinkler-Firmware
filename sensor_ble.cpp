@@ -104,7 +104,7 @@ static void ble_release_scan_lock_if_needed() {
 
 // Reuse a single client instance; do not delete clients manually.
 // Deinit is deferred to the BLE maintenance loop to avoid heap corruption.
-static BLEClient* ble_client = nullptr;
+static BLEClient* EXT_RAM_BSS_ATTR ble_client = nullptr;
 static bool ble_in_read = false;
 static bool ble_stop_requested = false;
 static uint32_t ble_stop_request_time = 0;
@@ -125,7 +125,7 @@ static uint32_t ble_scan_start_time = 0;  // Time when current scan started (0 =
 static const uint32_t BLE_HARD_TIMEOUT_MS = 30000;  // 30 seconds max per scan
 
 // Discovered devices storage (dynamically allocated)
-static std::vector<BLEDeviceInfo> discovered_ble_devices;
+static std::vector<BLEDeviceInfo> EXT_RAM_BSS_ATTR discovered_ble_devices;
 
 // ============================================================================
 // Govee BLE Advertisement Data Decoder
@@ -941,11 +941,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     }
 };
 
-static MyAdvertisedDeviceCallbacks ble_scan_callbacks;
-
-/**
- * @brief Initialize BLE sensor subsystem
- */
+static MyAdvertisedDeviceCallbacks EXT_RAM_BSS_ATTR ble_scan_callbacks;
 bool sensor_ble_init()
 {
     // Backoff if previous init failed

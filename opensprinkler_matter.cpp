@@ -75,16 +75,20 @@ namespace {
     std::hash<uint16_t>, std::equal_to<uint16_t>,
     PSRAMAllocator<std::pair<const uint16_t, std::unique_ptr<MatterPressureSensor>>>>;
   
-  StationMap stations;
-  TempSensorMap temp_sensors;
-  HumiditySensorMap humidity_sensors;
-  PressureSensorMap pressure_sensors;
+  EXT_RAM_BSS_ATTR StationMap stations;
+  EXT_RAM_BSS_ATTR TempSensorMap temp_sensors;
+  EXT_RAM_BSS_ATTR HumiditySensorMap humidity_sensors;
+  EXT_RAM_BSS_ATTR PressureSensorMap pressure_sensors;
   
   EXT_RAM_BSS_ATTR bool matter_started = false;
   EXT_RAM_BSS_ATTR bool commissioned = false;
   EXT_RAM_BSS_ATTR bool matter_ble_lock_held = false;
   EXT_RAM_BSS_ATTR bool ble_init_pending = false;
   EXT_RAM_BSS_ATTR uint32_t ble_init_at = 0;
+  
+  // Matter QR code and pairing information
+  EXT_RAM_BSS_ATTR String qr_code_url = "";
+  EXT_RAM_BSS_ATTR String manual_pairing_code = "";
   EXT_RAM_BSS_ATTR uint32_t config_signature = 0;
 }
 
@@ -341,6 +345,21 @@ void OSMatter::init() {
   #if defined(BOARD_HAS_PSRAM)
   DEBUG_PRINTF("[Matter] Pre-init: Heap %d KB, PSRAM %.2f MB\n",
                ESP.getFreeHeap()/1024, ESP.getFreePsram()/1048576.0);
+  
+  // Pre-allocate internal RAM for crypto operations
+  // Hardware AES requires DMA-capable internal memory
+  size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  DEBUG_PRINTF("[Matter] Internal heap before crypto reserve: %d bytes\n", internal_free);
+  
+  // If internal heap is below threshold, try to free up space
+  if(internal_free < 50000) {
+    DEBUG_PRINTLN("[Matter] WARNING: Low internal heap - crypto may fail!");
+    // Try to allocate and immediately free to defragment
+    void* defrag_block = heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(defrag_block) {
+      heap_caps_free(defrag_block);
+    }
+  }
   #endif
   
   create_station_endpoints();
@@ -357,10 +376,10 @@ void OSMatter::init() {
   #endif
   
   if(!Matter.isDeviceCommissioned()) {
-    String qr = Matter.getOnboardingQRCodeUrl();
-    String code = Matter.getManualPairingCode();
-    DEBUG_PRINTLN("[Matter] QR: " + qr);
-    DEBUG_PRINTLN("[Matter] Code: " + code);
+    qr_code_url = Matter.getOnboardingQRCodeUrl();
+    manual_pairing_code = Matter.getManualPairingCode();
+    DEBUG_PRINTLN("[Matter] QR: " + qr_code_url);
+    DEBUG_PRINTLN("[Matter] Code: " + manual_pairing_code);
   } else {
     commissioned = true;
     DEBUG_PRINTLN("[Matter] Already commissioned");
@@ -434,6 +453,14 @@ void OSMatter::update_station(uint8_t sid, bool is_on) {
 
 bool OSMatter::is_commissioned() {
   return commissioned;
+}
+
+String OSMatter::get_qr_code_url() {
+  return qr_code_url;
+}
+
+String OSMatter::get_manual_pairing_code() {
+  return manual_pairing_code;
 }
 
 void OSMatter::station_on(unsigned char sid) {

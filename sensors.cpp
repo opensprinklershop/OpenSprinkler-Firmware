@@ -111,11 +111,11 @@ unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const c
                 bool key_in_pgm = false, uint8_t *keyfound = NULL);
 
 // All sensors (map nr -> SensorBase*)
-static std::map<uint, SensorBase*> sensorsMap;
+static std::map<uint, SensorBase*> EXT_RAM_BSS_ATTR sensorsMap;
 static time_t last_save_time = 0;
 static boolean apiInit = false;
-static SensorBase *current_sensor = NULL;
-static std::map<uint, SensorBase*>::iterator current_sensor_it;
+static SensorBase * EXT_RAM_BSS_ATTR current_sensor = NULL;
+static std::map<uint, SensorBase*>::iterator EXT_RAM_BSS_ATTR current_sensor_it;
 
 // Factory forward declaration
 SensorBase* sensor_make_obj(uint type, boolean ip_based);
@@ -124,10 +124,10 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based);
 static uint16_t asb_detected_boards = 0;  // bit 1=0x48+0x49 bit 2=0x4A+0x4B usw
 
 // Program sensor data (HashMap for efficient lookup by nr)
-static std::map<uint, ProgSensorAdjust*> progSensorAdjustsMap;
+static std::map<uint, ProgSensorAdjust*> EXT_RAM_BSS_ATTR progSensorAdjustsMap;
 
 // Monitor data (HashMap for efficient lookup by nr)
-static std::map<uint, Monitor*> monitorsMap;
+static std::map<uint, Monitor*> EXT_RAM_BSS_ATTR monitorsMap;
 
 static const unsigned char MAX_SENSOR_UNITNAMES = 14;
 const char *sensor_unitNames[]{
@@ -1116,8 +1116,8 @@ void sensor_remote_http_callback(char *) {
 void push_message(SensorBase *sensor) {
   if (!sensor || !sensor->last_read) return;
 
-  static char topic[TMP_BUFFER_SIZE];
-  static char payload[TMP_BUFFER_SIZE];
+  static char EXT_RAM_BSS_ATTR topic[TMP_BUFFER_SIZE];
+  static char EXT_RAM_BSS_ATTR payload[TMP_BUFFER_SIZE];
   char *postval = tmp_buffer;
 
   if (os.mqtt.enabled()) {
