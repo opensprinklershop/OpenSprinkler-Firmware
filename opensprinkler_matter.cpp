@@ -75,10 +75,12 @@ namespace {
     std::hash<uint16_t>, std::equal_to<uint16_t>,
     PSRAMAllocator<std::pair<const uint16_t, std::unique_ptr<MatterPressureSensor>>>>;
   
-  EXT_RAM_BSS_ATTR StationMap stations;
-  EXT_RAM_BSS_ATTR TempSensorMap temp_sensors;
-  EXT_RAM_BSS_ATTR HumiditySensorMap humidity_sensors;
-  EXT_RAM_BSS_ATTR PressureSensorMap pressure_sensors;
+  // NOTE: std::unordered_map cannot use EXT_RAM_BSS_ATTR - has internal hash table pointers
+  // The PSRAMAllocator handles dynamic allocations in PSRAM
+  StationMap stations;
+  TempSensorMap temp_sensors;
+  HumiditySensorMap humidity_sensors;
+  PressureSensorMap pressure_sensors;
   
   EXT_RAM_BSS_ATTR bool matter_started = false;
   EXT_RAM_BSS_ATTR bool commissioned = false;
@@ -87,8 +89,9 @@ namespace {
   EXT_RAM_BSS_ATTR uint32_t ble_init_at = 0;
   
   // Matter QR code and pairing information
-  EXT_RAM_BSS_ATTR String qr_code_url = "";
-  EXT_RAM_BSS_ATTR String manual_pairing_code = "";
+  // NOTE: Arduino String cannot use EXT_RAM_BSS_ATTR - has internal buffer pointer
+  String qr_code_url = "";
+  String manual_pairing_code = "";
   EXT_RAM_BSS_ATTR uint32_t config_signature = 0;
 }
 

@@ -45,7 +45,7 @@ unsigned char OpenSprinkler::hw_type;
 unsigned char OpenSprinkler::hw_rev;
 unsigned char OpenSprinkler::nboards;
 unsigned char OpenSprinkler::nstations;
-PSRAM_ATTR unsigned char OpenSprinkler::station_bits[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::station_bits[MAX_NUM_BOARDS];
 unsigned char OpenSprinkler::engage_booster;
 uint16_t OpenSprinkler::baseline_current;
 
@@ -68,17 +68,17 @@ uint8_t OpenSprinkler::last_reboot_cause = REBOOT_CAUSE_NONE;
 unsigned char    OpenSprinkler::weather_update_flag;
 
 // todo future: the following attribute bytes are for backward compatibility
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_mas[MAX_NUM_BOARDS];
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_igs[MAX_NUM_BOARDS];
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_mas2[MAX_NUM_BOARDS];
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_igs2[MAX_NUM_BOARDS];
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_igrd[MAX_NUM_BOARDS];
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_dis[MAX_NUM_BOARDS];
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_spe[MAX_NUM_BOARDS];
-PSRAM_ATTR unsigned char OpenSprinkler::attrib_grp[MAX_NUM_STATIONS];
-PSRAM_ATTR uint16_t OpenSprinkler::attrib_fas[MAX_NUM_STATIONS];
-PSRAM_ATTR uint16_t OpenSprinkler::attrib_favg[MAX_NUM_STATIONS];
-PSRAM_ATTR unsigned char OpenSprinkler::masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
+unsigned char OpenSprinkler::attrib_mas[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::attrib_igs[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::attrib_mas2[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::attrib_igs2[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::attrib_igrd[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::attrib_dis[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::attrib_spe[MAX_NUM_BOARDS];
+unsigned char OpenSprinkler::attrib_grp[MAX_NUM_STATIONS];
+uint16_t OpenSprinkler::attrib_fas[MAX_NUM_STATIONS];
+uint16_t OpenSprinkler::attrib_favg[MAX_NUM_STATIONS];
+unsigned char OpenSprinkler::masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
 time_os_t OpenSprinkler::masters_last_on[NUM_MASTER_ZONES];
 RCSwitch OpenSprinkler::rfswitch;
 OSInfluxDB OpenSprinkler::influxdb;
@@ -1203,7 +1203,7 @@ void OpenSprinkler::begin() {
 		expanders[i] = NULL;
 	detect_expanders();
 
-	DEBUG_PRINTLN(F("OpenSprinkler begin2"));		
+	DEBUG_PRINTLN(F("OpenSprinkler begin3"));		
 #else
 
 	// shift register setup
@@ -1326,7 +1326,7 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 
 #if defined(USE_DISPLAY)
 	lcd_start();
-
+DEBUG_PRINTLN(F("OpenSprinkler begin6a"));
 	#if defined(USE_SSD1306)
 		lcd.createChar(ICON_ETHER_CONNECTED, _iconimage_ether_connected);
 		lcd.createChar(ICON_ETHER_DISCONNECTED, _iconimage_ether_disconnected);
@@ -1337,12 +1337,14 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 		lcd.createChar(ICON_ETHER_DISCONNECTED, _iconimage_disconnected);
 	#endif
 
+	DEBUG_PRINTLN(F("OpenSprinkler begin6b"));
 	lcd.createChar(ICON_REMOTEXT, _iconimage_remotext);
 	lcd.createChar(ICON_RAINDELAY, _iconimage_raindelay);
 	lcd.createChar(ICON_RAIN, _iconimage_rain);
 	lcd.createChar(ICON_SOIL, _iconimage_soil);
 #endif
 
+DEBUG_PRINTLN(F("OpenSprinkler begin6c"));
 #if defined(ARDUINO)
 	#if defined(ESP8266) || defined(ESP32)
 		lcd.setCursor(0,0);
@@ -1362,6 +1364,7 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 			}
 		}
 		#else
+		DEBUG_PRINTLN(F("OpenSprinkler begin6d"));
 		if(!LittleFS.begin(true, "/littlefs", 10, "littlefs_ext")) {
 			if (!LittleFS.begin(true)) {
 				// !!! flash init failed, stall as we cannot proceed
@@ -1378,7 +1381,7 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6"));
 			DEBUG_PRINTF(F("completed.\n"));	
 		}*/
 		#endif
-
+DEBUG_PRINTLN(F("OpenSprinkler begin6e"));
 		#if defined(ESP8266)
 			FSInfo fs_info;
 			LittleFS.info(fs_info);

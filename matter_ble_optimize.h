@@ -63,28 +63,36 @@
  * Save: 480 bytes per connection slot
  * Use when device acts as BLE peripheral only
  */
+#ifndef CONFIG_BT_NIMBLE_MAX_CONNECTIONS
 #define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 1
+#endif
 
 /**
  * GATT max concurrent procedures
  * Default: 4, Optimized: 1
  * Save: 112 bytes
  */
+#ifndef CONFIG_BT_NIMBLE_GATT_MAX_PROCS
 #define CONFIG_BT_NIMBLE_GATT_MAX_PROCS 1
+#endif
 
 /**
  * BLE bonding entries optimization
  * Default: 3, Optimized: 1
  * Save: 448 bytes
  */
+#ifndef CONFIG_BT_NIMBLE_MAX_BONDS
 #define CONFIG_BT_NIMBLE_MAX_BONDS 1
+#endif
 
 /**
  * GATT Client Characteristic Configuration Descriptor (CCCD) entries
  * Default: 8, Optimized: 2
  * Save: 112 bytes
  */
+#ifndef CONFIG_BT_NIMBLE_MAX_CCCDS
 #define CONFIG_BT_NIMBLE_MAX_CCCDS 2
+#endif
 
 /**
  * Disable Secure Connections (SC) if not required
@@ -92,7 +100,9 @@
  * Save: 2KB of RAM
  * NOTE: Only disable if your application doesn't require SC pairing
  */
+#ifndef CONFIG_BT_NIMBLE_SM_SC
 #define CONFIG_BT_NIMBLE_SM_SC 0
+#endif
 
 /**
  * Disable LE Encryption if not required
@@ -100,26 +110,34 @@
  * Save: 32 bytes
  * NOTE: Only disable if your application doesn't require encryption
  */
+#ifndef CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_ENCRYPTION
 #define CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_ENCRYPTION 0
+#endif
 
 /**
  * BLE advertiser data buffer optimization
  * Default: 1024, Optimized: 512
  * Save: 512 bytes RAM per advertiser
  */
+#ifndef CONFIG_BT_NIMBLE_EXT_ADV_MAX_LEN
 #define CONFIG_BT_NIMBLE_EXT_ADV_MAX_LEN 512
+#endif
 
 /**
  * Reduce BLE whitelist size
  * Default: 8, Optimized: 2
  * Save: ~96 bytes
  */
+#ifndef CONFIG_BT_NIMBLE_MAX_WHITELIST
 #define CONFIG_BT_NIMBLE_MAX_WHITELIST 2
+#endif
 
 /**
  * Disable BLE controller debug logs (further saves RAM)
  */
+#ifndef CONFIG_BT_NIMBLE_HOST_ONLY
 #define CONFIG_BT_NIMBLE_HOST_ONLY 0
+#endif
 
 #endif // OS_ENABLE_BLE
 

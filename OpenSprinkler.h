@@ -276,9 +276,11 @@ public:
 	// data members
 	static OSInfluxDB EXT_RAM_BSS_ATTR influxdb;
 #if defined(USE_SSD1306)
-	static SSD1306Display EXT_RAM_BSS_ATTR lcd;  // 128x64 OLED display
+	// NOTE: lcd CANNOT use EXT_RAM_BSS_ATTR - SSD1306Display inherits from OLEDDisplay
+	// which has virtual functions. BSS zero-init would corrupt the vtable pointer.
+	static SSD1306Display lcd;  // 128x64 OLED display
 #elif defined(USE_LCD)
-	static LiquidCrystal EXT_RAM_BSS_ATTR lcd;   // 16x2 character LCD
+	static LiquidCrystal lcd;   // 16x2 character LCD
 #endif
 
 #if defined(OSPI)
@@ -478,7 +480,8 @@ static unsigned char EXT_RAM_BSS_ATTR iopts[]; // integer options
 	static void detect_expanders();
 	static unsigned char get_wifi_mode() { if (useEth) return WIFI_MODE_STA; else return wifi_testmode ? WIFI_MODE_STA : iopts[IOPT_WIFI_MODE];}
 	static unsigned char wifi_testmode;
-	static String EXT_RAM_BSS_ATTR wifi_ssid, EXT_RAM_BSS_ATTR wifi_pass;
+	static String EXT_RAM_BSS_ATTR wifi_ssid;
+	static String EXT_RAM_BSS_ATTR wifi_pass;
 	static unsigned char wifi_bssid[6], wifi_channel;
 	static void config_ip();
 	static void save_wifi_ip();

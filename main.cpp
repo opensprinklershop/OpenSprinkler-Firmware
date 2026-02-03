@@ -244,7 +244,8 @@ void flow_poll() {
 
 #if defined(USE_DISPLAY)
 // ====== UI defines ======
-static char EXT_RAM_BSS_ATTR ui_anim_chars[3] = {'.', 'o', 'O'};
+// NOTE: Initialized arrays cannot use EXT_RAM_BSS_ATTR (BSS = zero-init only)
+static char ui_anim_chars[3] = {'.', 'o', 'O'};
 
 #define UI_STATE_DEFAULT   0
 #define UI_STATE_DISP_IP   1
@@ -656,7 +657,8 @@ static void perform_ntp_sync();
 bool delete_log_oldest();
 void start_server_ap();
 void start_server_client();
-static Ticker EXT_RAM_BSS_ATTR reboot_ticker;
+// NOTE: Ticker cannot use EXT_RAM_BSS_ATTR - has internal function pointers
+static Ticker reboot_ticker;
 
 void reboot_in(uint32_t ms) {
 	if(os.state != OS_STATE_WAIT_REBOOT) {

@@ -28,11 +28,50 @@
 
 typedef unsigned long ulong;
 
-// PSRAM allocation attribute: use PSRAM for large static arrays if available
+// ============================================================================
+// PSRAM (SPIRAM) Memory Allocation Attributes
+// ============================================================================
+// For ESP32 with external PSRAM, these macros place static variables in PSRAM
+// to free internal SRAM for DMA, WiFi, and stack.
+//
+// Usage:
+//   PSRAM_BSS_ATTR    char buffer[64*1024];     // Zero-initialized in PSRAM
+//   PSRAM_DATA_ATTR   char table[1024] = {...}; // Initialized from flash
+//   PSRAM_NOINIT_ATTR char persist[4096];       // NOT zero-initialized (survives soft reset)
+//
+// For dynamic allocation, use:
+//   heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)  // zeroed
+//   heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)     // not zeroed
+// ============================================================================
+
 #if defined(ESP32) && defined(BOARD_HAS_PSRAM)
-  #define PSRAM_ATTR EXT_RAM_BSS_ATTR
+  #include "esp_attr.h"
+  
+  // All ESP32 variants with PSRAM: Use EXT_RAM_BSS_ATTR for static PSRAM placement
+  // The framework-arduinoespressif32-libs must be built with:
+  //   CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+  // This ensures esp_psram_bss_init() properly adjusts heap to skip ext_ram_bss section.
+  
+  // Zero-initialized BSS in PSRAM (automatic zero-init at boot)
+  #define PSRAM_ATTR        EXT_RAM_BSS_ATTR
+  #define PSRAM_BSS_ATTR    EXT_RAM_BSS_ATTR
+  
+  // Initialized data in PSRAM (copied from flash at boot)
+  #define PSRAM_DATA_ATTR   __attribute__((section(".ext_ram.data")))
+  
+  // Non-initialized PSRAM (survives soft reset, NOT zeroed)
+  #define PSRAM_NOINIT_ATTR __attribute__((section(".ext_ram.noinit")))
+  
+  // Read-only data in PSRAM (for huge const tables)
+  #define PSRAM_RODATA_ATTR __attribute__((section(".ext_ram.rodata")))
+  
 #else
+  // Non-PSRAM platforms: no special placement
   #define PSRAM_ATTR
+  #define PSRAM_BSS_ATTR
+  #define PSRAM_DATA_ATTR
+  #define PSRAM_NOINIT_ATTR
+  #define PSRAM_RODATA_ATTR
 #endif
 
 #define TMP_BUFFER_SIZE      320   // scratch buffer size
@@ -435,8 +474,13 @@ enum {
 	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
 	#endif
 	#define PIN_FREE_LIST     {} // no free GPIO pin at the moment
+#if defined(ESP32)
+	#define ETHER_BUFFER_SIZE   4096
+	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE*2)
+#else
 	#define ETHER_BUFFER_SIZE   2048
-	#define ETHER_BUFFER_SIZE_L   ETHER_BUFFER_SIZE+100
+	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE+100)
+#endif
 
 	/* To accommodate different OS30 versions, we use software defines pins */
 	extern unsigned char PIN_BUTTON_1;

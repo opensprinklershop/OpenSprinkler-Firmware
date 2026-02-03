@@ -28,7 +28,6 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <esp_heap_caps_init.h>
-#include <mbedtls/platform.h>
 #include "defines.h"
 
 #if defined(SOC_PSRAM_DMA_CAPABLE)
@@ -36,10 +35,52 @@
 #endif
 
 // ============================================================================
-// mbedTLS PSRAM Allocator - Routes SSL/TLS allocations to SPIRAM
+// ESP-IDF mbedTLS Memory Override - Routes ALL TLS allocations to SPIRAM
 // ============================================================================
-// This is critical for HTTPS connections on memory-constrained ESP32-C5
-// The default mbedTLS allocator uses internal RAM which is limited to 384KB
+// The precompiled ESP-IDF mbedtls library (libmbedcrypto.a) has esp_mbedtls_mem_calloc
+// hardcoded with MALLOC_CAP_INTERNAL (0x804). We override it here to use SPIRAM.
+//
+// CRITICAL: The ESP-IDF library was compiled with C linkage, so we MUST use
+// extern "C" here to match the symbol name. We declare the functions BEFORE
+// including mbedtls/platform.h to avoid conflicts with esp_mem.h.
+
+extern "C" {
+// Override ESP-IDF's esp_mbedtls_mem_calloc - use PSRAM instead of internal RAM
+// This function is called by mbedTLS for ALL allocations (MBEDTLS_PLATFORM_STD_CALLOC)
+void* esp_mbedtls_mem_calloc(size_t n, size_t size) {
+  size_t total = n * size;
+  
+  // Use SPIRAM for all mbedTLS allocations
+  void* ptr = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (ptr) {
+    return ptr;
+  }
+  
+  // Fallback to any available memory (including internal) if SPIRAM fails
+  ptr = heap_caps_calloc(n, size, MALLOC_CAP_8BIT);
+  if (!ptr) {
+    DEBUG_PRINTF("[mbedTLS] ALLOC FAILED: %d bytes (SPIRAM and internal exhausted)\n", total);
+  }
+  return ptr;
+}
+
+// Override ESP-IDF's esp_mbedtls_mem_free
+void esp_mbedtls_mem_free(void* ptr) {
+  if (ptr) {
+    heap_caps_free(ptr);
+  }
+}
+}  // extern "C"
+
+// Now include mbedtls/platform.h (which includes esp_mem.h)
+// Our extern "C" definitions above will take precedence
+#include <mbedtls/platform.h>
+
+// ============================================================================
+// mbedTLS PSRAM Allocator (backup for mbedtls_platform_set_calloc_free)
+// ============================================================================
+// This is kept as a fallback mechanism but the extern "C" override above
+// should handle all allocations in the precompiled ESP-IDF mbedtls library
 
 static void* mbedtls_psram_calloc(size_t n, size_t size) {
   size_t total = n * size;

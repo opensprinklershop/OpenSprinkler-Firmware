@@ -125,7 +125,8 @@ static uint32_t ble_scan_start_time = 0;  // Time when current scan started (0 =
 static const uint32_t BLE_HARD_TIMEOUT_MS = 30000;  // 30 seconds max per scan
 
 // Discovered devices storage (dynamically allocated)
-static std::vector<BLEDeviceInfo> EXT_RAM_BSS_ATTR discovered_ble_devices;
+// NOTE: std::vector cannot use EXT_RAM_BSS_ATTR - has internal pointers that need constructor
+static std::vector<BLEDeviceInfo> discovered_ble_devices;
 
 // ============================================================================
 // Govee BLE Advertisement Data Decoder
@@ -941,7 +942,8 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     }
 };
 
-static MyAdvertisedDeviceCallbacks EXT_RAM_BSS_ATTR ble_scan_callbacks;
+// NOTE: Callback objects cannot use EXT_RAM_BSS_ATTR - has virtual functions
+static MyAdvertisedDeviceCallbacks ble_scan_callbacks;
 bool sensor_ble_init()
 {
     // Backoff if previous init failed
