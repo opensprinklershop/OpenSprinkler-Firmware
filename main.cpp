@@ -40,6 +40,7 @@
 #include "osinfluxdb.h"
 #include "opensprinkler_matter.h"
 #include "psram_utils.h"
+#include "matter_ble_optimize.h"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -510,8 +511,15 @@ void do_setup() {
 	// Initialize PSRAM-based buffers early
 	init_psram_buffers();
 	
-	// Initialize mbedTLS to use PSRAM for SSL/TLS allocations
-	init_mbedtls_psram();
+	// Initialize mbedTLS to use PSRAM for SSL/TLS buffers
+	// CRITICAL: Must be called before any HTTPS connections!
+	init_mbedtls_psram_allocator();
+	
+	#if defined(ENABLE_MATTER) || defined(OS_ENABLE_BLE)
+	// Log memory optimization configuration
+	log_matter_ble_memory_optimization();
+	#endif
+
 #endif
 
 	/* Clear WDT reset flag. */

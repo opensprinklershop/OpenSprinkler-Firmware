@@ -26,15 +26,7 @@
 
 #if defined(ESP32) && defined(BOARD_HAS_PSRAM)
 
-// Buffer sizes from defines.h
-#ifndef ETHER_BUFFER_SIZE_L
-#define ETHER_BUFFER_SIZE_L 2148
-#endif
-
-#ifndef TMP_BUFFER_SIZE_L
-#define TMP_BUFFER_SIZE_L 640
-#endif
-
+// Buffer sizes are defined in defines.h, use those directly
 // External buffer declarations
 extern char* ether_buffer;
 extern char* tmp_buffer;
@@ -43,8 +35,11 @@ extern char* tmp_buffer;
 void init_psram_buffers();
 void print_psram_stats();
 
-// mbedTLS PSRAM allocator for SSL/TLS
-void init_mbedtls_psram();
+// mbedTLS PSRAM allocator - call BEFORE any HTTPS/TLS operations!
+void init_mbedtls_psram_allocator();
+
+// Memory optimization logging (Matter & BLE)
+void log_matter_ble_memory_optimization();
 
 #else
 // Non-PSRAM platforms
@@ -53,7 +48,8 @@ extern char tmp_buffer[];
 
 inline void init_psram_buffers() {}
 inline void print_psram_stats() {}
-inline void init_mbedtls_psram() {}
+inline void init_mbedtls_psram_allocator() {}
+inline void log_matter_ble_memory_optimization() {}
 
 #endif
 
