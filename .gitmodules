@@ -1,6 +1,12 @@
+[submodule "external/OpenThings-Framework-Firmware-Library"]
+        path = external/OpenThings-Framework-Firmware-Library
+        url = https://github.com/OpenSprinklerShop/OpenThings-Framework-Firmware-Library.git
 [submodule "external/TinyWebsockets"]
 	path = external/TinyWebsockets
 	url = https://github.com/gilmaimon/TinyWebsockets.git
 [submodule "external/influxdb-cpp"]
 	path = external/influxdb-cpp
 	url = https://github.com/orca-zhang/influxdb-cpp.git
+[submodule "OpenThings-Framework-Firmware-Library"]
+	path = OpenThings-Framework-Firmware-Library
+	url = https://github.com/OpenSprinklerShop/OpenThings-Framework-Firmware-Library
