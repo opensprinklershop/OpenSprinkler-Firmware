@@ -293,7 +293,6 @@ BoardType get_board_type() {
 
 void remove_file(const char *fn) {
 #if defined(ESP8266) || defined(ESP32)
-
 	if(!LittleFS.exists(fn)) return;
 	LittleFS.remove(fn);
 
@@ -312,7 +311,6 @@ void remove_file(const char *fn) {
 
 bool file_exists(const char *fn) {
 #if defined(ESP8266)
-
 	//return LittleFS.exists(fn);
 	File f = LittleFS.open(fn, "r");
 	if (f) {
@@ -321,7 +319,6 @@ bool file_exists(const char *fn) {
 	}
 	return false;
 #elif defined(ESP32)
-
 	return LittleFS.exists(fn);
 
 #elif defined(ARDUINO)
@@ -343,7 +340,6 @@ bool file_exists(const char *fn) {
 ulong file_size(const char *fn) {
 	ulong size = 0;
 #if defined(ESP8266) || defined(ESP32)
-
 	// do not use File.readBytes or readBytesUntil because it's very slow  
 	if (!LittleFS.exists(fn)) return 0;
 	File f = LittleFS.open(fn, "r");
@@ -389,7 +385,6 @@ bool rename_file(const char *fn_old, const char *fn_new) {
 ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 	ulong result = 0;
 #if defined(ESP8266) || defined(ESP32)
-
 	// do not use File.read_byte or read_byteUntil because it's very slow
 	if (!LittleFS.exists(fn)) return 0;
 	File f = LittleFS.open(fn, "r");
@@ -424,7 +419,6 @@ ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 
 void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 #if defined(ESP8266) || defined(ESP32)
-
 	File f = LittleFS.open(fn, "r+");
 	if(!f) f = LittleFS.open(fn, "w");
 	if(f) {
@@ -461,7 +455,6 @@ void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 
 void file_append_block(const char *fn, const void *src, ulong len) {
 #if defined(ESP8266) || defined(ESP32)
-
 	File f = LittleFS.open(fn, "r+");
 	if(!f) f = LittleFS.open(fn, "w");
 	if(f) {
@@ -501,7 +494,6 @@ void file_copy_block(const char *fn, ulong from, ulong to, ulong len, void *tmp)
 	// todo future: if tmp buffer is not provided, do unsigned char-to-unsigned char copy
 	if(tmp==NULL) { return; }
 #if defined(ESP8266) || defined(ESP32)
-
 	File f = LittleFS.open(fn, "r+");
 	if(!f) return;
 	f.seek(from, SeekSet);
@@ -539,7 +531,6 @@ void file_copy_block(const char *fn, ulong from, ulong to, ulong len, void *tmp)
 // compare a block of content
 unsigned char file_cmp_block(const char *fn, const char *buf, ulong pos) {
 #if defined(ESP8266) || defined(ESP32)
-
 	File f = LittleFS.open(fn, "r");
 	if(f) {
 		f.seek(pos, SeekSet);

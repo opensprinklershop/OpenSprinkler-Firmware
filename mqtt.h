@@ -23,8 +23,9 @@
 
 #ifndef _MQTT_H
 #define _MQTT_H
+
 #if defined(ARDUINO)
-	#include <PubSubClient.h>
+	#include <PubSubClient.h>    
 #else
 	#if defined(__has_include)
 		#if __has_include(<mosquitto.h>)
@@ -37,6 +38,15 @@
 		#include <mosquitto.h>
 	#endif
 #endif
+
+	#if defined(ESP8266) 
+		#include <ESP8266WiFi.h>
+	#elif defined(ESP32)
+		#include <WiFi.h>
+		#include <WiFiClientSecure.h>
+	#else
+		#include <Ethernet.h>
+	#endif
 
 class OSMqtt {
 private:
@@ -79,6 +89,7 @@ private:
 #else
 	static void setCallback(int key, void (*on_message)(struct mosquitto *, void *, const struct mosquitto_message *));
 #endif
+	static Client * client;
 };
 
 #endif	// _MQTT_H

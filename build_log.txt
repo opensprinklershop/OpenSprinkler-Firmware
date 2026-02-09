@@ -1,0 +1,158 @@
+Processing esp32-c5-matter (platform: https://github.com/pioarduino/platform-espressif32.git#develop; framework: arduino; board: os4proEsp32; board_build.mcu: esp32c5; board_build.flash_mode: qio; board_build.psram_type: qio; board_build.filesystem: littlefs; board_build.partitions: os4_matter.csv; upload_protocol: esptool; monitor_filters: colorize, esp32_exception_decoder; upload_speed: 460800; monitor_speed: 115200; build_type: debug; extra_scripts: fix_build.py; build_flags: -D BOARD_HAS_PSRAM, -D SOC_PSRAM_DMA_CAPABLE, -D SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE, -D ESP32C5, -D OS_ENABLE_BLE, -D ENABLE_MATTER, -D ENABLE_DEBUG, -I../OpenThings-Framework-Firmware-Library, -I../pubsubclient3; lib_ignore: Zigbee, SD, SPIFFS, FFat; lib_deps: Ethernet, Matter, BLE, https://github.com/ThingPulse/esp8266-oled-ssd1306/archive/4.2.0.zip, file://../pubsubclient3, file://../ArduinoWebSockets, file://../OpenThings-Framework-Firmware-Library, RobTillaart/ADS1X15, https://github.com/tobiasschuerg/InfluxDB-Client-for-Arduino; build_src_filter: +<*> -<*.ino> -<html/*> -<external/*> -<ospi-analog/*> -<sensor_ospi*> -<managed_components/*> -<OpenThingsLib/*> -<demo_build.cpp>)
+--------------------------------------------------------------------------------
+Library Manager: Installing opensprinklershop/arduinoWebSockets
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/os4proEsp32.html
+PLATFORM: Espressif 32 (55.3.35+develop.sha.f901cca) (git+https://github.com/pioarduino/platform-espressif32.git#develop) > OpenSprinkler OS4 Pro ESP32-C5 R8M8
+HARDWARE: ESP32C5 240MHz, 8.31MB RAM, 8MB Flash
+DEBUG: Current (cmsis-dap) External (cmsis-dap, esp-bridge, esp-builtin, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - contrib-piohome @ 3.4.4 (https://github.com/pioarduino/registry/releases/download/0.0.1/contrib-piohome-3.4.4.tar.gz) 
+ - framework-arduinoespressif32 @ 3.3.6 (https://github.com/espressif/arduino-esp32/archive/master.zip) 
+ - framework-arduinoespressif32-libs @ 5.5.0+sha.f56bea3d1f (https://github.com/espressif/esp32-arduino-lib-builder/releases/download/idf-release_v5.5/esp32-arduino-libs-idf-release_v5.5-f56bea3d-v3.zip) 
+ - tool-esp-rom-elfs @ 2024.10.11 (file:///home/stefan/.platformio/tools/tool-esp-rom-elfs) 
+ - tool-esptoolpy @ 5.1.0 (file:///home/stefan/.platformio/tools/tool-esptoolpy) 
+ - tool-openocd-esp32 @ 2.1200.20251215 (12.0, file:///home/stefan/.platformio/tools/tool-openocd-esp32) 
+ - tool-riscv32-esp-elf-gdb @ 16.3.0+20250913 (file:///home/stefan/.platformio/tools/tool-riscv32-esp-elf-gdb) 
+ - toolchain-riscv32-esp @ 14.2.0+20251107 (file:///home/stefan/.platformio/tools/toolchain-riscv32-esp)
+[ComponentManager] BT/BLE protection enabled
+[ComponentManager] Ignored library: spiffs (1 entries)
+[ComponentManager] Ignored library: fatfs (3 entries)
+[ComponentManager] Updated build file (4 total removals)
+[ComponentManager] Processed 3 ignored libraries
+[ComponentManager] Session completed with 5 changes
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Ignored library /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/FFat
+Ignored library /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SD
+Ignored library /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SPIFFS
+Ignored library /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Zigbee
+More details about "Library Compatibility Mode": https://docs.platformio.org/page/librarymanager/ldf.html#ldf-compat-mode
+Found 45 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- Ethernet @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Ethernet)
+|   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- SPI @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SPI)
+|-- Matter @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Matter)
+|-- BLE @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/BLE)
+|-- ESP8266 and ESP32 OLED driver for SSD1306 displays @ 4.2.0 (License: Unknown, URI: https://github.com/ThingPulse/esp8266-oled-ssd1306/archive/4.2.0.zip, Path: /data/Workspace/OpenSprinkler-Firmware/.pio/libdeps/esp32-c5-matter/ESP8266 and ESP32 OLED driver for SSD1306 displays)
+|   |-- Wire @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Wire)
+|-- PubSubClient3 @ 3.3.0 (License: MIT, URI: file://../pubsubclient3, Path: /data/Workspace/OpenSprinkler-Firmware/.pio/libdeps/esp32-c5-matter/PubSubClient3)
+|-- WebSockets @ 2.7.1 (License: LGPL-2.1, URI: file://../ArduinoWebSockets, Path: /data/Workspace/OpenSprinkler-Firmware/.pio/libdeps/esp32-c5-matter/WebSockets)
+|   |-- Ethernet @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Ethernet)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |   |-- SPI @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SPI)
+|   |-- SPI @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SPI)
+|   |-- WiFi @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/WiFi)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- NetworkClientSecure @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|-- OpenThings-Framework-Firmware-Library @ 0.2.1 (License: Unknown, URI: file://../OpenThings-Framework-Firmware-Library, Path: /data/Workspace/OpenSprinkler-Firmware/.pio/libdeps/esp32-c5-matter/OpenThings-Framework-Firmware-Library)
+|   |-- WebSockets @ 2.7.1 (License: LGPL-2.1, URI: file://../ArduinoWebSockets, Path: /data/Workspace/OpenSprinkler-Firmware/.pio/libdeps/esp32-c5-matter/WebSockets)
+|   |   |-- Ethernet @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Ethernet)
+|   |   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |   |   |-- SPI @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SPI)
+|   |   |-- SPI @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SPI)
+|   |   |-- WiFi @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/WiFi)
+|   |   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |   |-- NetworkClientSecure @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure)
+|   |   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- WiFi @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/WiFi)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|-- ADS1X15 @ 0.6.0 (License: MIT, Path: /data/Workspace/OpenSprinkler-Firmware/.pio/libdeps/esp32-c5-matter/ADS1X15)
+|   |-- Wire @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Wire)
+|-- ESP8266 Influxdb @ 3.13.2+sha.c004871 (License: Unknown, URI: git+https://github.com/tobiasschuerg/InfluxDB-Client-for-Arduino, Path: /data/Workspace/OpenSprinkler-Firmware/.pio/libdeps/esp32-c5-matter/ESP8266 Influxdb)
+|   |-- HTTPClient @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/HTTPClient)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |   |-- NetworkClientSecure @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure)
+|   |   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- WiFi @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/WiFi)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- NetworkClientSecure @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|-- Wire @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Wire)
+|-- ArduinoOTA @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/ArduinoOTA)
+|   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- Update @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Update)
+|   |   |-- Hash @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Hash)
+|   |-- ESPmDNS @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/ESPmDNS)
+|   |-- Hash @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Hash)
+|-- SPI @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/SPI)
+|-- WiFi @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/WiFi)
+|   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|-- NetworkClientSecure @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure)
+|   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|-- FS @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/FS)
+|-- LittleFS @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/LittleFS)
+|   |-- FS @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/FS)
+|-- Update @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Update)
+|   |-- Hash @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Hash)
+|-- DNSServer @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/DNSServer)
+|   |-- ESP32 Async UDP @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/AsyncUDP)
+|   |-- WiFi @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/WiFi)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|-- Ticker @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Ticker)
+|-- WebServer @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/WebServer)
+|   |-- FS @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/FS)
+|   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- Hash @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Hash)
+|-- HTTPClient @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/HTTPClient)
+|   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+|   |-- NetworkClientSecure @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure)
+|   |   |-- Networking @ 3.3.6 (License: Unknown, Path: /home/stefan/.platformio/packages/framework-arduinoespressif32/libraries/Network)
+Building in debug mode
+ESP32-C5 Fix: Configured middleware to remove -mlongcalls flag from all builds
+<lambda>(["checkprogsize"], [".pio/build/esp32-c5-matter/firmware.elf"])
+MethodWrapper(["checkprogsize"], [".pio/build/esp32-c5-matter/firmware.elf"])
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [          ]   1.6% (used 135536 bytes from 8716288 bytes)
+Flash: [====      ]  38.2% (used 3208354 bytes from 8388608 bytes)
+.pio/build/esp32-c5-matter/firmware.elf  :
+section                    size         addr
+.rtc.text                     0   1342177280
+.rtc.force_fast               0   1342177280
+.rtc_noinit                   0   1342177280
+.rtc.force_slow              32   1342177280
+.rtc_reserved                40   1342193624
+.iram0.text              121148   1082130432
+.iram0.text_end              68   1082251580
+.iram0.data                   0   1082251648
+.iram0.bss                    0   1082251648
+.dram0.dummy                  0   1082251648
+.dram0.data               20312   1082251648
+.noinit                       0   1082271960
+.dram0.bss               115224   1082271968
+.flash.text             2564350   1107296288
+.flash_rodata_dummy     2621440   1107296288
+.flash.appdesc              256   1109917728
+.flash.rodata            502544   1109917984
+.eh_frame_hdr                 0   1110420528
+.eh_frame                435436   1110420528
+.flash.tdata                  0   1110855964
+.flash.rodata_noload      34971   1110855964
+.dram0.heap_start             8   1082387192
+.ext_ram.dummy          3604448   1107296288
+.debug_aranges           149064            0
+.debug_info            20577794            0
+.debug_abbrev           1226160            0
+.debug_line             5714525            0
+.debug_frame             262380            0
+.debug_str              3090827            0
+.debug_loc              3649332            0
+.debug_ranges            350496            0
+.debug_line_str           19798            0
+.debug_loclists          171326            0
+.debug_rnglists           16031            0
+.comment                    171            0
+.riscv.attributes           106            0
+Total                  45248287
+========================= [SUCCESS] Took 16.05 seconds =========================
+
+Environment      Status    Duration
+---------------  --------  ------------
+esp32-c5-zigbee  IGNORED
+esp32-c5-matter  SUCCESS   00:00:16.045
+os3x_esp8266     IGNORED
+linux            IGNORED
+demo             IGNORED
+========================= 1 succeeded in 00:00:16.045 =========================

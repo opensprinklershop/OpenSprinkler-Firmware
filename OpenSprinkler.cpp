@@ -1237,9 +1237,6 @@ void OpenSprinkler::begin() {
 
 	// init masters_last_on array
 	memset(masters_last_on, 0, sizeof(masters_last_on));
-	// Reset all stations
-	clear_all_station_bits();
-	apply_all_station_bits();
 
 	DEBUG_PRINTLN(F("OpenSprinkler begin4"));
 
@@ -1394,6 +1391,10 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6e"));
 			DEBUG_PRINTF(F("Free space:  %lu kb\n"), (unsigned long)((LittleFS.totalBytes()-LittleFS.usedBytes()) / 1024));
 		#endif
 
+		// Reset all stations after filesystem is mounted to avoid early file access
+		clear_all_station_bits();
+		apply_all_station_bits();
+
 		state = OS_STATE_INITIAL;
 
 	#else
@@ -1408,6 +1409,10 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6e"));
 			lcd_print_pgm(PSTR("Error Code: 0x2D"));
 			while(1){}
 		}
+
+		// Reset all stations after filesystem is mounted
+		clear_all_station_bits();
+		apply_all_station_bits();
 
 	#endif
 
@@ -3692,6 +3697,22 @@ void OpenSprinkler::save_wifi_ip() {
 		memcpy(iopts+IOPT_DNS_IP1, &(WiFi.dnsIP()[0]), 4);
 		memcpy(iopts+IOPT_SUBNET_MASK1, &(WiFi.subnetMask()[0]), 4);
 		iopts_save();
+	}
+
+	// Save BSSID@channel to avoid future WiFi scans (ESP32-C5 scan can fail under memory pressure)
+	if (WiFi.status() == WL_CONNECTED) {
+		uint8_t mode = (uint8_t)WiFi.getMode();
+		if (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA) {
+			String bssid = WiFi.BSSIDstr();
+			int32_t channel = WiFi.channel();
+			if (bssid.length() > 0 && channel > 0) {
+				char bssid_chl[MAX_SOPTS_SIZE];
+				snprintf(bssid_chl, sizeof(bssid_chl), "%s@%d", bssid.c_str(), (int)channel);
+				sopt_save(SOPT_STA_BSSID_CHL, bssid_chl);
+				str2mac(bssid.c_str(), wifi_bssid);
+				wifi_channel = (unsigned char)channel;
+			}
+		}
 	}
 }
 

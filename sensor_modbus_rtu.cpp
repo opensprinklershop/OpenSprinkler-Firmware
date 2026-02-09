@@ -368,6 +368,7 @@ int ModbusRtuSensor::setAddressIp(SensorBase *sensor, uint8_t new_address) {
 }
 
 bool send_modbus_rtu_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit) {
+  if (!os.network_connected) return false;
   return ModbusRtuSensor::sendCommand(ip, port, address, reg, data, isbit);
 }
 

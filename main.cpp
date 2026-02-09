@@ -33,7 +33,6 @@
 #endif
 #include "mqtt.h"
 #include "sensors.h"
-#include "sensor_scheduler.h"
 #include "sensor_ble.h"
 #include "main.h"
 #include "notifier.h"
@@ -501,8 +500,8 @@ void do_setup() {
 	DEBUG_PRINTLN(F("started"));
 
 #if defined(ESP32)
-	// PSRAM malloc threshold now set in framework (esp32-hal-psram.c: threshold=4)
-	// This routes all allocations >=4 bytes to PSRAM for maximum heap preservation
+// PSRAM malloc threshold set in psram_utils.cpp init_psram_buffers()
+        // Uses CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL (4096) to keep WiFi/DMA in internal RAM
 	
 	DEBUG_PRINT(F("I2C SDA: "));
 	DEBUG_PRINTLN(SDA);
@@ -531,10 +530,13 @@ void do_setup() {
 	MCUSR &= ~(1<<WDRF);
 #endif
 
-
 #if defined(ESP32)
 	init_external_flash(); // initialize external flash
 #endif
+
+	// os.mqtt.init(); MOVED TO LAZY INIT
+	// os.status.req_mqtt_restart = true;
+
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
 #if defined(ESP8266)
@@ -567,9 +569,6 @@ void do_setup() {
 	os.status.req_network = 0;
 	os.status.req_ntpsync = 1;
 
-	os.mqtt.init();
-	os.status.req_mqtt_restart = true;
-
 	os.apply_all_station_bits(); // reset station bits
 
 	// because at reboot we don't know if special stations
@@ -578,13 +577,15 @@ void do_setup() {
 		os.switch_special_station(sid, 0);
 	}
 
+	os.mqtt.init();
+	os.status.req_mqtt_restart = true;
+
 	os.button_timeout = LCD_BACKLIGHT_TIMEOUT;
 
 	// Initialize legacy sensor API (for prog_adjust, monitors, MQTT subscriptions)
 	sensor_api_init(true);
-	
-	// NEW: Initialize sensor scheduler (lazy-loading metadata only)
-	sensor_scheduler_init(false);  // boards already detected by sensor_api_init
+
+
 }
 
 
@@ -635,9 +636,6 @@ void do_setup() {
 
 	// Initialize legacy sensor API (for prog_adjust, monitors, MQTT subscriptions)
 	sensor_api_init(true);
-	
-	// NEW: Initialize sensor scheduler (lazy-loading metadata only)
-	sensor_scheduler_init(false);  // boards already detected by sensor_api_init
 
 	initialize_otf();
 	// Delayed initialization: sensor_api_connect at 10s, matter_init at 15s
@@ -827,10 +825,6 @@ void do_loop()
 			os.lcd.clear();
 			os.save_wifi_ip();
 			start_server_client();
-			// Only call sensor_api_connect when Ethernet is available
-			if(os.network_connected()) {
-				sensor_api_connect();
-			}
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
@@ -872,6 +866,8 @@ void do_loop()
 
 	case OS_STATE_CONNECTING:
 		if(WiFi.status() == WL_CONNECTED) {
+			// WiFi scan/connect is done — safe to route malloc back to PSRAM
+			psram_restore_after_wifi_init();
 			led_blink_ms = 0;
 			os.set_screen_led(LOW);
 			os.lcd.clear();
@@ -881,9 +877,6 @@ void do_loop()
 			// Im STA-Modus: Matter initialisieren (BLE wird nach Matter-Disconnect aktiviert)
 			if(os.get_wifi_mode() == WIFI_MODE_STA) {
 				#ifdef ENABLE_MATTER
-				DEBUG_PRINTLN("[INIT] Initializing Matter after WiFi connected (STA mode)");
-				DEBUG_PRINTLN("[INIT] BLE will be initialized by Matter when safe");
-				
 				OSMatter::instance().init();
 				#endif
 			}
@@ -892,6 +885,7 @@ void do_loop()
 			connecting_timeout = 0;
 		} else {
 			if((long)(millis()-connecting_timeout)>0) {
+				psram_restore_after_wifi_init(); // Restore PSRAM before retry
 				os.state = OS_STATE_INITIAL;
 				WiFi.disconnect(true);
 				DEBUG_PRINTLN(F("timeout"));
@@ -921,9 +915,7 @@ void do_loop()
 				//os.reboot_dev(REBOOT_CAUSE_WIFIDONE);
 			}
 		} else {
-			sensor_api_connect();
 			if(useEth || WiFi.status() == WL_CONNECTED) {
-				
 				update_server->handleClient();
 				otf->loop();
 				connecting_timeout = 0;
@@ -992,17 +984,13 @@ void do_loop()
 #endif	// Process Ethernet packets
 
 	// Start up MQTT when we have a network connection
-	if (os.status.req_mqtt_restart && os.network_connected()) {
+	if (os.status.req_mqtt_restart && os.network_connected() && boot_elapsed >= 15000) {
 		DEBUG_PRINTLN(F("req_mqtt_restart"));
 		os.mqtt.begin();
 		os.status.req_mqtt_restart = false;
 		os.mqtt.subscribe();
 	}
 	os.mqtt.loop();
-	
-	// NEW: Sensor scheduler loop - lazy-loading based sensor reads
-	// Only reads sensors whose scheduled time has arrived
-	sensor_scheduler_loop();
 	
 	// Legacy sensor maintenance loop (BLE/Zigbee auto-stop timers)
 	sensor_api_loop();

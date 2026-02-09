@@ -255,16 +255,8 @@ void sensor_api_init(boolean detect_boards) {
   sensor_load();
   DEBUG_PRINTLN(F("[SENSOR_API] Loading prog_adjust..."));
   prog_adjust_load();
-  #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
-  DEBUG_PRINTLN(F("[SENSOR_API] Initializing MQTT..."));
-  sensor_mqtt_init();
-  #endif
   DEBUG_PRINTLN(F("[SENSOR_API] Loading monitors..."));
   monitor_load();
-  #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
-  DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
-  fyta_check_opts();
-  #endif
 
 #if defined(OSPI)
   //Read rs485 file. Details see below
@@ -323,14 +315,38 @@ void sensor_api_init(boolean detect_boards) {
   DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_init() completed"));
 }
 
+bool is_api_init() {
+  return apiInit;
+}
+
 void sensor_api_connect() {
+  #if defined(ESP8266) || defined(ESP32)
+  if (os.get_wifi_mode() != WIFI_MODE_STA) {
+    DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_connect skipped (not STA mode)"));
+    return;
+  }
+  #endif
+
+  if (!os.network_connected()) {
+    DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_connect skipped (network not connected)"));
+    return;
+  }
+
+  #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  DEBUG_PRINTLN(F("[SENSOR_API] Initializing MQTT..."));
+  sensor_mqtt_init();
+  DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
+  fyta_check_opts();
+  #endif
+
   #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
   sensor_zigbee_start();
   #endif
 }
-// Note: sensor_api_connect()/sensor_api_disconnect() were removed.
-// Zigbee/BLE are started on-demand by their respective operations (scan/read/open-network)
+// Note: Zigbee/BLE are started on-demand by their respective operations (scan/read/open-network)
 // and their maintenance loops are gated by sensor_*_is_active().
+// sensor_api_connect() is used to initialize network-dependent sensor subsystems
+// once the device is connected in WiFi STA mode.
 
 /**
  * @brief Sensor maintenance loop

@@ -38,6 +38,14 @@ void print_psram_stats();
 // mbedTLS PSRAM allocator - call BEFORE any HTTPS/TLS operations!
 void init_mbedtls_psram_allocator();
 
+// WiFi PSRAM protection - temporarily forces ALL malloc to internal RAM
+// Call psram_protect_wifi_init() BEFORE WiFi.mode()/WiFi.begin()
+// Call psram_restore_after_wifi_init() AFTER WiFi.status()==WL_CONNECTED (or timeout)
+// Do NOT call restore immediately after WiFi.begin() — scan/connect is async!
+// Required on ESP32-C5 Rev 1.0 where PSRAM memory barrier is broken
+void psram_protect_wifi_init();
+void psram_restore_after_wifi_init();
+
 // Memory optimization logging (Matter & BLE)
 void log_matter_ble_memory_optimization();
 
@@ -49,6 +57,8 @@ extern char tmp_buffer[];
 inline void init_psram_buffers() {}
 inline void print_psram_stats() {}
 inline void init_mbedtls_psram_allocator() {}
+inline void psram_protect_wifi_init() {}
+inline void psram_restore_after_wifi_init() {}
 inline void log_matter_ble_memory_optimization() {}
 
 #endif

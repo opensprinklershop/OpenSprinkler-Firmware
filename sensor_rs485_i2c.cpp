@@ -33,6 +33,7 @@ int i2c_rs485_addr = 0;
 int active_i2c_RS485 = 0;
 int active_i2c_RS485_mode = 0;
 int i2c_pending = 0;
+static bool i2c_rs485_wire_started = false;
 
 // SC16IS752 Register Adressen (Teilauswahl)
 #define REG_RHR     0x00
@@ -48,15 +49,35 @@ int i2c_pending = 0;
 #define REG_IOC     0x0E
 #define REG_EFCR    0x0F
 
-void sensor_rs485_i2c_init() {
-   if (detect_i2c(ASB_I2C_RS485_ADDR)) {    // 0x48
-        i2c_rs485_addr = ASB_I2C_RS485_ADDR;
-        DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
-        add_asb_detected_boards(ASB_I2C_RS485);
+static bool ensure_i2c_rs485_bus() {
+  if (!i2c_rs485_wire_started) {
+#if defined(ESP32)
+    if (!Wire.begin()) {
+      DEBUG_PRINTLN(F("i2c_rs485: Wire.begin failed"));
+      return false;
     }
+#else
+    Wire.begin();
+#endif
+    Wire.setClock(100000);
+    i2c_rs485_wire_started = true;
+  }
+  return true;
+}
+
+void sensor_rs485_i2c_init() {
+  if (!ensure_i2c_rs485_bus()) {
+    return;
+  }
+  if (detect_i2c(ASB_I2C_RS485_ADDR)) {    // 0x48
+    i2c_rs485_addr = ASB_I2C_RS485_ADDR;
+    DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
+    add_asb_detected_boards(ASB_I2C_RS485);
+  }
 }
 
 void writeSC16Register(uint8_t reg, uint8_t value) {
+  if (!ensure_i2c_rs485_bus() || i2c_rs485_addr == 0) return;
   Wire.beginTransmission(i2c_rs485_addr); // Wire Lib erwartet 7-bit Adresse
   Wire.write( (reg << 3) | 0x00 ); // Befehlsbyte für Schreibzugriff
   Wire.write(value);
@@ -65,6 +86,7 @@ void writeSC16Register(uint8_t reg, uint8_t value) {
 
 uint8_t readSC16Register(uint8_t reg) {
   uint8_t result =0;
+  if (!ensure_i2c_rs485_bus() || i2c_rs485_addr == 0) return result;
   Wire.beginTransmission(i2c_rs485_addr);
   Wire.write( (reg << 3) | 0x80 ); // Befehlsbyte für Lesezugriff
   Wire.endTransmission(false); // Kein Stop, um Re-Start zu senden
@@ -79,8 +101,14 @@ uint8_t readSC16Register(uint8_t reg) {
 
 void UART_sendByte(uint8_t data) {
   // Warten bis der THR (Transmit Holding Register) leer ist
-  while (!(readSC16Register(REG_LSR) & 0x20)) // LSR Bit 5 (THRE)
-    delay(1); 
+  uint32_t start = millis();
+  while (!(readSC16Register(REG_LSR) & 0x20)) { // LSR Bit 5 (THRE)
+    if (millis() - start > 50) {
+      DEBUG_PRINTLN(F("i2c_rs485: THR timeout"));
+      return;
+    }
+    delay(1);
+  }
   writeSC16Register(REG_THR, data);
 }
 
@@ -122,11 +150,11 @@ void set_RS485_Mode(bool transmitMode) {
     if (transmitMode) {
       DEBUG_PRINTLN(F("i2c_rs485: POWER ON"));
       // Bei RS485: DE=LOW, RE=HIGH -> Pin muss LOW sein
-      ioState &= ~0x80; // Löscht Bit 7 auf LOW
+      ioState |= 0x80; // Setzt Bit 7 auf HIGH
     } else {
       DEBUG_PRINTLN(F("i2c_rs485: POWER OFF"));
       // Bei RS485: DE=HIGH, RE=LOW -> Pin muss HIGH sein
-      ioState |= 0x80; // Setzt Bit 7 auf HIGH
+      ioState &= ~0x80; // Löscht Bit 7 auf LOW
     }
     writeSC16Register(REG_IOS, ioState);
 }
@@ -189,6 +217,9 @@ void init_SC16IS752(uint32_t baudrate, uint8_t use2stopbits, uint parity) {
  * @return int
  */
 int RS485I2CSensor::read(unsigned long time) {
+  if (i2c_rs485_addr == 0) {
+    sensor_rs485_i2c_init();
+  }
   if (!(get_asb_detected_boards() & ASB_I2C_RS485)) {
     DEBUG_PRINTLN(F("RS485 board not detected, skipping read"));
     flags.data_ok = false;
@@ -391,6 +422,9 @@ int RS485I2CSensor::read(unsigned long time) {
 }
 
 int RS485I2CSensor::setAddress(uint8_t new_address) {
+  if (i2c_rs485_addr == 0) {
+    sensor_rs485_i2c_init();
+  }
   if (!(get_asb_detected_boards() & ASB_I2C_RS485)) 
     return HTTP_RQT_NOT_RECEIVED;
 
@@ -446,6 +480,9 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
 
 // class-level helper
 int RS485I2CSensor::sendCommand(uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
+  if (i2c_rs485_addr == 0) {
+    sensor_rs485_i2c_init();
+  }
   if (!(get_asb_detected_boards() & ASB_I2C_RS485)) 
     return HTTP_RQT_NOT_RECEIVED;
 
@@ -538,6 +575,7 @@ void RS485I2CSensor::emitJson(BufferFiller& bfill) const {
 
 // Backwards-compatible wrapper
 int send_i2c_rs485_command(uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
+  if (!is_api_init()) return false;
   return RS485I2CSensor::sendCommand(address, reg, data, isbit);
 }
 

@@ -11,11 +11,11 @@
 #include "main.h"
 #include "sensors.h"
 #include "SensorBase.hpp"
-#include "sensor_scheduler.h"
 #include "opensprinkler_matter.h"
 
 #if defined(ESP32)
 #include <Matter.h>
+#include <new>
 #ifdef OS_ENABLE_BLE
 #include "sensor_ble.h"
 #endif
@@ -82,17 +82,17 @@ namespace {
   HumiditySensorMap humidity_sensors;
   PressureSensorMap pressure_sensors;
   
-  EXT_RAM_BSS_ATTR bool matter_started = false;
-  EXT_RAM_BSS_ATTR bool commissioned = false;
-  EXT_RAM_BSS_ATTR bool matter_ble_lock_held = false;
-  EXT_RAM_BSS_ATTR bool ble_init_pending = false;
-  EXT_RAM_BSS_ATTR uint32_t ble_init_at = 0;
+  bool matter_started = false;
+  bool commissioned = false;
+  bool matter_ble_lock_held = false;
+  bool ble_init_pending = false;
+  uint32_t ble_init_at = 0;
   
   // Matter QR code and pairing information
   // NOTE: Arduino String cannot use EXT_RAM_BSS_ATTR - has internal buffer pointer
   String qr_code_url = "";
   String manual_pairing_code = "";
-  EXT_RAM_BSS_ATTR uint32_t config_signature = 0;
+  uint32_t config_signature = 0;
 }
 
 // ====== Helper Functions ======
@@ -106,10 +106,13 @@ uint32_t compute_config_signature() {
     uint8_t bid = i >> 3, sbit = i & 0x07;
     sig = sig * 31 + ((os.attrib_dis[bid] >> sbit) & 1);
   }
-  const SensorScheduleMap& sensors = sensor_get_all_metadata();
-  for(const auto& entry : sensors) {
-    const SensorMetadata& m = entry.second;
-    if(m.isEnabled()) sig = sig * 31 + ((uint32_t)m.type << 16) + m.nr;
+  SensorIterator it = sensors_iterate_begin();
+  SensorBase* sensor = sensors_iterate_next(it);
+  while (sensor) {
+    if (sensor->flags.enable) {
+      sig = sig * 31 + ((uint32_t)sensor->type << 16) + sensor->nr;
+    }
+    sensor = sensors_iterate_next(it);
   }
   return sig;
 }
@@ -223,15 +226,19 @@ void create_station_endpoints() {
 
 // ====== Sensor Management ======
 void create_sensor_endpoints() {
-  const SensorScheduleMap& metadata = sensor_get_all_metadata();
-  DEBUG_PRINTF("[Matter] Discovering %zu sensors\n", metadata.size());
-  
-  for(const auto& entry : metadata) {
-    const SensorMetadata& m = entry.second;
-    if(!m.isEnabled()) continue;
-    uint16_t key = sensor_key(m.type, m.nr);
+  size_t sensor_total = sensor_count();
+  DEBUG_PRINTF("[Matter] Discovering %zu sensors\n", sensor_total);
+
+  SensorIterator it = sensors_iterate_begin();
+  SensorBase* sensor = sensors_iterate_next(it);
+  while (sensor) {
+    if (!sensor->flags.enable) {
+      sensor = sensors_iterate_next(it);
+      continue;
+    }
+    uint16_t key = sensor_key(sensor->type, sensor->nr);
     
-    switch(m.type) {
+    switch(sensor->type) {
       // Temperature sensors
       case SENSOR_SMT100_TEMP:
       case SENSOR_SMT50_TEMP:
@@ -248,7 +255,7 @@ void create_sensor_endpoints() {
         temp_sensors[key] = std::unique_ptr<MatterTemperatureSensor>(
           new(mem) MatterTemperatureSensor());
         if(temp_sensors[key]->begin()) {
-          DEBUG_PRINTF("[Matter] Temp sensor %d.%d\n", m.type, m.nr);
+          DEBUG_PRINTF("[Matter] Temp sensor %d.%d\n", sensor->type, sensor->nr);
         }
         break;
       }
@@ -261,7 +268,7 @@ void create_sensor_endpoints() {
         humidity_sensors[key] = std::unique_ptr<MatterHumiditySensor>(
           new(mem) MatterHumiditySensor());
         if(humidity_sensors[key]->begin()) {
-          DEBUG_PRINTF("[Matter] Humidity sensor %d.%d\n", m.type, m.nr);
+          DEBUG_PRINTF("[Matter] Humidity sensor %d.%d\n", sensor->type, sensor->nr);
         }
         break;
       }
@@ -274,11 +281,12 @@ void create_sensor_endpoints() {
         pressure_sensors[key] = std::unique_ptr<MatterPressureSensor>(
           new(mem) MatterPressureSensor());
         if(pressure_sensors[key]->begin()) {
-          DEBUG_PRINTF("[Matter] Precip sensor %d.%d\n", m.type, m.nr);
+          DEBUG_PRINTF("[Matter] Precip sensor %d.%d\n", sensor->type, sensor->nr);
         }
         break;
       }
     }
+    sensor = sensors_iterate_next(it);
   }
   
   DEBUG_PRINTF("[Matter] Created %zu temp, %zu humidity, %zu pressure\n",
@@ -286,18 +294,17 @@ void create_sensor_endpoints() {
 }
 
 void update_sensor_values() {
-  const SensorScheduleMap& metadata = sensor_get_all_metadata();
-  
-  for(const auto& entry : metadata) {
-    const SensorMetadata& m = entry.second;
-    if(!m.isEnabled()) continue;
-    
-    uint16_t key = sensor_key(m.type, m.nr);
-    
-    // Use cached sensor value (lazy-loaded by scheduler)
-    double value = sensor_get_cached_value(m.nr);
-    
-    switch(m.type) {
+  SensorIterator it = sensors_iterate_begin();
+  SensorBase* sensor = sensors_iterate_next(it);
+  while (sensor) {
+    if (!sensor->flags.enable || !sensor->flags.data_ok) {
+      sensor = sensors_iterate_next(it);
+      continue;
+    }
+    uint16_t key = sensor_key(sensor->type, sensor->nr);
+    double value = sensor->last_data;
+
+    switch(sensor->type) {
       case SENSOR_SMT100_TEMP:
       case SENSOR_SMT50_TEMP:
       case SENSOR_SMT100_ANALOG_TEMP:
@@ -333,6 +340,7 @@ void update_sensor_values() {
         break;
       }
     }
+    sensor = sensors_iterate_next(it);
   }
 }
 
@@ -416,6 +424,9 @@ void OSMatter::init() {
 
 void OSMatter::loop() {
   if(!matter_started) return;
+
+  // Prevent re-initialization during WiFi connection/scan (avoids PSRAM access conflicts)
+  if(os.state == OS_STATE_CONNECTING) return;
   
   #ifdef OS_ENABLE_BLE
   // Process deferred BLE init

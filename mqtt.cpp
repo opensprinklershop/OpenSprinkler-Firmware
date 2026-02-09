@@ -161,6 +161,7 @@ bool OSMqtt::_enabled = false;          // Flag indicating whether MQTT is enabl
 char OSMqtt::_pub_topic[MQTT_MAX_TOPIC_LEN + 1] = {0}; // topic for publishing data
 char OSMqtt::_sub_topic[MQTT_MAX_TOPIC_LEN + 1] = {0}; // topic for subscribing
 bool OSMqtt::_done_subscribed = false;		//Flag indicating if command topic has been subscribed to
+Client * OSMqtt::client = NULL;
 
 //******************************** HELPER FUNCTIONS ********************************// 
 
@@ -381,6 +382,23 @@ void runOnceProgram(char *message){
 	return;
 }
 
+//****************************** CALLBACKS ******************************//
+
+typedef struct KEY_CALLBACK {
+	int key;
+	MQTT_CALLBACK_SIGNATURE;
+} KEY_CALLBACK_t;
+#define MAX_CALLBACKS 2
+
+static KEY_CALLBACK_t key_callbacks[MAX_CALLBACKS] = {0};
+
+void key_callback(char* mtopic, byte* payload, unsigned int length) {
+	for (int i = 0; i < MAX_CALLBACKS; i++) {
+		if (key_callbacks[i].callback)
+			key_callbacks[i].callback(mtopic, payload, length);
+	}
+}
+
 //****************************** MQTT FUNCTIONS ******************************//
 
 // Initialise the client libraries and event handlers.
@@ -548,7 +566,6 @@ void OSMqtt::loop(void) {
 
 	// Only attemp to reconnect every MQTT_RECONNECT_DELAY seconds to avoid blocking the main loop
 	if (!_connected() && (millis() - last_reconnect_attempt >= MQTT_RECONNECT_DELAY * 1000UL)) {
-		DEBUG_LOGF("MQTT Loop: Reconnecting\r\n");
 		_done_subscribed = false;
 		_connect();
 		last_reconnect_attempt = millis();
@@ -583,26 +600,30 @@ void OSMqtt::loop(void) {
 /**************************** ARDUINO ********************************************/
 #if defined(ARDUINO)
 
-	#if defined(ESP8266) || defined(ESP32)
-		WiFiClient wifiClient;
-	#else
-		EthernetClient ethClient;
-	#endif
-
 int OSMqtt::_init(void) {
-	Client * client = NULL;
-
-	if (mqtt_client) { delete mqtt_client; mqtt_client = 0; }
+	if (mqtt_client) { 
+		delete mqtt_client; 
+		mqtt_client = 0; 
+	}
+	if (client) {
+		delete client;
+		client = 0;
+	}
 
 	#if defined(ESP8266) || defined(ESP32)
-		client = &wifiClient;
+		client = new WiFiClient();
 	#else
-		client = &ethClient;
+		client = new EthernetClient();
 	#endif
 
 	mqtt_client = new PubSubClient(*client);
+	mqtt_client->setCallback(key_callback);
 	mqtt_client->setKeepAlive(OS_MQTT_KEEPALIVE);
+	#if defined(ESP32)
+	mqtt_client->setBufferSize(8192);
+	#else
 	mqtt_client->setBufferSize(2048); //Most LORA Pakets are bigger!
+	#endif
 
 	if (mqtt_client == NULL) {
 		DEBUG_LOGF("MQTT Init: Failed to initialise client\r\n");
@@ -713,21 +734,6 @@ bool OSMqtt::unsubscribe(const char *topic) {
 	return mqtt_client->unsubscribe(topic);
 }
 
-typedef struct KEY_CALLBACK {
-	int key;
-	MQTT_CALLBACK_SIGNATURE;
-} KEY_CALLBACK_t;
-#define MAX_CALLBACKS 2
-
-static KEY_CALLBACK_t key_callbacks[MAX_CALLBACKS] = {0};
-
-void key_callback(char* mtopic, byte* payload, unsigned int length) {
-	for (int i = 0; i < MAX_CALLBACKS; i++) {
-		if (key_callbacks[i].callback)
-			key_callbacks[i].callback(mtopic, payload, length);
-	}
-}
-
 void registerCallback(int key, MQTT_CALLBACK_SIGNATURE) {
 	int j = -1;
 	for (int i = 0; i < MAX_CALLBACKS; i++) {
@@ -747,7 +753,6 @@ void registerCallback(int key, MQTT_CALLBACK_SIGNATURE) {
 
 void OSMqtt::setCallback(int key, MQTT_CALLBACK_SIGNATURE) {
 	registerCallback(key, callback);
-	mqtt_client->setCallback(key_callback);
 }
 
 const char * OSMqtt::_state_string(int rc) {

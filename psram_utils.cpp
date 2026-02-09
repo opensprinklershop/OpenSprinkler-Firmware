@@ -120,18 +120,24 @@ void init_mbedtls_psram_allocator() {
 
 // Allocation failed callback: log when internal RAM allocation fails
 // Note: ESP32 API only allows logging, not replacement allocation
+// Rate-limited to avoid serial spam from WiFi DMA buffer polling
+static uint32_t alloc_fail_count = 0;
+static uint32_t alloc_fail_last_log = 0;
+static const uint32_t ALLOC_FAIL_LOG_INTERVAL_MS = 30000; // Log summary every 30s
+
 static void psram_alloc_failed_callback(size_t size, uint32_t caps, const char *function_name) {
-  DEBUG_PRINTF("[ALLOC_FAIL] %d bytes (caps=0x%X) in %s - internal RAM exhausted!\n", 
-               size, caps, function_name ? function_name : "unknown");
+  alloc_fail_count++;
   
-  // Log available memory
-  uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  uint32_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-  DEBUG_PRINTF("[ALLOC_FAIL] Available: Internal=%d bytes, SPIRAM=%d bytes\n", 
-               internal_free, spiram_free);
-  
-  if ((caps & MALLOC_CAP_DMA) && (caps & MALLOC_CAP_INTERNAL)) {
-    DEBUG_PRINTLN(F("[ALLOC_FAIL] This was a DMA+INTERNAL allocation - caller should retry with SPIRAM!"));
+  uint32_t now = millis();
+  if (now - alloc_fail_last_log >= ALLOC_FAIL_LOG_INTERVAL_MS) {
+    uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    DEBUG_PRINTF("[ALLOC_FAIL] %d failures in last %ds | Last: %d bytes (caps=0x%X) in %s | Internal=%d, SPIRAM=%d\n", 
+                 alloc_fail_count, ALLOC_FAIL_LOG_INTERVAL_MS/1000,
+                 size, caps, function_name ? function_name : "unknown",
+                 internal_free, spiram_free);
+    alloc_fail_count = 0;
+    alloc_fail_last_log = now;
   }
 }
 
@@ -140,7 +146,34 @@ char* ether_buffer = nullptr;
 char* tmp_buffer = nullptr;
 
 void init_psram_buffers() {
-  heap_caps_malloc_extmem_enable(4);
+  // Set PSRAM malloc threshold: allocations >= this size go to PSRAM via malloc().
+  // 
+  // STRATEGY: Use a LOW threshold to route most malloc() to PSRAM.
+  // WiFi DMA allocations are SAFE because they use heap_caps_malloc() with
+  // MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL, which always goes to internal RAM
+  // regardless of this threshold. The threshold only affects plain malloc()/calloc().
+  //
+  // WiFi BSS is placed in internal .dram0.bss by linker script (sections.ld),
+  // so static WiFi state is also safe.
+  //
+  // By setting threshold low, Matter/CHIP allocations (many small mallocs for
+  // attributes, clusters, event handlers) go to PSRAM, freeing ~40-50 KB of
+  // internal RAM for WiFi DMA buffers at runtime.
+  //
+  // Note: Some FreeRTOS internals and ISR-related allocations need internal RAM
+  // and use heap_caps_malloc() with appropriate caps, so they're also unaffected.
+  // 
+  // IMPORTANT: BLE Controller uses plain malloc() and NEEDS internal RAM for its
+  // structures. Threshold too low (e.g., 64) causes BLE controller init to fail
+  // with "ble ll env init error code:-21" and crash. Keep at 4096 (default).
+  // Start with threshold=SIZE_MAX: ALL plain malloc stays in internal RAM.
+  // This protects WiFi/BLE init which uses plain malloc() for structures that
+  // MUST be in internal RAM (ESP32-C5 Rev 1.0 PSRAM memory barrier broken).
+  // Threshold is lowered to 8 by psram_restore_after_wifi_init() only after
+  // WiFi is fully connected. Our own PSRAM buffers use heap_caps_calloc()
+  // with MALLOC_CAP_SPIRAM directly, so they are unaffected by the threshold.
+  heap_caps_malloc_extmem_enable(SIZE_MAX);
+  DEBUG_PRINTLN(F("[PSRAM] malloc threshold=SIZE_MAX (all malloc->internal until WiFi connected)"));
 
   if (!psramFound()) {
     DEBUG_PRINTLN(F("[PSRAM] WARNING: No PSRAM - using internal RAM (may cause issues)"));
@@ -176,6 +209,40 @@ void init_psram_buffers() {
   } else {
     DEBUG_PRINTLN(F("[PSRAM] ERROR: tmp_buffer allocation FAILED"));
   }
+}
+
+// ============================================================================
+// WiFi PSRAM Protection
+// ============================================================================
+// ESP32-C5 Rev 1.0 has a broken PSRAM memory barrier (esp_psram_mspi_mb() is
+// a no-op because the dummy cacheline allocation fails). This means the WiFi
+// blob's internal structures MUST NOT be allocated in PSRAM, or Load access
+// faults will occur when the WiFi hardware/DMA accesses them.
+//
+// WiFi blob uses plain malloc() internally. The heap_caps routing sends
+// allocations >= threshold to PSRAM. Even with threshold=4096, WiFi allocates
+// structures >4KB (e.g. NVS buffers, scan lists) that land in PSRAM and crash.
+//
+// Solution: Temporarily disable PSRAM routing during WiFi.mode()/WiFi.begin()
+// by setting threshold to SIZE_MAX (nothing goes to PSRAM). After WiFi is
+// initialized, restore the normal threshold so app-level large allocations
+// can use PSRAM again.
+// ============================================================================
+
+void psram_protect_wifi_init() {
+  // Ensure ALL malloc() stays in internal RAM during WiFi.mode()/WiFi.begin().
+  // Threshold is SIZE_MAX from boot, but re-assert here in case something
+  // changed it (e.g. after a WiFi reconnect cycle).
+  heap_caps_malloc_extmem_enable(SIZE_MAX);
+  DEBUG_PRINTLN(F("[PSRAM] WiFi init: malloc routed to internal RAM"));
+}
+
+void psram_restore_after_wifi_init() {
+  // Restore normal PSRAM threshold so app-level allocations use PSRAM again.
+  heap_caps_malloc_extmem_enable(8);
+  uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  DEBUG_PRINTF("[PSRAM] WiFi init done, threshold restored to %d. Internal free=%d KB\n",
+               8, internal_free/1024);
 }
 
 void print_psram_stats() {
@@ -222,8 +289,4 @@ void log_matter_ble_memory_optimization() {
   #endif // ENABLE_MATTER || OS_ENABLE_BLE
 }
 
-#else
-// Non-PSRAM platforms: static allocation
-char ether_buffer[ETHER_BUFFER_SIZE_L];
-char tmp_buffer[TMP_BUFFER_SIZE_L];
-#endif
+#endif // defined(ESP32) && defined(BOARD_HAS_PSRAM)

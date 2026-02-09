@@ -243,7 +243,9 @@ enum {
 #else  // all non-AVR platforms support OTF, EMAIL and HTTPS
 	// DEMO builds on Windows/native may not have OTF/SSL deps; OSPI demo still should.
 	#if !defined(DEMO) || defined(OSPI)
-		#define USE_OTF
+		#if !defined(DISABLE_OTF)
+			#define USE_OTF
+		#endif
 		#define SUPPORT_EMAIL
 		#define SUPPORT_HTTPS
 	#endif

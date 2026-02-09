@@ -20,8 +20,11 @@
 #if defined(ESP8266) || defined(ESP32)
 
 #include "espconnect.h"
+#include "psram_utils.h"
 
 #include <ArduinoOTA.h>
+
+#include <string.h>
 
 #if defined(ESP32)
 	#include <esp_wifi.h>
@@ -29,7 +32,6 @@
 
 String scan_network() {
 	// Note: This function is called by the AP captive portal endpoint (/jsap).
-	// It must never block for long, otherwise the UI gets stuck at "(Scanning...)".
 	#if defined(ESP8266)
 	DEBUG_PRINTLN("Scanning for networks...");
 	WiFi.setOutputPower(20.5);
@@ -141,6 +143,7 @@ void start_network_ap(const char *ssid, const char *pass) {
 	WiFi.softAPConfig(ap_ip, ap_gw, ap_sn);
 
 	WiFi.softAP(ssid, pass);
+
 	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
 	#endif
@@ -161,6 +164,10 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 	WiFi.mode(WIFI_MODE_APSTA);
 	#endif
 	WiFi.begin(ssid, pass, channel, bssid);
+
+	// NOTE: Do NOT restore PSRAM here — WiFi scan/connect is async.
+	// psram_restore_after_wifi_init() is called from main.cpp on WL_CONNECTED.
+
 	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
 	#endif
@@ -178,8 +185,14 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	WiFi.mode(WIFI_STA);
 	#else
 	WiFi.mode(WIFI_MODE_STA);
+	WiFi.setSleep(false);
 	#endif
+
 	WiFi.begin(ssid, pass, channel, bssid);
+
+	// NOTE: Do NOT restore PSRAM here — WiFi scan/connect is async.
+	// psram_restore_after_wifi_init() is called from main.cpp on WL_CONNECTED.
+
 	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
 	#endif

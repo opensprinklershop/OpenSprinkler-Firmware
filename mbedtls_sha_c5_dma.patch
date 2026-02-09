@@ -1,0 +1,13 @@
+--- a/components/mbedtls/port/sha/core/sha.c
++++ b/components/mbedtls/port/sha/core/sha.c
+@@ -107,7 +107,11 @@
+     /* Copy to internal buf if buf is in non DMA capable memory */
+     if (!s_check_dma_capable(buf) && (buf_len != 0)) {
++#ifdef CONFIG_SOC_PSRAM_DMA_CAPABLE
++        dma_cap_buf = heap_caps_malloc(sizeof(unsigned char) * buf_len, MALLOC_CAP_8BIT|MALLOC_CAP_DMA|MALLOC_CAP_SPIRAM);
++#else
+         dma_cap_buf = heap_caps_malloc(sizeof(unsigned char) * buf_len, MALLOC_CAP_8BIT|MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
++#endif
+         if (dma_cap_buf == NULL) {
+             ESP_LOGE(TAG, "Failed to allocate buf memory");
+             ret = -1;
