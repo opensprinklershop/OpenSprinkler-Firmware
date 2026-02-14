@@ -30,7 +30,8 @@ extern OpenSprinkler os;
 // modbus transaction id
 static uint16_t modbusTcpId = 0;
 #if defined(OSPI)
-static modbus_t * modbusDevs[MAX_RS485_DEVICES];
+#include <modbus/modbus.h>
+#include "sensor_usbrs485.h"
 #endif
 
 void sensor_modbus_rtu_free() {

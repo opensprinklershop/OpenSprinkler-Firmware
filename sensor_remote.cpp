@@ -40,7 +40,7 @@ bool RemoteSensor::extract(char *s, char *buf, int maxlen) {
   if (!e && !f) return false;
   if (f && f < e) e = f;
   int l = e - s;
-  if (l < 1 || l > maxlen) return false;
+  if (l < 1 || l >= maxlen) return false;
   strncpy(buf, s, l);
   buf[l] = 0;
   return true;

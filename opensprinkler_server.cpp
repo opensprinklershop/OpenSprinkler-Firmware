@@ -28,6 +28,9 @@
 #include "weather.h"
 #include "mqtt.h"
 #include "main.h"
+#if defined(ESP32)
+#include <esp_heap_caps.h>
+#endif
 #include "sensors.h"
 #include "osinfluxdb.h"
 #include "ArduinoJson.hpp"
@@ -1276,7 +1279,7 @@ void server_json_options_main() {
 		}
 		#endif
 
-		if (oid==IOPT_SEQUENTIAL_RETIRED || oid==IOPT_URS_RETIRED || oid==IOPT_RSO_RETIRED || oid==IOPT_RESERVE_7 || oid==IOPT_RESERVE_8) continue;
+		if (oid==IOPT_SEQUENTIAL_RETIRED || oid==IOPT_URS_RETIRED || oid==IOPT_RSO_RETIRED) continue;
 
 #if defined(ARDUINO)
 		#if defined(ESP8266) || defined(ESP32)
@@ -1301,15 +1304,20 @@ void server_json_options_main() {
 	}
 
 	//feature flag Analog Sensor API
-	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,BLE,ZIGBEE\""));
-	#elif defined(ENABLE_MATTER)
-	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,MATTER\""));
-	#elif defined(ESP32)
-	bfill.emit_p(PSTR(",\"feature\":\"ASB,ESP32,BLE\""));
-	#else
-	bfill.emit_p(PSTR(",\"feature\":\"ASB\""));
+	bfill.emit_p(PSTR(",\"feature\":\"ASB"));
+	#if defined(ESP32)
+	bfill.emit_p(PSTR(",ESP32"));	
 	#endif
+	#if defined(OS_ENABLE_BLE)
+	bfill.emit_p(PSTR(",BLE"));	
+	#endif
+	#if defined(OS_ENABLE_ZIGBEE)
+	bfill.emit_p(PSTR(",ZIGBEE"));
+	#endif
+	#if defined(ENABLE_MATTER)
+	bfill.emit_p(PSTR(",MATTER"));
+	#endif
+	bfill.emit_p(PSTR("\""));
 
 	bfill.emit_p(PSTR(",\"dexp\":$D,\"mexp\":$D,\"hwt\":$D,"), os.detect_exp(), MAX_EXT_BOARDS, os.hw_type);
 
@@ -1468,6 +1476,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
+#if defined(ARDUINO)
 	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
 						 SOPT_LOCATION,
 						 SOPT_JAVASCRIPTURL,
@@ -1479,6 +1488,19 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 						 wt_errCode,
 						 wt_restricted,
 						 SOPT_DEVICE_NAME);
+#else
+	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$O},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
+						 SOPT_LOCATION,
+						 SOPT_JAVASCRIPTURL,
+						 SOPT_WEATHERURL,
+						 SOPT_WEATHER_OPTS,
+						 SOPT_IFTTT_KEY,
+						 SOPT_MQTT_OPTS,
+						 strlen(wt_rawData)==0?"{}":wt_rawData,
+						 wt_errCode,
+						 wt_restricted,
+						 SOPT_DEVICE_NAME);
+#endif
 
 #if defined(SUPPORT_EMAIL)
 	bfill.emit_p(PSTR("\"email\":{$O},"), SOPT_EMAIL_OPTS);
@@ -2431,6 +2453,7 @@ void server_json_debug(OTF_PARAMS_DEF) {
 }
 
 #if defined(ESP32) && defined(ENABLE_MATTER)
+#include "ieee802154_config.h"
 /** Output Matter pairing information in JSON */
 void server_json_matter(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -2442,27 +2465,32 @@ void server_json_matter(OTF_PARAMS_DEF) {
 #endif
 
 	bfill.emit_p(PSTR("{"));
-	
-	// Get Matter pairing information
-	String qr_url = OSMatter::instance().get_qr_code_url();
-	String pairing_code = OSMatter::instance().get_manual_pairing_code();
-	bool commissioned = OSMatter::instance().is_commissioned();
-	
-	// Output JSON
-	bfill.emit_p(PSTR("\"commissioned\":$D"), commissioned ? 1 : 0);
-	
-	if (!commissioned && qr_url.length() > 0) {
-		bfill.emit_p(PSTR(",\"qr_url\":\""));
-		bfill.emit_p(qr_url.c_str());
-		bfill.emit_p(PSTR("\""));
+
+	// Check if Matter mode is active
+	bool matter_enabled = ieee802154_is_matter();
+	bfill.emit_p(PSTR("\"matter_enabled\":$D"), matter_enabled ? 1 : 0);
+
+	if (matter_enabled) {
+		// Get Matter pairing information
+		String qr_url = OSMatter::instance().get_qr_code_url();
+		String pairing_code = OSMatter::instance().get_manual_pairing_code();
+		bool commissioned = OSMatter::instance().is_commissioned();
+
+		bfill.emit_p(PSTR(",\"commissioned\":$D"), commissioned ? 1 : 0);
+
+		if (!commissioned && qr_url.length() > 0) {
+			bfill.emit_p(PSTR(",\"qr_url\":\""));
+			bfill.emit_p(qr_url.c_str());
+			bfill.emit_p(PSTR("\""));
+		}
+
+		if (!commissioned && pairing_code.length() > 0) {
+			bfill.emit_p(PSTR(",\"pairing_code\":\""));
+			bfill.emit_p(pairing_code.c_str());
+			bfill.emit_p(PSTR("\""));
+		}
 	}
-	
-	if (!commissioned && pairing_code.length() > 0) {
-		bfill.emit_p(PSTR(",\"pairing_code\":\""));
-		bfill.emit_p(pairing_code.c_str());
-		bfill.emit_p(PSTR("\""));
-	}
-	
+
 	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);
 }
@@ -2838,7 +2866,11 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 	#define BLOCKSIZE 256
 #endif
 	ulong count = 0;
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+ 	SensorLog_t *sensorlog = (SensorLog_t*)heap_caps_malloc(sizeof(SensorLog_t)*BLOCKSIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
  	SensorLog_t *sensorlog = (SensorLog_t*)malloc(sizeof(SensorLog_t)*BLOCKSIZE);
+#endif
 	SensorBase *sensor = NULL;
 
 	//lastHours: find limit for this
@@ -4204,7 +4236,299 @@ void server_influx_get_main() {
 	bfill.emit_p(tmp_buffer);
 }
 
+// ====== IEEE 802.15.4 Radio Configuration API ======
+#if defined(ESP32C5)
+#include "ieee802154_config.h"
+
+/**
+ * ir
+ * @brief Get IEEE 802.15.4 radio configuration
+ * Returns JSON with all available modes and the active mode:
+ *   {"activeMode":1, "activeModeName":"matter",
+ *    "modes":[{"id":0,"name":"disabled"},{"id":1,"name":"matter"},
+ *             {"id":2,"name":"zigbee_gateway"},{"id":3,"name":"zigbee_client"}],
+ *    "enabled":1, "matter":1, "zigbee":0, "zigbee_gw":0, "zigbee_client":0}
+ */
+void server_ieee802154_get(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	IEEE802154Mode mode = ieee802154_get_mode();
+	bfill.emit_p(PSTR("{\"activeMode\":$D,\"activeModeName\":\"$S\","
+	                   "\"modes\":["),
+	             static_cast<uint8_t>(mode),
+	             ieee802154_mode_name(mode));
+
+	// List all possible IEEE 802.15.4 modes
+	for (uint8_t i = 0; i <= 3; i++) {
+		IEEE802154Mode m = static_cast<IEEE802154Mode>(i);
+		if (i > 0) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("{\"id\":$D,\"name\":\"$S\"}"),
+		             i, ieee802154_mode_name(m));
+	}
+
+	bfill.emit_p(PSTR("],\"enabled\":$D,"
+	                   "\"matter\":$D,"
+	                   "\"zigbee\":$D,"
+	                   "\"zigbee_gw\":$D,"
+	                   "\"zigbee_client\":$D}"),
+	             ieee802154_is_enabled() ? 1 : 0,
+	             ieee802154_is_matter() ? 1 : 0,
+	             ieee802154_is_zigbee() ? 1 : 0,
+	             ieee802154_is_zigbee_gw() ? 1 : 0,
+	             ieee802154_is_zigbee_client() ? 1 : 0);
+
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * iw
+ * @brief Set IEEE 802.15.4 radio mode and reboot
+ * Parameters: mode (0=disabled, 1=matter, 2=zigbee_gw, 3=zigbee_client)
+ * Returns JSON: {"result":1, "mode":N, "reboot":1} on success
+ * The device will reboot after ~2 seconds to apply the new mode.
+ */
+void server_ieee802154_set(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	print_header();
+#endif
+
+	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("mode"), true)) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing mode parameter\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	int mode_val = atoi(tmp_buffer);
+	if (mode_val < 0 || mode_val > 3) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid mode (0-3)\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	IEEE802154Mode new_mode = static_cast<IEEE802154Mode>(mode_val);
+
+	if (!ieee802154_save_mode(new_mode)) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"failed to save config\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	bfill.emit_p(PSTR("{\"result\":1,\"mode\":$D,\"mode_name\":\"$S\",\"reboot\":1}"),
+	             mode_val, ieee802154_mode_name(new_mode));
+	send_packet(OTF_PARAMS);
+
+	// Schedule reboot after sending the response
+	reboot_in(2000);
+	handle_return(HTML_OK);
+}
+
+#endif // ESP32C5
+
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+
+/**
+ * zj
+ * @brief ZigBee Client: Join/search for a ZigBee network
+ * Only available when mode == ZIGBEE_CLIENT
+ * Parameters: duration (seconds, default 60)
+ * Returns JSON: {"result":1, "duration":N, "status":"searching"}
+ */
+void server_zigbee_join_network(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	print_header();
+#endif
+
+	if (!ieee802154_is_zigbee_client()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"not in zigbee_client mode\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	uint16_t duration = 60;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
+		duration = atoi(tmp_buffer);
+		if (duration < 1) duration = 1;
+		if (duration > 600) duration = 600;
+	}
+
+	// Ensure Zigbee is started, then trigger network search
+	bool started = sensor_zigbee_ensure_started();
+	if (!started) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"zigbee not started\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	// Factory reset forces re-join on next start cycle
+	sensor_zigbee_factory_reset();
+
+	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D,\"status\":\"searching\","
+	                   "\"active\":$D,\"connected\":$D}"),
+	             duration,
+	             sensor_zigbee_is_active() ? 1 : 0,
+	             sensor_zigbee_is_active() ? 1 : 0);
+
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * zs
+ * @brief ZigBee Client: Get join/connection status
+ * Only available when mode == ZIGBEE_CLIENT
+ * Returns JSON: {"active":0|1, "connected":0|1}
+ */
+void server_zigbee_status(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	if (!ieee802154_is_zigbee()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"not in zigbee mode\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	bfill.emit_p(PSTR("{\"result\":1,\"active\":$D,\"connected\":$D,\"mode\":\"$S\"}"),
+	             sensor_zigbee_is_active() ? 1 : 0,
+	             sensor_zigbee_is_active() ? 1 : 0,
+	             ieee802154_is_zigbee_gw() ? "gateway" : "client");
+
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * zg
+ * @brief ZigBee Gateway: Manage devices (list, permit join, remove)
+ * Only available when mode == ZIGBEE_GATEWAY
+ * Parameters:
+ *   action=list      - List all known devices
+ *   action=permit&duration=N - Open network for N seconds (default 60)
+ *   action=remove&ieee=0x... - Remove a device by IEEE address
+ * Returns JSON with device list or action result
+ */
+void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	print_header();
+#endif
+
+	if (!ieee802154_is_zigbee_gw()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"not in zigbee_gateway mode\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	// Default action is "list"
+	char action[16] = "list";
+	findKeyVal(FKV_SOURCE, action, sizeof(action), PSTR("action"), true);
+
+	if (strcmp(action, "permit") == 0) {
+		// Open network for device joining
+		uint16_t duration = 60;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
+			duration = atoi(tmp_buffer);
+			if (duration < 1) duration = 1;
+			if (duration > 600) duration = 600;
+		}
+		sensor_zigbee_open_network(duration);
+		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"permit\",\"duration\":$D}"), duration);
+
+	} else if (strcmp(action, "remove") == 0) {
+		// Remove a device by IEEE address
+		char ieee_str[24] = "";
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		// Unbind all sensors using this device
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		// Find and unbind sensors referencing this device
+		SensorIterator it = sensors_iterate_begin();
+		SensorBase* sensor;
+		int unbound = 0;
+		while ((sensor = sensors_iterate_next(it)) != NULL) {
+			if (sensor && sensor->type == SENSOR_ZIGBEE) {
+				ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+				if (zb->device_ieee == addr) {
+					zb->device_ieee = 0;
+					zb->device_bound = false;
+					zb->flags.data_ok = false;
+					unbound++;
+				}
+			}
+		}
+		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"remove\",\"ieee\":\"$S\",\"unbound_sensors\":$D}"),
+		             ieee_str, unbound);
+
+	} else {
+		// Default: list devices
+		ZigbeeDeviceInfo devices[10];
+		int count = sensor_zigbee_get_discovered_devices(devices, 10);
+
+		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"list\",\"devices\":["));
+		for (int i = 0; i < count; i++) {
+			if (i > 0) bfill.emit_p(PSTR(","));
+			char ieee_str[20];
+			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
+			         (unsigned long long)devices[i].ieee_addr);
+			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
+			                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
+			             ieee_str,
+			             devices[i].short_addr,
+			             devices[i].model_id,
+			             devices[i].manufacturer,
+			             devices[i].endpoint,
+			             devices[i].device_id,
+			             devices[i].is_new ? 1 : 0);
+		}
+		bfill.emit_p(PSTR("],\"count\":$D}"), count);
+	}
+
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
 
 /**
  * zd
@@ -4455,7 +4779,14 @@ const char _url_keys[] PROGMEM =
 	"mc"
 	"ml"
 	"mt"
+#if defined(ESP32C5)
+	"ir"  // IEEE 802.15.4: get radio config
+	"iw"  // IEEE 802.15.4: set radio mode (+ reboot)
+#endif
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+	"zj"  // Zigbee Client: join/search network
+	"zs"  // Zigbee: get connection status
+	"zg"  // Zigbee Gateway: manage devices
 	"zd"  // Zigbee: get discovered devices
 	"zo"  // Zigbee: open network
 	"zc"  // Zigbee: clear new device flags
@@ -4521,7 +4852,14 @@ URLHandler urls[] = {
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
+#if defined(ESP32C5)
+	server_ieee802154_get, // ir
+	server_ieee802154_set, // iw
+#endif
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+	server_zigbee_join_network, // zj
+	server_zigbee_status, // zs
+	server_zigbee_gw_manage, // zg
 	server_zigbee_discovered_devices, // zd
 	server_zigbee_open_network, // zo
 	server_zigbee_clear_flags, // zc
@@ -4812,7 +5150,7 @@ void handle_web_request(char *p) {
 #endif
 
 #if defined(ARDUINO)
-#define NTP_NTRIES 10
+#define NTP_NTRIES 3
 /** NTP sync request */
 #if defined(ESP8266) || defined(ESP32)
 // Use esp_netif_sntp API for thread-safe SNTP synchronization

@@ -53,9 +53,21 @@ For security reasons, all examples in this documentation use the placeholder `<p
 
 ---
 
-## Recent Updates (January 2025)
+## Recent Updates
 
-This documentation has been updated to match the current firmware implementation:
+### February 2026
+
+**Unified IEEE 802.15.4 Support (ESP32-C5):**
+- Native ZigBee and Matter support merged into a single firmware binary (`esp32-c5` PlatformIO environment)
+- Runtime-selectable radio mode via `/ir` and `/iw` endpoints (see [IEEE802154_API.md](IEEE802154_API.md))
+- ZigBee Gateway mode (`activeMode=2`): ESP32-C5 as ZigBee Coordinator with device management (`/zg`)
+- ZigBee Client mode (`activeMode=3`): ESP32-C5 joins existing ZigBee networks with network search (`/zj`)
+- New endpoints: `/ir`, `/iw`, `/zj`, `/zs`, `/zg` for IEEE 802.15.4 radio configuration and ZigBee management
+- Legacy ZigBee endpoints (`/zd`, `/zo`, `/zc`) remain available for backward compatibility
+- Matter pairing endpoint (`/jm`) updated with `matter_enabled` field based on runtime mode
+- Updated ZigBee sensor documentation (Native ZigBee and Zigbee2MQTT modes)
+
+### January 2025
 
 **Sensor Type IDs:**
 - Added missing sensor types: Zigbee (95), BLE (96), FYTA sensors (60-61)
@@ -91,6 +103,7 @@ This documentation has been updated to match the current firmware implementation
 ---
 
 ## Table of Contents
+- [Platform Availability](#platform-availability)
 - [Sensor Configuration](#sensor-configuration)
 - [Sensor Data Retrieval](#sensor-data-retrieval)
 - [Sensor Logging](#sensor-logging)
@@ -100,7 +113,74 @@ This documentation has been updated to match the current firmware implementation
 
 ---
 
+## Platform Availability
+
+Not all endpoints and sensor types are available on every hardware platform. The table below summarises platform support for each endpoint group.
+
+### Endpoint Availability
+
+| Endpoint | Description | ESP32 | ESP32-C5 | ESP8266 | OSPi/Linux |
+|----------|-------------|:-----:|:--------:|:-------:|:----------:|
+| `/si` | Configure user-defined sensor params | ✅ | ✅ | ✅ | ✅ |
+| `/sc` | Configure sensor | ✅ | ✅ | ✅ | ✅ |
+| `/sj` | Get MQTT/URL config | ✅ | ✅ | ✅ | ✅ |
+| `/sk` | Set MQTT/URL config | ✅ | ✅ | ✅ | ✅ |
+| `/sa` | Set RS485 address | ✅ | ✅ | ✅ | ✅ |
+| `/sl` | List all sensors | ✅ | ✅ | ✅ | ✅ |
+| `/sg` | Get sensor values | ✅ | ✅ | ✅ | ✅ |
+| `/sr` | Read sensor now | ✅ | ✅ | ✅ | ✅ |
+| `/sf` | Get sensor types | ✅ | ✅ | ✅ | ✅ |
+| `/so` | Get sensor log | ✅ | ✅ | ✅ | ✅ |
+| `/sn` | Clear sensor log | ✅ | ✅ | ✅ | ✅ |
+| `/sb` | Configure adjustment | ✅ | ✅ | ✅ | ✅ |
+| `/se` | List adjustments | ✅ | ✅ | ✅ | ✅ |
+| `/sd` | Calculate adjustment | ✅ | ✅ | ✅ | ✅ |
+| `/sh` | Get adjustment types | ✅ | ✅ | ✅ | ✅ |
+| `/mc` | Configure monitor | ✅ | ✅ | ✅ | ✅ |
+| `/ml` | List monitors | ✅ | ✅ | ✅ | ✅ |
+| `/mt` | Get monitor types | ✅ | ✅ | ✅ | ✅ |
+| `/sx` | Backup config | ✅ | ✅ | ✅ | ✅ |
+| `/du` | System resources | ✅ | ✅ | ✅ | ✅ |
+| `/ir` | IEEE 802.15.4 mode read | ❌ | ✅ | ❌ | ❌ |
+| `/iw` | IEEE 802.15.4 mode write | ❌ | ✅ | ❌ | ❌ |
+| `/zj` | ZigBee join network | ❌ | ✅¹ | ❌ | ❌ |
+| `/zs` | ZigBee status | ❌ | ✅¹ | ❌ | ❌ |
+| `/zg` | ZigBee device management | ❌ | ✅¹ | ❌ | ❌ |
+| `/zd` | ZigBee discovered devices | ❌ | ✅¹ | ❌ | ❌ |
+| `/zo` | ZigBee open network | ❌ | ✅¹ | ❌ | ❌ |
+| `/zc` | ZigBee clear flags | ❌ | ✅¹ | ❌ | ❌ |
+| `/jm` | Matter pairing info | ✅² | ✅² | ❌ | ❌ |
+| `/bd` | BLE device scan | ✅ | ❌ | ❌ | ❌ |
+| `/bs` | BLE device status | ✅ | ❌ | ❌ | ❌ |
+| `/bc` | BLE device clear | ✅ | ❌ | ❌ | ❌ |
+
+> ¹ Requires `OS_ENABLE_ZIGBEE` build flag  
+> ² Requires `ENABLE_MATTER` build flag
+
+### Sensor Type Availability
+
+| Sensor Type | Description | ESP32 | ESP32-C5 | ESP8266 | OSPi/Linux |
+|-------------|-------------|:-----:|:--------:|:-------:|:----------:|
+| 1–9 | RS485/Modbus | ✅ | ✅ | ✅ | ✅ |
+| 10–49 | ASB (Analog Sensor Board) | ✅ | ✅ | ✅ | ❌ |
+| 50–54 | OSPI analog inputs | ❌ | ❌ | ❌ | ✅ |
+| 60–61 | FYTA cloud sensors | ✅ | ✅ | ✅ | ✅ |
+| 90 | MQTT subscription | ✅ | ✅ | ✅ | ✅ |
+| 95 | ZigBee (native) | ❌ | ✅ | ❌ | ❌ |
+| 95 | ZigBee (via Zigbee2MQTT/MQTT) | ✅ | ✅ | ✅ | ✅ |
+| 96 | BLE sensor | ✅ | ❌ | ❌ | ✅³ |
+| 100 | Remote OS sensor | ✅ | ✅ | ✅ | ✅ |
+| 101–110 | Weather service | ✅ | ✅ | ✅ | ✅ |
+| 1000–1003 | Sensor groups | ✅ | ✅ | ✅ | ✅ |
+| 10000–10001 | Diagnostic (free mem/storage) | ✅ | ✅ | ✅ | ✅ |
+
+> ³ OSPi/Linux uses BlueZ D-Bus API instead of native ESP32 BLE
+
+---
+
 ## Sensor Configuration
+
+> **Platform:** All endpoints in this section are available on **ESP32, ESP32-C5, ESP8266, and OSPi/Linux**.
 
 ### Configure User-Defined Sensor Parameters
 **Endpoint:** `/si`  
@@ -262,6 +342,8 @@ This documentation has been updated to match the current firmware implementation
 ---
 
 ## Sensor Data Retrieval
+
+> **Platform:** All endpoints in this section are available on **ESP32, ESP32-C5, ESP8266, and OSPi/Linux**.
 
 ### List All Sensors
 **Endpoint:** `/sl`  
@@ -425,6 +507,8 @@ This documentation has been updated to match the current firmware implementation
 
 ## Sensor Logging
 
+> **Platform:** All endpoints in this section are available on **ESP32, ESP32-C5, ESP8266, and OSPi/Linux**.
+
 ### Get Sensor Log
 **Endpoint:** `/so`  
 **Command:** `so`  
@@ -531,6 +615,8 @@ Or for all logs:
 ---
 
 ## Program Adjustments
+
+> **Platform:** All endpoints in this section are available on **ESP32, ESP32-C5, ESP8266, and OSPi/Linux**.
 
 ### Configure Program Adjustment
 **Endpoint:** `/sb`  
@@ -705,6 +791,8 @@ Or for all logs:
 ---
 
 ## Monitoring
+
+> **Platform:** All endpoints in this section are available on **ESP32, ESP32-C5, ESP8266, and OSPi/Linux**.
 
 ### Configure Monitor
 **Endpoint:** `/mc`  
@@ -906,6 +994,8 @@ Or for all logs:
 
 ## Utility Endpoints
 
+> **Platform:** All endpoints in this section are available on **ESP32, ESP32-C5, ESP8266, and OSPi/Linux**.
+
 ### Backup Sensor Configuration
 **Endpoint:** `/sx`  
 **Command:** `sx`  
@@ -997,7 +1087,7 @@ Common sensor type constants (use `/sf` endpoint to get complete list for your p
 - `5` - Truebner TH100 RS485 (temperature mode)
 - `9` - RS485 generic sensor
 
-**Analog Sensor Board (ASB) Sensors (10-49):**
+**Analog Sensor Board (ASB) Sensors (10-49):** *(ESP32, ESP32-C5, ESP8266 only)*
 - `10` - ASB - voltage mode 0..4V
 - `11` - ASB - percent 0..3.3V to 0..100%
 - `15` - ASB - SMT50 moisture sensor
@@ -1009,7 +1099,7 @@ Common sensor type constants (use `/sf` endpoint to get complete list for your p
 - `32` - ASB - Vegetronix Aquaplumb sensor
 - `49` - ASB - user defined sensor
 
-**OSPI Sensors (50-59):**
+**OSPI Sensors (50-59):** *(OSPi/Linux only)*
 - `50` - OSPI analog input - voltage mode 0..3.3V
 - `51` - OSPI analog input - percent 0..3.3V to 0..100%
 - `52` - OSPI analog input - SMT50 moisture
@@ -1232,6 +1322,9 @@ Remote sensors (type 100) allow reading sensor values from another OpenSprinkler
 - Use for centralized monitoring of distributed sensors
 
 ### FYTA Sensors
+
+**Platform:** ESP32, ESP32-C5, ESP8266, OSPi/Linux
+
 FYTA sensors (types 60-61) connect to FYTA plant monitoring devices via cloud API:
 - **Type 60:** FYTA moisture sensor
 - **Type 61:** FYTA temperature sensor
@@ -1316,12 +1409,52 @@ Internal sensors (types 10000-10001) provide system health monitoring:
 - Trigger alerts on low resources
 
 ### Zigbee Sensors
-Zigbee sensors (type 95) connect via Zigbee2MQTT:
+
+**Platform:** Native ZigBee — ESP32-C5 only · Zigbee2MQTT mode — all platforms
+
+Zigbee sensors (type 95) can be used in two ways on ESP32-C5:
+
+#### Native ZigBee (ESP32-C5 only)
+The ESP32-C5 has a built-in IEEE 802.15.4 radio for native ZigBee support. The radio mode is selected at runtime via the **IEEE 802.15.4 API** (see [IEEE802154_API.md](IEEE802154_API.md)).
+
+Query the current mode and all available modes with `/ir`:
+```json
+{
+  "activeMode": 2,
+  "activeModeName": "zigbee_gateway",
+  "modes": [
+    {"id": 0, "name": "disabled"},
+    {"id": 1, "name": "matter"},
+    {"id": 2, "name": "zigbee_gateway"},
+    {"id": 3, "name": "zigbee_client"}
+  ],
+  "enabled": 1, "matter": 0, "zigbee": 1, "zigbee_gw": 1, "zigbee_client": 0
+}
+```
+
+Set the mode with `/iw?mode=N` (device reboots to apply):
+- **ZigBee Gateway** (`/iw?mode=2`): ESP32-C5 acts as ZigBee Coordinator, directly receives sensor data
+- **ZigBee Client** (`/iw?mode=3`): ESP32-C5 joins an existing ZigBee network (e.g., Zigbee2MQTT)
+
+**Native ZigBee Endpoints:**
+| Endpoint | Description | Modes |
+|----------|-------------|-------|
+| `/ir` | Get current radio mode and list all available modes | All |
+| `/iw` | Set radio mode (requires reboot) | All |
+| `/zj` | Join/search ZigBee network | Client (`activeMode=3`) |
+| `/zs` | Get ZigBee connection status | Gateway & Client |
+| `/zg` | Manage ZigBee devices (list, permit, remove) | Gateway (`activeMode=2`) |
+| `/zd` | List discovered ZigBee devices | Gateway & Client |
+| `/zo` | Open network for pairing (legacy, use `/zg?action=permit`) | Gateway |
+| `/zc` | Clear new device flags | Gateway & Client |
+
+#### Via Zigbee2MQTT
+Zigbee sensors can also connect via Zigbee2MQTT using MQTT as transport:
 - Requires a Zigbee coordinator (e.g., CC2652, ConBee II) connected to your network
 - Uses MQTT as transport protocol
 - Supports various Zigbee sensors (temperature, humidity, moisture, etc.)
 
-**Configuration:**
+**Configuration (MQTT mode):**
 1. Configure the Zigbee sensor using `/sc` with type 95
 2. Set MQTT broker URL using `/sk` with `type=0`
 3. Set Zigbee2MQTT topic using `/sk` with `type=1` (typically `zigbee2mqtt/[device_name]`)
@@ -1350,6 +1483,9 @@ Zigbee sensors (type 95) connect via Zigbee2MQTT:
 - Custom Zigbee devices reporting numeric values
 
 ### BLE Sensors
+
+**Platform:** ESP32 (native BLE) · OSPi/Linux (BlueZ D-Bus)
+
 BLE (Bluetooth Low Energy) sensors (type 96) provide wireless sensor connectivity:
 - **ESP32:** Native BLE support for scanning and reading BLE advertisements and GATT characteristics
 - **OSPI:** Requires BlueZ stack on Linux (Raspberry Pi)
@@ -1508,3 +1644,5 @@ Where:
 
 ## Version Information
 This API documentation corresponds to OpenSprinkler firmware version 2.2.0 and later with analog sensor support.
+
+**Last updated:** February 2026 — Added unified IEEE 802.15.4 / ZigBee / Matter documentation for ESP32-C5.

@@ -101,7 +101,8 @@ void OSInfluxDB::get_influx_config(char *json) {
             set_influx_config(json);
         }
     }
-    if (json[0] != '{' || strchr(json, '}') != strrchr(json, '}')) {
+    // Ensure valid JSON if file doesn't exist or is empty
+    if (json[0] == 0 || json[0] != '{' || strchr(json, '}') != strrchr(json, '}') || strrchr(json, '}') < strchr(json, '{')) {
         strcpy(json, "{\"en\":0}");
         set_influx_config(json);
     }

@@ -16,10 +16,9 @@
  * Author: Copilot for OpenSprinkler ESP32-C5
  */
 
-#include "sdkconfig.h"
-
 #if defined(ESP32) || defined(ESP_PLATFORM)
 
+#include "sdkconfig.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>

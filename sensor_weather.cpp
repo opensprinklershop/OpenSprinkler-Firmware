@@ -98,7 +98,7 @@ void GetSensorWeather() {
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
       current_wind = atof(buf);
     }
-    char tmp[10];
+    char tmp[16];
     DEBUG_PRINT(F("temp: "));
     dtostrf(current_temp, 2, 2, tmp);
     DEBUG_PRINTLN(tmp)

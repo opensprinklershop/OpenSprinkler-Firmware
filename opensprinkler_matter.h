@@ -9,6 +9,8 @@
 
 #ifdef ENABLE_MATTER
 
+uint32_t matter_get_init_time_ms();
+
 class OSMatter {
 public:
   static OSMatter& instance();

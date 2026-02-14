@@ -21,6 +21,9 @@
  * <http://www.gnu.org/licenses/>. 
  */
 #include "sensor_truebner_rs485.h"
+
+#if defined(ESP8266) || defined(ESP32)
+
 #include "sensors.h"
 #include "OpenSprinkler.h"
 
@@ -167,3 +170,5 @@ int TruebnerRS485Sensor::setAddress(uint8_t new_address) {
 }
 
 #endif
+
+#endif // defined(ESP8266) || defined(ESP32)

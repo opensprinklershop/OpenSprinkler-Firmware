@@ -27,6 +27,10 @@
 
 #if defined(ESP8266) || defined(ESP32)
 
+#if defined(ESP32C5)
+#include "soc/lp_aon_reg.h"
+#endif
+
 extern OpenSprinkler os;
 
 int i2c_rs485_addr = 0;
@@ -52,6 +56,10 @@ static bool i2c_rs485_wire_started = false;
 static bool ensure_i2c_rs485_bus() {
   if (!i2c_rs485_wire_started) {
 #if defined(ESP32)
+    #if defined(ESP32C5)
+    // Force GPIO 0/1 to stay in digital mode (LP domain can steal them)
+    REG_CLR_BIT(LP_AON_GPIO_MUX_REG, BIT(SDA) | BIT(SCL));
+    #endif
     if (!Wire.begin()) {
       DEBUG_PRINTLN(F("i2c_rs485: Wire.begin failed"));
       return false;

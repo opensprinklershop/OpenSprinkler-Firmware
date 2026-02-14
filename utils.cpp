@@ -142,16 +142,17 @@ void initialiseEpoch()
 	epochMicro = (uint64_t)tv.tv_sec * (uint64_t)1000000 + (uint64_t)(tv.tv_usec) ;
 }
 
-// ulong millis (void)
-// {
-// 	struct timeval tv ;
-// 	uint64_t now ;
+// millis: returns milliseconds since epoch init
+ulong millis (void)
+{
+	struct timeval tv ;
+	uint64_t now ;
 
-// 	gettimeofday (&tv, NULL) ;
-// 	now  = (uint64_t)tv.tv_sec * (uint64_t)1000 + (uint64_t)(tv.tv_usec / 1000) ;
+	gettimeofday (&tv, NULL) ;
+	now  = (uint64_t)tv.tv_sec * (uint64_t)1000 + (uint64_t)(tv.tv_usec / 1000) ;
 
-// 	return (ulong)(now - epochMilli) ;
-// }
+	return (ulong)(now - epochMilli) ;
+}
 
 ulong micros (void)
 {

@@ -24,11 +24,18 @@
 #include "SensorBase.hpp"
 #include "sensors_util.h"
 #include "main.h"
+#include "TimeLib.h"
 #include <stdlib.h>
+#if defined(ESP32)
+#include <esp_heap_caps.h>
+#endif
 
 #include "OpenSprinkler.h"
 #if defined(ESP8266) || defined(ESP32)
 #include "Wire.h"
+#if defined(ESP32)
+#include <WiFi.h>
+#endif
 #elif defined(OSPI)
 #include <stdio.h>
 #include <iostream>
@@ -36,6 +43,7 @@
 #include <modbus/modbus.h>
 #include <modbus/modbus-rtu.h>
 #include <errno.h>
+#include <sys/statvfs.h>
 #else
 #include <stdio.h>
 #include <iostream>
@@ -51,6 +59,7 @@
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
   #include "sensor_zigbee.h"
+  #include "ieee802154_config.h"
 #endif
 
 #if defined(ESP32)
@@ -234,6 +243,12 @@ boolean sensor_type_supported(int type) {
     ((asb_detected_boards & OSPI_PCF8591) != 0 || (asb_detected_boards & OSPI_ADS1115) != 0))
       return true;
 
+  // Internal temperature sensor: available on OSPI (Linux) and ESP32 (built-in temp sensor)
+#if defined(OSPI) || defined(ESP32)
+  if (type == SENSOR_INTERNAL_TEMP)
+      return true;
+#endif
+
   if (type >= INDEPENDENT_SENSORS_START)
       return true;
 
@@ -321,10 +336,20 @@ bool is_api_init() {
 
 void sensor_api_connect() {
   #if defined(ESP8266) || defined(ESP32)
+  // Allow sensor_api_connect in both WiFi STA and Ethernet mode
+  #if defined(ESP32C5)
+  // ESP32-C5: Ethernet mode has WiFi.getMode()==WIFI_MODE_NULL
+  wifi_mode_t wmode = WiFi.getMode();
+  if (wmode != WIFI_MODE_STA && wmode != WIFI_MODE_NULL) {
+    DEBUG_PRINTF("[SENSOR_API] sensor_api_connect skipped (wifi_mode=%d, not STA/ETH)\n", wmode);
+    return;
+  }
+  #else
   if (os.get_wifi_mode() != WIFI_MODE_STA) {
     DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_connect skipped (not STA mode)"));
     return;
   }
+  #endif
   #endif
 
   if (!os.network_connected()) {
@@ -340,13 +365,26 @@ void sensor_api_connect() {
   #endif
 
   #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-  sensor_zigbee_start();
+  // Start Zigbee only if runtime mode is set to a Zigbee mode
+  if (ieee802154_is_zigbee()) {
+    DEBUG_PRINTF("[SENSOR_API] Starting Zigbee (%s mode)...\n",
+                 ieee802154_is_zigbee_gw() ? "gateway" : "client");
+    sensor_zigbee_start();
+  }
+  #endif
+
+  #if defined(ESP32) && defined(OS_ENABLE_BLE)
+  DEBUG_PRINTLN(F("[SENSOR_API] Initializing BLE..."));
+  if (sensor_ble_init()) {
+    DEBUG_PRINTLN(F("[SENSOR_API] BLE initialized successfully"));
+  } else {
+    DEBUG_PRINTLN(F("[SENSOR_API] BLE init deferred or failed"));
+  }
   #endif
 }
-// Note: Zigbee/BLE are started on-demand by their respective operations (scan/read/open-network)
-// and their maintenance loops are gated by sensor_*_is_active().
-// sensor_api_connect() is used to initialize network-dependent sensor subsystems
-// once the device is connected in WiFi STA mode.
+// sensor_api_connect() initializes all network-dependent sensor subsystems
+// (MQTT, FYTA, Zigbee, BLE) once the device is connected in WiFi STA mode
+// and the required delay after Matter init has elapsed.
 
 /**
  * @brief Sensor maintenance loop
@@ -354,7 +392,7 @@ void sensor_api_connect() {
  */
 void sensor_api_loop() {
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-  if (sensor_zigbee_is_active()) {
+  if (ieee802154_is_zigbee() && sensor_zigbee_is_active()) {
     sensor_zigbee_loop();
   }
 #endif
@@ -975,15 +1013,13 @@ ulong findLogPosition(uint8_t log, ulong after) {
 /**
  * compatibility functions for OSPi:
  **/
-#define timeSet 0
-int timeStatus() { return timeSet; }
 
 void dtostrf(float value, int min_width, int precision, char *txt) {
-  printf(txt, "%*.*f", min_width, precision, value);
+  sprintf(txt, "%*.*f", min_width, precision, value);
 }
 
 void dtostrf(double value, int min_width, int precision, char *txt) {
-  printf(txt, "%*.*d", min_width, precision, value);
+  sprintf(txt, "%*.*f", min_width, precision, value);
 }
 #endif
 
@@ -1011,7 +1047,11 @@ void calc_sensorlogs() {
 
   if (time >= next_week_calc) {
     DEBUG_PRINTLN(F("calc_sensorlogs WEEK start"));
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+    sensorlog = (SensorLog_t *)heap_caps_malloc(sizeof(SensorLog_t) * BLOCKSIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     sensorlog = (SensorLog_t *)malloc(sizeof(SensorLog_t) * BLOCKSIZE);
+#endif
     ulong size = sensorlog_size(LOG_WEEK);
     if (size == 0) {
       sensorlog_load(LOG_STD, 0, sensorlog);
@@ -1072,7 +1112,11 @@ void calc_sensorlogs() {
       return;
     }
     if (!sensorlog)
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+      sensorlog = (SensorLog_t *)heap_caps_malloc(sizeof(SensorLog_t) * BLOCKSIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
       sensorlog = (SensorLog_t *)malloc(sizeof(SensorLog_t) * BLOCKSIZE);
+#endif
 
     DEBUG_PRINTLN(F("calc_sensorlogs MONTH start"));
     ulong size = sensorlog_size(LOG_MONTH);
@@ -1348,8 +1392,10 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
 
     // Generic RS485 sensor (prefer I2C RS485 if available)
     case SENSOR_MODBUS_RTU:
+#if defined(ESP8266) || defined(ESP32)
       if (!ip_based && (get_asb_detected_boards() & ASB_I2C_RS485))
         return new RS485I2CSensor(type);
+#endif
       return new ModbusRtuSensor(type); // fallback to existing C implementation
       break;
 
@@ -1863,8 +1909,17 @@ ulong diskFree() {
 ulong diskFree() {
   return LittleFS.totalBytes() - LittleFS.usedBytes();
 }
+#elif defined(OSPI)
+ulong diskFree() {
+  struct statvfs stat;
+  if (statvfs("/", &stat) == 0) {
+    return (ulong)stat.f_bavail * stat.f_bsize;
+  }
+  return 0;
+}
 #endif
 
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 bool checkDiskFree() {
   if (diskFree() < MIN_DISK_FREE) {
     DEBUG_PRINT(F("fs has low space!"));
@@ -1872,12 +1927,15 @@ bool checkDiskFree() {
   }
   return true;
 }
+#endif
 
 // SensorBase default emitJson implementation
 void SensorBase::emitJson(BufferFiller& bfill) const {
   ArduinoJson::JsonDocument doc;
   ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
   toJson(obj);
+
+  // Temperature conversion removed — now handled by client app
 
   // Serialize direkt in den Zielbuffer (vermeidet Heap-String-Allokationen)
   const size_t cap = bfill.avail() + 1; // +1 für Nullterminator

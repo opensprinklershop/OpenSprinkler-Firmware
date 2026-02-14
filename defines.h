@@ -72,6 +72,9 @@ typedef unsigned long ulong;
   #define PSRAM_DATA_ATTR
   #define PSRAM_NOINIT_ATTR
   #define PSRAM_RODATA_ATTR
+  #ifndef EXT_RAM_BSS_ATTR
+    #define EXT_RAM_BSS_ATTR
+  #endif
 #endif
 
 #define TMP_BUFFER_SIZE      320   // scratch buffer size
@@ -363,8 +366,8 @@ enum {
 	IOPT_I_MIN_THRESHOLD,
 	IOPT_I_MAX_LIMIT,
 	IOPT_TARGET_PD_VOLTAGE,
-	IOPT_RESERVE_7,
-	IOPT_RESERVE_8,
+	IOPT_RESERVED_TEMPCON, // removed: temp conversion moved to client app
+	IOPT_RESERVED_COMBCHART, // removed: combine chart moved to client app
 	IOPT_WIFI_MODE, //ro
 	IOPT_RESET,     //ro
 	IOPT_BELOW_HANDLING,
@@ -609,13 +612,15 @@ enum {
 	#define MIO2                    4   // 13  // QIO IO2 for external flash
 	#define MIO3                    23  // 14  // QIO IO3 for external flash
 
-	#define UART_TX_PIN             15   // UART pin out
-	#define UART_RX_PIN             27   // UART pin out
+	#define PIN_FREE1               25  
+	#define PIN_FREE2               26 
+	#define PIN_FREE3               7
 
-	#define PIN_ETHER_CS       3  // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
-	#define PIN_EXT_FLASH_CS   5 // external flash CS pin
-	#define PIN_ETHER_IRQ     -1  //
-	#define PIN_ETHER_RESET   -1
+	// W5500 Ethernet: SCK=6, MISO=14, MOSI=13, CS=3, RST=EN(hardwired HIGH)
+	#define PIN_ETHER_CS       3  // Ethernet CS (chip select pin)
+	#define PIN_EXT_FLASH_CS   5  // external flash CS pin
+	#define PIN_ETHER_IRQ     27   // W5500 INT pin on GPIO7 (PIN_FREE3)
+	#define PIN_ETHER_RESET   -1  // RESET hardwired to EN (always HIGH)
 #endif
 
 #endif

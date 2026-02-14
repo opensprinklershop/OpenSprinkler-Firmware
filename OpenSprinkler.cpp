@@ -28,11 +28,17 @@
 #include "program.h"
 #include "ArduinoJson.hpp"
 #include "sunrise.h"
+#include "ieee802154_config.h"
 
 #if defined(ESP32)
 #include <esp_system.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
+#include <esp_partition.h>
+#include <esp_log.h>
+#if defined(ESP32C5)
+#include "soc/lp_aon_reg.h"
+#endif
 #endif
 
 /** Declare static data members */
@@ -196,8 +202,8 @@ const char iopt_json_names[] PROGMEM =
 	"imin\0"
 	"imax\0"
 	"tpdv\0"
-	"resv7"
-	"resv8"
+	"rsv7\0"
+	"rsv8\0"
 	"wimod"
 	"reset"
 	"belha"
@@ -356,8 +362,8 @@ const unsigned char iopt_max[] PROGMEM = {
 	100,
 	255,
 	210,
-	255,
-	255,
+	2,
+	1,
 	255,
 	1
 };
@@ -440,8 +446,8 @@ unsigned char OpenSprinkler::iopts[] = {
 	DEFAULT_UNDERCURRENT_THRESHOLD/10, // imin threshold scaled down by 10.
 	0,  // imax limit scaled down by 10. 0 means using default value
 	DEFAULT_TARGET_PD_VOLTAGE,  // target pd voltage (in unit of 100mV)
-	0,  // reserved 7
-	0,  // reserved 8
+	0,  // reserved (was: temperature conversion, moved to client)
+	0,  // reserved (was: combine chart, moved to client)
 	WIFI_MODE_AP, // wifi mode
 	0   // reset
 };
@@ -566,6 +572,10 @@ unsigned char OpenSprinkler::start_network() {
 	} else {
 		useEth = false;
 	}
+
+	// Suppress Arduino NetworkClient "Connection reset by peer" log_e() spam.
+	// These are normal when HTTP clients disconnect before the response is fully sent.
+	esp_log_level_set("NetworkClient.cpp", ESP_LOG_WARN);
 
 	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
 		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, false, ether_buffer, ETHER_BUFFER_SIZE);
@@ -746,12 +756,20 @@ byte OpenSprinkler::start_ether() {
 	}
 	#else
 	Network.onEvent(etherOnEvent);
-	SPI.begin(SCK, MISO, MOSI);
-	SPI.setBitOrder(MSBFIRST);
-	SPI.setDataMode(SPI_MODE0);
-	SPI.setFrequency(80000000); // 80MHz is the maximum SPI clock for W5500
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI))
+	
+	DEBUG_PRINTLN(F("W5500 initialization..."));
+	DEBUG_PRINTF("CS=%d, IRQ=%d, RST=%d\n", PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET);
+
+	// W5500 shares SPI2_HOST bus with external flash (already initialized by init_external_flash()).
+	// Do NOT call SPI.begin() - it uses Arduino HAL register access which conflicts
+	// with the ESP-IDF spi_bus driver used by both external flash and W5500 MAC.
+	// Use eth.begin() variant with explicit SPI host, pin numbers, and frequency.
+	delay(100);
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI, 8)) {
+		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
+	}
+	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 8 MHz)"));
 	#endif
 
 
@@ -788,7 +806,9 @@ byte OpenSprinkler::start_ether() {
 	
 	ulong timeout = millis()+60000; // 60 seconds time out
 	unsigned char timecount = 1;
-	while ((!eth.connected() || eth.localIP().toString().equals("255.255.255.255"))  && millis()<timeout) {
+	while ((!eth.connected() 
+	|| eth.localIP().toString().equals("255.255.255.255")
+	|| eth.localIP().toString().equals("0.0.0.0")) && millis()<timeout) {
 		DEBUG_PRINT(".");
 		lcd.setCursor(13, 2);
 		lcd.print(timecount);
@@ -1020,7 +1040,17 @@ void OpenSprinkler::lcd_start() {
 void OpenSprinkler::begin() {
 
 #if defined(ARDUINO)
+	#if defined(ESP32C5)
+	// ESP32-C5: GPIO 0/1 (SDA/SCL) are LP-domain RTC-IO pins (32kHz XTAL pads).
+	// The LP subsystem can reclaim them at any time via LP_AON_GPIO_MUX_SEL,
+	// which disconnects them from the digital GPIO matrix and kills I2C.
+	// Fix: Force these pins to stay in digital GPIO mode.
+	REG_CLR_BIT(LP_AON_GPIO_MUX_REG, BIT(SDA) | BIT(SCL));  // Keep GPIO 0,1 in digital mode
+	Wire.begin(SDA, SCL);  // Explicit pins: SDA=0, SCL=1
+	DEBUG_PRINTF("I2C init: SDA=%d SCL=%d, LP_AON_GPIO_MUX=0x%08x\n", SDA, SCL, REG_READ(LP_AON_GPIO_MUX_REG));
+	#else
 	Wire.begin(); // init I2C
+	#endif
 #endif
 
 	hw_type = HW_TYPE_UNKNOWN;
@@ -1370,13 +1400,13 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6c"));
 				delay(5000);
 			}	
 		}
-		/*if (!file_exists(SOPTS_FILENAME)){
+		if (!file_exists(SOPTS_FILENAME)){
 			// format external littlefs if not existing
 			lcd_print_pgm(PSTR("Formating ext FS"));
 			DEBUG_PRINTF(F("Formatting external LittleFS...\n"));	
 			LittleFS.format();
 			DEBUG_PRINTF(F("completed.\n"));	
-		}*/
+		}
 		#endif
 DEBUG_PRINTLN(F("OpenSprinkler begin6e"));
 		#if defined(ESP8266)
@@ -2389,10 +2419,13 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		client = new EthernetClient();
 	#endif
 
-	#define HTTP_CONNECT_NTRIES 3
+	#define HTTP_CONNECT_NTRIES 1
 	unsigned char tries = 0;
 	int conn_result = 0;
 	(void)conn_result; // Used in DEBUG_PRINT but not in release builds
+	#if defined(ESP32)
+	client->setTimeout(2000); // 2s connect timeout (default 5s blocks main loop too long)
+	#endif
 	do {
 		DEBUG_PRINT(server);
 		DEBUG_PRINT(":");
@@ -2659,6 +2692,38 @@ void OpenSprinkler::pre_factory_reset() {
 	lcd_print_line_clear_pgm(PSTR("Wiping flash.."), 0);
 	lcd_print_line_clear_pgm(PSTR("Please Wait..."), 1);
 	LittleFS.format();
+
+	// After format the filesystem is empty.  Explicitly write DISABLED
+	// so the IEEE 802.15.4 mode is deterministic even without a reboot.
+	#if defined(ESP32C5)
+	ieee802154_save_mode(IEEE802154Mode::IEEE_DISABLED);
+	DEBUG_PRINTLN(F("[FACTORY_RESET] IEEE 802.15.4 mode reset to DISABLED"));
+	#endif
+
+	#if defined(ESP32)
+	// Erase Zigbee and Matter partitions so radio state is fully clean after reset.
+	// Partition names from os4_matter.csv / os4.csv:
+	//   zb_storage  (data, fat)  — Zigbee ZBOSS NVRAM
+	//   zb_fct      (data, fat)  — Zigbee factory data
+	//   matter_kvs  (data, nvs)  — Matter key-value store (commissioning, fabrics)
+	// matter_fct is readonly and must NOT be erased.
+	static const struct { const char *name; esp_partition_type_t type; esp_partition_subtype_t subtype; } partitions_to_erase[] = {
+		{ "zb_storage", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT },
+		{ "zb_fct",     ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT },
+		{ "matter_kvs", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS },
+	};
+	for (const auto &p : partitions_to_erase) {
+		const esp_partition_t *part = esp_partition_find_first(p.type, p.subtype, p.name);
+		if (part) {
+			esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+			DEBUG_PRINTF("[FACTORY_RESET] Erased partition '%s' (%u bytes): %s\n",
+						 p.name, part->size, (err == ESP_OK) ? "OK" : esp_err_to_name(err));
+		} else {
+			DEBUG_PRINTF("[FACTORY_RESET] Partition '%s' not found (skipped)\n", p.name);
+		}
+	}
+	#endif
+
 	#else
 	// remove 'done' file as an indicator for reset
 	// todo os2.3 and ospi: delete log files and/or wipe SD card
@@ -3700,6 +3765,7 @@ void OpenSprinkler::save_wifi_ip() {
 	}
 
 	// Save BSSID@channel to avoid future WiFi scans (ESP32-C5 scan can fail under memory pressure)
+#if defined(ESP32)
 	if (WiFi.status() == WL_CONNECTED) {
 		uint8_t mode = (uint8_t)WiFi.getMode();
 		if (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA) {
@@ -3714,6 +3780,7 @@ void OpenSprinkler::save_wifi_ip() {
 			}
 		}
 	}
+#endif
 }
 
 void OpenSprinkler::detect_expanders() {

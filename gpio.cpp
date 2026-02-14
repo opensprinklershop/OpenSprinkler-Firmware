@@ -218,18 +218,7 @@ unsigned char digitalReadExt(unsigned char pin) {
 	#include <pthread.h>
 #endif
 
-#elif defined(OSPI)
-
-// OSPI is enabled, but this host isn't POSIX-capable (e.g. Windows/MinGW).
-// Provide minimal stubs so other code can still link.
-
-void pinMode(int pin, unsigned char mode) {(void)pin; (void)mode;}
-void digitalWrite(int pin, unsigned char value) {(void)pin; (void)value;}
-int gpio_fd_open(int pin, int mode) {(void)pin; (void)mode; return -1;}
-void gpio_fd_close(int fd) {(void)fd;}
-void gpio_write(int fd, unsigned char value) {(void)fd; (void)value;}
-unsigned char digitalRead(int pin) {(void)pin; return LOW;}
-void attachInterrupt(int pin, const char* mode, void (*isr)(void)) {(void)pin; (void)mode; (void)isr;}
+// sysfs GPIO implementation for OSPI (non-LIBGPIOD)
 
 #define BUFFER_MAX 64
 #define GPIO_MAX	 64

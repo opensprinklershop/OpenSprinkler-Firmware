@@ -44,7 +44,7 @@
 	#elif defined(ESP32)
 		#include <WiFi.h>
 		#include <WiFiClientSecure.h>
-	#else
+	#elif defined(ARDUINO)
 		#include <Ethernet.h>
 	#endif
 
@@ -86,10 +86,10 @@ private:
     static bool reconnect();
 #if defined(ARDUINO)
     static void setCallback(int key, MQTT_CALLBACK_SIGNATURE);
+    static Client * client;
 #else
 	static void setCallback(int key, void (*on_message)(struct mosquitto *, void *, const struct mosquitto_message *));
 #endif
-	static Client * client;
 };
 
 #endif	// _MQTT_H

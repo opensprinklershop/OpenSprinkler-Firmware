@@ -38,6 +38,7 @@
 #include "notifier.h"
 #include "osinfluxdb.h"
 #include "opensprinkler_matter.h"
+#include "ieee802154_config.h"
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
 
@@ -539,6 +540,13 @@ void do_setup() {
 
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
+
+#if defined(ESP32C5)
+	// Load IEEE 802.15.4 radio mode (disabled/matter/zigbee_gw/zigbee_client)
+	// Must be called before any Matter or Zigbee initialization
+	ieee802154_config_init();
+#endif
+
 #if defined(ESP8266)
 	os.setup_pd_voltage();
 #endif
@@ -728,11 +736,11 @@ void do_loop()
 	handle_arduino_ota();
 	#endif
 
-	// ====== Periodic memory debug output (once per second) ======
+	// ====== Periodic memory debug output (once per minute) ======
 	#if defined(ENABLE_DEBUG) && defined(ESP32)
 	static ulong last_mem_print = 0;
 	ulong now_ms = millis();
-	if (now_ms - last_mem_print >= 1000) {
+	if (now_ms - last_mem_print >= 60000) {
 		last_mem_print = now_ms;
 		uint32_t free_heap = ESP.getFreeHeap();
 		uint32_t min_heap = ESP.getMinFreeHeap();
@@ -759,14 +767,28 @@ void do_loop()
 
 	ulong boot_elapsed = millis() - boot_time_ms;
 
-	// Delayed sensor_api_connect at 15 seconds (required for Zigbee/WiFi coexistence)
-	if(!sensor_api_connected && boot_elapsed >= 15000) {
-		if(os.network_connected()) {
-			DEBUG_PRINTLN("[INIT] Calling sensor_api_connect at 15s");
+	// sensor_api_connect: runs once, 15s after Matter init (or 15s after boot without Matter).
+	// Initializes MQTT, FYTA, Zigbee, and BLE.
+	if(!sensor_api_connected) {
+		bool ready = false;
+		#ifdef ENABLE_MATTER
+		{
+			uint32_t m_init = matter_get_init_time_ms();
+			if (m_init > 0) {
+				// Matter is active: wait 15s after Matter init
+				ready = ((millis() - m_init) >= 15000);
+			} else {
+				// Matter NOT active (e.g. Zigbee mode or disabled): use boot elapsed
+				ready = (boot_elapsed >= 15000);
+			}
+		}
+		#else
+		ready = (boot_elapsed >= 15000);
+		#endif
+		if(ready && os.network_connected()) {
+			DEBUG_PRINTF("[INIT] Calling sensor_api_connect (boot_elapsed=%lu, useEth=%d)\n", boot_elapsed, useEth);
 			sensor_api_connect();
 			sensor_api_connected = true;
-		} else {
-			//DEBUG_PRINTLN("[INIT] Skipping sensor_api_connect (network not connected)");
 		}
 	}
 
@@ -825,6 +847,8 @@ void do_loop()
 			os.lcd.clear();
 			os.save_wifi_ip();
 			start_server_client();
+			// Ethernet is up — safe to route malloc back to PSRAM
+			psram_restore_after_wifi_init();
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
@@ -834,6 +858,8 @@ void do_loop()
 			// Captive Portal: Redirect ALL DNS requests to AP IP (192.168.4.1)
 			// This handles msftconnecttest.com, connectivitycheck.gstatic.com, etc.
 			dns->start(53, "*", WiFi.softAPIP());
+			// WiFi AP is up — safe to route malloc back to PSRAM
+			psram_restore_after_wifi_init();
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else {
@@ -861,6 +887,8 @@ void do_loop()
 		else
 			start_network_sta_with_ap(os.wifi_ssid.c_str(), os.wifi_pass.c_str());
 		os.config_ip();
+		// WiFi AP is up — safe to route malloc back to PSRAM
+		psram_restore_after_wifi_init();
 		os.state = OS_STATE_CONNECTED;
 		break;
 
@@ -1402,17 +1430,27 @@ void do_loop()
 		//if((millis()/1000) % NTP_SYNC_INTERVAL==15) os.status.req_ntpsync = 1;
 		perform_ntp_sync();
 
+		// Service web clients between potentially blocking operations
+		// to keep HTTPS/HTTP response times low on single-core ESP32-C5
+		if(otf) otf->loop();
+
 		// check network connection
 		if (curr_time && (curr_time % CHECK_NETWORK_INTERVAL==0))  os.status.req_network = 1;
 		check_network();
 
+		if(otf) otf->loop();
+
 		// check weather
 		check_weather();
+
+		if(otf) otf->loop();
 
 		// process notifier events
 		if(os.network_connected()) {
 			notif.run();
 		}
+
+		if(otf) otf->loop();
 
 		if(os.weather_update_flag & WEATHER_UPDATE_WL) {
 			// at the moment, we only send notification if water level changed

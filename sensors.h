@@ -553,9 +553,14 @@ boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_
 boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
 #endif
 
-#if defined(ESP8266) || defined(ESP32) 
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 ulong diskFree();
 bool checkDiskFree();  // true: disk space Ok, false: Out of disk space
+#endif
+
+#if !defined(ARDUINO)
+void dtostrf(float value, int min_width, int precision, char *txt);
+void dtostrf(double value, int min_width, int precision, char *txt);
 #endif
 
 void replace_pid(uint old_pid, uint new_pid);

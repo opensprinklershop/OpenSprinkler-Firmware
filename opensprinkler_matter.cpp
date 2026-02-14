@@ -12,10 +12,13 @@
 #include "sensors.h"
 #include "SensorBase.hpp"
 #include "opensprinkler_matter.h"
+#include "ieee802154_config.h"
 
 #if defined(ESP32)
 #include <Matter.h>
 #include <new>
+#include <WiFi.h>
+#include <esp_wifi.h>
 #ifdef OS_ENABLE_BLE
 #include "sensor_ble.h"
 #endif
@@ -81,6 +84,53 @@ namespace {
   TempSensorMap temp_sensors;
   HumiditySensorMap humidity_sensors;
   PressureSensorMap pressure_sensors;
+
+  bool wifi_sync_pending = false;
+  uint32_t matter_init_time_ms = 0;
+
+  bool matter_sync_wifi_config() {
+    if (WiFi.status() != WL_CONNECTED) {
+      return false;
+    }
+
+    wifi_config_t conf;
+    if (esp_wifi_get_config(WIFI_IF_STA, &conf) != ESP_OK) {
+      return false;
+    }
+
+    const char* ssid = reinterpret_cast<const char*>(conf.sta.ssid);
+    const char* pass = reinterpret_cast<const char*>(conf.sta.password);
+    if (!ssid || !ssid[0]) {
+      return false;
+    }
+
+    os.wifi_ssid = ssid;
+    os.wifi_pass = pass ? pass : "";
+
+    os.sopt_save(SOPT_STA_SSID, os.wifi_ssid.c_str());
+    os.sopt_save(SOPT_STA_PASS, os.wifi_pass.c_str());
+
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+      char bssid_chl[MAX_SOPTS_SIZE];
+      snprintf(bssid_chl, sizeof(bssid_chl),
+               "%02x:%02x:%02x:%02x:%02x:%02x@%u",
+               ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2],
+               ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5],
+               ap_info.primary);
+      os.sopt_save(SOPT_STA_BSSID_CHL, bssid_chl);
+      memcpy(os.wifi_bssid, ap_info.bssid, 6);
+      os.wifi_channel = ap_info.primary;
+    }
+
+    if (os.iopts[IOPT_WIFI_MODE] != WIFI_MODE_STA) {
+      os.iopts[IOPT_WIFI_MODE] = WIFI_MODE_STA;
+      os.iopts_save();
+    }
+
+    DEBUG_PRINTLN("[Matter] WiFi credentials stored to OpenSprinkler config");
+    return true;
+  }
   
   bool matter_started = false;
   bool commissioned = false;
@@ -93,6 +143,10 @@ namespace {
   String qr_code_url = "";
   String manual_pairing_code = "";
   uint32_t config_signature = 0;
+}
+
+uint32_t matter_get_init_time_ms() {
+  return matter_init_time_ms;
 }
 
 // ====== Helper Functions ======
@@ -127,6 +181,7 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
     case MATTER_EVENT_COMMISSIONED:
       commissioned = true;
       DEBUG_PRINTLN("[Matter] Device commissioned");
+      wifi_sync_pending = true;
       break;
     case MATTER_COMMISSIONING_SESSION_STARTED:
     case MATTER_CHIPOBLE_CONNECTION_ESTABLISHED:
@@ -148,6 +203,7 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
       break;
     case MATTER_COMMISSIONING_COMPLETE:
       DEBUG_PRINTLN("[Matter] Commissioning complete");
+      wifi_sync_pending = true;
       #ifdef OS_ENABLE_BLE
       {
         // Release BLE semaphore after commissioning completes
@@ -350,6 +406,16 @@ void OSMatter::init() {
     DEBUG_PRINTLN("[Matter] Already initialized");
     return;
   }
+
+  // Runtime check: only start Matter when IEEE 802.15.4 mode is MATTER
+  if (!ieee802154_is_matter()) {
+    DEBUG_PRINTLN("[Matter] Not in MATTER mode - Matter disabled");
+    return;
+  }
+
+  if (matter_init_time_ms == 0) {
+    matter_init_time_ms = millis();
+  }
   
   DEBUG_PRINTLN("[Matter] Initializing...");
   
@@ -358,13 +424,11 @@ void OSMatter::init() {
                ESP.getFreeHeap()/1024, ESP.getFreePsram()/1048576.0);
   
   // Pre-allocate internal RAM for crypto operations
-  // Hardware AES requires DMA-capable internal memory
   size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  DEBUG_PRINTF("[Matter] Internal heap before crypto reserve: %d bytes\n", internal_free);
   
-  // If internal heap is below threshold, try to free up space
+  // If internal heap is below threshold, try to defragment
   if(internal_free < 50000) {
-    DEBUG_PRINTLN("[Matter] WARNING: Low internal heap - crypto may fail!");
+    DEBUG_PRINTLN("[Matter] WARNING: Low internal heap!");
     // Try to allocate and immediately free to defragment
     void* defrag_block = heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if(defrag_block) {
@@ -436,6 +500,12 @@ void OSMatter::loop() {
     sensor_ble_init();
   }
   #endif
+
+  if (wifi_sync_pending) {
+    if (matter_sync_wifi_config()) {
+      wifi_sync_pending = false;
+    }
+  }
   
   // Check config changes
   uint32_t current_sig = compute_config_signature();

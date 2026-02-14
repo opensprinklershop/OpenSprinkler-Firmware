@@ -43,30 +43,27 @@ struct ZigbeeDeviceInfo {
 #include "SensorBase.hpp"
 
 /**
- * @brief Start Zigbee as END DEVICE (called after WiFi is connected)
+ * @brief Start Zigbee stack in the mode selected by ieee802154_get_mode()
  * 
- * IMPORTANT: This runs Zigbee in END DEVICE mode, which is the ONLY mode
- * that supports WiFi coexistence on ESP32-C5/C6!
+ * Runtime dispatch based on IEEE 802.15.4 configuration:
+ *   - IEEE_DISABLED       → no-op (radio off)
+ *   - IEEE_MATTER         → no-op (Matter active, Zigbee disabled)
+ *   - IEEE_ZIGBEE_GATEWAY → starts Coordinator (sensor_zigbee_gw.cpp)
+ *   - IEEE_ZIGBEE_CLIENT  → starts End Device (sensor_zigbee.cpp)
  * 
- * - Coordinator + WiFi = NOT SUPPORTED (will break WiFi connection)
- * - Router + WiFi = NOT SUPPORTED  
- * - End Device + WiFi STA = SUPPORTED (stable performance)
- * 
- * The device will join an existing Zigbee network (e.g., Zigbee2MQTT)
- * and receive attribute reports from other sensors via bindings.
+ * Only ONE mode can be active at a time (mutual exclusivity enforced).
  * 
  * @note Call after WiFi STA is fully connected
- * @note Bindings must be configured via the Zigbee coordinator
  */
 void sensor_zigbee_start();
 
 /**
- * @brief Returns true if Zigbee End Device is currently active
+ * @brief Returns true if Zigbee stack is currently active (any mode)
  */
 bool sensor_zigbee_is_active();
 
 /**
- * @brief Start Zigbee End Device if needed (best-effort)
+ * @brief Start Zigbee if needed based on runtime mode (best-effort)
  * @return true if Zigbee is active after the call
  * @note Only works in WiFi STA mode, not in SOFTAP mode
  */
@@ -143,7 +140,10 @@ bool sensor_zigbee_read_attribute(uint64_t device_ieee, uint8_t endpoint,
  * @note Uses ESP32-C5 built-in Zigbee radio for direct communication
  * @note Supports Tuya soil moisture sensor and other Zigbee devices
  * 
- * ESP32-C5 acts as Zigbee Coordinator and receives reports from End Devices.
+ * Runtime mode determines behavior:
+ *   - ZIGBEE_GATEWAY: ESP32-C5 acts as Coordinator, receives reports from End Devices
+ *   - ZIGBEE_CLIENT:  ESP32-C5 acts as End Device, joins existing network
+ *   - MATTER/DISABLED: Sensor read returns NOT_RECEIVED (Zigbee not available)
  * 
  * Supported Zigbee Clusters:
  * - Soil Moisture Measurement (0x0408)
@@ -164,18 +164,14 @@ public:
     uint16_t cluster_id = 0x0408;     // Cluster ID (0x0408=soil moisture, 0x0402=temperature)
     uint16_t attribute_id = 0x0000;   // Attribute ID (0x0000=MeasuredValue)
     
-    // User-defined conversion parameters (like AsbSensor SENSOR_USERDEF)
-    int32_t factor = 0;               // Multiplication factor for value conversion
-    int32_t divider = 0;              // Division factor for value conversion
-    int32_t offset_mv = 0;            // Zero-point offset in millivolts (applied before factor/divider)
-    int32_t offset2 = 0;              // Offset in 0.01 unit (applied after factor/divider)
-    
+    // NOTE: factor, divider, offset_mv, offset2 are inherited from SensorBase.
+    // JSON keys: "fac", "div", "offset", "offset2" (handled by SensorBase::fromJson/toJson).
+    // Legacy keys "factor", "divider", "offset_mv" are accepted by fromJson for backward compatibility.
+
     // Runtime state
     bool device_bound = false;        // Track binding state
     uint32_t last_battery = 100;      // Last reported battery level (0-100%)
     uint8_t last_lqi = 0;             // Last reported LQI (Link Quality Indicator, 0-255)
-    uint32_t poll_interval = 60000;   // Active polling interval in ms (default: 60 seconds)
-    uint32_t last_poll_time = 0;      // Timestamp of last active poll
 
     /**
      * @brief Constructor
@@ -207,8 +203,6 @@ public:
      * @brief Read sensor value from Zigbee device
      * @param time Current timestamp
      * @return HTTP_RQT_SUCCESS if data received, HTTP_RQT_NOT_RECEIVED otherwise
-     * @note Supports both passive reports and active polling
-     * @note If poll_interval > 0, actively polls device when interval expires
      */
     virtual int read(unsigned long time) override;
 

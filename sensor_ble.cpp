@@ -28,6 +28,9 @@
 #include "sensor_payload_decoder.h"
 #include <vector>
 #include <ctype.h>
+#ifdef ENABLE_MATTER
+#include "opensprinkler_matter.h"
+#endif
 
 extern OpenSprinkler os;
 
@@ -36,6 +39,9 @@ extern OpenSprinkler os;
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <freertos/semphr.h>
+
+// Forward declaration
+void ble_semaphore_init();
 
 // BLE scan instance
 static bool ble_initialized = false;
@@ -61,6 +67,9 @@ static bool ble_scan_lock_held = false;
 static bool ble_sensor_lock_acquire(uint32_t timeout_ms, bool* acquired_new = nullptr) {
     if (acquired_new) {
         *acquired_new = false;
+    }
+    if (!ble_access_semaphore) {
+        ble_semaphore_init();
     }
     if (!ble_access_semaphore) {
         return false;
@@ -761,6 +770,12 @@ const char* ble_uuid_to_name(const char* uuid) {
  */
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
+        DEBUG_PRINT("[BLE] ADV: ");
+        DEBUG_PRINT(advertisedDevice.getAddress().toString().c_str());
+        DEBUG_PRINT(" RSSI=");
+        DEBUG_PRINT(advertisedDevice.getRSSI());
+        DEBUG_PRINT(" name=");
+        DEBUG_PRINTLN(advertisedDevice.haveName() ? advertisedDevice.getName().c_str() : "");
         DEBUG_PRINT("BLE Device found: ");
         DEBUG_PRINTLN(advertisedDevice.getAddress().toString().c_str());
 
@@ -911,6 +926,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             if (sensor_type != BLE_TYPE_UNKNOWN) {
                 existing_device->sensor_type = sensor_type;
             }
+            DEBUG_PRINTLN("[BLE] ADV update cached device");
         } else {
             // Add new device
             BLEDeviceInfo new_dev;
@@ -946,6 +962,41 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 static MyAdvertisedDeviceCallbacks ble_scan_callbacks;
 bool sensor_ble_init()
 {
+#ifdef ENABLE_MATTER
+    // Block ALL BLE activity until Matter has been initialized for at least 15s.
+    // Matter uses the shared NimBLE controller for CHIPoBLE commissioning;
+    // if we call BLEDevice::init() first the controller is already owned by the
+    // sensor subsystem and Matter's own init will fail with
+    // "BLE_INIT: controller init failed".
+    uint32_t m_init = matter_get_init_time_ms();
+    if (m_init == 0) {
+        // Matter has not started yet – do NOT touch BLE
+        return false;
+    }
+    if ((millis() - m_init) < 15000) {
+        // Matter started but still in the 15-second grace window
+        return false;
+    }
+#endif
+
+    if (!ble_initialized && BLEDevice::getInitialized()) {
+        ble_initialized = true;
+    }
+
+    if (ble_initialized) {
+        // Ensure semaphore and scan callbacks are configured even if already initialized elsewhere (e.g. Matter)
+        ble_semaphore_init();
+        if (!pBLEScan) {
+            pBLEScan = BLEDevice::getScan();
+            DEBUG_PRINTLN("[BLE] Reusing existing NimBLE stack (from Matter) - attaching scan callbacks");
+            pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
+            pBLEScan->setActiveScan(true);
+            pBLEScan->setInterval(100);
+            pBLEScan->setWindow(99);
+        }
+        return true;
+    }
+
     // Backoff if previous init failed
     if (ble_init_failed) {
         uint32_t now = millis();
@@ -954,13 +1005,14 @@ bool sensor_ble_init()
         }
     }
 
-    if (ble_initialized) {
-        return true;
-    }
-
     DEBUG_PRINTLN("Initializing BLE...");
 
     ble_initialized = BLEDevice::init("OpenSprinkler");
+    if (!ble_initialized) {
+        if (BLEDevice::getInitialized()) {
+            ble_initialized = true;
+        }
+    }
     if (!ble_initialized) {
         DEBUG_PRINTLN("ERROR: BLE initialization failed");
         ble_init_failed = true;
@@ -970,11 +1022,30 @@ bool sensor_ble_init()
 
     DEBUG_PRINTLN("BLE initialized successfully");
     ble_init_failed = false;
-    
-        // Initialize the semaphore for thread-safe access
-        ble_semaphore_init();
-    
+
+    // Initialize the semaphore for thread-safe access
+    ble_semaphore_init();
+
+    // Prepare scan object and callbacks immediately so scanning works when Matter already owns NimBLE
+    pBLEScan = BLEDevice::getScan();
+    DEBUG_PRINTLN("[BLE] Scan object created after init - attaching callbacks");
+    pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
+    pBLEScan->setActiveScan(true); // Active scan preferred for sensor discovery
+    pBLEScan->setInterval(100);
+    pBLEScan->setWindow(99);
+
     return true;
+}
+
+static bool ble_ensure_initialized(const char* reason) {
+    if (ble_initialized) {
+        return true;
+    }
+    if (reason && reason[0]) {
+        DEBUG_PRINT(F("[BLE] Init requested by: "));
+        DEBUG_PRINTLN(reason);
+    }
+    return sensor_ble_init();
 }
 
 /**
@@ -1036,16 +1107,24 @@ void sensor_ble_stop() {
  * @brief Start BLE scanning
  */
 void sensor_ble_start_scan(uint16_t duration) {
-    if (!ble_initialized)
+    // sensor_ble_init() already has the full Matter-timing guard,
+    // so ble_ensure_initialized() will return false if it's too early.
+    if (!ble_ensure_initialized("scan")) {
         return;
+    }
+
+    DEBUG_PRINTLN("[BLE] Request to start scan");
 
     if (!ble_access_semaphore) {
         ble_semaphore_init();
     }
 
     bool acquired_new = false;
-    if (!ble_sensor_lock_acquire(200, &acquired_new)) {
+    if (!ble_sensor_lock_acquire(1500, &acquired_new)) {
         DEBUG_PRINTLN("[BLE] Scan skipped: semaphore busy");
+        // Request stop so maintenance loop can retry cleanly
+        ble_stop_requested = true;
+        ble_stop_request_time = millis();
         return;
     }
     ble_scan_lock_held = true;
@@ -1053,6 +1132,7 @@ void sensor_ble_start_scan(uint16_t duration) {
     if (!pBLEScan) {
         // Configure scan only when discovery is requested.
         pBLEScan = BLEDevice::getScan();
+        DEBUG_PRINTLN("[BLE] Scan object lazily created on start");
         pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
         pBLEScan->setActiveScan(true); // Active scan uses more power but gets more info
         pBLEScan->setInterval(100);
@@ -1060,6 +1140,7 @@ void sensor_ble_start_scan(uint16_t duration) {
     }
     
     if (scanning_active) {
+        DEBUG_PRINTLN("[BLE] Scan already active - skipping new start");
         ble_release_scan_lock_if_needed();
         return;
     }
@@ -1077,6 +1158,9 @@ void sensor_ble_start_scan(uint16_t duration) {
     
     // Start scan (non-blocking)
     pBLEScan->start(actual_duration, false);
+    DEBUG_PRINTLN("[BLE] pBLEScan->start issued");
+    DEBUG_PRINT("[BLE] isScanning after start: ");
+    DEBUG_PRINTLN(pBLEScan->isScanning() ? "yes" : "no");
     scanning_active = true;
     ble_scan_start_time = millis();  // Start timeout timer for this scan
     scan_end_time = millis() + (actual_duration * 1000);
@@ -1163,9 +1247,8 @@ void sensor_ble_loop() {
         scanning_active = false;
         ble_scan_start_time = 0;  // Reset timeout timer
         ble_release_scan_lock_if_needed();
-        DEBUG_PRINT("BLE scan completed. Found ");
-        DEBUG_PRINT(discovered_ble_devices.size());
-        DEBUG_PRINTLN(" devices.");
+        DEBUG_PRINT("[BLE] Scan completed (timer). Devices cached: ");
+        DEBUG_PRINTLN(discovered_ble_devices.size());
     }
     
     // Remove stale devices (not seen in 5 minutes)
@@ -1187,7 +1270,10 @@ bool sensor_ble_is_active() {
  */
 int sensor_ble_get_discovered_devices(BLEDeviceInfo* devices, int max_devices) {
     if (!devices || max_devices <= 0) return 0;
-    
+
+    DEBUG_PRINT("[BLE] API get_discovered_devices, cached count=");
+    DEBUG_PRINTLN(discovered_ble_devices.size());
+
     int count = (discovered_ble_devices.size() < (size_t)max_devices) ? discovered_ble_devices.size() : max_devices;
     for (int i = 0; i < count; i++) {
         memcpy(&devices[i], &discovered_ble_devices[i], sizeof(BLEDeviceInfo));
@@ -1466,7 +1552,7 @@ int BLESensor::read(unsigned long time) {
         DEBUG_PRINTLN(name);
         
         // Start BLE if not running
-        if (!ble_initialized) {
+        if (!ble_ensure_initialized("sensor read")) {
             return fail(nullptr, false);
         }
     
@@ -1796,6 +1882,9 @@ int BLESensor::read(unsigned long time) {
         
         // If not found, search through all services for the characteristic
         if (pRemoteCharacteristic == nullptr) {
+#if defined(ESP32C5)
+            DEBUG_PRINTLN(F("Skipping full service scan on ESP32-C5 (stability). Provide correct service/char UUID."));
+#else
             DEBUG_PRINTLN(F("Searching all services for characteristic..."));
             std::map<std::string, BLERemoteService*>* services = pClient->getServices();
             if (services != nullptr) {
@@ -1814,6 +1903,7 @@ int BLESensor::read(unsigned long time) {
                     }
                 }
             }
+#endif
         }
         
         if (pRemoteCharacteristic == nullptr) {
@@ -1881,6 +1971,32 @@ const char * BLESensor::getUnit() const {
     return getSensorUnit(assigned_unitid);
 }
 
+bool sensor_ble_reinit_after_matter() {
+    // If BLE was never initialized, perform full init
+    if (!ble_initialized) {
+        ble_initialized = sensor_ble_init();
+        if (!ble_initialized) {
+            DEBUG_PRINTLN("[BLE] Failed to initialize BLE after Matter");
+            return ble_initialized;
+        }
+    }
+
+    // Rebuild semaphore and scan callbacks so advertisement events are delivered to sensors
+    ble_semaphore_init();
+
+    pBLEScan = BLEDevice::getScan();
+    if (pBLEScan) {
+        DEBUG_PRINTLN("[BLE] Reinit after Matter - attaching scan callbacks");
+        pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
+        pBLEScan->setActiveScan(true);
+        pBLEScan->setInterval(100);
+        pBLEScan->setWindow(99);
+        return true;
+    }
+
+    return false;
+}
+
 /**
  * @brief Initialize BLE access semaphore (call during startup)
  * Creates the semaphore that synchronizes access between Matter and Sensors
@@ -1903,19 +2019,19 @@ void ble_semaphore_init() {
  * @return true if semaphore acquired, false if timeout
  */
 bool sensor_ble_acquire(uint32_t timeout_ms) {
-    if (!ble_access_semaphore) {
-        ble_semaphore_init();
+    // Use the same re-entrant lock path as sensors to avoid semaphore state mismatch
+    bool acquired = ble_sensor_lock_acquire(timeout_ms);
+    if (!acquired) {
+        DEBUG_PRINTLN("[BLE] sensor_ble_acquire timeout");
     }
-    return (xSemaphoreTake(ble_access_semaphore, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+    return acquired;
 }
 
 /**
  * @brief Release BLE access (must match a prior acquire)
  */
 void sensor_ble_release() {
-    if (ble_access_semaphore) {
-        xSemaphoreGive(ble_access_semaphore);
-    }
+    ble_sensor_lock_release();
 }
 
 #endif // ESP32

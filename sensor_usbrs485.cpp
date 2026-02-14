@@ -119,4 +119,9 @@ bool UsbRs485Sensor::sendCommand(uint8_t device, uint8_t address, uint16_t reg, 
   return modbus_write_register(modbusDevs[device], reg, data) > 0;
 }
 
+// Free function wrapper for backward compatibility (used by OpenSprinkler::switch_modbusStation)
+boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg, uint16_t data, bool isbit) {
+  return UsbRs485Sensor::sendCommand(device, address, reg, data, isbit);
+}
+
 #endif // defined(OSPI)

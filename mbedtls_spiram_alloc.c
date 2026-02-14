@@ -5,6 +5,8 @@
  * fall back to SPIRAM when internal RAM is exhausted.
  */
 
+#if defined(ESP32) || defined(ESP_PLATFORM)
+
 #include "mbedtls/platform.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -14,28 +16,33 @@
 static const char *TAG = "MBEDTLS_ALLOC";
 
 /**
- * Custom calloc for mbedTLS with SPIRAM fallback
+ * Custom calloc for mbedTLS — ALWAYS prefer SPIRAM
+ *
+ * ESP32-C5 has DMA-capable PSRAM (CONFIG_SOC_PSRAM_DMA_CAPABLE=y),
+ * so there is no reason to waste scarce internal RAM on mbedTLS buffers.
+ * Only fall back to internal RAM as an absolute last resort.
  */
 static void *mbedtls_calloc_spiram_fallback(size_t nmemb, size_t size) {
     size_t total_size = nmemb * size;
     void *ptr = NULL;
     
-    // Try internal RAM first (for DMA-capable allocation if available)
-    if (total_size < 512) {  // Small allocations prefer internal RAM
-        ptr = heap_caps_calloc(nmemb, size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    // 1) Always try SPIRAM first — it's DMA-capable on ESP32-C5 and plentiful
+    ptr = heap_caps_calloc(nmemb, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        return ptr;
     }
     
-    // If failed or large allocation, use SPIRAM
-    if (ptr == NULL) {
-        ptr = heap_caps_calloc(nmemb, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (ptr != NULL) {
-            ESP_LOGD(TAG, "mbedTLS calloc %u bytes from SPIRAM @ %p", total_size, ptr);
-        }
+    // 2) SPIRAM exhausted — try internal RAM as fallback
+    ptr = heap_caps_calloc(nmemb, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        ESP_LOGW(TAG, "mbedTLS calloc %u bytes fell back to INTERNAL RAM!", (unsigned)total_size);
+        return ptr;
     }
     
-    // Last resort: try regular malloc
+    // 3) Last resort: try any available memory
+    ptr = calloc(nmemb, size);
     if (ptr == NULL) {
-        ptr = calloc(nmemb, size);
+        ESP_LOGE(TAG, "mbedTLS calloc %u bytes FAILED — no memory available!", (unsigned)total_size);
     }
     
     return ptr;
@@ -57,3 +64,5 @@ void mbedtls_platform_set_spiram_allocators(void) {
     mbedtls_platform_set_calloc_free(mbedtls_calloc_spiram_fallback, mbedtls_free_spiram);
     ESP_LOGI(TAG, "mbedTLS memory allocators set to use SPIRAM fallback");
 }
+
+#endif // ESP32 || ESP_PLATFORM

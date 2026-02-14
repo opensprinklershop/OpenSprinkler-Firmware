@@ -23,8 +23,8 @@ public:
   uint32_t last_native_data = 0;  // last native sensor data
   double last_data = 0.0;         // last converted sensor data
   SensorFlags_t flags = {};       // enable/log/show/data_ok etc.
-  int16_t factor = 0;             // factor
-  int16_t divider = 0;            // divider
+  int16_t factor = 1;             // factor
+  int16_t divider = 1;            // divider
   char userdef_unit[8] = {0};     // unit for custom sensors
   int16_t offset_mv = 0;          // offset in millivolt
   int16_t offset2 = 0;            // offset unit (1/100)
@@ -96,6 +96,8 @@ public:
     obj["port"] = port;
     obj["id"] = id;
     obj["ri"] = read_interval;
+    obj["factor"] = factor;
+    obj["divider"] = divider;
     obj["fac"] = factor;
     obj["div"] = divider;
     obj["offset"] = offset_mv;
@@ -130,7 +132,9 @@ public:
     if (obj.containsKey("id")) id = obj["id"];
     if (obj.containsKey("ri")) read_interval = obj["ri"];
     if (obj.containsKey("fac")) factor = obj["fac"];
+    else if (obj.containsKey("factor")) factor = obj["factor"];
     if (obj.containsKey("div")) divider = obj["div"];
+    else if (obj.containsKey("divider")) divider = obj["divider"];
     if (obj.containsKey("offset")) offset_mv = obj["offset"];
     if (obj.containsKey("offset2")) offset2 = obj["offset2"];
     if (obj.containsKey("unit")) {

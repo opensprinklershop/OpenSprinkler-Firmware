@@ -161,7 +161,9 @@ bool OSMqtt::_enabled = false;          // Flag indicating whether MQTT is enabl
 char OSMqtt::_pub_topic[MQTT_MAX_TOPIC_LEN + 1] = {0}; // topic for publishing data
 char OSMqtt::_sub_topic[MQTT_MAX_TOPIC_LEN + 1] = {0}; // topic for subscribing
 bool OSMqtt::_done_subscribed = false;		//Flag indicating if command topic has been subscribed to
+#if defined(ARDUINO)
 Client * OSMqtt::client = NULL;
+#endif
 
 //******************************** HELPER FUNCTIONS ********************************// 
 
@@ -384,6 +386,7 @@ void runOnceProgram(char *message){
 
 //****************************** CALLBACKS ******************************//
 
+#if defined(ARDUINO)
 typedef struct KEY_CALLBACK {
 	int key;
 	MQTT_CALLBACK_SIGNATURE;
@@ -398,6 +401,7 @@ void key_callback(char* mtopic, byte* payload, unsigned int length) {
 			key_callbacks[i].callback(mtopic, payload, length);
 	}
 }
+#endif
 
 //****************************** MQTT FUNCTIONS ******************************//
 
@@ -612,12 +616,16 @@ int OSMqtt::_init(void) {
 
 	#if defined(ESP8266) || defined(ESP32)
 		client = new WiFiClient();
+		#if defined(ESP32)
+		client->setTimeout(2);  // 2s TCP connect timeout (default 5s blocks main loop)
+		#endif
 	#else
 		client = new EthernetClient();
 	#endif
 
 	mqtt_client = new PubSubClient(*client);
 	mqtt_client->setCallback(key_callback);
+	mqtt_client->setSocketTimeout(2);  // 2s instead of 15s default — avoid blocking main loop
 	mqtt_client->setKeepAlive(OS_MQTT_KEEPALIVE);
 	#if defined(ESP32)
 	mqtt_client->setBufferSize(8192);
@@ -636,7 +644,7 @@ int OSMqtt::_init(void) {
 int OSMqtt::_connect(void) {
 	mqtt_client->setServer(_host, _port);
 	boolean state;
-	#define MQTT_CONNECT_NTRIES 2
+	#define MQTT_CONNECT_NTRIES 1
 	unsigned char tries = 0;
 	String avail_topic(_pub_topic);
 	avail_topic += "/";

@@ -155,19 +155,19 @@ def configure_zigbee_libs(env):
         env.Append(LIBS=[lib])
     print(f"Added Zigbee libs: {', '.join(zigbee_libs)}")
 
-    # NOTE: Zigbee (ZBOSS) and OpenThread both provide IEEE802154 glue on ESP32-C5.
-    # If both are linked, the build fails with multiple-definition errors.
-    # This project uses Zigbee, and Matter is expected to run over WiFi (not Thread),
-    # so we drop OpenThread when Zigbee is enabled.
+    # NOTE: With the unified build (runtime-selectable IEEE 802.15.4 mode),
+    # both Matter (OpenThread) and Zigbee (ZBOSS) libraries must be linked.
+    # The radio mode is selected at runtime via ieee802154.json config —
+    # only one stack will actually be initialized at boot.
+    # The --allow-multiple-definition flag handles any rare overlapping symbols.
     if is_matter:
-        print("Zigbee+Matter build detected: removing OpenThread to avoid IEEE802154 symbol conflicts...")
+        print("Unified Zigbee+Matter build: keeping OpenThread libs for Matter support")
     else:
+        # Pure Zigbee build (no Matter) — OpenThread is not needed
         print("Removing OpenThread library to prevent conflicts with Zigbee...")
-    
-    # Filter out OpenThread library from LIBS
-    libs = env.get("LIBS", [])
-    filtered_libs = [lib for lib in libs if "openthread" not in str(lib).lower()]
-    env.Replace(LIBS=filtered_libs)
+        libs = env.get("LIBS", [])
+        filtered_libs = [lib for lib in libs if "openthread" not in str(lib).lower()]
+        env.Replace(LIBS=filtered_libs)
     
     # Add explicit linker flag to relax duplicate symbols in mixed stacks
     env.Append(LINKFLAGS=[

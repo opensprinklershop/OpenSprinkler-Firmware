@@ -296,8 +296,8 @@ public:
 	static unsigned char hw_type;  // hardware type
 	static unsigned char hw_rev;   // hardware minor
 
-static unsigned char EXT_RAM_BSS_ATTR iopts[]; // integer options
-	static const char* EXT_RAM_BSS_ATTR sopts[]; // string options
+static unsigned char iopts[]; // integer options (initialized — must NOT be in BSS/PSRAM)
+	static const char* sopts[]; // string options  (initialized — must NOT be in BSS/PSRAM)
 	static unsigned char EXT_RAM_BSS_ATTR station_bits[];     // station activation bits. each byte corresponds to a board (8 stations)
 																		// first byte-> master controller, second byte-> ext. board 1, and so on
 	// Note: the following attribute bytes are for backward compatibility
