@@ -418,6 +418,7 @@ void sensor_api_init(boolean detect_boards);
 void sensor_api_connect();     // Start BLE/Zigbee if needed
 void sensor_api_loop();        // Sensor maintenance loop (BLE/Zigbee auto-stop, etc.)
 bool is_api_init();
+bool is_sensor_api_connected(); // True after sensor_api_connect() has run (BLE init done)
 
 
 uint16_t get_asb_detected_boards();

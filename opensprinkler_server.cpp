@@ -50,6 +50,7 @@
 #include "sensor_zigbee.h"
 #endif
 
+#include "ieee802154_config.h"
 #if defined(ESP32) && defined(ENABLE_MATTER)
 #include "opensprinkler_matter.h"
 #endif
@@ -4238,7 +4239,6 @@ void server_influx_get_main() {
 
 // ====== IEEE 802.15.4 Radio Configuration API ======
 #if defined(ESP32C5)
-#include "ieee802154_config.h"
 
 /**
  * ir
@@ -4661,13 +4661,20 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 			svc_name = ble_uuid_to_name(svc_uuid);
 		}
 
-		bfill.emit_p(PSTR("{\"address\":\"$S\",\"name\":\"$S\",\"rssi\":$D,\"is_new\":$D,\"service_uuid\":\"$S\",\"service_name\":\"$S\"}"),
+		const char* mfr = devices[i].manufacturer;
+		if (!mfr) mfr = "";
+		const char* mdl = devices[i].model;
+		if (!mdl) mdl = "";
+
+		bfill.emit_p(PSTR("{\"address\":\"$S\",\"name\":\"$S\",\"rssi\":$D,\"is_new\":$D,\"service_uuid\":\"$S\",\"service_name\":\"$S\",\"manufacturer\":\"$S\",\"model\":\"$S\"}"),
 		             addr_str,
 		             devices[i].name,
 		             devices[i].rssi,
 		             devices[i].is_new ? 1 : 0,
 		             svc_uuid,
-		             svc_name);
+		             svc_name,
+		             mfr,
+		             mdl);
 	}
 	
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);

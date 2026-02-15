@@ -168,8 +168,13 @@ public:
     // JSON keys: "fac", "div", "offset", "offset2" (handled by SensorBase::fromJson/toJson).
     // Legacy keys "factor", "divider", "offset_mv" are accepted by fromJson for backward compatibility.
 
+    // Basic Cluster information (read from remote device on first contact)
+    char zb_manufacturer[32] = {0};   // Manufacturer name (Basic Cluster attr 0x0004)
+    char zb_model[32] = {0};          // Model identifier (Basic Cluster attr 0x0005)
+
     // Runtime state
     bool device_bound = false;        // Track binding state
+    bool basic_cluster_queried = false; // True after Basic Cluster info has been read
     uint32_t last_battery = 100;      // Last reported battery level (0-100%)
     uint8_t last_lqi = 0;             // Last reported LQI (Link Quality Indicator, 0-255)
 
@@ -258,6 +263,15 @@ public:
      * @return IEEE address as 64-bit integer
      */
     static uint64_t parseIeeeAddress(const char* ieee_str);
+
+    /**
+     * @brief Update Basic Cluster info (manufacturer/model) on all sensors matching the IEEE address
+     * @param ieee_addr Device IEEE address
+     * @param manufacturer Manufacturer name string (NULL to skip)
+     * @param model Model identifier string (NULL to skip)
+     * @note Also calls sensor_save() if any sensor was updated
+     */
+    static void updateBasicClusterInfo(uint64_t ieee_addr, const char* manufacturer, const char* model);
 };
 
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE

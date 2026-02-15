@@ -334,6 +334,12 @@ bool is_api_init() {
   return apiInit;
 }
 
+static bool apiConnected = false;
+
+bool is_sensor_api_connected() {
+  return apiConnected;
+}
+
 void sensor_api_connect() {
   #if defined(ESP8266) || defined(ESP32)
   // Allow sensor_api_connect in both WiFi STA and Ethernet mode
@@ -364,21 +370,37 @@ void sensor_api_connect() {
   fyta_check_opts();
   #endif
 
-  #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-  // Start Zigbee only if runtime mode is set to a Zigbee mode
-  if (ieee802154_is_zigbee()) {
-    DEBUG_PRINTF("[SENSOR_API] Starting Zigbee (%s mode)...\n",
-                 ieee802154_is_zigbee_gw() ? "gateway" : "client");
-    sensor_zigbee_start();
-  }
-  #endif
-
+  // BLE MUST be initialized BEFORE Zigbee.  The NimBLE controller init
+  // (esp_bt_controller_init → ble_ll_env_init) requires a small amount of
+  // DMA-capable internal SRAM.  The ZBOSS Zigbee stack consumes most of the
+  // remaining internal RAM, so if Zigbee starts first the BLE controller
+  // init fails with "ble ll env init error code:-21" (no internal memory).
+  // Initializing BLE first lets the controller claim its DMA buffers while
+  // internal RAM is still available; Zigbee's larger allocations can then
+  // fall back to PSRAM via CONFIG_SPIRAM_USE_MALLOC.
+  //
+  // IMPORTANT: Set apiConnected AFTER BLE init but BEFORE Zigbee start.
+  // sensor_zigbee_ensure_started() checks is_sensor_api_connected() to
+  // prevent Zigbee from auto-starting (via sensor reads) before BLE has
+  // claimed its DMA buffers.
   #if defined(ESP32) && defined(OS_ENABLE_BLE)
   DEBUG_PRINTLN(F("[SENSOR_API] Initializing BLE..."));
   if (sensor_ble_init()) {
     DEBUG_PRINTLN(F("[SENSOR_API] BLE initialized successfully"));
   } else {
     DEBUG_PRINTLN(F("[SENSOR_API] BLE init deferred or failed"));
+  }
+  #endif
+
+  // Mark connect phase done — Zigbee ensure_started() is now unblocked
+  apiConnected = true;
+
+  #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+  // Start Zigbee only if runtime mode is set to a Zigbee mode
+  if (ieee802154_is_zigbee()) {
+    DEBUG_PRINTF("[SENSOR_API] Starting Zigbee (%s mode)...\n",
+                 ieee802154_is_zigbee_gw() ? "gateway" : "client");
+    sensor_zigbee_start();
   }
   #endif
 }

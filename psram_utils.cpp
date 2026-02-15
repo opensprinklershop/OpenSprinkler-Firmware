@@ -35,6 +35,25 @@
 // heap_caps_malloc_extmem_enable() lowers the ALWAYSINTERNAL threshold at runtime
 extern "C" void heap_caps_malloc_extmem_enable(size_t limit);
 
+// ============================================================================
+// EARLY PSRAM THRESHOLD — runs before Arduino setup() and FreeRTOS services.
+//
+// Without the heap_caps_spiram_16byte.patch applied to the framework library,
+// the ESP-IDF default is MALLOC_DISABLE_EXTERNAL_ALLOCS (-1), meaning every
+// malloc() goes to internal RAM until heap_caps_malloc_extmem_enable() is
+// called.  WiFi, FreeRTOS, and framework tasks that start before setup() can
+// burn 20-30 KB of internal SRAM that way.
+//
+// This constructor runs at priority 101 (after static C++ init), sets the
+// threshold to 128 bytes immediately, and saves that internal RAM for
+// components that truly need it (BLE controller DMA, Zigbee ZBOSS).
+// ============================================================================
+static void __attribute__((constructor(101))) psram_early_threshold() {
+    if (psramFound()) {
+        heap_caps_malloc_extmem_enable(128);
+    }
+}
+
 // DMA+SPIRAM fallback detection: check sdkconfig flags at compile time
 #if defined(CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP) || defined(CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC)
 static bool psram_dma_spiram_fallback_enabled() { return true; }
@@ -45,20 +64,37 @@ static const char* psram_dma_spiram_fallback_status() { return "disabled"; }
 #endif
 
 // Allocation failed callback: log when internal RAM allocation fails
-// Note: ESP32 API only allows logging, not replacement allocation
+// Rate-limited to avoid flooding the serial log when a component (e.g. ZBOSS
+// Zigbee stack) repeatedly requests DMA+INTERNAL buffers in its runtime loop.
+static uint32_t _alloc_fail_count = 0;
+static uint32_t _alloc_fail_last_log_ms = 0;
+static const uint32_t ALLOC_FAIL_LOG_INTERVAL_MS = 10000; // summarize every 10s
+
 static void psram_alloc_failed_callback(size_t size, uint32_t caps, const char *function_name) {
-  DEBUG_PRINTF("[ALLOC_FAIL] %d bytes (caps=0x%X) in %s - internal RAM exhausted!\n", 
-               size, caps, function_name ? function_name : "unknown");
-  
-  // Log available memory
-  uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  uint32_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-  DEBUG_PRINTF("[ALLOC_FAIL] Available: Internal=%d bytes, SPIRAM=%d bytes\n", 
-               internal_free, spiram_free);
-  
-  if ((caps & MALLOC_CAP_DMA) && (caps & MALLOC_CAP_INTERNAL)) {
-    DEBUG_PRINTLN(F("[ALLOC_FAIL] This was a DMA+INTERNAL allocation - caller should retry with SPIRAM!"));
+  _alloc_fail_count++;
+
+  uint32_t now = millis();
+  // Log the very first failure immediately, then rate-limit.
+  if (_alloc_fail_count == 1) {
+    uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    DEBUG_PRINTF("[ALLOC_FAIL] %d bytes (caps=0x%X) in %s - internal RAM exhausted!\n",
+                 size, caps, function_name ? function_name : "unknown");
+    DEBUG_PRINTF("[ALLOC_FAIL] Internal=%u bytes free, SPIRAM=%u bytes free\n",
+                 internal_free, spiram_free);
+    if ((caps & MALLOC_CAP_DMA) && (caps & MALLOC_CAP_INTERNAL)) {
+      DEBUG_PRINTLN(F("[ALLOC_FAIL] DMA+INTERNAL request cannot use SPIRAM (MALLOC_CAP_INTERNAL flag)"));
+    }
+    _alloc_fail_last_log_ms = now;
+  } else if ((int32_t)(now - _alloc_fail_last_log_ms) >= (int32_t)ALLOC_FAIL_LOG_INTERVAL_MS) {
+    uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    DEBUG_PRINTF("[ALLOC_FAIL] %u failures in last %us (last: %d bytes caps=0x%X, internal free=%u)\n",
+                 _alloc_fail_count, ALLOC_FAIL_LOG_INTERVAL_MS / 1000,
+                 size, caps, internal_free);
+    _alloc_fail_count = 0;
+    _alloc_fail_last_log_ms = now;
   }
+  // Silently drop intermediate failures to prevent serial flood
 }
 
 // PSRAM-allocated buffers
@@ -68,12 +104,12 @@ char* tmp_buffer = nullptr;
 void init_psram_buffers() {
   psramAddToHeap();
 
-  // Lower the SPIRAM_MALLOC_ALWAYSINTERNAL threshold from 4096 → 256 bytes
+  // Lower the SPIRAM_MALLOC_ALWAYSINTERNAL threshold from 4096 → 128 bytes
   // ESP32-C5 PSRAM is DMA-capable — no reason to burn internal RAM for most allocs.
-  // Only tiny allocations (<= 256 bytes) will still prefer internal RAM for speed.
+  // Only tiny allocations (<= 128 bytes) will still prefer internal RAM for speed.
   if (psramFound()) {
-    heap_caps_malloc_extmem_enable(256);
-    DEBUG_PRINTLN(F("[PSRAM] Lowered ALWAYSINTERNAL threshold: 4096 → 256 bytes"));
+    heap_caps_malloc_extmem_enable(128);
+    DEBUG_PRINTLN(F("[PSRAM] Lowered ALWAYSINTERNAL threshold: 4096 → 128 bytes"));
   }
 
   // Register allocation failed callback for PSRAM fallback

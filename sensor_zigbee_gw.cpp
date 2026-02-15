@@ -71,6 +71,31 @@ static std::vector<ZigbeeDeviceInfo> gw_discovered_devices;
 #define ZB_ZCL_CLUSTER_ID_LEAF_WETNESS              0x0407
 #define ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE             0x0408
 
+// Basic Cluster attribute IDs
+#define ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID       0x0004
+#define ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID        0x0005
+#define ZB_ZCL_ATTR_BASIC_POWER_SOURCE_ID            0x0007
+
+// Basic Cluster query state (Gateway mode)
+// Used to read ManufacturerName (0x0004) and ModelIdentifier (0x0005)
+// from newly joined devices.
+static uint16_t gw_basic_query_attrs[2] = {
+    ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID,
+    ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID
+};
+static bool     gw_basic_query_pending = false;
+static unsigned long gw_basic_query_time = 0;
+#define GW_BASIC_QUERY_TIMEOUT_MS   10000  // 10 seconds
+#define GW_BASIC_QUERY_DELAY_MS     3000   // Wait 3s after discovery before querying
+
+struct GwBasicQueryItem {
+    uint64_t ieee_addr;
+    uint16_t short_addr;
+    uint8_t  endpoint;
+    unsigned long discovered_time;
+};
+static std::vector<GwBasicQueryItem> gw_basic_query_queue;
+
 // Tuya manufacturer-specific cluster (manuSpecificTuya)
 #define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
 
@@ -152,6 +177,21 @@ static uint64_t gw_resolve_ieee(uint16_t short_addr) {
     strncpy(info.model_id, "unknown", sizeof(info.model_id) - 1);
     gw_discovered_devices.push_back(info);
 
+    // Queue a Basic Cluster query for this newly discovered device
+    bool already_queued = false;
+    for (const auto& q : gw_basic_query_queue) {
+        if (q.ieee_addr == ieee64) { already_queued = true; break; }
+    }
+    if (!already_queued) {
+        GwBasicQueryItem item = {};
+        item.ieee_addr = ieee64;
+        item.short_addr = short_addr;
+        item.endpoint = 1;  // Most devices use endpoint 1
+        item.discovered_time = millis();
+        gw_basic_query_queue.push_back(item);
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Queued Basic Cluster query for new device 0x%04X\n"), short_addr);
+    }
+
     DEBUG_PRINTF(F("[ZIGBEE-GW] Auto-discovered device: short=0x%04X ieee=%08lX%08lX\n"),
                 short_addr, (unsigned long)(ieee64 >> 32), (unsigned long)(ieee64 & 0xFFFFFFFF));
     return ieee64;
@@ -176,6 +216,77 @@ void sensor_zigbee_gw_clear_new_device_flags() {
 }
 
 // ========== Tuya DP protocol handler (APS layer) ==========
+
+/**
+ * @brief Extract a ZCL CHAR_STRING attribute into a C string buffer (GW mode)
+ */
+static bool gw_extractStringAttribute(const esp_zb_zcl_attribute_t *attr, char *buf, size_t buf_size) {
+    if (!attr || !attr->data.value || buf_size == 0) return false;
+    
+    if (attr->data.type == ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING) {
+        uint8_t *raw = (uint8_t*)attr->data.value;
+        uint8_t len = raw[0];
+        if (len == 0xFF) { buf[0] = '\0'; return false; }
+        if (len >= buf_size) len = buf_size - 1;
+        memcpy(buf, raw + 1, len);
+        buf[len] = '\0';
+        return len > 0;
+    } else if (attr->data.type == ESP_ZB_ZCL_ATTR_TYPE_LONG_CHAR_STRING) {
+        uint8_t *raw = (uint8_t*)attr->data.value;
+        uint16_t len = raw[0] | ((uint16_t)raw[1] << 8);
+        if (len == 0xFFFF) { buf[0] = '\0'; return false; }
+        if (len >= buf_size) len = buf_size - 1;
+        memcpy(buf, raw + 2, len);
+        buf[len] = '\0';
+        return len > 0;
+    }
+    return false;
+}
+
+/**
+ * @brief Handle Basic Cluster (0x0000) attribute read response in Gateway mode
+ * Updates discovered device info and matching sensor configurations.
+ */
+static void gw_handleBasicClusterResponse(uint16_t short_addr, const esp_zb_zcl_attribute_t *attribute) {
+    if (!attribute || !attribute->data.value) return;
+    
+    char str_buf[32] = {0};
+    if (!gw_extractStringAttribute(attribute, str_buf, sizeof(str_buf))) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic Cluster attr 0x%04X: not a string (type=0x%02X)\n"),
+                     attribute->id, attribute->data.type);
+        return;
+    }
+    
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Basic Cluster attr 0x%04X = \"%s\" (from short=0x%04X)\n"),
+                 attribute->id, str_buf, short_addr);
+    
+    // Find device in discovered list and update
+    uint64_t ieee_addr = 0;
+    for (auto& dev : gw_discovered_devices) {
+        if (dev.short_addr == short_addr) {
+            ieee_addr = dev.ieee_addr;
+            if (attribute->id == ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID) {
+                strncpy(dev.manufacturer, str_buf, sizeof(dev.manufacturer) - 1);
+                dev.manufacturer[sizeof(dev.manufacturer) - 1] = '\0';
+            } else if (attribute->id == ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID) {
+                strncpy(dev.model_id, str_buf, sizeof(dev.model_id) - 1);
+                dev.model_id[sizeof(dev.model_id) - 1] = '\0';
+            }
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Updated device 0x%016llX: mfr=\"%s\" model=\"%s\"\n"),
+                         (unsigned long long)dev.ieee_addr, dev.manufacturer, dev.model_id);
+            break;
+        }
+    }
+    
+    // Update matching sensor configurations
+    if (ieee_addr != 0) {
+        const char* mfr = (attribute->id == ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID) ? str_buf : nullptr;
+        const char* mdl = (attribute->id == ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID) ? str_buf : nullptr;
+        ZigbeeSensor::updateBasicClusterInfo(ieee_addr, mfr, mdl);
+    }
+}
+
+// ========== Tuya DP protocol handler (APS layer) - continued ==========
 // Tuya devices using cluster 0xEF00 send proprietary DataPoint messages
 // instead of standard ZCL attribute reports. This APS indication handler
 // intercepts those frames, parses the Tuya DP payload, and injects them
@@ -348,6 +459,14 @@ public:
                 esp_zb_cluster_list_add_basic_cluster(_cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
             }
             
+            // CLIENT-side Basic Cluster - needed to receive Read Attributes Responses
+            // when we query remote devices' Basic Cluster (ManufacturerName, ModelIdentifier)
+            esp_zb_attribute_list_t *basic_client_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_BASIC);
+            if (basic_client_cluster) {
+                esp_zb_cluster_list_add_custom_cluster(_cluster_list, basic_client_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+                DEBUG_PRINTLN(F("[ZIGBEE-GW] Basic cluster 0x0000 added (CLIENT for remote queries)"));
+            }
+            
             esp_zb_attribute_list_t *identify_cluster = esp_zb_identify_cluster_create(NULL);
             if (identify_cluster) {
                 esp_zb_cluster_list_add_identify_cluster(_cluster_list, identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -416,6 +535,13 @@ public:
         if (!attribute) {
             DEBUG_PRINTLN(F("[ZIGBEE-GW] zbAttributeRead called with NULL attribute!"));
             return;
+        }
+        
+        // Handle Basic Cluster responses (string attributes: manufacturer/model)
+        if (cluster_id == ZB_ZCL_CLUSTER_ID_BASIC) {
+            gw_basic_query_pending = false;
+            gw_handleBasicClusterResponse(src_address.u.short_addr, attribute);
+            return;  // Don't cache as sensor data
         }
         
         DEBUG_PRINTF(F("[ZIGBEE-GW] >>> zbAttributeRead: cluster=0x%04X attr=0x%04X type=0x%02X src_ep=%d src_short=0x%04X\n"),
@@ -523,6 +649,59 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
 }
 
 // ========== NVRAM erase ==========
+
+/**
+ * @brief Send a ZCL Read Attributes request for Basic Cluster to a remote device (GW mode)
+ * Reads ManufacturerName (0x0004) and ModelIdentifier (0x0005) in one request.
+ */
+static bool gw_query_basic_cluster_internal(uint16_t short_addr, uint8_t endpoint) {
+    if (!gw_zigbee_initialized || !gw_reportReceiver) return false;
+    if (!Zigbee.started() || !Zigbee.connected()) return false;
+    if (short_addr == 0xFFFF || short_addr == 0xFFFE) return false;
+    if (gw_basic_query_pending) return false;  // Already in progress
+    
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Querying Basic Cluster: short=0x%04X ep=%d\n"),
+                 short_addr, endpoint);
+    
+    esp_zb_zcl_read_attr_cmd_t read_req;
+    memset(&read_req, 0, sizeof(read_req));
+    read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    read_req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
+    read_req.zcl_basic_cmd.dst_endpoint = endpoint;
+    read_req.zcl_basic_cmd.src_endpoint = 10;  // our endpoint
+    read_req.clusterID = ZB_ZCL_CLUSTER_ID_BASIC;
+    read_req.attr_number = 2;
+    read_req.attr_field = gw_basic_query_attrs;  // static memory - safe for async
+    
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_read_attr_cmd_req(&read_req);
+    gw_basic_query_pending = true;
+    gw_basic_query_time = millis();
+    esp_zb_lock_release();
+    
+    DEBUG_PRINTLN(F("[ZIGBEE-GW] Basic Cluster read request sent (ManufacturerName + ModelIdentifier)"));
+    return true;
+}
+
+void sensor_zigbee_gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint) {
+    // Check if already queued
+    for (const auto& q : gw_basic_query_queue) {
+        if (q.short_addr == short_addr) return;
+    }
+    GwBasicQueryItem item = {};
+    item.short_addr = short_addr;
+    item.endpoint = endpoint;
+    item.discovered_time = millis();
+    // Resolve IEEE
+    for (const auto& dev : gw_discovered_devices) {
+        if (dev.short_addr == short_addr) {
+            item.ieee_addr = dev.ieee_addr;
+            break;
+        }
+    }
+    gw_basic_query_queue.push_back(item);
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Queued Basic Cluster query for device 0x%04X\n"), short_addr);
+}
 
 static bool gw_erase_zigbee_nvram() {
     const esp_partition_t* zb_partition = esp_partition_find_first(
@@ -810,15 +989,17 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             
             if (matches) {
                 gw_updateSensorFromReport(zb_sensor, report);
-                report.consumed = true;  // Don't re-process this report
                 found = true;
-                break;
+                // Don't break — multiple logical sensors may reference the
+                // same physical device (same IEEE/cluster/attr).  Continue
+                // iterating so every matching sensor is updated.
             }
         }
         
+        // Mark consumed after iterating ALL sensors so every match is serviced
+        report.consumed = true;
+        
         if (!found) {
-            // Mark as consumed to prevent re-processing every loop iteration
-            report.consumed = true;
             
             // If this is a battery report (cluster 0x0001, attr 0x0021), update
             // battery on any sensor matching the IEEE address
@@ -955,6 +1136,28 @@ void sensor_zigbee_gw_loop() {
     if (gw_join_window_end != 0 && millis() > gw_join_window_end) {
         gw_set_zigbee_pti_low();
         gw_join_window_end = 0;
+    }
+
+    // Process pending Basic Cluster queries for newly discovered devices
+    if (connected && !gw_basic_query_queue.empty()) {
+        // Timeout stale queries
+        if (gw_basic_query_pending && millis() - gw_basic_query_time > GW_BASIC_QUERY_TIMEOUT_MS) {
+            gw_basic_query_pending = false;
+            DEBUG_PRINTLN(F("[ZIGBEE-GW] Basic Cluster query timed out"));
+        }
+        
+        if (!gw_basic_query_pending) {
+            auto& item = gw_basic_query_queue.front();
+            // Wait for delay after discovery before querying (device needs time to settle)
+            if (millis() - item.discovered_time >= GW_BASIC_QUERY_DELAY_MS) {
+                if (gw_query_basic_cluster_internal(item.short_addr, item.endpoint)) {
+                    DEBUG_PRINTF(F("[ZIGBEE-GW] Basic Cluster query sent for 0x%04X\n"),
+                                 item.short_addr);
+                }
+                // Remove from queue regardless of success (avoid infinite retries)
+                gw_basic_query_queue.erase(gw_basic_query_queue.begin());
+            }
+        }
     }
 
     static unsigned long last_status_print = 0;

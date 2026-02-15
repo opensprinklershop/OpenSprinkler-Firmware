@@ -49,6 +49,8 @@ public:
    */
   virtual int read(unsigned long time) override;
   
+  virtual const char* getUnit() const override;
+  
   /**
    * @brief Get measurement unit identifier
    * @return Unit ID based on metric type (BYTES for memory, DEGREE for temperature, etc.)

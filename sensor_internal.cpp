@@ -46,7 +46,7 @@ int InternalSensor::read(unsigned long time) {
       if (this->last_native_data == fm)
         return HTTP_RQT_NOT_RECEIVED;
       this->last_native_data = fm;
-      this->last_data = fm;
+      this->last_data = fm/1000;
       this->last_read = time;
       this->flags.data_ok = true;
       return HTTP_RQT_SUCCESS;
@@ -66,7 +66,7 @@ int InternalSensor::read(unsigned long time) {
         if (this->last_native_data == fd)
           return HTTP_RQT_NOT_RECEIVED;
         this->last_native_data = fd;
-        this->last_data = fd;
+        this->last_data = fd/1000;
       }
       this->flags.data_ok = ok;
       this->last_read = time;
@@ -113,4 +113,27 @@ int InternalSensor::read(unsigned long time) {
     default:
       return HTTP_RQT_NOT_RECEIVED;
   }
+}
+
+
+const char* InternalSensor::getUnit() const {
+  switch(type) {
+    case SENSOR_FREE_MEMORY:
+    case SENSOR_FREE_STORE:
+      return "KB"; 
+    case SENSOR_INTERNAL_TEMP:
+      return "°C";
+  }
+  return SensorBase::getUnit();
+}
+
+unsigned char InternalSensor::getUnitId() const {
+  switch(type) {
+    case SENSOR_FREE_MEMORY:
+    case SENSOR_FREE_STORE:
+      return UNIT_USERDEF;
+    case SENSOR_INTERNAL_TEMP:
+      return UNIT_DEGREE;
+  }
+  return SensorBase::getUnitId();
 }

@@ -81,5 +81,13 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                                        uint16_t cluster_id, uint16_t attr_id,
                                        int32_t value, uint8_t lqi);
 
+/**
+ * @brief Query Basic Cluster (ManufacturerName + ModelIdentifier) from a device
+ * @param short_addr Short network address of the target device
+ * @param endpoint Endpoint to query (usually 1)
+ * @note Response arrives asynchronously via zbAttributeRead callback
+ */
+void sensor_zigbee_gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint);
+
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE
 #endif // _SENSOR_ZIGBEE_GW_H

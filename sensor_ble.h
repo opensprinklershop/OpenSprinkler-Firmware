@@ -73,6 +73,11 @@ struct BLEDeviceInfo {
     float bms_temperature;        // Average cell temperature (°C)
     uint16_t bms_cycles;          // Charge cycles
     bool has_bms_data;            // True if bms_* fields are valid
+    
+    // Device Information Service (DIS, 0x180A) cached data
+    char manufacturer[32];        // Manufacturer Name String (0x2A29)
+    char model[32];               // Model Number String (0x2A24)
+    bool dis_queried;             // True if DIS has been queried for this device
 };
 
 /**
@@ -102,6 +107,14 @@ public:
     char characteristic_uuid_cfg[40] = {0};
     char mac_address_cfg[24] = {0};
     uint8_t payload_format_cfg = (uint8_t)FORMAT_TEMP_001;
+    
+    // BLE Device Information Service fields (persisted)
+    char ble_manufacturer[32] = {0};  // From DIS Manufacturer Name String (0x2A29)
+    char ble_model[32] = {0};         // From DIS Model Number String (0x2A24)
+    bool dis_info_queried = false;    // Runtime flag: DIS data available
+    
+    // Battery level (runtime, from advertisement or BMS data)
+    uint32_t last_battery = 0;        // Last reported battery level (0-100%)
     
     // For advertisement-based sensors (Govee etc.): which value to report
     // Uses assigned_unitid from base class:
@@ -144,6 +157,14 @@ public:
    
     virtual const char* getUnit() const override;
     virtual unsigned char getUnitId() const override;
+    
+    /**
+     * @brief Update DIS info for all BLE sensors matching a MAC address
+     * @param mac_address MAC address string (e.g., "AA:BB:CC:DD:EE:FF")
+     * @param manufacturer Manufacturer name from DIS
+     * @param model Model number from DIS
+     */
+    static void updateDeviceInfo(const char* mac_address, const char* manufacturer, const char* model);
 private:
     /**
      * @brief Store sensor result and mark data as valid

@@ -28,6 +28,7 @@
 #include "sensor_payload_decoder.h"
 #include <vector>
 #include <ctype.h>
+#include "ieee802154_config.h"
 #ifdef ENABLE_MATTER
 #include "opensprinkler_matter.h"
 #endif
@@ -40,8 +41,10 @@ extern OpenSprinkler os;
 #include <BLEAdvertisedDevice.h>
 #include <freertos/semphr.h>
 
-// Forward declaration
+// Forward declarations
 void ble_semaphore_init();
+static bool ble_ensure_initialized(const char* reason);
+static BLEClient* ble_get_client();
 
 // BLE scan instance
 static bool ble_initialized = false;
@@ -591,6 +594,156 @@ static void ble_copy_stripped(char* dst, size_t dst_len, const char* src) {
     dst[di] = 0;
 }
 
+// ============================================================================
+// Device Information Service (DIS, 0x180A) Query
+// Reads Manufacturer Name (0x2A29) and Model Number (0x2A24) via GATT
+// ============================================================================
+
+// DIS query queue: MAC addresses of devices whose DIS has not yet been read
+struct BLEDISQueryItem {
+    char mac[18];    // "AA:BB:CC:DD:EE:FF"
+    uint32_t queued_at;
+};
+static std::vector<BLEDISQueryItem> ble_dis_query_queue;
+static bool ble_dis_query_pending = false;
+static uint32_t ble_dis_query_time = 0;
+
+/**
+ * @brief Queue a DIS query for a BLE device
+ * @param mac_address MAC address string
+ */
+static void ble_queue_dis_query(const char* mac_address) {
+    if (!mac_address || !mac_address[0]) return;
+    // Check if already queued
+    for (const auto& item : ble_dis_query_queue) {
+        if (strcasecmp(item.mac, mac_address) == 0) return;
+    }
+    BLEDISQueryItem item;
+    memset(&item, 0, sizeof(item));
+    strncpy(item.mac, mac_address, sizeof(item.mac) - 1);
+    item.queued_at = millis();
+    ble_dis_query_queue.push_back(item);
+    DEBUG_PRINT(F("[BLE] DIS query queued for: "));
+    DEBUG_PRINTLN(mac_address);
+}
+
+/**
+ * @brief Connect to a BLE device and read Device Information Service characteristics
+ * @param mac_address MAC address of the device
+ * @param out_manufacturer Buffer to receive Manufacturer Name (min 32 bytes)
+ * @param out_model Buffer to receive Model Number (min 32 bytes)
+ * @return true if at least one field was read successfully
+ */
+static bool ble_read_device_info_service(const char* mac_address, char* out_manufacturer, char* out_model) {
+    if (!mac_address || !out_manufacturer || !out_model) return false;
+    out_manufacturer[0] = 0;
+    out_model[0] = 0;
+
+    if (!ble_ensure_initialized("DIS query")) return false;
+
+    bool lock_acquired = ble_sensor_lock_acquire(1500);
+    if (!lock_acquired) {
+        DEBUG_PRINTLN(F("[BLE] DIS query skipped: semaphore busy"));
+        return false;
+    }
+
+    ble_in_read = true;
+    bool success = false;
+
+    BLEClient* pClient = ble_get_client();
+    if (!pClient) {
+        DEBUG_PRINTLN(F("[BLE] DIS: Failed to create client"));
+        ble_in_read = false;
+        ble_sensor_lock_release();
+        return false;
+    }
+
+    BLEAddress bleAddress(mac_address);
+    if (!pClient->connect(bleAddress, 0, BLE_CONNECT_TIMEOUT_MS)) {
+        DEBUG_PRINT(F("[BLE] DIS: Failed to connect to "));
+        DEBUG_PRINTLN(mac_address);
+        ble_in_read = false;
+        sensor_ble_stop();
+        ble_sensor_lock_release();
+        return false;
+    }
+
+    DEBUG_PRINT(F("[BLE] DIS: Connected to "));
+    DEBUG_PRINTLN(mac_address);
+
+    // Get Device Information Service (0x180A)
+    BLERemoteService* pDIS = pClient->getService(BLEUUID((uint16_t)0x180A));
+    if (pDIS) {
+        // Read Manufacturer Name String (0x2A29)
+        BLERemoteCharacteristic* pManufacturer = pDIS->getCharacteristic(BLEUUID((uint16_t)0x2A29));
+        if (pManufacturer && pManufacturer->canRead()) {
+            String val = pManufacturer->readValue().c_str();
+            if (val.length() > 0) {
+                strncpy(out_manufacturer, val.c_str(), 31);
+                out_manufacturer[31] = 0;
+                success = true;
+                DEBUG_PRINT(F("[BLE] DIS Manufacturer: "));
+                DEBUG_PRINTLN(out_manufacturer);
+            }
+        }
+
+        // Read Model Number String (0x2A24)
+        BLERemoteCharacteristic* pModel = pDIS->getCharacteristic(BLEUUID((uint16_t)0x2A24));
+        if (pModel && pModel->canRead()) {
+            String val = pModel->readValue().c_str();
+            if (val.length() > 0) {
+                strncpy(out_model, val.c_str(), 31);
+                out_model[31] = 0;
+                success = true;
+                DEBUG_PRINT(F("[BLE] DIS Model: "));
+                DEBUG_PRINTLN(out_model);
+            }
+        }
+    } else {
+        DEBUG_PRINTLN(F("[BLE] DIS: Service 0x180A not found on device"));
+    }
+
+    pClient->disconnect();
+    sensor_ble_stop();
+    ble_in_read = false;
+    ble_sensor_lock_release();
+    return success;
+}
+
+/**
+ * @brief Update DIS info for all BLE sensors matching a MAC address
+ */
+void BLESensor::updateDeviceInfo(const char* mac_address, const char* manufacturer, const char* model) {
+    if (!mac_address || !mac_address[0]) return;
+    bool updated = false;
+
+    SensorIterator it = sensors_iterate_begin();
+    SensorBase* sensor;
+    while ((sensor = sensors_iterate_next(it)) != NULL) {
+        if (!sensor || sensor->type != SENSOR_BLE) continue;
+        BLESensor* ble = static_cast<BLESensor*>(sensor);
+        // Compare MAC addresses (case-insensitive)
+        if (strcasecmp(ble->mac_address_cfg, mac_address) == 0) {
+            if (manufacturer && manufacturer[0]) {
+                strncpy(ble->ble_manufacturer, manufacturer, sizeof(ble->ble_manufacturer) - 1);
+                ble->ble_manufacturer[sizeof(ble->ble_manufacturer) - 1] = 0;
+            }
+            if (model && model[0]) {
+                strncpy(ble->ble_model, model, sizeof(ble->ble_model) - 1);
+                ble->ble_model[sizeof(ble->ble_model) - 1] = 0;
+            }
+            ble->dis_info_queried = true;
+            updated = true;
+            DEBUG_PRINT(F("[BLE] Updated DIS info for sensor: "));
+            DEBUG_PRINTLN(ble->name);
+        }
+    }
+
+    if (updated) {
+        sensor_save();
+    }
+}
+
 void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     SensorBase::fromJson(obj);
 
@@ -647,6 +800,38 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     if (obj.containsKey("adv_last_ok")) {
         adv_last_success_time = obj["adv_last_ok"].as<uint32_t>();
     }
+    
+    // Restore battery level
+    if (obj.containsKey("battery")) {
+        last_battery = obj["battery"].as<uint32_t>();
+    }
+    
+    // Restore DIS (Device Information Service) data
+    // Accept both "ble_manufacturer" (new) and "ble_mfr" (legacy) for backward compatibility
+    if (obj.containsKey("ble_manufacturer")) {
+        const char* m = obj["ble_manufacturer"].as<const char*>();
+        if (m) {
+            strncpy(ble_manufacturer, m, sizeof(ble_manufacturer) - 1);
+            ble_manufacturer[sizeof(ble_manufacturer) - 1] = 0;
+        }
+    } else if (obj.containsKey("ble_mfr")) {
+        const char* m = obj["ble_mfr"].as<const char*>();
+        if (m) {
+            strncpy(ble_manufacturer, m, sizeof(ble_manufacturer) - 1);
+            ble_manufacturer[sizeof(ble_manufacturer) - 1] = 0;
+        }
+    }
+    if (obj.containsKey("ble_model")) {
+        const char* m = obj["ble_model"].as<const char*>();
+        if (m) {
+            strncpy(ble_model, m, sizeof(ble_model) - 1);
+            ble_model[sizeof(ble_model) - 1] = 0;
+        }
+    }
+    // Mark DIS as queried if we have data from persistence
+    if (ble_manufacturer[0] || ble_model[0]) {
+        dis_info_queried = true;
+    }
 }
 
 void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
@@ -661,6 +846,13 @@ void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
     
     // Persist last successful read time for auto-disable feature
     if (adv_last_success_time > 0) obj["adv_last_ok"] = adv_last_success_time;
+    
+    // Battery level (consistent with ZigBee: obj["battery"])
+    obj["battery"] = last_battery;
+    
+    // Persist DIS (Device Information Service) data (consistent with ZigBee naming: zb_manufacturer/zb_model)
+    if (ble_manufacturer[0]) obj["ble_manufacturer"] = ble_manufacturer;
+    if (ble_model[0]) obj["ble_model"] = ble_model;
 }
 
 static bool ble_uuid_extract_16bit(const char* uuid_in, uint16_t* out_uuid16) {
@@ -950,6 +1142,13 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             
             discovered_ble_devices.push_back(new_dev);
 
+            // Queue DIS query for newly discovered device
+            char mac_str[18];
+            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     addr_bytes[0], addr_bytes[1], addr_bytes[2],
+                     addr_bytes[3], addr_bytes[4], addr_bytes[5]);
+            ble_queue_dis_query(mac_str);
+
             DEBUG_PRINT("New BLE sensor added: ");
             DEBUG_PRINT(new_dev.name);
             DEBUG_PRINT(" type=");
@@ -962,22 +1161,25 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 static MyAdvertisedDeviceCallbacks ble_scan_callbacks;
 bool sensor_ble_init()
 {
-#ifdef ENABLE_MATTER
-    // Block ALL BLE activity until Matter has been initialized for at least 15s.
+    // When IEEE 802.15.4 mode is Matter, block ALL BLE activity until
+    // Matter has been initialized for at least 15s.
     // Matter uses the shared NimBLE controller for CHIPoBLE commissioning;
     // if we call BLEDevice::init() first the controller is already owned by the
     // sensor subsystem and Matter's own init will fail with
     // "BLE_INIT: controller init failed".
-    uint32_t m_init = matter_get_init_time_ms();
-    if (m_init == 0) {
-        // Matter has not started yet – do NOT touch BLE
-        return false;
-    }
-    if ((millis() - m_init) < 15000) {
-        // Matter started but still in the 15-second grace window
-        return false;
-    }
+    if (ieee802154_is_matter()) {
+#ifdef ENABLE_MATTER
+        uint32_t m_init = matter_get_init_time_ms();
+        if (m_init == 0) {
+            // Matter has not started yet – do NOT touch BLE
+            return false;
+        }
+        if ((millis() - m_init) < 15000) {
+            // Matter started but still in the 15-second grace window
+            return false;
+        }
 #endif
+    }
 
     if (!ble_initialized && BLEDevice::getInitialized()) {
         ble_initialized = true;
@@ -1249,6 +1451,65 @@ void sensor_ble_loop() {
         ble_release_scan_lock_if_needed();
         DEBUG_PRINT("[BLE] Scan completed (timer). Devices cached: ");
         DEBUG_PRINTLN(discovered_ble_devices.size());
+    }
+    
+    // =========================================================================
+    // DIS (Device Information Service) query processing
+    // Process one queued DIS query at a time, only when scan is idle
+    // =========================================================================
+    if (!scanning_active && !ble_in_read && !ble_stop_requested &&
+        !ble_dis_query_queue.empty()) {
+        // Enforce delay between DIS queries (3 seconds) to avoid RF congestion
+        if (!ble_dis_query_pending || (now - ble_dis_query_time >= 3000)) {
+            BLEDISQueryItem item = ble_dis_query_queue.front();
+            ble_dis_query_queue.erase(ble_dis_query_queue.begin());
+            
+            // Check if device is still in discovered list and not already queried
+            bool needs_query = false;
+            for (auto& dev : discovered_ble_devices) {
+                char mac_str[18];
+                snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         dev.address[0], dev.address[1], dev.address[2],
+                         dev.address[3], dev.address[4], dev.address[5]);
+                if (strcasecmp(mac_str, item.mac) == 0 && !dev.dis_queried) {
+                    needs_query = true;
+                    break;
+                }
+            }
+            
+            if (needs_query) {
+                ble_dis_query_pending = true;
+                ble_dis_query_time = now;
+                
+                char manufacturer[32] = {0};
+                char model[32] = {0};
+                bool success = ble_read_device_info_service(item.mac, manufacturer, model);
+                
+                // Update discovered device cache
+                for (auto& dev : discovered_ble_devices) {
+                    char mac_str[18];
+                    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                             dev.address[0], dev.address[1], dev.address[2],
+                             dev.address[3], dev.address[4], dev.address[5]);
+                    if (strcasecmp(mac_str, item.mac) == 0) {
+                        dev.dis_queried = true;
+                        if (success) {
+                            strncpy(dev.manufacturer, manufacturer, sizeof(dev.manufacturer) - 1);
+                            strncpy(dev.model, model, sizeof(dev.model) - 1);
+                        }
+                        break;
+                    }
+                }
+                
+                // Update any matching BLE sensors
+                if (success && (manufacturer[0] || model[0])) {
+                    BLESensor::updateDeviceInfo(item.mac, manufacturer, model);
+                }
+                
+                ble_dis_query_pending = false;
+                ble_dis_query_time = now;  // Record time for inter-query delay
+            }
+        }
     }
     
     // Remove stale devices (not seen in 5 minutes)
@@ -1531,8 +1792,12 @@ int BLESensor::read(unsigned long time) {
         };
 
         // Success handler for advertisement sensors
-        auto success_adv = [&](double value) -> int {
+        auto success_adv = [&](double value, const BLEDeviceInfo* dev = nullptr) -> int {
             store_result(value, time);
+            // Update battery from cached device (consistent with ZigBee)
+            if (dev && dev->has_adv_data) {
+                last_battery = dev->adv_battery;
+            }
             adv_last_success_time = time;  // Record Unix timestamp of success
             adv_consecutive_failures = 0;
             adv_retry_interval = ADV_RETRY_INITIAL;  // Reset retry interval
@@ -1609,7 +1874,7 @@ int BLESensor::read(unsigned long time) {
                 if (cached_dev->has_adv_data && (now_ms - cached_dev->last_seen < 300000)) {
                     // Fresh cached data available - use it
                     double parsed_value = ble_select_adv_value(cached_dev, assigned_unitid);
-                    return success_adv(parsed_value);
+                    return success_adv(parsed_value, cached_dev);
                 }
                 
                 // No fresh data, but still in cooldown - skip this read
@@ -1692,7 +1957,7 @@ int BLESensor::read(unsigned long time) {
             uint32_t now = millis();
             if (now - cached_dev->last_seen < 300000) {
                 double parsed_value = ble_select_adv_value(cached_dev, assigned_unitid);
-                return success_adv(parsed_value);
+                return success_adv(parsed_value, cached_dev);
             } else {
                 return fail_adv("Data too old even after scan");
             }
@@ -1816,6 +2081,9 @@ int BLESensor::read(unsigned long time) {
                         break;
                     }
                 }
+                
+                // Update battery from BMS SOC (consistent with ZigBee)
+                last_battery = soc;
                 
                 // Select value based on assigned_unitid and store result
                 double parsed_value = ble_select_bms_value(voltage, current, soc, temperature, assigned_unitid);
