@@ -175,7 +175,7 @@ public:
     // Runtime state
     bool device_bound = false;        // Track binding state
     bool basic_cluster_queried = false; // True after Basic Cluster info has been read
-    uint32_t last_battery = 100;      // Last reported battery level (0-100%)
+    uint32_t last_battery = UINT32_MAX; // UINT32_MAX = not yet measured
     uint8_t last_lqi = 0;             // Last reported LQI (Link Quality Indicator, 0-255)
 
     /**

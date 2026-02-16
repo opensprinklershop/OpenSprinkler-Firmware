@@ -57,14 +57,18 @@
   #include "sensor_mqtt.h"
 #endif
 
-#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-  #include "sensor_zigbee.h"
+#if defined(ESP32C5)
   #include "ieee802154_config.h"
+  #if defined(OS_ENABLE_ZIGBEE)
+    #include "sensor_zigbee.h"
+  #endif
 #endif
 
 #if defined(ESP32)
   #include "sensor_ble.h"
 #endif
+
+#include "radio_arbiter.h"
 
 #if defined(OSPI)
   #include "sensor_ospi_ble.h"
@@ -340,6 +344,54 @@ bool is_sensor_api_connected() {
   return apiConnected;
 }
 
+static bool radioEarlyInitDone = false;
+
+bool is_radio_early_init_done() {
+  return radioEarlyInitDone;
+}
+
+void sensor_radio_early_init() {
+  if (radioEarlyInitDone) return;
+
+#if defined(ESP32C5)
+  // Only for non-Matter modes: init BLE + Zigbee immediately at boot
+  if (ieee802154_is_matter()) {
+    DEBUG_PRINTLN(F("[RADIO] Matter mode — skipping early radio init (Matter manages BLE)"));
+    return;
+  }
+#endif
+
+  DEBUG_PRINTLN(F("[RADIO] Early radio init: BLE + Zigbee"));
+
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+  radio_arbiter_apply_balanced_coex_once();
+#endif
+
+  // BLE MUST be initialized BEFORE Zigbee — NimBLE controller needs
+  // DMA-capable internal SRAM that Zigbee would otherwise consume.
+#if defined(ESP32) && defined(OS_ENABLE_BLE)
+  DEBUG_PRINTLN(F("[RADIO] Initializing BLE..."));
+  if (sensor_ble_init()) {
+    DEBUG_PRINTLN(F("[RADIO] BLE initialized successfully"));
+  } else {
+    DEBUG_PRINTLN(F("[RADIO] BLE init failed"));
+  }
+#endif
+
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+  if (ieee802154_is_zigbee()) {
+    DEBUG_PRINTF("[RADIO] Starting Zigbee (%s mode)...\n",
+                 ieee802154_is_zigbee_gw() ? "gateway" : "client");
+    sensor_zigbee_start();
+  }
+#endif
+
+  radioEarlyInitDone = true;
+  // Also mark apiConnected so Zigbee ensure_started() is unblocked
+  apiConnected = true;
+  DEBUG_PRINTLN(F("[RADIO] Early radio init complete"));
+}
+
 void sensor_api_connect() {
   #if defined(ESP8266) || defined(ESP32)
   // Allow sensor_api_connect in both WiFi STA and Ethernet mode
@@ -370,39 +422,12 @@ void sensor_api_connect() {
   fyta_check_opts();
   #endif
 
-  // BLE MUST be initialized BEFORE Zigbee.  The NimBLE controller init
-  // (esp_bt_controller_init → ble_ll_env_init) requires a small amount of
-  // DMA-capable internal SRAM.  The ZBOSS Zigbee stack consumes most of the
-  // remaining internal RAM, so if Zigbee starts first the BLE controller
-  // init fails with "ble ll env init error code:-21" (no internal memory).
-  // Initializing BLE first lets the controller claim its DMA buffers while
-  // internal RAM is still available; Zigbee's larger allocations can then
-  // fall back to PSRAM via CONFIG_SPIRAM_USE_MALLOC.
-  //
-  // IMPORTANT: Set apiConnected AFTER BLE init but BEFORE Zigbee start.
-  // sensor_zigbee_ensure_started() checks is_sensor_api_connected() to
-  // prevent Zigbee from auto-starting (via sensor reads) before BLE has
-  // claimed its DMA buffers.
-  #if defined(ESP32) && defined(OS_ENABLE_BLE)
-  DEBUG_PRINTLN(F("[SENSOR_API] Initializing BLE..."));
-  if (sensor_ble_init()) {
-    DEBUG_PRINTLN(F("[SENSOR_API] BLE initialized successfully"));
-  } else {
-    DEBUG_PRINTLN(F("[SENSOR_API] BLE init deferred or failed"));
+  // BLE + Zigbee: handled by sensor_radio_early_init() at boot (non-Matter)
+  // or lazily here for Matter mode.
+  if (!radioEarlyInitDone) {
+    sensor_radio_early_init();
   }
-  #endif
-
-  // Mark connect phase done — Zigbee ensure_started() is now unblocked
   apiConnected = true;
-
-  #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-  // Start Zigbee only if runtime mode is set to a Zigbee mode
-  if (ieee802154_is_zigbee()) {
-    DEBUG_PRINTF("[SENSOR_API] Starting Zigbee (%s mode)...\n",
-                 ieee802154_is_zigbee_gw() ? "gateway" : "client");
-    sensor_zigbee_start();
-  }
-  #endif
 }
 // sensor_api_connect() initializes all network-dependent sensor subsystems
 // (MQTT, FYTA, Zigbee, BLE) once the device is connected in WiFi STA mode
@@ -1299,6 +1324,12 @@ void read_all_sensors(boolean online) {
           current_sensor->last_read = time + max((uint)60, current_sensor->read_interval);
           current_sensor->repeat_read = 0;
           DEBUG_PRINTF("Delayed2: %s\n", current_sensor->name);
+        } else if (result == HTTP_RQT_NOT_RECEIVED) {
+          // Ensure minimum delay to prevent tight spin when sensor
+          // returns NOT_RECEIVED repeatedly (e.g., BLE scan blocked).
+          if (current_sensor->last_read < time) {
+            current_sensor->last_read = time;
+          }
         }
         ulong passed = os.now_tz() - time;
         if (passed > MAX_SENSOR_READ_TIME) {

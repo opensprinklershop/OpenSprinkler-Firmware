@@ -43,8 +43,10 @@ int InternalSensor::read(unsigned long time) {
 #if defined(ESP8266) || defined(ESP32)
     case SENSOR_FREE_MEMORY: {
       uint32_t fm = freeMemory();
-      if (this->last_native_data == fm)
+      if (this->last_native_data == fm) {
+        this->flags.data_ok = true;
         return HTTP_RQT_NOT_RECEIVED;
+      }
       this->last_native_data = fm;
       this->last_data = fm/1000;
       this->last_read = time;
@@ -58,13 +60,19 @@ int InternalSensor::read(unsigned long time) {
       boolean ok = LittleFS.info(fsinfo);
       if (ok) {
         uint32_t fd = fsinfo.totalBytes - fsinfo.usedBytes;
+        if (this->last_native_data == fd) {
+          this->flags.data_ok = true;
+          return HTTP_RQT_NOT_RECEIVED;
+        }
 #elif defined(ESP32)
       boolean ok = LittleFS.totalBytes() > 0;
       if (ok) {
         uint32_t fd = LittleFS.totalBytes() - LittleFS.usedBytes();
 #endif
-        if (this->last_native_data == fd)
+        if (this->last_native_data == fd) {
+          this->flags.data_ok = true;
           return HTTP_RQT_NOT_RECEIVED;
+        }
         this->last_native_data = fd;
         this->last_data = fd/1000;
       }
@@ -78,8 +86,10 @@ int InternalSensor::read(unsigned long time) {
     case SENSOR_INTERNAL_TEMP: {
       float temp = temperatureRead();
       int32_t temp_milli = (int32_t)(temp * 1000.0f);
-      if (this->last_native_data == (uint32_t)temp_milli)
+      if (this->last_native_data == (uint32_t)temp_milli) {
+        this->flags.data_ok = true;
         return HTTP_RQT_NOT_RECEIVED;
+      }
 
       this->last_read = time;
       this->last_native_data = (uint32_t)temp_milli;

@@ -1,0 +1,17 @@
+# ESP32-C5 dual-image layout (8MB boot flash)
+# matter = ota_0 (Matter image)
+# zigbee = ota_1 (ZigBee image)
+# Total boot flash: 0x800000 (8MB)
+#
+# NOTE: Bootloader/partition table must fit into boot-visible flash.
+# Each firmware slot: 0x390000 (~3.56MB), sufficient for current image sizes.
+
+nvs,            data, nvs,      0x9000,   0x5000,
+otadata,        data, ota,      0xE000,   0x2000,
+matter,         app,  ota_0,    0x10000,  0x390000,
+zigbee,         app,  ota_1,    0x3A0000, 0x390000,
+matter_kvs,     data, nvs,      0x730000, 0x10000,
+zb_storage,     data, fat,      0x740000, 0x20000,
+zb_fct,         data, fat,      0x760000, 0x1000,
+littlefs,       data, littlefs, 0x761000, 0x8F000,
+coredump,       data, coredump, 0x7F0000, 0x10000,

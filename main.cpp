@@ -41,6 +41,7 @@
 #include "ieee802154_config.h"
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
+#include "radio_arbiter.h"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -500,6 +501,18 @@ void do_setup() {
 	DEBUG_BEGIN(115200);
 	DEBUG_PRINTLN(F("started"));
 
+#if defined(ESP32C5)
+	DEBUG_PRINTLN(F("\n============================================"));
+#if defined(ENABLE_MATTER)
+	DEBUG_PRINTF("  OpenSprinkler MATTER  FW %d.%d\n", OS_FW_VERSION, OS_FW_MINOR);
+#elif defined(OS_ENABLE_ZIGBEE)
+	DEBUG_PRINTF("  OpenSprinkler ZIGBEE  FW %d.%d\n", OS_FW_VERSION, OS_FW_MINOR);
+#else
+	DEBUG_PRINTF("  OpenSprinkler ESP32-C5  FW %d.%d\n", OS_FW_VERSION, OS_FW_MINOR);
+#endif
+	DEBUG_PRINTLN(F("============================================"));
+#endif
+
 #if defined(ESP32)
 // PSRAM malloc threshold set in psram_utils.cpp init_psram_buffers()
         // Uses CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL (4096) to keep WiFi/DMA in internal RAM
@@ -740,7 +753,7 @@ void do_loop()
 	#if defined(ENABLE_DEBUG) && defined(ESP32)
 	static ulong last_mem_print = 0;
 	ulong now_ms = millis();
-	if (now_ms - last_mem_print >= 60000) {
+	if (now_ms - last_mem_print >= 15000) {
 		last_mem_print = now_ms;
 		uint32_t free_heap = ESP.getFreeHeap();
 		uint32_t min_heap = ESP.getMinFreeHeap();
@@ -750,6 +763,7 @@ void do_loop()
 		DEBUG_PRINTF("[MEM] Heap: %d/%d KB free (min: %d KB) | PSRAM: %.1f/%.1f MB free\n",
 			free_heap/1024, ESP.getHeapSize()/1024, min_heap/1024,
 			free_psram/1048576.0, total_psram/1048576.0);
+		radio_arbiter_debug_state();
 		#else
 		DEBUG_PRINTF("[MEM] Heap: %d KB free (min: %d KB)\n", free_heap/1024, min_heap/1024);
 		#endif
@@ -767,8 +781,10 @@ void do_loop()
 
 	ulong boot_elapsed = millis() - boot_time_ms;
 
-	// sensor_api_connect: runs once, 15s after Matter init (or 15s after boot without Matter).
-	// Initializes MQTT, FYTA, Zigbee, and BLE.
+	// sensor_api_connect: runs once after network is ready.
+	// Matter mode: wait 15s after Matter init (BLE/Zigbee managed by Matter).
+	// Non-Matter: BLE+Zigbee already initialized via sensor_radio_early_init(),
+	//             only MQTT/FYTA need a short delay (5s) for network stability.
 	if(!sensor_api_connected) {
 		bool ready = false;
 		#ifdef ENABLE_MATTER
@@ -778,12 +794,12 @@ void do_loop()
 				// Matter is active: wait 15s after Matter init
 				ready = ((millis() - m_init) >= 15000);
 			} else {
-				// Matter NOT active (e.g. Zigbee mode or disabled): use boot elapsed
-				ready = (boot_elapsed >= 15000);
+				// Matter NOT active: 5s delay for MQTT/FYTA only (radio already up)
+				ready = (boot_elapsed >= 5000);
 			}
 		}
 		#else
-		ready = (boot_elapsed >= 15000);
+		ready = (boot_elapsed >= 5000);
 		#endif
 		if(ready && os.network_connected()) {
 			DEBUG_PRINTF("[INIT] Calling sensor_api_connect (boot_elapsed=%lu, useEth=%d)\n", boot_elapsed, useEth);
@@ -849,6 +865,12 @@ void do_loop()
 			start_server_client();
 			// Ethernet is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
+			// Ethernet: init BLE + Zigbee immediately (non-Matter)
+			#if defined(ESP32C5)
+			if (!ieee802154_is_matter()) {
+				sensor_radio_early_init();
+			}
+			#endif
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
@@ -908,6 +930,13 @@ void do_loop()
 				OSMatter::instance().init();
 				#endif
 			}
+
+			// Non-Matter: init BLE + Zigbee immediately after WiFi connects
+			#if defined(ESP32C5)
+			if (!ieee802154_is_matter()) {
+				sensor_radio_early_init();
+			}
+			#endif
 			
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;

@@ -29,6 +29,14 @@ enum class IEEE802154Mode : uint8_t {
     IEEE_ZIGBEE_CLIENT  = 3    ///< ZigBee End Device mode (join existing network)
 };
 
+/**
+ * @brief Firmware boot variants (mapped to OTA slots)
+ */
+enum class IEEE802154BootVariant : uint8_t {
+    MATTER = 1,  ///< OTA slot 0 (ota_0)
+    ZIGBEE = 2   ///< OTA slot 1 (ota_1)
+};
+
 #if defined(ESP32C5)
 
 /**
@@ -51,10 +59,38 @@ IEEE802154Mode ieee802154_load_mode();
 bool ieee802154_save_mode(IEEE802154Mode mode);
 
 /**
+ * @brief Save IEEE 802.15.4 mode and explicit OTF boot variant
+ * @param mode IEEE 802.15.4 mode
+ * @param boot_variant Boot variant (MATTER/ZIGBEE)
+ * @return true if saved successfully
+ */
+bool ieee802154_save_config(IEEE802154Mode mode, IEEE802154BootVariant boot_variant);
+
+/**
  * @brief Get the currently active IEEE 802.15.4 mode (loaded at boot)
  * @return Current mode
  */
 IEEE802154Mode ieee802154_get_mode();
+
+/**
+ * @brief Get configured OTF boot variant
+ * @return Boot variant from config (or default mapping)
+ */
+IEEE802154BootVariant ieee802154_get_boot_variant();
+
+/**
+ * @brief Derive boot variant from IEEE mode
+ * @param mode IEEE 802.15.4 mode
+ * @return MATTER for DISABLED/MATTER, ZIGBEE for ZigBee modes
+ */
+IEEE802154BootVariant ieee802154_boot_variant_for_mode(IEEE802154Mode mode);
+
+/**
+ * @brief Select next boot partition according to boot variant
+ * @param variant target OTF variant
+ * @return true on success
+ */
+bool ieee802154_select_otf_boot_variant(IEEE802154BootVariant variant);
 
 /**
  * @brief Check if Matter is enabled (mode == IEEE_MATTER)
@@ -110,9 +146,19 @@ void ieee802154_config_init();
  */
 const char* ieee802154_mode_name(IEEE802154Mode mode);
 
+/**
+ * @brief Get boot variant name
+ * @param variant variant value
+ * @return "matter" / "zigbee" / "unknown"
+ */
+const char* ieee802154_boot_variant_name(IEEE802154BootVariant variant);
+
 #else
 // Non-ESP32C5: stubs
 inline IEEE802154Mode ieee802154_get_mode() { return IEEE802154Mode::IEEE_DISABLED; }
+inline IEEE802154BootVariant ieee802154_get_boot_variant() { return IEEE802154BootVariant::MATTER; }
+inline IEEE802154BootVariant ieee802154_boot_variant_for_mode(IEEE802154Mode) { return IEEE802154BootVariant::MATTER; }
+inline bool ieee802154_select_otf_boot_variant(IEEE802154BootVariant) { return false; }
 inline bool ieee802154_is_matter() { return false; }
 inline bool ieee802154_is_zigbee_gw() { return false; }
 inline bool ieee802154_is_zigbee_client() { return false; }

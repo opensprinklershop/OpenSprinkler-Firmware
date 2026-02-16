@@ -19,6 +19,7 @@
 #include "OpenSprinkler.h"
 #include "opensprinkler_server.h"
 #include "ieee802154_config.h"
+#include "radio_arbiter.h"
 
 extern OpenSprinkler os;
 
@@ -28,8 +29,6 @@ extern OpenSprinkler os;
 #include <vector>
 #include <WiFi.h>
 #include <esp_err.h>
-#include <esp_wifi.h>
-#include <esp_coexist.h>
 extern "C" {
 #include <esp_coex_i154.h>
 }
@@ -49,12 +48,6 @@ extern "C" {
 static bool gw_zigbee_initialized = false;
 static bool gw_zigbee_connected = false;
 static bool gw_zigbee_needs_nvram_reset = false;
-// NOTE: The Arduino Zigbee library does NOT support Zigbee.stop() + Zigbee.begin()
-// restart cycles (causes Load access fault). Once started, Zigbee stays running.
-static bool gw_zigbee_was_stopped = false;  // guard against restart after stop
-
-// Active Zigbee sensor (prevents concurrent access)
-static int gw_active_zigbee_sensor = 0;
 
 // Discovered devices storage
 static std::vector<ZigbeeDeviceInfo> gw_discovered_devices;
@@ -87,6 +80,12 @@ static bool     gw_basic_query_pending = false;
 static unsigned long gw_basic_query_time = 0;
 #define GW_BASIC_QUERY_TIMEOUT_MS   10000  // 10 seconds
 #define GW_BASIC_QUERY_DELAY_MS     3000   // Wait 3s after discovery before querying
+
+// Active one-shot read request state (Gateway mode)
+static uint16_t gw_read_attr_id = 0;
+static bool     gw_read_pending = false;
+static unsigned long gw_read_time = 0;
+#define GW_READ_TIMEOUT_MS 10000
 
 struct GwBasicQueryItem {
     uint64_t ieee_addr;
@@ -543,6 +542,8 @@ public:
             gw_handleBasicClusterResponse(src_address.u.short_addr, attribute);
             return;  // Don't cache as sensor data
         }
+
+        gw_read_pending = false;
         
         DEBUG_PRINTF(F("[ZIGBEE-GW] >>> zbAttributeRead: cluster=0x%04X attr=0x%04X type=0x%02X src_ep=%d src_short=0x%04X\n"),
                     cluster_id, attribute->id, attribute->data.type, src_endpoint, src_address.u.short_addr);
@@ -606,11 +607,13 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
             converted_value = report.value / 10.0;  // Tuya sends tenths of °C (e.g. 227 = 22.7°C)
         } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT) {
             converted_value = report.value / 10.0;  // Tuya sends tenths of %RH
+        } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE) {
+            // Tuya soil moisture is already raw % (0-100)
+            converted_value = report.value;
         } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG) {
             // Tuya battery is raw % (0-100), keep as-is
             zb_sensor->last_battery = (uint32_t)report.value;
         }
-        // Soil moisture from Tuya is raw % (0-100), already in natural units
     } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE && report.attr_id == 0x0000) {
         converted_value = report.value / 100.0;
     } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT && report.attr_id == 0x0000) {
@@ -703,6 +706,54 @@ void sensor_zigbee_gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint)
     DEBUG_PRINTF(F("[ZIGBEE-GW] Queued Basic Cluster query for device 0x%04X\n"), short_addr);
 }
 
+bool sensor_zigbee_gw_read_attribute(uint64_t device_ieee, uint8_t endpoint,
+                                     uint16_t cluster_id, uint16_t attribute_id) {
+    if (!radio_arbiter_allow_zigbee_active_ops()) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Active read deferred: web priority"));
+        return false;
+    }
+
+    if (!gw_zigbee_initialized || !gw_reportReceiver) return false;
+    if (!Zigbee.started() || !Zigbee.connected()) return false;
+    if (device_ieee == 0) return false;
+    if (gw_read_pending) return false;
+
+    esp_zb_ieee_addr_t ieee_le = {0};
+    for (int i = 0; i < 8; i++) {
+        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
+    }
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+    if (short_addr == 0xFFFF || short_addr == 0xFFFE) {
+        esp_zb_lock_release();
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Active read skipped: IEEE 0x%016llX not in address table (short=0x%04X)\n"),
+                     (unsigned long long)device_ieee, short_addr);
+        return false;
+    }
+
+    gw_read_attr_id = attribute_id;
+
+    esp_zb_zcl_read_attr_cmd_t read_req;
+    memset(&read_req, 0, sizeof(read_req));
+    read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    read_req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
+    read_req.zcl_basic_cmd.dst_endpoint = endpoint;
+    read_req.zcl_basic_cmd.src_endpoint = 10;
+    read_req.clusterID = cluster_id;
+    read_req.attr_number = 1;
+    read_req.attr_field = &gw_read_attr_id;
+
+    esp_zb_zcl_read_attr_cmd_req(&read_req);
+    gw_read_pending = true;
+    gw_read_time = millis();
+    esp_zb_lock_release();
+
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Active read sent: ieee=0x%016llX short=0x%04X ep=%d cluster=0x%04X attr=0x%04X\n"),
+                 (unsigned long long)device_ieee, short_addr, endpoint, cluster_id, attribute_id);
+    return true;
+}
+
 static bool gw_erase_zigbee_nvram() {
     const esp_partition_t* zb_partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA,
@@ -720,17 +771,12 @@ void sensor_zigbee_gw_factory_reset() {
 }
 
 void sensor_zigbee_gw_stop() {
+    // Zigbee Coordinator stays running permanently (non-Matter mode).
+    // The Arduino Zigbee library does NOT support stop+restart anyway.
+    // This function is now a no-op. Coexistence priorities are
+    // managed dynamically via the radio arbiter.
     if (!gw_zigbee_initialized) return;
-    DEBUG_PRINTLN(F("[ZIGBEE-GW] Stopping Zigbee Coordinator (WARNING: cannot restart without reboot!)"));
-    gw_zigbee_initialized = false;
-    gw_zigbee_connected = false;
-    gw_zigbee_was_stopped = true;  // Mark as stopped - restart is NOT possible
-    if (gw_reportReceiver) {
-        delete gw_reportReceiver;
-        gw_reportReceiver = nullptr;
-    }
-    Zigbee.stop();
-    DEBUG_PRINTLN(F("[ZIGBEE-GW] Zigbee stopped"));
+    DEBUG_PRINTLN(F("[ZIGBEE-GW] stop() called — Zigbee stays active (permanent mode)"));
 }
 
 void sensor_zigbee_gw_start() {
@@ -752,22 +798,7 @@ void sensor_zigbee_gw_start() {
         return;
     }
 
-    // Arduino Zigbee library cannot restart after Zigbee.stop() - guard against crash
-    if (gw_zigbee_was_stopped) {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW] Cannot restart Zigbee after stop (library limitation) - reboot required"));
-        return;
-    }
-    
-    if (Zigbee.started()) {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW] Stopping previous Zigbee instance..."));
-        Zigbee.stop();
-        if (gw_reportReceiver) {
-            delete gw_reportReceiver;
-            gw_reportReceiver = nullptr;
-        }
-    }
-    
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Zigbee stays active once started (no stop/restart toggling).
 
     if (gw_zigbee_needs_nvram_reset) {
         gw_zigbee_needs_nvram_reset = false;
@@ -780,11 +811,7 @@ void sensor_zigbee_gw_start() {
     Zigbee.setRadioConfig(radio_config);
 
     if (WiFi.getMode() != WIFI_MODE_NULL) {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW] WiFi active - configuring coexistence"));
-        WiFi.setSleep(false);
-        (void)esp_wifi_set_ps(WIFI_PS_NONE);
-        (void)esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-        (void)esp_coex_wifi_i154_enable();
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] WiFi active - coexistence base already configured"));
         // NOTE: Per-packet PTI must be set AFTER Zigbee.begin() — ieee802154_mac_init()
         // inside esp_zb_start() resets all PTI values to defaults.
     } else {
@@ -1111,7 +1138,15 @@ void sensor_zigbee_gw_open_network(uint16_t duration) {
 
 void sensor_zigbee_gw_loop() {
     if (!gw_zigbee_initialized) return;
-    
+
+    // Timeout stale active-read requests
+    if (gw_read_pending && millis() - gw_read_time > GW_READ_TIMEOUT_MS) {
+        gw_read_pending = false;
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Active read timeout"));
+    }
+
+    // Always process pending reports regardless of web priority.
+    // Zigbee ZCL reports are lightweight and must not be starved.
     if (pending_report_count > 0) {
         sensor_zigbee_gw_process_reports(0, 0, 0, 0, 0, 0);
     }

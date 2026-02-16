@@ -573,9 +573,12 @@ unsigned char OpenSprinkler::start_network() {
 		useEth = false;
 	}
 
-	// Suppress Arduino NetworkClient "Connection reset by peer" log_e() spam.
-	// These are normal when HTTP clients disconnect before the response is fully sent.
-	esp_log_level_set("NetworkClient.cpp", ESP_LOG_WARN);
+	// Arduino log_e() in NetworkClient.cpp uses log_printf (compile-time level),
+	// NOT esp_log_level_set (runtime IDF tags). Suppress via CORE_DEBUG_LEVEL in
+	// platformio.ini instead. The calls below are kept for any IDF-native log_e().
+	#if defined(ESP32)
+	esp_log_level_set("NetworkClient", ESP_LOG_NONE);
+	#endif
 
 	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
 		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, false, ether_buffer, ETHER_BUFFER_SIZE);

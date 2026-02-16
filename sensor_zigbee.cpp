@@ -42,6 +42,7 @@
 #include "OpenSprinkler.h"
 #include "opensprinkler_server.h"
 #include "ieee802154_config.h"
+#include "radio_arbiter.h"
 
 extern OpenSprinkler os;
 
@@ -51,8 +52,6 @@ extern OpenSprinkler os;
 #include <vector>
 #include <WiFi.h>
 #include <esp_err.h>
-#include <esp_wifi.h>
-#include <esp_coexist.h>
 extern "C" {
 #include <esp_coex_i154.h>
 }
@@ -98,9 +97,6 @@ static ClientZigbeeReportReceiver* client_reportReceiver = nullptr;
 
 // Flag to track if we need to reset NVRAM
 static bool client_zigbee_needs_nvram_reset = false;
-// NOTE: The Arduino Zigbee library does NOT support Zigbee.stop() + Zigbee.begin()
-// restart cycles (causes Load access fault). Once started, Zigbee stays running.
-static bool client_zigbee_was_stopped = false;  // guard against restart after stop
 
 // Static storage for active attribute read requests.
 // attr_field in esp_zb_zcl_read_attr_cmd_t is a pointer that ZBOSS
@@ -393,12 +389,6 @@ static void client_zigbee_start_internal() {
 
     if (client_zigbee_initialized) return;
 
-    // Arduino Zigbee library cannot restart after Zigbee.stop() - guard against crash
-    if (client_zigbee_was_stopped) {
-        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Cannot restart Zigbee after stop (library limitation) - reboot required"));
-        return;
-    }
-
     DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Starting Zigbee END DEVICE..."));
     
     const esp_partition_t* zb_partition = esp_partition_find_first(
@@ -432,11 +422,7 @@ static void client_zigbee_start_internal() {
     Zigbee.setRadioConfig(radio_config);    
 
     if (WiFi.getMode() != WIFI_MODE_NULL) {
-        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] WiFi active - configuring coexistence"));
-        WiFi.setSleep(false);
-        (void)esp_wifi_set_ps(WIFI_PS_NONE);
-        (void)esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-        (void)esp_coex_wifi_i154_enable();
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] WiFi active - coexistence base already configured"));
         // NOTE: Per-packet PTI must be set AFTER Zigbee.begin() — ieee802154_mac_init()
         // inside esp_zb_start() resets all PTI values to defaults.
     } else {
@@ -489,17 +475,10 @@ static void client_zigbee_start_internal() {
 }
 
 static void client_zigbee_stop_internal() {
+    // Zigbee End Device stays running permanently (non-Matter mode).
+    // The Arduino Zigbee library does NOT support stop+restart.
     if (!client_zigbee_initialized) return;
-    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Stopping Zigbee (WARNING: cannot restart without reboot!)"));
-    client_zigbee_initialized = false;
-    client_zigbee_connected = false;
-    client_zigbee_was_stopped = true;  // Mark as stopped - restart is NOT possible
-    if (client_reportReceiver) {
-        delete client_reportReceiver;
-        client_reportReceiver = nullptr;
-    }
-    Zigbee.stop();
-    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Zigbee stopped (reboot needed to restart)"));
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] stop() called — Zigbee stays active (permanent mode)"));
 }
 
 static bool client_zigbee_ensure_started_internal() {
@@ -531,6 +510,10 @@ static bool client_zigbee_ensure_started_internal() {
 
 static void client_zigbee_loop_internal() {
     if (!client_zigbee_initialized) return;
+
+    if (radio_arbiter_is_web_priority_active()) {
+        return;
+    }
 
     // NOTE: No idle timeout - Arduino Zigbee library does NOT support
     // Zigbee.stop() + Zigbee.begin() restart (causes Load access fault).
@@ -628,6 +611,11 @@ static void client_zigbee_loop_internal() {
  */
 static bool client_read_remote_attribute(uint64_t device_ieee, uint8_t endpoint,
                                          uint16_t cluster_id, uint16_t attribute_id) {
+    if (!radio_arbiter_allow_zigbee_active_ops()) {
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Active read deferred: web priority"));
+        return false;
+    }
+
     if (!client_zigbee_initialized || !client_reportReceiver) {
         DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Cannot read: Zigbee not initialized"));
         return false;
@@ -764,12 +752,12 @@ bool sensor_zigbee_ensure_started() {
     // If Zigbee is already running, allow immediate access.
     // Otherwise, block until sensor_api_connect() has been called.
     // This prevents Zigbee from auto-starting (via sensor reads) before
-    // sensor_api_connect() has initialized BLE — BLE's controller init
-    // needs DMA-capable internal RAM that Zigbee would consume first.
+    // Block Zigbee auto-start until BLE has been initialized first.
+    // sensor_radio_early_init() or sensor_api_connect() handles this.
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && !sensor_zigbee_gw_is_active()) {
-        if (!is_sensor_api_connected()) return false;
+        if (!is_radio_early_init_done() && !is_sensor_api_connected()) return false;
     } else if (mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT && !client_zigbee_initialized) {
-        if (!is_sensor_api_connected()) return false;
+        if (!is_radio_early_init_done() && !is_sensor_api_connected()) return false;
     }
 
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
@@ -956,6 +944,10 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             zb_model[sizeof(zb_model) - 1] = '\0';
         }
     }
+    // Restore battery level (UINT32_MAX = not yet measured)
+    if (obj.containsKey("battery")) {
+        last_battery = obj["battery"].as<uint32_t>();
+    }
     // If we already have Basic Cluster info from config, mark as queried
     if (zb_manufacturer[0] != '\0' || zb_model[0] != '\0') {
         basic_cluster_queried = true;
@@ -973,7 +965,8 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     obj["endpoint"] = endpoint;
     obj["cluster_id"] = cluster_id;
     obj["attribute_id"] = attribute_id;
-    obj["battery"] = last_battery;
+    // Battery level — only persist when actually measured
+    if (last_battery != UINT32_MAX) obj["battery"] = last_battery;
     obj["lqi"] = last_lqi;
     // Basic Cluster info (persisted)
     if (zb_manufacturer[0] != '\0') {
@@ -1020,12 +1013,23 @@ int ZigbeeSensor::read(unsigned long time) {
     // Simply return the current data_ok status.
     // =========================================================================
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
-        last_read = time;
         if (flags.data_ok) {
             repeat_read = 0;
             return HTTP_RQT_SUCCESS;
         }
-        // No data yet — keep repeat_read so we retry quickly
+
+        // No data yet: in gateway mode we normally rely on passive reports,
+        // but some devices do not report reliably. Trigger a best-effort
+        // active read as fallback at a bounded interval.
+        uint poll_interval = read_interval ? read_interval : 60;
+        if (poll_interval < 15) poll_interval = 15;
+        if (radio_arbiter_allow_zigbee_active_ops() && device_ieee != 0 && (last_read == 0 || time >= last_read + poll_interval)) {
+            if (sensor_zigbee_gw_read_attribute(device_ieee, endpoint, cluster_id, attribute_id)) {
+                last_read = time;
+            }
+        }
+
+        // Keep repeat_read so we retry quickly
         repeat_read = 1;
         return HTTP_RQT_NOT_RECEIVED;
     }

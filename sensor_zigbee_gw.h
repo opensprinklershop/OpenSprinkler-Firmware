@@ -89,5 +89,16 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
  */
 void sensor_zigbee_gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint);
 
+/**
+ * @brief Actively read one attribute from a remote device in Gateway mode
+ * @param device_ieee IEEE address of target device
+ * @param endpoint Target endpoint
+ * @param cluster_id Cluster ID
+ * @param attribute_id Attribute ID
+ * @return true if read request was queued successfully
+ */
+bool sensor_zigbee_gw_read_attribute(uint64_t device_ieee, uint8_t endpoint,
+                                     uint16_t cluster_id, uint16_t attribute_id);
+
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE
 #endif // _SENSOR_ZIGBEE_GW_H

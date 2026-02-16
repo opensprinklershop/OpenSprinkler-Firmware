@@ -40,16 +40,19 @@ extern OpenSprinkler os;
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <freertos/semphr.h>
+#include "radio_arbiter.h"
 
 // Forward declarations
 void ble_semaphore_init();
 static bool ble_ensure_initialized(const char* reason);
 static BLEClient* ble_get_client();
+static bool ble_uuid_extract_16bit(const char* uuid_in, uint16_t* out_uuid16);
 
 // BLE scan instance
 static bool ble_initialized = false;
 static BLEScan* pBLEScan = nullptr;
 static uint32_t scan_end_time = 0;
+static uint32_t last_scan_completed_time = 0;
 static bool scanning_active = false;
 
 // ============================================================================
@@ -136,6 +139,18 @@ static bool ble_discovery_mode = false;
 static uint32_t ble_scan_start_time = 0;  // Time when current scan started (0 = no active scan)
 static const uint32_t BLE_HARD_TIMEOUT_MS = 30000;  // 30 seconds max per scan
 
+// Non-blocking scan completion callback (called by NimBLE when scan finishes)
+static void ble_scan_complete_cb(BLEScanResults results) {
+    scanning_active = false;
+    ble_scan_start_time = 0;
+    scan_end_time = 0;
+    ble_discovery_mode = false;
+    ble_auto_stop_time = 0;
+    last_scan_completed_time = millis();
+    ble_release_scan_lock_if_needed();
+    DEBUG_PRINTF("[BLE] Scan completed (%d results)\n", results.getCount());
+}
+
 // Discovered devices storage (dynamically allocated)
 // NOTE: std::vector cannot use EXT_RAM_BSS_ATTR - has internal pointers that need constructor
 static std::vector<BLEDeviceInfo> discovered_ble_devices;
@@ -158,7 +173,8 @@ static BLESensorType govee_detect_type_from_name(const char* name) {
         return BLE_TYPE_GOVEE_H5074;
     if (strstr(name, "GVH5075") || strstr(name, "GVH5072") || 
         strstr(name, "GVH5100") || strstr(name, "GVH5101") ||
-        strstr(name, "GVH5102") || strstr(name, "GVH5105"))
+        strstr(name, "GVH5102") || strstr(name, "GVH5104") ||
+        strstr(name, "GVH5105") || strstr(name, "GVH5110"))
         return BLE_TYPE_GOVEE_H5075;
     if (strstr(name, "GVH5179") || strstr(name, "GV5179") || strstr(name, "Govee_H5179"))
         return BLE_TYPE_GOVEE_H5179;
@@ -166,7 +182,7 @@ static BLESensorType govee_detect_type_from_name(const char* name) {
         return BLE_TYPE_GOVEE_H5177;
     if (strstr(name, "GVH5181") || strstr(name, "GVH5182") || 
         strstr(name, "GVH5183") || strstr(name, "GVH5184") ||
-        strstr(name, "GVH5055"))
+        strstr(name, "GVH5055") || strstr(name, "GVH5054"))
         return BLE_TYPE_GOVEE_MEAT;
     if (strstr(name, "LYWSD") || strstr(name, "MJ_HT"))
         return BLE_TYPE_XIAOMI;
@@ -195,11 +211,12 @@ static bool govee_decode_h5074(const uint8_t* data, size_t len, float* temp, flo
  * Temperature + humidity are encoded together: TTTTTHHH (19 bits temp * 10, 10 bits hum * 10)
  */
 static bool govee_decode_h5075(const uint8_t* data, size_t len, float* temp, float* hum, uint8_t* battery) {
-    if (len < 5) return false;
+    if (len < 6) return false;
     
-    // 3-byte encoding: iTemp contains both temp and humidity
-    // From GoveeBTTempLogger: int(Data[1]) << 16 | int(Data[2]) << 8 | int(Data[3])
+    // H5075/H510x format per GoveeBTTempLogger:
+    // int(Data[1]) << 16 | int(Data[2]) << 8 | int(Data[3])
     int32_t iTemp = ((int32_t)data[1] << 16) | ((int32_t)data[2] << 8) | (int32_t)data[3];
+    *battery = data[4];
     
     bool bNegative = (iTemp & 0x800000) != 0;  // Check sign bit
     iTemp = iTemp & 0x7FFFF;  // Mask off sign bit (19 bits)
@@ -210,9 +227,46 @@ static bool govee_decode_h5075(const uint8_t* data, size_t len, float* temp, flo
     if (bNegative) *temp = -*temp;
     
     *hum = (float)(iTemp % 1000) / 10.0f;
-    *battery = data[4];
     
     return true;
+}
+
+/**
+ * @brief Decode Govee meat thermometer advertisement data
+ * Supports models handled in GoveeBTTempLogger (H5181/H5182/H5183/H5184/H5055)
+ * Only current value is used (no min/max); humidity is 0 for these devices.
+ */
+static bool govee_decode_meat(const uint8_t* data, size_t len, float* temp, float* hum, uint8_t* battery) {
+    if (!data || len < 14) return false;
+
+    // H5181/H5183 commonly use 14-byte payloads (current temp at bytes 8..9)
+    if (len == 14) {
+        int16_t t0 = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
+        *temp = (float)t0 / 100.0f;
+        *hum = 0.0f;
+        *battery = data[5] & 0x7F;
+        return true;
+    }
+
+    // H5182/H5184 commonly use 17-byte payloads (probe1 current temp at bytes 8..9)
+    if (len == 17) {
+        int16_t t0 = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
+        *temp = (float)t0 / 100.0f;
+        *hum = 0.0f;
+        *battery = data[5] & 0x7F;
+        return true;
+    }
+
+    // H5055 commonly uses 20-byte payloads (current probe temp at bytes 5..6)
+    if (len == 20) {
+        int16_t t0 = (int16_t)(((uint16_t)data[6] << 8) | data[5]);
+        *temp = (float)t0;
+        *hum = 0.0f;
+        *battery = data[2] & 0x7F;
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -270,6 +324,13 @@ static bool govee_decode_adv_data(uint16_t manufacturer_id, const uint8_t* data,
                                    float* out_temp, float* out_hum, uint8_t* out_battery,
                                    BLESensorType* out_type) {
     if (!data || len < 5) return false;
+
+    // Apple iBeacon payloads (0x004C) can coexist with Govee service UUIDs
+    // but do NOT contain Govee temperature/humidity payload.
+    // Never decode these as Govee sensor readings.
+    if (manufacturer_id == 0x004c) {
+        return false;
+    }
     
     // First try to detect type from name
     BLESensorType type = govee_detect_type_from_name(device_name);
@@ -282,7 +343,31 @@ static bool govee_decode_adv_data(uint16_t manufacturer_id, const uint8_t* data,
             else if (len == 9) type = BLE_TYPE_GOVEE_H5179;
         } else if (manufacturer_id == 0x0001 && len == 6) {
             type = BLE_TYPE_GOVEE_H5177;
+        } else if ((len == 14 || len == 17 || len == 20) && manufacturer_id != 0x004c) {
+            // Meat thermometers often use vendor-specific IDs, infer by payload shape
+            type = BLE_TYPE_GOVEE_MEAT;
         }
+    }
+
+    // Validate manufacturer + payload length for each decoder to avoid false positives.
+    switch (type) {
+        case BLE_TYPE_GOVEE_H5074:
+            if (!(manufacturer_id == 0xec88 && len == 7)) return false;
+            break;
+        case BLE_TYPE_GOVEE_H5075:
+            if (!(manufacturer_id == 0xec88 && len == 6)) return false;
+            break;
+        case BLE_TYPE_GOVEE_H5179:
+            if (!(manufacturer_id == 0xec88 && len == 9)) return false;
+            break;
+        case BLE_TYPE_GOVEE_H5177:
+            if (!(manufacturer_id == 0x0001 && len == 6)) return false;
+            break;
+        case BLE_TYPE_GOVEE_MEAT:
+            if (!(len == 14 || len == 17 || len == 20)) return false;
+            break;
+        default:
+            return false;
     }
     
     bool success = false;
@@ -298,6 +383,9 @@ static bool govee_decode_adv_data(uint16_t manufacturer_id, const uint8_t* data,
             break;
         case BLE_TYPE_GOVEE_H5177:
             success = govee_decode_h5177(data, len, out_temp, out_hum, out_battery);
+            break;
+        case BLE_TYPE_GOVEE_MEAT:
+            success = govee_decode_meat(data, len, out_temp, out_hum, out_battery);
             break;
         default:
             return false;
@@ -594,6 +682,97 @@ static void ble_copy_stripped(char* dst, size_t dst_len, const char* src) {
     dst[di] = 0;
 }
 
+static bool ble_addr_has_prefix(const uint8_t addr[6], uint8_t b0, uint8_t b1, uint8_t b2) {
+    return addr && addr[0] == b0 && addr[1] == b1 && addr[2] == b2;
+}
+
+static bool ble_addr_is_known_govee(const uint8_t addr[6]) {
+    // Known Govee OUI seen on H5075 devices
+    return ble_addr_has_prefix(addr, 0xA4, 0xC1, 0x38);
+}
+
+static bool ble_is_govee_type(BLESensorType type) {
+    return type == BLE_TYPE_GOVEE_H5074 || type == BLE_TYPE_GOVEE_H5075 ||
+           type == BLE_TYPE_GOVEE_H5177 || type == BLE_TYPE_GOVEE_H5179 ||
+           type == BLE_TYPE_GOVEE_MEAT;
+}
+
+static bool ble_decode_raw_service_data_ec88(BLEAdvertisedDevice& advertisedDevice,
+                                             const char* device_name,
+                                             float* adv_temp, float* adv_hum,
+                                             uint8_t* adv_battery, BLESensorType* sensor_type,
+                                             bool* saw_ec88_service) {
+    const uint8_t* payload = advertisedDevice.getPayload();
+    size_t payload_len = advertisedDevice.getPayloadLength();
+    if (!payload || payload_len < 4) return false;
+
+    size_t idx = 0;
+    while (idx + 1 < payload_len) {
+        uint8_t ad_len = payload[idx];
+        if (ad_len == 0) break;
+
+        // AD structure: [len][type][data...], len excludes first len byte
+        if (idx + 1 + ad_len > payload_len) break;
+
+        uint8_t ad_type = payload[idx + 1];
+        if (ad_type == 0x16 && ad_len >= 3) {
+            const uint8_t* ad_data = payload + idx + 2;
+            uint16_t uuid16 = (uint16_t)ad_data[0] | ((uint16_t)ad_data[1] << 8);
+            if (uuid16 == 0xec88) {
+                if (saw_ec88_service) *saw_ec88_service = true;
+
+                const uint8_t* svc_payload = ad_data + 2;
+                size_t svc_len = (size_t)ad_len - 3;
+
+                DEBUG_PRINT("  ServiceData(raw) UUID: ec88 len=");
+                DEBUG_PRINTLN((int)svc_len);
+
+                // Direct decode first
+                if (govee_decode_adv_data(0xec88, svc_payload, svc_len, device_name,
+                                          adv_temp, adv_hum, adv_battery, sensor_type)) {
+                    return true;
+                }
+
+                // H5075 fallback window decode if service payload has leading bytes
+                BLESensorType name_type = govee_detect_type_from_name(device_name);
+                if (name_type == BLE_TYPE_GOVEE_H5075 && svc_len >= 6) {
+                    for (size_t off = 0; off + 6 <= svc_len && off < 10; off++) {
+                        float t = 0, h = 0;
+                        uint8_t b = 0;
+                        if (govee_decode_h5075(svc_payload + off, 6, &t, &h, &b)) {
+                            if (t > -40.0f && t < 85.0f && h >= 0.0f && h <= 100.0f) {
+                                *adv_temp = t;
+                                *adv_hum = h;
+                                *adv_battery = b;
+                                if (sensor_type) *sensor_type = BLE_TYPE_GOVEE_H5075;
+                                DEBUG_PRINT("  -> Govee raw service-data window decode (off=");
+                                DEBUG_PRINT((int)off);
+                                DEBUG_PRINT("): ");
+                                DEBUG_PRINT(*adv_temp);
+                                DEBUG_PRINT("C, ");
+                                DEBUG_PRINT(*adv_hum);
+                                DEBUG_PRINT("%, Bat:");
+                                DEBUG_PRINTLN(*adv_battery);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        idx += (size_t)ad_len + 1;
+    }
+
+    return false;
+}
+
+static bool ble_is_uuid_ec88_service(const char* uuid_str) {
+    if (!uuid_str || !uuid_str[0]) return false;
+    uint16_t uuid16 = 0;
+    return ble_uuid_extract_16bit(uuid_str, &uuid16) && uuid16 == 0xec88;
+}
+
 // ============================================================================
 // Device Information Service (DIS, 0x180A) Query
 // Reads Manufacturer Name (0x2A29) and Model Number (0x2A24) via GATT
@@ -796,14 +975,25 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     // - Unit 5 (%) → humidity  
     // - Other units → battery
     
-    // Restore last successful read time for auto-disable feature
-    if (obj.containsKey("adv_last_ok")) {
-        adv_last_success_time = obj["adv_last_ok"].as<uint32_t>();
+    // Don't restore adv_last_success_time from persisted state.
+    // Each boot gets a fresh start — the 24h auto-disable countdown
+    // begins only after the first successful read IN THIS SESSION.
+    // This prevents stale timestamps from immediately disabling sensors
+    // that have radio coexistence issues on reboot.
+    // adv_last_success_time stays 0 until first success.
+    
+    // Migration: if sensor was auto-disabled by stale adv_last_ok timestamp,
+    // re-enable it so it gets a fresh chance at data collection.
+    if (obj.containsKey("adv_last_ok") && !flags.enable) {
+        DEBUG_PRINTF("[BLE] Re-enabling auto-disabled sensor: %s\n", name);
+        flags.enable = true;
     }
     
-    // Restore battery level
+    // Restore battery level (UINT32_MAX = not yet measured)
     if (obj.containsKey("battery")) {
         last_battery = obj["battery"].as<uint32_t>();
+    } else {
+        last_battery = UINT32_MAX;
     }
     
     // Restore DIS (Device Information Service) data
@@ -847,8 +1037,8 @@ void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
     // Persist last successful read time for auto-disable feature
     if (adv_last_success_time > 0) obj["adv_last_ok"] = adv_last_success_time;
     
-    // Battery level (consistent with ZigBee: obj["battery"])
-    obj["battery"] = last_battery;
+    // Battery level — only persist when actually measured
+    if (last_battery != UINT32_MAX) obj["battery"] = last_battery;
     
     // Persist DIS (Device Information Service) data (consistent with ZigBee naming: zb_manufacturer/zb_model)
     if (ble_manufacturer[0]) obj["ble_manufacturer"] = ble_manufacturer;
@@ -993,6 +1183,8 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         uint8_t adv_battery = 0;
         BLESensorType sensor_type = BLE_TYPE_UNKNOWN;
         bool has_adv_data = false;
+        bool saw_govee_mfg = false;
+        bool saw_ec88_service = false;
         
         // Check for manufacturer data (where Govee sends sensor readings)
         if (advertisedDevice.haveManufacturerData()) {
@@ -1000,6 +1192,9 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             if (mfg_data.length() >= 2) {
                 // First 2 bytes are manufacturer ID (little-endian)
                 uint16_t mfg_id = (uint8_t)mfg_data[0] | ((uint8_t)mfg_data[1] << 8);
+                if (mfg_id == 0xec88 || mfg_id == 0x0001) {
+                    saw_govee_mfg = true;
+                }
                 const uint8_t* payload = (const uint8_t*)mfg_data.c_str() + 2;
                 size_t payload_len = mfg_data.length() - 2;
                 
@@ -1007,6 +1202,14 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 DEBUG_PRINT(String(mfg_id, HEX).c_str());
                 DEBUG_PRINT(" Data len: ");
                 DEBUG_PRINTLN(payload_len);
+
+                DEBUG_PRINT(" Payload: ");
+                for (size_t i = 0; i < payload_len; i++) {
+                     DEBUG_PRINT(payload[i] < 16 ? "0" : "");
+                     DEBUG_PRINT(String(payload[i], HEX).c_str());
+                     DEBUG_PRINT(" ");
+                }
+                DEBUG_PRINTLN("");
                 
                 has_adv_data = govee_decode_adv_data(mfg_id, payload, payload_len, device_name,
                                                      &adv_temp, &adv_hum, &adv_battery, &sensor_type);
@@ -1021,7 +1224,80 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 }
             }
         }
+
+        // Some Govee models expose current values in Service Data (UUID 0xEC88)
+        // while Manufacturer Data only carries Apple iBeacon (0x004C).
+        if (!has_adv_data && advertisedDevice.haveServiceData()) {
+            int svc_count = advertisedDevice.getServiceDataCount();
+            for (int i = 0; i < svc_count && !has_adv_data; i++) {
+                String svc_uuid_str = advertisedDevice.getServiceDataUUID(i).toString().c_str();
+                uint16_t svc_uuid16 = 0;
+                if (!ble_uuid_extract_16bit(svc_uuid_str.c_str(), &svc_uuid16)) {
+                    continue;
+                }
+                if (svc_uuid16 == 0xec88) {
+                    saw_ec88_service = true;
+                }
+
+                String svc_data = advertisedDevice.getServiceData(i);
+                size_t svc_len = svc_data.length();
+                if (svc_len == 0) {
+                    continue;
+                }
+
+                DEBUG_PRINT("  ServiceData UUID: ");
+                DEBUG_PRINT(svc_uuid_str.c_str());
+                DEBUG_PRINT(" len=");
+                DEBUG_PRINTLN((int)svc_len);
+
+                const uint8_t* svc_payload = (const uint8_t*)svc_data.c_str();
+
+                if (svc_uuid16 == 0xec88) {
+                    // 1) Try direct decode first
+                    has_adv_data = govee_decode_adv_data(0xec88, svc_payload, svc_len, device_name,
+                                                         &adv_temp, &adv_hum, &adv_battery, &sensor_type);
+
+                    // 2) Fallback for H5075-like payloads where service data contains
+                    // extra leading bytes before the 6-byte Govee value block.
+                    if (!has_adv_data) {
+                        BLESensorType name_type = govee_detect_type_from_name(device_name);
+                        if (name_type == BLE_TYPE_GOVEE_H5075 && svc_len >= 6) {
+                            for (size_t off = 0; off + 6 <= svc_len && off < 10 && !has_adv_data; off++) {
+                                float t = 0, h = 0;
+                                uint8_t b = 0;
+                                if (govee_decode_h5075(svc_payload + off, 6, &t, &h, &b)) {
+                                    // Plausibility bounds
+                                    if (t > -40.0f && t < 85.0f && h >= 0.0f && h <= 100.0f) {
+                                        adv_temp = t;
+                                        adv_hum = h;
+                                        adv_battery = b;
+                                        sensor_type = BLE_TYPE_GOVEE_H5075;
+                                        has_adv_data = true;
+                                        DEBUG_PRINT("  -> Govee service-data window decode (off=");
+                                        DEBUG_PRINT((int)off);
+                                        DEBUG_PRINT("): ");
+                                        DEBUG_PRINT(adv_temp);
+                                        DEBUG_PRINT("C, ");
+                                        DEBUG_PRINT(adv_hum);
+                                        DEBUG_PRINT("%, Bat:");
+                                        DEBUG_PRINTLN(adv_battery);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
+        // Raw AD payload fallback: some stack versions don't always populate
+        // service-data vectors for 0x16, but ec88 bytes are still present in payload.
+        if (!has_adv_data) {
+            has_adv_data = ble_decode_raw_service_data_ec88(advertisedDevice, device_name,
+                                                            &adv_temp, &adv_hum, &adv_battery,
+                                                            &sensor_type, &saw_ec88_service);
+        }
+
         // Also try to detect type from name if not yet detected
         if (sensor_type == BLE_TYPE_UNKNOWN) {
             sensor_type = govee_detect_type_from_name(device_name);
@@ -1040,6 +1316,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             
             // ec88 is the Govee service UUID
             if (svc.indexOf("ec88") >= 0 || svc.indexOf("EC88") >= 0) {
+                saw_ec88_service = true;
                 if (sensor_type == BLE_TYPE_UNKNOWN) {
                     sensor_type = BLE_TYPE_GOVEE_H5075; // Default Govee type
                 }
@@ -1058,31 +1335,39 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             DEBUG_PRINT(ble_uuid_to_name(svc.c_str()));
             DEBUG_PRINTLN(")");
         }
-        
-        // FILTER: Only add devices with known sensor type OR advertisement data
-        // This filters out generic BLE devices like phones, headphones, etc.
-        if (sensor_type == BLE_TYPE_UNKNOWN && !has_adv_data) {
-            // Check if name looks like a sensor
-            if (strstr(device_name, "GVH") == nullptr &&
-                strstr(device_name, "Govee") == nullptr &&
-                strstr(device_name, "LYWSD") == nullptr &&
-                strstr(device_name, "MJ_HT") == nullptr &&
-                strstr(device_name, "ATC_") == nullptr &&
-                strstr(device_name, "Temp") == nullptr &&
-                strstr(device_name, "Thermo") == nullptr &&
-                // BMS patterns
-                strstr(device_name, "BMS") == nullptr &&
-                strstr(device_name, "xiaoxiang") == nullptr &&
-                strstr(device_name, "JBD") == nullptr &&
-                strstr(device_name, "DL-") == nullptr &&
-                strstr(device_name, "JK-") == nullptr &&
-                strstr(device_name, "ANT-") == nullptr &&
-                strstr(device_name, "SP0") == nullptr &&
-                strstr(device_name, "SP1") == nullptr) {
-                DEBUG_PRINTLN("  -> Filtered out (not a known sensor)");
-                return; // Skip this device
+
+        // Guard against false positives from corrupted/partial names.
+        // A name-only Govee match is accepted only with additional evidence.
+        if (!has_adv_data && ble_is_govee_type(sensor_type)) {
+            bool has_govee_evidence = saw_ec88_service || saw_govee_mfg || ble_addr_is_known_govee(addr_bytes);
+            if (!has_govee_evidence) {
+                // Don't trust the Govee type detection, but still keep device in list
+                sensor_type = BLE_TYPE_UNKNOWN;
             }
-            sensor_type = BLE_TYPE_GENERIC_GATT; // Mark as generic for later GATT read
+        }
+        
+        // Classify devices with known sensor patterns for auto-detection,
+        // but keep ALL devices in the discovery list so the user can see them.
+        if (sensor_type == BLE_TYPE_UNKNOWN && !has_adv_data) {
+            // Check if name looks like a sensor — if so, mark for GATT read
+            if (strstr(device_name, "GVH") != nullptr ||
+                strstr(device_name, "Govee") != nullptr ||
+                strstr(device_name, "LYWSD") != nullptr ||
+                strstr(device_name, "MJ_HT") != nullptr ||
+                strstr(device_name, "ATC_") != nullptr ||
+                strstr(device_name, "Temp") != nullptr ||
+                strstr(device_name, "Thermo") != nullptr ||
+                // BMS patterns
+                strstr(device_name, "BMS") != nullptr ||
+                strstr(device_name, "xiaoxiang") != nullptr ||
+                strstr(device_name, "JBD") != nullptr ||
+                strstr(device_name, "DL-") != nullptr ||
+                strstr(device_name, "JK-") != nullptr ||
+                strstr(device_name, "ANT-") != nullptr ||
+                strstr(device_name, "SP0") != nullptr ||
+                strstr(device_name, "SP1") != nullptr) {
+                sensor_type = BLE_TYPE_GENERIC_GATT; // Mark as generic for later GATT read
+            }
         }
         
         // Check if device already exists in list
@@ -1118,6 +1403,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             if (sensor_type != BLE_TYPE_UNKNOWN) {
                 existing_device->sensor_type = sensor_type;
             }
+
             DEBUG_PRINTLN("[BLE] ADV update cached device");
         } else {
             // Add new device
@@ -1142,12 +1428,16 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             
             discovered_ble_devices.push_back(new_dev);
 
-            // Queue DIS query for newly discovered device
-            char mac_str[18];
-            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     addr_bytes[0], addr_bytes[1], addr_bytes[2],
-                     addr_bytes[3], addr_bytes[4], addr_bytes[5]);
-            ble_queue_dis_query(mac_str);
+            // Queue DIS query only for likely GATT devices; skip for advertisement-only
+            // sensors (Govee/Xiaomi) and unknown devices (phones, headphones, etc.)
+            // to avoid unnecessary connect/disconnect churn.
+            if (new_dev.sensor_type != BLE_TYPE_UNKNOWN && !sensor_ble_is_adv_sensor(&new_dev)) {
+                char mac_str[18];
+                snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         addr_bytes[0], addr_bytes[1], addr_bytes[2],
+                         addr_bytes[3], addr_bytes[4], addr_bytes[5]);
+                ble_queue_dis_query(mac_str);
+            }
 
             DEBUG_PRINT("New BLE sensor added: ");
             DEBUG_PRINT(new_dev.name);
@@ -1191,7 +1481,7 @@ bool sensor_ble_init()
         if (!pBLEScan) {
             pBLEScan = BLEDevice::getScan();
             DEBUG_PRINTLN("[BLE] Reusing existing NimBLE stack (from Matter) - attaching scan callbacks");
-            pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
+            pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks, true);
             pBLEScan->setActiveScan(true);
             pBLEScan->setInterval(100);
             pBLEScan->setWindow(99);
@@ -1231,7 +1521,7 @@ bool sensor_ble_init()
     // Prepare scan object and callbacks immediately so scanning works when Matter already owns NimBLE
     pBLEScan = BLEDevice::getScan();
     DEBUG_PRINTLN("[BLE] Scan object created after init - attaching callbacks");
-    pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
+    pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks, true);
     pBLEScan->setActiveScan(true); // Active scan preferred for sensor discovery
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);
@@ -1268,9 +1558,12 @@ static void sensor_ble_stop_now() {
     }
 
     // Stop scanning if active
-    if (scanning_active && pBLEScan && pBLEScan->isScanning()) {
-        pBLEScan->stop();
+    if (scanning_active) {
+        if (pBLEScan && pBLEScan->isScanning()) {
+            pBLEScan->stop();
+        }
         scanning_active = false;
+        last_scan_completed_time = millis(); // Scan finished
         ble_scan_start_time = 0;  // Reset timeout timer
         ble_release_scan_lock_if_needed();
     }
@@ -1281,41 +1574,43 @@ static void sensor_ble_stop_now() {
         ble_client = nullptr;
     }
 
-    // WICHTIG: BLE NICHT deinitialisieren im STA-Modus (bleibt dauerhaft aktiv)
-    // BLEDevice::deinit(false); // ENTFERNT - verursacht Konflikte mit Matter
-    // ble_initialized = false;  // ENTFERNT - bleibt initialisiert
-    pBLEScan = nullptr;
+    // BLE bleibt dauerhaft initialisiert — pBLEScan bleibt intakt.
+    // Nur Scan wird gestoppt, kein deinit.
 
+    ble_discovery_mode = false;
+    ble_auto_stop_time = 0;
     DEBUG_PRINTLN("BLE scan stopped (BLE bleibt initialisiert)");
 }
 
 /**
- * @brief Stop BLE subsystem (frees RF resources)
+ * @brief Stop BLE scanning (BLE stays initialized)
+ * Only stops active scanning and disconnects clients.
+ * BLE controller and pBLEScan remain intact for immediate re-use.
  */
 void sensor_ble_stop() {
     if (!ble_initialized) {
         return;
     }
-    // Avoid deinit/free from within BLE callbacks or immediately after connect failures.
-    // Defer stop to the maintenance loop.
-    if (!ble_stop_requested) {
-        DEBUG_PRINTLN("Stopping BLE to free RF resources...");
-    }
-    ble_stop_requested = true;
-    ble_stop_request_time = millis();
+    // Stop scanning immediately (no deferred stop needed since we don't deinit)
+    sensor_ble_stop_now();
 }
 
 /**
  * @brief Start BLE scanning
  */
-void sensor_ble_start_scan(uint16_t duration) {
+void sensor_ble_start_scan(uint16_t duration, bool passive) {
     // sensor_ble_init() already has the full Matter-timing guard,
     // so ble_ensure_initialized() will return false if it's too early.
     if (!ble_ensure_initialized("scan")) {
         return;
     }
 
-    DEBUG_PRINTLN("[BLE] Request to start scan");
+    DEBUG_PRINTF("[BLE] Request to start scan (passive=%d)\n", (int)passive);
+
+    if (!radio_arbiter_allow_ble_scan()) {
+        DEBUG_PRINTLN("[BLE] Scan deferred: web traffic has priority");
+        return;
+    }
 
     if (!ble_access_semaphore) {
         ble_semaphore_init();
@@ -1335,8 +1630,8 @@ void sensor_ble_start_scan(uint16_t duration) {
         // Configure scan only when discovery is requested.
         pBLEScan = BLEDevice::getScan();
         DEBUG_PRINTLN("[BLE] Scan object lazily created on start");
-        pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
-        pBLEScan->setActiveScan(true); // Active scan uses more power but gets more info
+        pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks, true);
+        pBLEScan->setActiveScan(true);
         pBLEScan->setInterval(100);
         pBLEScan->setWindow(99);
     }
@@ -1346,9 +1641,22 @@ void sensor_ble_start_scan(uint16_t duration) {
         ble_release_scan_lock_if_needed();
         return;
     }
-    
-    // Limit discovery time to max 10 seconds to minimize WiFi interference
-    const uint16_t MAX_DISCOVERY_TIME = 10;
+
+    // Passive mode: no SCAN_REQ/RSP overhead → less radio contention with WiFi/Zigbee.
+    // Critical for Govee sensors that send 0xEC88 data in a separate ADV_NONCONN_IND
+    // packet which gets dropped under heavy radio coexistence with 99% BLE duty cycle.
+    if (passive) {
+        pBLEScan->setActiveScan(false);
+        pBLEScan->setInterval(320);  // 200ms interval
+        pBLEScan->setWindow(160);    // 100ms window → 50% duty cycle
+    } else {
+        pBLEScan->setActiveScan(true);
+        pBLEScan->setInterval(100);
+        pBLEScan->setWindow(99);     // 99% duty cycle for discovery
+    }
+
+    // Passive scans can run longer (lower duty cycle → less WiFi impact)
+    const uint16_t MAX_DISCOVERY_TIME = passive ? 15 : 10;
     uint16_t actual_duration = (duration > MAX_DISCOVERY_TIME) ? MAX_DISCOVERY_TIME : duration;
 
     DEBUG_PRINT("Starting BLE scan for ");
@@ -1358,18 +1666,18 @@ void sensor_ble_start_scan(uint16_t duration) {
     // Clear old scan results
     pBLEScan->clearResults();
     
-    // Start scan (non-blocking)
-    pBLEScan->start(actual_duration, false);
-    DEBUG_PRINTLN("[BLE] pBLEScan->start issued");
-    DEBUG_PRINT("[BLE] isScanning after start: ");
-    DEBUG_PRINTLN(pBLEScan->isScanning() ? "yes" : "no");
+    // Start scan — use callback version so we don't block the main loop.
+    // The completion callback sets scanning_active=false and releases the lock.
+    pBLEScan->start(actual_duration, ble_scan_complete_cb, false);
     scanning_active = true;
-    ble_scan_start_time = millis();  // Start timeout timer for this scan
+    ble_scan_start_time = millis();
     scan_end_time = millis() + (actual_duration * 1000);
-    
+
     // Set auto-stop timer
     ble_discovery_mode = true;
     ble_auto_stop_time = millis() + (actual_duration * 1000UL);
+
+    DEBUG_PRINTF("[BLE] Scan started (duration=%ds)\n", actual_duration);
 }
 
 /**
@@ -1387,6 +1695,19 @@ void sensor_ble_loop() {
     }
     
     uint32_t now = millis();
+
+    if (scanning_active && !radio_arbiter_allow_ble_scan() && !ble_in_read) {
+        DEBUG_PRINTLN("[BLE] BLE scan window closed - stopping scan");
+        if (pBLEScan && pBLEScan->isScanning()) {
+            pBLEScan->stop();
+        }
+        scanning_active = false;
+        ble_scan_start_time = 0;
+        ble_discovery_mode = false;
+        ble_auto_stop_time = 0;
+        last_scan_completed_time = now;
+        ble_release_scan_lock_if_needed();
+    }
 
     // =========================================================================
     // HARD TIMEOUT: Force stop BLE scan if it's been running too long
@@ -1416,28 +1737,27 @@ void sensor_ble_loop() {
         }
     }
 
-    // Deferred stop (avoids heap corruption when deinit happens during/after BLE stack activity)
+    // Deferred stop (legacy — now sensor_ble_stop() acts immediately,
+    // but keep the flag handling for any code that still sets ble_stop_requested)
     if (ble_stop_requested && !ble_in_read) {
-        if ((uint32_t)(now - ble_stop_request_time) >= 500) {  // Increased delay to 500ms for stability
-            ble_stop_requested = false;
-            sensor_ble_stop_now();
-            ble_discovery_mode = false;
-            ble_auto_stop_time = 0;
-            scanning_active = false;
-            return;
-        }
+        ble_stop_requested = false;
+        sensor_ble_stop_now();
+        return;
     }
     
-    // Check if discovery mode auto-stop timer expired
+    // Check if discovery mode auto-stop timer expired — only stop scanning
     if (ble_discovery_mode && ble_auto_stop_time > 0) {
         if (now >= ble_auto_stop_time) {
-            DEBUG_PRINTLN("BLE discovery time expired - stopping BLE to free WiFi RF");
-            sensor_ble_stop();
+            DEBUG_PRINTLN("BLE discovery time expired - stopping scan");
+            if (scanning_active && pBLEScan && pBLEScan->isScanning()) {
+                pBLEScan->stop();
+            }
+            scanning_active = false;
+            ble_scan_start_time = 0;
             ble_discovery_mode = false;
             ble_auto_stop_time = 0;
-            scanning_active = false;
             ble_release_scan_lock_if_needed();
-            return; // Exit early since we just stopped
+            return;
         }
     }
     
@@ -1592,6 +1912,17 @@ bool sensor_ble_is_adv_sensor(const BLEDeviceInfo* device) {
  * @param time Current timestamp
  */
 void BLESensor::store_result(double value, unsigned long time) {
+    // Apply user-defined scaling (same behavior as ZigBee/ASB):
+    // value = value * factor / divider + offset2/100
+    if (factor && divider) {
+        value *= (double)factor / (double)divider;
+    } else if (divider) {
+        value /= (double)divider;
+    } else if (factor) {
+        value *= (double)factor;
+    }
+    value += offset2 / 100.0;
+
     flags.data_ok = 1;
     last_data = value;                      // Store as-is (e.g., 34.59 for 34.59°C)
     last_native_data = (int32_t)(value * 100.0);  // Native: integer representation
@@ -1716,6 +2047,64 @@ int BLESensor::read(unsigned long time) {
     }
     
     if (repeat_read == 0) {
+        // Fast-path for advertisement sensors during retry cooldown:
+        // do NOT bring BLE up, optionally use fresh cached data, otherwise keep BLE off.
+        const char* pre_mac_address = mac_address_cfg;
+        if ((!pre_mac_address || pre_mac_address[0] == 0) && ble_is_mac_string(name)) {
+            pre_mac_address = name;
+        }
+
+        char pre_characteristic_uuid[128] = {0};
+        bool pre_has_gatt_config = false;
+        if (characteristic_uuid_cfg[0]) {
+            ble_copy_stripped(pre_characteristic_uuid, sizeof(pre_characteristic_uuid), characteristic_uuid_cfg);
+            pre_has_gatt_config = (pre_characteristic_uuid[0] != 0);
+        } else if (userdef_unit && strlen(userdef_unit) > 0) {
+            uint8_t pre_fmt = (uint8_t)FORMAT_TEMP_001;
+            ble_parse_uuid_and_format_legacy(userdef_unit, pre_characteristic_uuid, sizeof(pre_characteristic_uuid), &pre_fmt);
+            pre_has_gatt_config = (pre_characteristic_uuid[0] != 0);
+        }
+        if (pre_has_gatt_config && ble_is_uuid_ec88_service(pre_characteristic_uuid)) {
+            pre_has_gatt_config = false;
+        }
+
+        if (pre_mac_address && pre_mac_address[0] && ble_is_mac_string(pre_mac_address)) {
+            const BLEDeviceInfo* pre_cached_dev = sensor_ble_find_device(pre_mac_address);
+            bool pre_is_adv_sensor = pre_cached_dev && sensor_ble_is_adv_sensor(pre_cached_dev);
+
+            if (pre_is_adv_sensor && !pre_has_gatt_config && adv_last_attempt > 0) {
+                uint32_t now_ms = millis();
+                uint32_t elapsed_ms = now_ms - adv_last_attempt;
+                uint32_t required_ms = adv_retry_interval * 1000UL;
+
+                if (elapsed_ms < required_ms) {
+                    if (pre_cached_dev->has_adv_data && (now_ms - pre_cached_dev->last_seen < 300000)) {
+                        double parsed_value = ble_select_adv_value(pre_cached_dev, assigned_unitid);
+                        store_result(parsed_value, time);
+                        last_battery = pre_cached_dev->adv_battery;
+                        adv_last_success_time = time;
+                        adv_consecutive_failures = 0;
+                        adv_retry_interval = ADV_RETRY_INITIAL;
+                        if (sensor_ble_is_active()) {
+                            sensor_ble_stop();
+                        }
+                        return HTTP_RQT_NOT_RECEIVED;
+                    }
+
+                    DEBUG_PRINT(F("BLE adv sensor: retry cooldown, "));
+                    DEBUG_PRINT((required_ms - elapsed_ms) / 1000);
+                    DEBUG_PRINTLN(F("s remaining"));
+
+                    if (sensor_ble_is_active()) {
+                        sensor_ble_stop();
+                    }
+                    flags.data_ok = false;
+                    last_read = time;
+                    return HTTP_RQT_NOT_RECEIVED;
+                }
+            }
+        }
+
         bool ble_lock_acquired = ble_sensor_lock_acquire(500);
         if (!ble_lock_acquired) {
             DEBUG_PRINTLN(F("[BLE] Read skipped: semaphore busy"));
@@ -1844,6 +2233,14 @@ int BLESensor::read(unsigned long time) {
             ble_parse_uuid_and_format_legacy(userdef_unit, characteristic_uuid, sizeof(characteristic_uuid), &fmt);
             format = (PayloadFormat)fmt;
         }
+        bool has_gatt_config = (characteristic_uuid[0] != 0);
+
+        // For known advertisement-based sensors, service UUIDs like ec88 are not
+        // readable characteristics. Treat them as no explicit GATT config.
+        if (has_gatt_config && ble_is_uuid_ec88_service(characteristic_uuid)) {
+            has_gatt_config = false;
+            characteristic_uuid[0] = 0;  // Clear so GATT path won't attempt connect
+        }
         
         if (!mac_address || mac_address[0] == 0 || !ble_is_mac_string(mac_address)) {
             DEBUG_PRINTLN(F("ERROR: BLE MAC address not configured/invalid (mac field)"));
@@ -1864,7 +2261,7 @@ int BLESensor::read(unsigned long time) {
         bool is_adv_sensor = cached_dev && sensor_ble_is_adv_sensor(cached_dev);
         
         // For adv sensors: Check if we're within the retry cooldown period
-        if (is_adv_sensor && adv_last_attempt > 0) {
+        if (is_adv_sensor && !has_gatt_config && adv_last_attempt > 0) {
             uint32_t now_ms = millis();
             uint32_t elapsed_ms = now_ms - adv_last_attempt;
             uint32_t required_ms = adv_retry_interval * 1000UL;
@@ -1881,6 +2278,10 @@ int BLESensor::read(unsigned long time) {
                 DEBUG_PRINT(F("BLE adv sensor: retry cooldown, "));
                 DEBUG_PRINT((required_ms - elapsed_ms) / 1000);
                 DEBUG_PRINTLN(F("s remaining"));
+
+                if (sensor_ble_is_active()) {
+                    sensor_ble_stop();
+                }
                 
                 ble_in_read = false;
                 release_lock();
@@ -1894,7 +2295,7 @@ int BLESensor::read(unsigned long time) {
             // Device not in cache - need to scan to discover it
             DEBUG_PRINTLN(F("Device not in cache, starting discovery scan..."));
             needs_scan = true;
-        } else if (is_adv_sensor) {
+        } else if (is_adv_sensor && !has_gatt_config) {
             // Known advertisement-based sensor - check if data is fresh
             if (!cached_dev->has_adv_data || (millis() - cached_dev->last_seen > 300000)) {
                 DEBUG_PRINTLN(F("Advertisement sensor needs fresh data, starting scan..."));
@@ -1903,33 +2304,73 @@ int BLESensor::read(unsigned long time) {
         }
         
         if (needs_scan) {
-            // Record this attempt for retry timing
-            adv_last_attempt = millis();
-            
-            DEBUG_PRINTLN(F("Starting BLE scan for sensor discovery..."));
-            sensor_ble_start_scan(5); // 5 second scan
-            
-            // Wait for scan to complete (blocking, but short)
-            // CRITICAL: Use timeout to prevent indefinite blocking
-            uint32_t scan_start = millis();
-            const uint32_t SCAN_TIMEOUT = 7000; // 7 seconds max (5s scan + 2s buffer)
-            while (scanning_active && (millis() - scan_start < SCAN_TIMEOUT)) {
-                delay(100);
-                sensor_ble_loop();
+            if (!radio_arbiter_allow_ble_scan()) {
+                // Short retry (5s) so the next attempt lands inside a BLE window
+                const uint32_t BLE_DEFERRED_RETRY_S = 5;
+                DEBUG_PRINTF("[BLE] %s: scan deferred (web priority), retry in %ds\n",
+                             name, (int)BLE_DEFERRED_RETRY_S);
+                last_read = (time > read_interval - BLE_DEFERRED_RETRY_S)
+                    ? time - read_interval + BLE_DEFERRED_RETRY_S : 1;
+                adv_last_attempt = millis();  // activate retry cooldown
+                adv_retry_interval = BLE_DEFERRED_RETRY_S;  // short internal cooldown too
+                flags.data_ok = false;
+                ble_in_read = false;
+                release_lock();
+                return HTTP_RQT_NOT_RECEIVED;
             }
-            
-            // Force stop scan if it didn't complete (prevents WiFi blocking)
+
+            // If a scan is already running, just wait for it to finish
             if (scanning_active) {
-                DEBUG_PRINTLN(F("Force stopping BLE scan (timeout)"));
-                if (pBLEScan && pBLEScan->isScanning()) {
-                    pBLEScan->stop();
-                }
-                scanning_active = false;
+                DEBUG_PRINTLN(F("[BLE] Scan already running, will retry after completion"));
+                // Retry in 2s — scan should finish soon
+                const uint32_t SCAN_WAIT_RETRY_S = 2;
+                last_read = (time > read_interval - SCAN_WAIT_RETRY_S)
+                    ? time - read_interval + SCAN_WAIT_RETRY_S : 1;
+                flags.data_ok = false;
+                ble_in_read = false;
+                release_lock();
+                return HTTP_RQT_NOT_RECEIVED;
+            }
+
+            // Check global scan cooldown (prevent scan storms when multiple sensors missing)
+            if (last_scan_completed_time > 0 && (millis() - last_scan_completed_time < 15000)) { 
+                DEBUG_PRINTLN(F("Skipping BLE scan (global cooldown active)"));
+            } else {
+                adv_last_attempt = millis();
+                
+                // Always use passive scan for sensor data collection.
+                // Passive mode avoids SCAN_REQ/RSP overhead, giving WiFi/Zigbee
+                // more radio time on the shared ESP32-C5 antenna.
+                // Critical for Govee: the 0xEC88 data is in a separate ADV_NONCONN_IND
+                // that gets lost with 99% duty active scanning under radio coexistence.
+                bool passive_mode = true;
+                uint16_t scan_duration = 15;
+                DEBUG_PRINTF("Starting BLE scan (%s, %ds)...\n",
+                             passive_mode ? "passive/data" : "active/discovery", scan_duration);
+                sensor_ble_start_scan(scan_duration, passive_mode);
+                
+                // scan runs in background — don't block the main loop!
+                // Retry after scan completes + buffer
+                const uint32_t SCAN_RETRY_S = 17;
+                last_read = (time > read_interval - SCAN_RETRY_S)
+                    ? time - read_interval + SCAN_RETRY_S : 1;
+                adv_retry_interval = SCAN_RETRY_S;
+                flags.data_ok = false;
+                ble_in_read = false;
+                release_lock();
+                return HTTP_RQT_NOT_RECEIVED;
             }
             
-            // Re-check cache after scan
+            // Re-check cache (scan completed via cooldown path or earlier scan)
             cached_dev = sensor_ble_find_device(mac_address);
             is_adv_sensor = cached_dev && sensor_ble_is_adv_sensor(cached_dev);
+
+            if (is_adv_sensor && has_gatt_config && cached_dev) {
+                if (ble_is_uuid_ec88_service(characteristic_uuid_cfg) ||
+                    (cached_dev->service_uuid[0] && strcasecmp(characteristic_uuid_cfg, cached_dev->service_uuid) == 0)) {
+                    has_gatt_config = false;
+                }
+            }
             
             if (cached_dev) {
                 DEBUG_PRINT(F("Found device after scan: "));
@@ -1964,8 +2405,13 @@ int BLESensor::read(unsigned long time) {
         }
         
         // If it's a known advertisement sensor but we couldn't get data, fail with retry
-        if (is_adv_sensor) {
+        // unless we have explicit GATT config and can fall back to characteristic read.
+        if (is_adv_sensor && !has_gatt_config) {
             return fail_adv("No advertisement data received");
+        }
+
+        if (is_adv_sensor && has_gatt_config) {
+            DEBUG_PRINTLN(F("No advertisement payload available - falling back to GATT read"));
         }
         
         // =====================================================================
@@ -2103,10 +2549,13 @@ int BLESensor::read(unsigned long time) {
         // Need to connect and read characteristic
         // =====================================================================
         
-        if (strlen(characteristic_uuid) == 0) {
-            DEBUG_PRINTLN(F("ERROR: BLE characteristic UUID not configured (char_uuid/uuid or legacy unit)"));
-            flags.enable = false;
-            return fail(nullptr, true);
+        if (!has_gatt_config || strlen(characteristic_uuid) == 0) {
+            // No readable GATT characteristic configured.
+            // For ADV-only sensors (Govee ec88 etc.) this is expected - return retry.
+            DEBUG_PRINTLN(F("No readable GATT characteristic - ADV-only sensor, waiting for scan data"));
+            ble_in_read = false;
+            release_lock();
+            return HTTP_RQT_NOT_RECEIVED;
         }
         
         DEBUG_PRINT("Reading BLE sensor: ");
@@ -2255,7 +2704,7 @@ bool sensor_ble_reinit_after_matter() {
     pBLEScan = BLEDevice::getScan();
     if (pBLEScan) {
         DEBUG_PRINTLN("[BLE] Reinit after Matter - attaching scan callbacks");
-        pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks);
+        pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks, true);
         pBLEScan->setActiveScan(true);
         pBLEScan->setInterval(100);
         pBLEScan->setWindow(99);

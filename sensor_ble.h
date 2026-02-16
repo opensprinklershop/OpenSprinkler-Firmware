@@ -114,7 +114,7 @@ public:
     bool dis_info_queried = false;    // Runtime flag: DIS data available
     
     // Battery level (runtime, from advertisement or BMS data)
-    uint32_t last_battery = 0;        // Last reported battery level (0-100%)
+    uint32_t last_battery = UINT32_MAX; // UINT32_MAX = not yet measured
     
     // For advertisement-based sensors (Govee etc.): which value to report
     // Uses assigned_unitid from base class:
@@ -196,7 +196,7 @@ void sensor_ble_stop();
  * @brief Start BLE scanning for devices
  * @param duration Duration in seconds (default: 5)
  */
-void sensor_ble_start_scan(uint16_t duration = 5);
+void sensor_ble_start_scan(uint16_t duration = 5, bool passive = false);
 
 /**
  * @brief BLE maintenance loop (call periodically from main loop)

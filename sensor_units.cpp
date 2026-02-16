@@ -210,25 +210,6 @@ unsigned char WeatherSensor::getUnitId() const {
 }
 
 /**
- * @brief Get measurement unit for Internal system sensor
- * @return Unit ID based on system metric type (USERDEF for memory/storage, DEGREE for temperature)
- * @note Platform-specific metrics (ESP has memory, OSPI has CPU temperature)
- */
-#include "sensor_internal.h"
-unsigned char InternalSensor::getUnitId() const {
-  switch (type) {
-#if defined(ESP8266) || defined(ESP32)
-    case SENSOR_FREE_MEMORY:
-    case SENSOR_FREE_STORE: return UNIT_USERDEF;
-#endif
-#if defined(OSPI)
-    case SENSOR_INTERNAL_TEMP: return UNIT_DEGREE;
-#endif
-    default: return UNIT_NONE;
-  }
-}
-
-/**
  * @brief Get measurement unit for OSPI BLE sensor
  * @return Unit ID based on BLE sensor type (DEGREE, PERCENT, PASCAL)
  * @note Supports temperature, humidity and pressure sensors via BlueZ

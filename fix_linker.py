@@ -75,8 +75,15 @@ def fix_linker_command(env):
         gcc_linker = cc_cmd if cc_cmd else "riscv32-esp-elf-gcc"
         env.Replace(LINK=gcc_linker)
 
+        # Remove any -fno-lto from LINKFLAGS (pioarduino-build.py may set it)
+        linkflags = env.get("LINKFLAGS", [])
+        filtered = [f for f in linkflags if str(f) != "-fno-lto"]
+        if len(filtered) != len(linkflags):
+            env.Replace(LINKFLAGS=filtered)
+            print("Removed -fno-lto from LINKFLAGS")
+
         # Ensure LTO flags are passed to linker via GCC
-        env.Append(LINKFLAGS=["-flto"])
+        env.Append(LINKFLAGS=["-flto=auto"])
 
         print(f"Linker set to: {gcc_linker}")
 
@@ -107,6 +114,7 @@ def configure_zigbee_libs(env):
             # Try common library paths in order of preference
             lib_paths = [
                 os.path.join(framework_dir, mcu, "lib"),  # Primary location
+                os.path.join(framework_dir, mcu, "qio_qspi", "lib"),  # Official release layout
                 os.path.join(framework_dir, mcu, "dio_qspi", "lib"),
                 os.path.join(framework_dir, mcu, "dio", "lib"),
             ]
@@ -139,6 +147,7 @@ def configure_zigbee_libs(env):
         "zboss_stack.ed",              # ZBOSS End Device Stack (WiFi compatible!)
         "zboss_port.native",           # ZBOSS Port Layer (native, not remote)
         "ieee802154",                  # IEEE 802.15.4 MAC layer
+        "esp_hal_ieee802154",          # IEEE 802.15.4 HAL peripheral defs (IDF 5.5.2+)
         "espressif__esp-zigbee-lib",   # Zigbee helper library
     ]
     

@@ -22,6 +22,7 @@
  */
 
 #include "psram_utils.h"
+#include "defines.h"
 
 #if defined(ESP32) && defined(BOARD_HAS_PSRAM)
 
@@ -30,7 +31,6 @@
 #include <esp_heap_caps_init.h>
 #include <esp_idf_version.h>
 #include <mbedtls/platform.h>
-#include "defines.h"
 
 // heap_caps_malloc_extmem_enable() lowers the ALWAYSINTERNAL threshold at runtime
 extern "C" void heap_caps_malloc_extmem_enable(size_t limit);

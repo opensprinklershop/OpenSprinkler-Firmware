@@ -37,6 +37,7 @@
 #include "sensor_fyta.h"
 #include "sensor_mqtt.h"
 #include "LinkedMap.h"
+#include "radio_arbiter.h"
 
 #if defined(ESP32) && defined(OS_ENABLE_BLE)
 #include "sensor_ble.h"
@@ -282,6 +283,7 @@ void send_packet(OTF_PARAMS_DEF) {
 	int len = (int)bfill.position();
 	if (len > 0) {
 		res.writeBodyData(ether_buffer, len);
+		radio_arbiter_mark_web_activity();
 	}
 	if (otf != nullptr) {
 		otf->pollCloud();
@@ -290,6 +292,7 @@ void send_packet(OTF_PARAMS_DEF) {
 	int len = (int)bfill.position();
 	if (len > 0 && m_client) {
 		m_client->write((const uint8_t *)ether_buffer, len);
+		radio_arbiter_mark_web_activity();
 	}
 #endif
 	rewind_ether_buffer();
@@ -4245,6 +4248,7 @@ void server_influx_get_main() {
  * @brief Get IEEE 802.15.4 radio configuration
  * Returns JSON with all available modes and the active mode:
  *   {"activeMode":1, "activeModeName":"matter",
+ *    "bootVariant":1, "bootVariantName":"otf1",
  *    "modes":[{"id":0,"name":"disabled"},{"id":1,"name":"matter"},
  *             {"id":2,"name":"zigbee_gateway"},{"id":3,"name":"zigbee_client"}],
  *    "enabled":1, "matter":1, "zigbee":0, "zigbee_gw":0, "zigbee_client":0}
@@ -4259,10 +4263,14 @@ void server_ieee802154_get(OTF_PARAMS_DEF) {
 #endif
 
 	IEEE802154Mode mode = ieee802154_get_mode();
+	IEEE802154BootVariant boot_variant = ieee802154_get_boot_variant();
 	bfill.emit_p(PSTR("{\"activeMode\":$D,\"activeModeName\":\"$S\","
+	                   "\"bootVariant\":$D,\"bootVariantName\":\"$S\","
 	                   "\"modes\":["),
 	             static_cast<uint8_t>(mode),
-	             ieee802154_mode_name(mode));
+	             ieee802154_mode_name(mode),
+	             static_cast<uint8_t>(boot_variant),
+	             ieee802154_boot_variant_name(boot_variant));
 
 	// List all possible IEEE 802.15.4 modes
 	for (uint8_t i = 0; i <= 3; i++) {
@@ -4320,16 +4328,28 @@ void server_ieee802154_set(OTF_PARAMS_DEF) {
 	}
 
 	IEEE802154Mode new_mode = static_cast<IEEE802154Mode>(mode_val);
+	IEEE802154BootVariant target_boot_variant = ieee802154_boot_variant_for_mode(new_mode);
 
-	if (!ieee802154_save_mode(new_mode)) {
+	if (!ieee802154_select_otf_boot_variant(target_boot_variant)) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"failed to select boot variant\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	if (!ieee802154_save_config(new_mode, target_boot_variant)) {
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"failed to save config\"}"));
 		send_packet(OTF_PARAMS);
 		handle_return(HTML_OK);
 		return;
 	}
 
-	bfill.emit_p(PSTR("{\"result\":1,\"mode\":$D,\"mode_name\":\"$S\",\"reboot\":1}"),
-	             mode_val, ieee802154_mode_name(new_mode));
+	bfill.emit_p(PSTR("{\"result\":1,\"mode\":$D,\"mode_name\":\"$S\","
+	                   "\"bootVariant\":$D,\"bootVariantName\":\"$S\",\"reboot\":1}"),
+	             mode_val,
+	             ieee802154_mode_name(new_mode),
+	             static_cast<uint8_t>(target_boot_variant),
+	             ieee802154_boot_variant_name(target_boot_variant));
 	send_packet(OTF_PARAMS);
 
 	// Schedule reboot after sending the response
@@ -4666,7 +4686,7 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 		const char* mdl = devices[i].model;
 		if (!mdl) mdl = "";
 
-		bfill.emit_p(PSTR("{\"address\":\"$S\",\"name\":\"$S\",\"rssi\":$D,\"is_new\":$D,\"service_uuid\":\"$S\",\"service_name\":\"$S\",\"manufacturer\":\"$S\",\"model\":\"$S\"}"),
+		bfill.emit_p(PSTR("{\"address\":\"$S\",\"name\":\"$S\",\"rssi\":$D,\"is_new\":$D,\"service_uuid\":\"$S\",\"service_name\":\"$S\",\"manufacturer\":\"$S\",\"model\":\"$S\",\"battery\":$D}"),
 		             addr_str,
 		             devices[i].name,
 		             devices[i].rssi,
@@ -4674,7 +4694,8 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 		             svc_uuid,
 		             svc_name,
 		             mfr,
-		             mdl);
+		             mdl,
+		             devices[i].has_adv_data ? devices[i].adv_battery : 0);
 	}
 	
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);
