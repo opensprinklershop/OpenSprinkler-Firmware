@@ -2611,11 +2611,11 @@ static void check_network() {
 		
 #if defined(ARDUINO)
 		// ESP8266 / ESP32: Check WiFi or Ethernet connectivity		
-		if (useEth && (!eth.connected() || !eth.gatewayIP() || !eth.gatewayIP().isSet())) {
+		if (useEth && (!eth.connected() || !eth.gatewayIP() || !(bool)eth.gatewayIP())) {
 			os.status.network_fails++;
 			return;
 		}
-		if (!useEth && (!WiFi.isConnected() || !WiFi.gatewayIP() || !WiFi.gatewayIP().isSet() || os.get_wifi_mode()==WIFI_MODE_AP)) {
+		if (!useEth && (!WiFi.isConnected() || !WiFi.gatewayIP() || !(bool)WiFi.gatewayIP() || os.get_wifi_mode()==WIFI_MODE_AP)) {
 			os.status.network_fails++;
 			return;
 		}
