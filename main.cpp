@@ -80,6 +80,8 @@
 		#include <esp_flash.h>
 		#include <hal/spi_types.h>
 		#include <esp_flash_spi_init.h>
+		#include "Pinger.h"
+		Pinger *pinger = NULL;
 		WebServer *update_server = NULL;
 
 		DNSServer *dns = NULL;
@@ -94,6 +96,8 @@
 	#endif
 	unsigned long getNtpTime();
 #else // header and defs for RPI/Linux
+	#include "Pinger.h"
+	Pinger *pinger = NULL;
 	bool useEth = false;
 #endif
 
@@ -2434,6 +2438,11 @@ void delete_log(char *name) {
  * to check if it's still online.
  * If not, it re-initializes Ethernet controller.
  */
+/** Perform network check
+ * This function pings the router/gateway
+ * to check if it's still online.
+ * Unified implementation for ESP8266, ESP32, and Linux/OSPi
+ */
 static void check_network() {
 #if defined(OS_AVR)
 	// do not perform network checking if the controller has just started, or if a program is running
@@ -2448,23 +2457,10 @@ static void check_network() {
 			os.lcd.write('>');
 		}
 
-
 		boolean failed = false;
 		// todo: ping gateway ip
-		/*ether.clientIcmpRequest(ether.gwip);
-		ulong start = millis();
-		// wait at most PING_TIMEOUT milliseconds for ping result
-		do {
-			ether.packetLoop(ether.packetReceive());
-			if (ether.packetLoopIcmpCheckReply(ether.gwip)) {
-				failed = false;
-				break;
-			}
-		} while((long)(millis() - start) < PING_TIMEOUT);*/
 		if (failed)  {
 			if(os.status.network_fails<3)  os.status.network_fails++;
-			// clamp it to 6
-			//if (os.status.network_fails > 6) os.status.network_fails = 6;
 		}
 		else os.status.network_fails=0;
 		// if failed more than 3 times, restart
@@ -2479,7 +2475,7 @@ static void check_network() {
 		}
 	}
 #endif
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
 	if (os.status.program_busy) {return;}
 
 	if (os.status.req_network) {
@@ -2495,14 +2491,26 @@ static void check_network() {
 #if defined(ENABLE_DEBUG)
 			pinger->OnReceive([](const PingerResponse& response) {
     			if (response.ReceivedResponse) {
+#if defined(ARDUINO)
       				Serial.printf(
         				"Reply from %s: bytes=%d time=%ums TTL=%d\r\n",
         			response.DestIPAddress.toString().c_str(),
         			response.EchoMessageSize - sizeof(struct icmp_echo_hdr),
         			response.ResponseTime,
         			response.TimeToLive);
+#else
+					printf("Reply from %s: bytes=%u time=%ums TTL=%u\n",
+						response.DestIPAddress.toString().c_str(),
+						response.EchoMessageSize,
+						response.ResponseTime,
+						response.TimeToLive);
+#endif
     			} else {
+#if defined(ARDUINO)
       				Serial.printf("Request timed out.\r\n");
+#else
+					printf("Request timed out.\n");
+#endif
     			}
 
     			// Return true to continue the ping sequence.
@@ -2519,6 +2527,7 @@ static void check_network() {
       				loss = (response.TotalSentRequests - response.TotalReceivedResponses) * 100 / response.TotalSentRequests;
     			}
 
+#if defined(ARDUINO)
     			// Print packet trip data
     			Serial.printf("Ping statistics for %s:\r\n",
       			response.DestIPAddress.toString().c_str());
@@ -2550,6 +2559,32 @@ static void check_network() {
       				Serial.printf("    DNS name: %s\r\n",
         			response.DestHostname.c_str());
     			}
+#else
+				// Linux/OSPi output
+				printf("Ping statistics for %s:\n",
+					response.DestIPAddress.toString().c_str());
+				printf("    Packets: Sent = %u, Received = %u, Lost = %u (%.2f%% loss),\n",
+					response.TotalSentRequests,
+					response.TotalReceivedResponses,
+					response.TotalSentRequests - response.TotalReceivedResponses,
+					loss);
+
+				if(response.TotalReceivedResponses > 0) {
+					printf("Approximate round trip times in milli-seconds:\n");
+					printf("    Minimum = %ums, Maximum = %ums, Average = %.2fms\n",
+						response.MinResponseTime,
+						response.MaxResponseTime,
+						response.AvgResponseTime);
+				}
+
+				printf("Destination host data:\n");
+				printf("    IP address: %s\n",
+					response.DestIPAddress.toString().c_str());
+				if(response.DestHostname != nullptr && response.DestHostname != "") {
+					printf("    DNS name: %s\n",
+						response.DestHostname.c_str());
+				}
+#endif
 #endif
 				boolean failed = response.TotalSentRequests > response.TotalReceivedResponses;
 
@@ -2561,8 +2596,6 @@ static void check_network() {
 
 				if (failed)  {
 					if(os.status.network_fails<3)  os.status.network_fails++;
-					// clamp it to 6
-					//if (os.status.network_fails > 6) os.status.network_fails = 6;
 				}
 				else os.status.network_fails=0;
 				// if failed more than 3 times, restart
@@ -2575,6 +2608,9 @@ static void check_network() {
     			return true;
 			});
 		}
+		
+#if defined(ARDUINO)
+		// ESP8266 / ESP32: Check WiFi or Ethernet connectivity		
 		if (useEth && (!eth.connected() || !eth.gatewayIP() || !eth.gatewayIP().isSet())) {
 			os.status.network_fails++;
 			return;
@@ -2583,11 +2619,20 @@ static void check_network() {
 			os.status.network_fails++;
 			return;
 		}
+#else
+		// Linux/OSPi: Basic network check (could be enhanced with actual interface checks)
+		// For now, we simply proceed to ping test
+#endif
 
 		boolean ping_ok = false;
 		switch(os.status.network_fails % 3) {
 			case 0:
+#if defined(ARDUINO)
 				ping_ok = pinger->Ping(useEth?eth.gatewayIP() : WiFi.gatewayIP());
+#else
+				// Linux: ping common DNS server (Google DNS) as gateway
+				ping_ok = pinger->Ping("8.8.8.8");
+#endif
 				break;
 			case 1:
 				ping_ok = pinger->Ping("google.com");
@@ -2599,13 +2644,16 @@ static void check_network() {
 		if(!ping_ok) {
 			os.status.network_fails++;
 #if defined(ENABLE_DEBUG)
+#if defined(ARDUINO)
     		Serial.println("Error during last ping command.");
+#else
+			printf("Error during last ping command.\n");
+#endif
 #endif
   		}
 	}
 #endif
 }
-
 /** Perform NTP sync */
 static void perform_ntp_sync() {
 #if defined(ARDUINO)
