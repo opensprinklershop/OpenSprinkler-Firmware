@@ -958,20 +958,13 @@ void do_loop()
 
 	case OS_STATE_CONNECTED:
 		if(os.get_wifi_mode() == WIFI_MODE_AP) {
+			// AP mode: handle DNS and HTTP requests for captive portal
 			dns->processNextRequest();
 			update_server->handleClient();
 			otf->loop();
 			connecting_timeout = 0;
-			if(os.get_wifi_mode()==WIFI_MODE_STA) {
-				// already in STA mode, waiting to reboot
-				break;
-			}
-			if(WiFi.status()==WL_CONNECTED && WiFi.localIP() && reboot_timer!=0) {
-				DEBUG_PRINTLN(F("STA connected, set up reboot timer"));
-				reboot_timer = os.now_tz() + 10;
-				//os.reboot_dev(REBOOT_CAUSE_WIFIDONE);
-			}
 		} else {
+			// STA or Ethernet mode: handle regular server operations
 			if(useEth || WiFi.status() == WL_CONNECTED) {
 				update_server->handleClient();
 				otf->loop();
