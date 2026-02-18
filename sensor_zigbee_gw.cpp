@@ -78,6 +78,7 @@ static uint16_t gw_basic_query_attrs[2] = {
 };
 static bool     gw_basic_query_pending = false;
 static unsigned long gw_basic_query_time = 0;
+static uint16_t gw_basic_query_short_addr = 0;
 #define GW_BASIC_QUERY_TIMEOUT_MS   10000  // 10 seconds
 #define GW_BASIC_QUERY_DELAY_MS     3000   // Wait 3s after discovery before querying
 
@@ -525,22 +526,39 @@ public:
         _ep_config.app_device_version = 0;
         
         DEBUG_PRINTLN(F("[ZIGBEE-GW] Report receiver endpoint created (full cluster config)"));
+
+        // Allow multiple device bindings so findEndpoint() is called for every
+        // new device announcement, not just the first one.
+        _allow_multiple_binding = true;
     }
     
     virtual ~GwZigbeeReportReceiver() = default;
+
+    // Called by ZigbeeCore when a new device announces itself (DEVICE_ANNCE).
+    // Immediately add the device to the discovered list so it shows up in scans.
+    void findEndpoint(esp_zb_zdo_match_desc_req_param_t *cmd_req) override {
+        if (!cmd_req) return;
+        uint16_t short_addr = cmd_req->dst_nwk_addr;
+        DEBUG_PRINTF("[ZIGBEE-GW] Device announced: short=0x%04X\n", short_addr);
+        gw_resolve_ieee(short_addr);
+    }
+
+    // Override zbReadBasicCluster to handle Basic Cluster read responses ourselves.
+    // The base class implementation calls xSemaphoreGive(lock), but 'lock' may be
+    // uninitialised due to an Arduino Zigbee library bug (ZigbeeEP constructor
+    // checks 'if (!lock)' before ever assigning it, so heap-poisoned memory
+    // 0xfefefefe is treated as valid → crash in xQueueGenericSend).
+    void zbReadBasicCluster(const esp_zb_zcl_attribute_t *attribute) override {
+        if (!attribute) return;
+        gw_basic_query_pending = false;
+        gw_handleBasicClusterResponse(gw_basic_query_short_addr, attribute);
+    }
 
     virtual void zbAttributeRead(uint16_t cluster_id, const esp_zb_zcl_attribute_t *attribute,
                                   uint8_t src_endpoint, esp_zb_zcl_addr_t src_address) override {
         if (!attribute) {
             DEBUG_PRINTLN(F("[ZIGBEE-GW] zbAttributeRead called with NULL attribute!"));
             return;
-        }
-        
-        // Handle Basic Cluster responses (string attributes: manufacturer/model)
-        if (cluster_id == ZB_ZCL_CLUSTER_ID_BASIC) {
-            gw_basic_query_pending = false;
-            gw_handleBasicClusterResponse(src_address.u.short_addr, attribute);
-            return;  // Don't cache as sensor data
         }
 
         gw_read_pending = false;
@@ -680,6 +698,7 @@ static bool gw_query_basic_cluster_internal(uint16_t short_addr, uint8_t endpoin
     esp_zb_zcl_read_attr_cmd_req(&read_req);
     gw_basic_query_pending = true;
     gw_basic_query_time = millis();
+    gw_basic_query_short_addr = short_addr;
     esp_zb_lock_release();
     
     DEBUG_PRINTLN(F("[ZIGBEE-GW] Basic Cluster read request sent (ManufacturerName + ModelIdentifier)"));
@@ -1085,32 +1104,8 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
     pending_report_count = write_idx;
 }
 
-// Track when the join window closes so PTI can be lowered
+// Track when the join window closes so radio lock can be released
 static unsigned long gw_join_window_end = 0;
-
-static void gw_set_zigbee_pti_high() {
-    if (WiFi.getMode() == WIFI_MODE_NULL) return;
-    esp_ieee802154_coex_config_t coex_cfg = {
-        .idle    = IEEE802154_IDLE,
-        .txrx    = IEEE802154_HIGH,
-        .txrx_at = IEEE802154_HIGH,
-    };
-    esp_ieee802154_set_coex_config(coex_cfg);
-    esp_coex_ieee802154_ack_pti_set(IEEE802154_HIGH);
-    DEBUG_PRINTLN(F("[ZIGBEE-GW] PTI boosted to HIGH for device joining"));
-}
-
-static void gw_set_zigbee_pti_low() {
-    if (WiFi.getMode() == WIFI_MODE_NULL) return;
-    esp_ieee802154_coex_config_t coex_cfg = {
-        .idle    = IEEE802154_IDLE,
-        .txrx    = IEEE802154_LOW,
-        .txrx_at = IEEE802154_LOW,
-    };
-    esp_ieee802154_set_coex_config(coex_cfg);
-    esp_coex_ieee802154_ack_pti_set(IEEE802154_LOW);
-    DEBUG_PRINTLN(F("[ZIGBEE-GW] PTI restored to LOW (WiFi-friendly)"));
-}
 
 void sensor_zigbee_gw_open_network(uint16_t duration) {
     if (!gw_zigbee_initialized) {
@@ -1124,12 +1119,14 @@ void sensor_zigbee_gw_open_network(uint16_t duration) {
     uint8_t dur = (duration > 254) ? 254 : (uint8_t)duration;
     DEBUG_PRINTF("[ZIGBEE-GW] Opening network for %d seconds (permit join)\n", dur);
 
-    // Boost Zigbee priority during join window so devices can pair reliably
-    gw_set_zigbee_pti_high();
-    gw_join_window_end = millis() + (unsigned long)dur * 1000UL;
+    // Acquire exclusive radio ownership for the scan window
+    unsigned long window_ms = (unsigned long)dur * 1000UL;
+    if (!radio_arbiter_acquire(RADIO_OWNER_ZIGBEE_SCAN, window_ms + 2000)) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] open_network: radio busy, cannot acquire lock"));
+        return;
+    }
+    gw_join_window_end = millis() + window_ms;
 
-    // Must acquire Zigbee lock — this function is called from the HTTP server
-    // task, but esp_zb_bdb_open_network() must run in the Zigbee task context.
     esp_zb_lock_acquire(portMAX_DELAY);
     Zigbee.openNetwork(dur);
     esp_zb_lock_release();
@@ -1167,10 +1164,13 @@ void sensor_zigbee_gw_loop() {
     // Zigbee.stop() + Zigbee.begin() restart (causes Load access fault).
     // Once started, Zigbee stays running until reboot.
 
-    // Restore LOW PTI after join window expires
+    // Release radio lock and restore WiFi after join window expires
     if (gw_join_window_end != 0 && millis() > gw_join_window_end) {
-        gw_set_zigbee_pti_low();
+        radio_arbiter_release(RADIO_OWNER_ZIGBEE_SCAN);
         gw_join_window_end = 0;
+        // Ensure WiFi reconnects after Zigbee scan took priority
+        radio_arbiter_ensure_wifi();
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Join window closed, radio released, WiFi recovery triggered"));
     }
 
     // Process pending Basic Cluster queries for newly discovered devices

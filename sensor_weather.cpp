@@ -46,7 +46,7 @@ void GetSensorWeather() {
     if (os.state != OS_STATE_CONNECTED || WiFi.status() != WL_CONNECTED) return;
 #endif
   time_t time = os.now_tz();
-  if (last_weather_time == 0) last_weather_time = time - 59 * 60;
+  if (last_weather_time == 0) last_weather_time = time - 60 * 60;
 
   if (time < last_weather_time + 60 * 60) return;
 
@@ -74,13 +74,9 @@ void GetSensorWeather() {
 	strcat(ether_buffer, "\r\n\r\n");
 
   DEBUG_PRINTLN(F("GetSensorWeather"));
-  DEBUG_PRINTLN(ether_buffer);
 
-  last_weather_time = time;
   int ret = os.send_http_request(host, ether_buffer);
   if (ret == HTTP_RQT_SUCCESS) {
-    DEBUG_PRINTLN(ether_buffer);
-
     char buf[20];
     char *s = strstr(ether_buffer, "\"temp\":");
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
@@ -98,22 +94,14 @@ void GetSensorWeather() {
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
       current_wind = atof(buf);
     }
-    char tmp[16];
-    DEBUG_PRINT(F("temp: "));
-    dtostrf(current_temp, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
-    DEBUG_PRINT(F("humidity: "));
-    dtostrf(current_humidity, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
-    DEBUG_PRINT(F("precip: "));
-    dtostrf(current_precip, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
-    DEBUG_PRINT(F("wind: "));
-    dtostrf(current_wind, 2, 2, tmp);
-    DEBUG_PRINTLN(tmp)
+    DEBUG_PRINTF("Weather: temp=%.1f hum=%.1f precip=%.2f wind=%.1f\n",
+                 current_temp, current_humidity, current_precip, current_wind);
     current_weather_ok = true;
+    last_weather_time = time;
   } else {
-    current_weather_ok = false;
+    // Retry after 5 min on failure, don't invalidate previously fetched data
+    last_weather_time = time - 55 * 60;
+    DEBUG_PRINTLN(F("GetSensorWeather: HTTP request failed"));
   }
 }
 
@@ -123,7 +111,7 @@ void GetSensorWeatherEto() {
     if (os.state != OS_STATE_CONNECTED || WiFi.status() != WL_CONNECTED) return;
 #endif
   time_t time = os.now_tz();
-  if (last_weather_time_eto == 0) last_weather_time_eto = time - 59 * 60;
+  if (last_weather_time_eto == 0) last_weather_time_eto = time - 60 * 60;
 
   if (time < last_weather_time_eto + 60 * 60) return;
 
@@ -152,14 +140,10 @@ void GetSensorWeatherEto() {
 	strcat(ether_buffer, user_agent_string);
 	strcat(ether_buffer, "\r\n\r\n");
 
-  DEBUG_PRINTLN(F("GetSensorWeather"));
-  DEBUG_PRINTLN(ether_buffer);
+  DEBUG_PRINTLN(F("GetSensorWeatherEto"));
 
-  last_weather_time_eto = time;
   int ret = os.send_http_request(host, ether_buffer);
   if (ret == HTTP_RQT_SUCCESS) {
-    DEBUG_PRINTLN(ether_buffer);
-
     char buf[20];
     char *s = strstr(ether_buffer, "\"eto\":");
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
@@ -169,9 +153,13 @@ void GetSensorWeatherEto() {
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
       current_radiation = atof(buf);
     }
+    DEBUG_PRINTF("WeatherEto: eto=%.2f radiation=%.1f\n", current_eto, current_radiation);
     current_weather_eto_ok = true;
+    last_weather_time_eto = time;
   } else {
-    current_weather_eto_ok = false;
+    // Retry after 5 min on failure, don't invalidate previously fetched data
+    last_weather_time_eto = time - 55 * 60;
+    DEBUG_PRINTLN(F("GetSensorWeatherEto: HTTP request failed"));
   }
 }
 
@@ -182,7 +170,10 @@ int WeatherSensor::read(unsigned long time) {
   // Handle basic weather sensors
   if (this->type >= SENSOR_WEATHER_TEMP_F && this->type <= SENSOR_WEATHER_WIND_KMH) {
     GetSensorWeather();
-    if (!current_weather_ok) return HTTP_RQT_NOT_RECEIVED;
+    if (!current_weather_ok) {
+      this->flags.data_ok = false;
+      return HTTP_RQT_NOT_RECEIVED;
+    }
 
     DEBUG_PRINT(F("Reading sensor "));
     DEBUG_PRINTLN(this->name);
@@ -214,6 +205,7 @@ int WeatherSensor::read(unsigned long time) {
         this->last_data = current_wind * 1.609344;
         break;
       default:
+        this->flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
     return HTTP_RQT_SUCCESS;
@@ -222,7 +214,10 @@ int WeatherSensor::read(unsigned long time) {
   // Handle ETO and radiation sensors
   if (this->type == SENSOR_WEATHER_ETO || this->type == SENSOR_WEATHER_RADIATION) {
     GetSensorWeatherEto();
-    if (!current_weather_eto_ok) return HTTP_RQT_NOT_RECEIVED;
+    if (!current_weather_eto_ok) {
+      this->flags.data_ok = false;
+      return HTTP_RQT_NOT_RECEIVED;
+    }
 
     DEBUG_PRINT(F("Reading sensor "));
     DEBUG_PRINTLN(this->name);
@@ -239,10 +234,12 @@ int WeatherSensor::read(unsigned long time) {
         this->last_data = current_radiation;
         break;
       default:
+        this->flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
     return HTTP_RQT_SUCCESS;
   }
 
+  this->flags.data_ok = false;
   return HTTP_RQT_NOT_RECEIVED;
 }

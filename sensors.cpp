@@ -146,10 +146,10 @@ static std::map<uint, ProgSensorAdjust*> progSensorAdjustsMap;
 // NOTE: std::map cannot use EXT_RAM_BSS_ATTR - has internal tree pointers
 static std::map<uint, Monitor*> monitorsMap;
 
-static const unsigned char MAX_SENSOR_UNITNAMES = 14;
+static const unsigned char MAX_SENSOR_UNITNAMES = 15;
 const char *sensor_unitNames[]{
-    "",  "%", "°C", "°F", "V", "%", "in", "mm", "mph", "kmh", "%", "DK", "LM", "LX"
-    //0   1     2     3    4    5    6     7      8      9     10,  11,   12,   13
+    "",  "%", "°C", "°F", "V", "%", "in", "mm", "mph", "kmh", "%", "DK", "LM", "LX", "L"
+    //0   1     2     3    4    5    6     7      8      9     10,  11,   12,   13,  14
     //   0=Nothing
     //   1=Soil moisture
     //   2=degree celsius temperature
@@ -164,6 +164,7 @@ const char *sensor_unitNames[]{
     //  11=DK (Permitivität)
     //  12=LM (Lumen)
     //  13=LX (LUX)
+    //  14=L  (Liter)
 };
 uint8_t logFileSwitch[3] = {0, 0, 0};  // 0=use smaller File, 1=LOG1, 2=LOG2
 

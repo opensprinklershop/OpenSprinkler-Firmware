@@ -4567,26 +4567,79 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 	ZigbeeDeviceInfo devices[10];
 	int count = sensor_zigbee_get_discovered_devices(devices, 10);
 	
+	// Build a set of IEEE addresses already in the discovered list
+	uint64_t discovered_ieee[10];
+	for (int i = 0; i < count; i++) {
+		discovered_ieee[i] = devices[i].ieee_addr;
+	}
+
 	bfill.emit_p(PSTR("{\"devices\":["));
 	
+	// First: emit discovered devices, annotate with sensor_name if configured
 	for (int i = 0; i < count; i++) {
 		if (i > 0) bfill.emit_p(PSTR(","));
 		
 		char ieee_str[20];
 		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX", 
 		         (unsigned long long)devices[i].ieee_addr);
-		
+
+		// Look up sensor name for this IEEE address
+		const char* sensor_name = "";
+		SensorIterator it = sensors_iterate_begin();
+		SensorBase* sensor;
+		while ((sensor = sensors_iterate_next(it)) != NULL) {
+			if (sensor && sensor->type == SENSOR_ZIGBEE) {
+				ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+				if (zb->device_ieee == devices[i].ieee_addr && zb->name[0]) {
+					sensor_name = zb->name;
+					break;
+				}
+			}
+		}
+
 		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
+		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,"
+		                  "\"is_new\":$D,\"sensor_name\":\"$S\"}"),
 		             ieee_str,
 		             devices[i].short_addr,
 		             devices[i].model_id,
 		             devices[i].manufacturer,
 		             devices[i].endpoint,
 		             devices[i].device_id,
-		             devices[i].is_new ? 1 : 0);
+		             devices[i].is_new ? 1 : 0,
+		             sensor_name);
 	}
 	
+	// Second: emit configured ZigbeeSensors not yet in the discovered list
+	{
+		SensorIterator it = sensors_iterate_begin();
+		SensorBase* sensor;
+		while ((sensor = sensors_iterate_next(it)) != NULL) {
+			if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+			ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+			if (zb->device_ieee == 0) continue;
+			// Skip if already in discovered list
+			bool found = false;
+			for (int j = 0; j < count; j++) {
+				if (discovered_ieee[j] == zb->device_ieee) { found = true; break; }
+			}
+			if (found) continue;
+
+			if (count > 0 || bfill.position() > 20) bfill.emit_p(PSTR(","));
+			char ieee_str[20];
+			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX", (unsigned long long)zb->device_ieee);
+			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":0,\"model\":\"$S\","
+			                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":0,"
+			                  "\"is_new\":0,\"sensor_name\":\"$S\"}"),
+			             ieee_str,
+			             zb->zb_model[0] ? zb->zb_model : "",
+			             zb->zb_manufacturer[0] ? zb->zb_manufacturer : "",
+			             zb->endpoint,
+			             zb->name);
+			count++;
+		}
+	}
+
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);
 	
 	send_packet(OTF_PARAMS);
@@ -4608,11 +4661,11 @@ void server_zigbee_open_network(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	uint16_t duration = 60;
+	uint16_t duration = 10;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
 		duration = atoi(tmp_buffer);
 		if (duration < 1) duration = 1;
-		if (duration > 600) duration = 600; // Max 10 minutes
+		if (duration > 30) duration = 30; // Max 30 seconds to limit WiFi disruption
 	}
 	
 	sensor_zigbee_open_network(duration);

@@ -404,6 +404,7 @@ typedef Monitor Monitor_t;
 #define UNIT_DK 11 //Permitivität
 #define UNIT_LM 12 //Lumen
 #define UNIT_LX 13 //Lux
+#define UNIT_LITER 14 //Liter
 #define UNIT_USERDEF 99
 
 // Unitnames

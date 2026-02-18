@@ -65,6 +65,7 @@ struct BLEDeviceInfo {
     float adv_humidity;           // Humidity from advertisement  
     uint8_t adv_battery;          // Battery % from advertisement
     bool has_adv_data;            // True if adv_* fields are valid
+    bool adv_data_pending_push;   // True when new adv data needs pushing to sensors
     
     // BMS-specific cached data (requires GATT connection)
     float bms_voltage;            // Total pack voltage (V)
@@ -92,6 +93,12 @@ const char* ble_uuid_to_name(const char* uuid);
 /**
  * @brief BLE sensor class for ESP32 Arduino
  * @note Uses ESP32 BLE library for communication
+ * 
+ * Two operating modes:
+ * - Broadcast sensors (Govee, Xiaomi): Data arrives via BLE advertisements.
+ *   BLE stays permanently active with a background passive scan.
+ *   Unsolicited data is accepted immediately regardless of read interval.
+ * - Poll sensors (BMS, GATT): Active GATT connection for on-demand reads.
  * 
  * Configuration via sensor JSON:
  * - name: BLE device MAC address (e.g., "AA:BB:CC:DD:EE:FF")
@@ -122,20 +129,11 @@ public:
     // - Unit 5 (%) → humidity  
     // - Other units → battery
     
-    // Advertisement sensor retry logic (runtime only, not persisted)
-    // Retry interval starts at 10s and doubles on failure up to max 300s
-    // Resets to 10s on successful read
-    uint32_t adv_retry_interval = 10;      // Current retry interval in seconds
-    uint32_t adv_last_attempt = 0;         // Timestamp of last read attempt (millis)
-    uint32_t adv_consecutive_failures = 0; // Count of consecutive failed reads
-    
     // Persistent: Last successful data reception timestamp (Unix time)
     // Used for auto-disable after 24h without data
     uint32_t adv_last_success_time = 0;
     
-    // Constants for retry behavior
-    static constexpr uint32_t ADV_RETRY_INITIAL = 10;     // Initial retry interval (seconds)
-    static constexpr uint32_t ADV_RETRY_MAX = 300;        // Maximum retry interval (seconds)
+    // Constants
     static constexpr uint32_t ADV_DISABLE_TIMEOUT = 86400; // Auto-disable after 24h (seconds)
 
     /**
@@ -165,6 +163,15 @@ public:
      * @param model Model number from DIS
      */
     static void updateDeviceInfo(const char* mac_address, const char* manufacturer, const char* model);
+
+    /**
+     * @brief Push advertisement data to ALL BLE sensors matching a MAC address
+     * Called from sensor_ble_loop() (main task) to ensure all logical sensors
+     * sharing the same physical device get updated simultaneously.
+     * @param mac_address MAC address string (e.g., "AA:BB:CC:DD:EE:FF")
+     * @param cached_dev Pointer to the cached device info with adv data
+     */
+    static void pushAdvData(const char* mac_address, const BLEDeviceInfo* cached_dev);
 private:
     /**
      * @brief Store sensor result and mark data as valid

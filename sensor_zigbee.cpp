@@ -87,6 +87,25 @@ static std::vector<ZigbeeDeviceInfo> client_discovered_devices;
 #define ZB_ZCL_CLUSTER_ID_LEAF_WETNESS              0x0407
 #define ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE             0x0408
 
+// Tuya-specific protocol definitions (cluster 0xEF00)
+#define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
+#define TUYA_CMD_DATA_REQUEST   0x00
+#define TUYA_CMD_DATA_RESPONSE  0x01
+#define TUYA_CMD_DATA_REPORT    0x02
+#define TUYA_DP_TYPE_RAW    0x00
+#define TUYA_DP_TYPE_BOOL   0x01
+#define TUYA_DP_TYPE_VALUE  0x02  // 4-byte big-endian integer
+#define TUYA_DP_TYPE_STRING 0x03
+#define TUYA_DP_TYPE_ENUM   0x04
+#define TUYA_DP_TYPE_BITMAP 0x05
+// Common Tuya DP numbers for soil/environment sensors
+#define TUYA_DP_SOIL_MOISTURE     3
+#define TUYA_DP_TEMPERATURE       5
+#define TUYA_DP_TEMPERATURE_UNIT  9
+#define TUYA_DP_BATTERY          15
+// Flag to mark Tuya reports as pre-scaled (no ZCL scaling needed)
+#define TUYA_REPORT_FLAG_PRESCALED  0x8000
+
 // Basic Cluster attribute IDs
 #define ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID       0x0004
 #define ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID        0x0005
@@ -290,6 +309,13 @@ public:
         esp_zb_attribute_list_t *power_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
         esp_zb_cluster_list_add_power_config_cluster(_cluster_list, power_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
         
+        // Tuya-specific cluster 0xEF00 (CLIENT to receive Tuya DP reports)
+        esp_zb_attribute_list_t *tuya_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC);
+        if (tuya_cluster) {
+            esp_zb_cluster_list_add_custom_cluster(_cluster_list, tuya_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+            DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Tuya cluster 0xEF00 added (CLIENT)"));
+        }
+        
         _ep_config.endpoint = endpoint;
         _ep_config.app_profile_id = ESP_ZB_AF_HA_PROFILE_ID;
         _ep_config.app_device_id = ESP_ZB_HA_CONFIGURATION_TOOL_DEVICE_ID;
@@ -349,6 +375,122 @@ private:
         }
     }
 };
+
+// ========== Client Tuya support ==========
+
+/**
+ * @brief Resolve IEEE address from short address in Client mode
+ * Checks local cache first, then queries the Zigbee stack.
+ */
+static uint64_t client_resolve_ieee(uint16_t short_addr) {
+    for (const auto& dev : client_discovered_devices) {
+        if (dev.short_addr == short_addr) return dev.ieee_addr;
+    }
+    esp_zb_ieee_addr_t raw_ieee;
+    if (esp_zb_ieee_address_by_short(short_addr, raw_ieee) != ESP_OK) return 0;
+    uint64_t ieee64 = 0;
+    for (int i = 7; i >= 0; i--) ieee64 = (ieee64 << 8) | raw_ieee[i];
+    if (ieee64 == 0) return 0;
+
+    // Auto-discover: add to device list
+    ZigbeeDeviceInfo info = {};
+    info.ieee_addr = ieee64;
+    info.short_addr = short_addr;
+    info.endpoint = 1;
+    info.is_new = true;
+    strncpy(info.manufacturer, "unknown", sizeof(info.manufacturer) - 1);
+    strncpy(info.model_id, "unknown", sizeof(info.model_id) - 1);
+    client_discovered_devices.push_back(info);
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Auto-discovered device: ieee=0x%016llX short=0x%04X\n"),
+                 (unsigned long long)ieee64, short_addr);
+    return ieee64;
+}
+
+/**
+ * @brief APS indication handler for Tuya DP protocol (Client mode)
+ * Intercepts Tuya cluster 0xEF00 frames and converts them to standard
+ * attribute reports that the sensor system can process.
+ */
+static bool client_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
+    if (ind.cluster_id != ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC) return false;
+
+    if (!ind.asdu || ind.asdu_length < 9) {
+        DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] Frame too short (%u bytes)\n"), ind.asdu_length);
+        return true;
+    }
+
+    uint8_t command_id = ind.asdu[2];
+    if (command_id != TUYA_CMD_DATA_RESPONSE && command_id != TUYA_CMD_DATA_REPORT) {
+        DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] Ignoring command 0x%02X\n"), command_id);
+        return true;
+    }
+
+    uint64_t ieee_addr = client_resolve_ieee(ind.src_short_addr);
+
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] Processing DP: cmd=0x%02X len=%u src=0x%04X\n"),
+                 command_id, ind.asdu_length, ind.src_short_addr);
+
+    uint32_t offset = 5;  // After ZCL header (3) + Tuya seq (2)
+    while (offset + 4 <= ind.asdu_length) {
+        uint8_t dp_number = ind.asdu[offset];
+        uint8_t dp_type = ind.asdu[offset + 1];
+        uint16_t dp_len = ((uint16_t)ind.asdu[offset + 2] << 8) | ind.asdu[offset + 3];
+        offset += 4;
+
+        if (offset + dp_len > ind.asdu_length) break;
+
+        int32_t dp_value = 0;
+        if (dp_type == TUYA_DP_TYPE_VALUE && dp_len == 4) {
+            dp_value = (int32_t)(((uint32_t)ind.asdu[offset] << 24) |
+                                 ((uint32_t)ind.asdu[offset + 1] << 16) |
+                                 ((uint32_t)ind.asdu[offset + 2] << 8) |
+                                 ((uint32_t)ind.asdu[offset + 3]));
+        } else if (dp_type == TUYA_DP_TYPE_ENUM || dp_type == TUYA_DP_TYPE_BOOL) {
+            dp_value = (int32_t)ind.asdu[offset];
+        } else if (dp_len <= 4) {
+            for (uint16_t j = 0; j < dp_len; j++) dp_value = (dp_value << 8) | ind.asdu[offset + j];
+        }
+
+        DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] DP %d: type=%d len=%d value=%ld\n"),
+                     dp_number, dp_type, dp_len, dp_value);
+
+        // Map Tuya DPs to ZCL cluster/attribute and route through the sensor callback
+        uint16_t mapped_cluster = 0;
+        uint16_t mapped_attr = 0;
+        bool mapped = true;
+        switch (dp_number) {
+            case TUYA_DP_SOIL_MOISTURE:
+                mapped_cluster = ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE;
+                mapped_attr = 0x0000 | TUYA_REPORT_FLAG_PRESCALED;
+                break;
+            case TUYA_DP_TEMPERATURE:
+                mapped_cluster = ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT;
+                mapped_attr = 0x0000 | TUYA_REPORT_FLAG_PRESCALED;
+                break;
+            case TUYA_DP_BATTERY:
+                mapped_cluster = ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
+                mapped_attr = 0x0021 | TUYA_REPORT_FLAG_PRESCALED;
+                break;
+            case TUYA_DP_TEMPERATURE_UNIT:
+                mapped = false;
+                break;
+            default:
+                DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] Unhandled DP %d\n"), dp_number);
+                mapped = false;
+                break;
+        }
+
+        if (mapped) {
+            ZigbeeSensor::zigbee_attribute_callback(
+                ieee_addr, ind.src_endpoint, mapped_cluster,
+                mapped_attr, dp_value, ind.lqi);
+        }
+
+        offset += dp_len;
+    }
+
+    return true;  // Consumed
+}
 
 // ========== Client NVRAM erase ==========
 
@@ -459,6 +601,10 @@ static void client_zigbee_start_internal() {
 
     DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Zigbee End Device started, searching for network..."));
     client_zigbee_initialized = true;
+
+    // Register APS handler for Tuya DP protocol (cluster 0xEF00)
+    esp_zb_aps_data_indication_handler_register(client_tuya_aps_indication_handler);
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Tuya APS indication handler registered"));
 
     // Apply persistent 802.15.4 coexistence config AFTER Zigbee.begin().
     // ieee802154_mac_init() resets all PTI to defaults during init.
@@ -809,6 +955,10 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
     DEBUG_PRINTF(F("[ZIGBEE] Attribute callback: cluster=0x%04X, attr=0x%04X, value=%d\n"),
                  cluster_id, attr_id, value);
 
+    // Check Tuya pre-scaled flag: Tuya DP values don't need ZCL conversion
+    bool is_tuya_prescaled = (attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0;
+    uint16_t raw_attr_id = attr_id & ~TUYA_REPORT_FLAG_PRESCALED;
+
     SensorIterator it = sensors_iterate_begin();
     SensorBase* sensor;
     while ((sensor = sensors_iterate_next(it)) != NULL) {
@@ -819,7 +969,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
         ZigbeeSensor* zb_sensor = static_cast<ZigbeeSensor*>(sensor);
         
         bool matches = (zb_sensor->cluster_id == cluster_id &&
-                       zb_sensor->attribute_id == attr_id);
+                       zb_sensor->attribute_id == raw_attr_id);
         
         if (zb_sensor->device_ieee != 0 && ieee_addr != 0) {
             matches = matches && (zb_sensor->device_ieee == ieee_addr);
@@ -830,29 +980,37 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
         }
         
         if (matches) {
-            DEBUG_PRINTF(F("[ZIGBEE] Updating sensor: %s\n"), sensor->name);
+            DEBUG_PRINTF(F("[ZIGBEE] Updating sensor: %s%s\n"), sensor->name,
+                         is_tuya_prescaled ? " (Tuya)" : "");
             
             zb_sensor->last_native_data = value;
             double converted_value = (double)value;
             
-            // Apply ZCL standard conversions
-            if (cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE && attr_id == 0x0000) {
-                converted_value = value / 100.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT && attr_id == 0x0000) {
-                converted_value = value / 100.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT && attr_id == 0x0000) {
-                converted_value = value / 100.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT && attr_id == 0x0000) {
-                converted_value = value / 10.0;
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT && attr_id == 0x0000) {
-                if (value > 0 && value <= 65534) {
-                    converted_value = pow(10.0, (value - 1.0) / 10000.0);
-                } else {
-                    converted_value = 0.0;
+            // Apply ZCL standard conversions (skip for Tuya pre-scaled values)
+            if (!is_tuya_prescaled) {
+                if (cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE && raw_attr_id == 0x0000) {
+                    converted_value = value / 100.0;
+                } else if (cluster_id == ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT && raw_attr_id == 0x0000) {
+                    converted_value = value / 100.0;
+                } else if (cluster_id == ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT && raw_attr_id == 0x0000) {
+                    converted_value = value / 100.0;
+                } else if (cluster_id == ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT && raw_attr_id == 0x0000) {
+                    converted_value = value / 10.0;
+                } else if (cluster_id == ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT && raw_attr_id == 0x0000) {
+                    if (value > 0 && value <= 65534) {
+                        converted_value = pow(10.0, (value - 1.0) / 10000.0);
+                    } else {
+                        converted_value = 0.0;
+                    }
+                } else if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr_id == 0x0021) {
+                    converted_value = value / 2.0;
+                    zb_sensor->last_battery = (uint32_t)converted_value;
                 }
-            } else if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && attr_id == 0x0021) {
-                converted_value = value / 2.0;
-                zb_sensor->last_battery = (uint32_t)converted_value;
+            } else {
+                // Tuya: battery is already raw %
+                if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr_id == 0x0021) {
+                    zb_sensor->last_battery = (uint32_t)converted_value;
+                }
             }
             
             // Apply user-defined factor/divider/offset
@@ -873,7 +1031,9 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
             zb_sensor->repeat_read = 1;
             
             DEBUG_PRINTF(F("[ZIGBEE] Raw: %d -> Converted: %.2f\n"), value, converted_value);
-            break;
+            // Don't break — multiple logical sensors may reference the
+            // same physical device (same IEEE/cluster/attr).  Continue
+            // iterating so every matching sensor is updated.
         }
     }
 }
@@ -915,9 +1075,31 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     SensorBase::fromJson(obj);
     
     if (obj.containsKey("device_ieee")) {
-        const char *ieee_str = obj["device_ieee"].as<const char*>();
-        if (ieee_str) {
-            device_ieee = parseIeeeAddress(ieee_str);
+        ArduinoJson::JsonVariantConst val = obj["device_ieee"];
+        if (val.is<const char*>()) {
+            const char *ieee_str = val.as<const char*>();
+            if (ieee_str && ieee_str[0]) {
+                device_ieee = parseIeeeAddress(ieee_str);
+            }
+        } else if (val.is<uint64_t>() || val.is<long long>() || val.is<unsigned long long>()) {
+            device_ieee = val.as<uint64_t>();
+        } else if (val.is<long>()) {
+            device_ieee = (uint64_t)val.as<long>();
+        }
+    }
+    // Backward compatibility: old firmware may have used "ieee" or "ieee_addr"
+    if (device_ieee == 0) {
+        for (const char* altKey : {"ieee", "ieee_addr"}) {
+            if (obj.containsKey(altKey)) {
+                ArduinoJson::JsonVariantConst val = obj[altKey];
+                if (val.is<const char*>()) {
+                    const char *s = val.as<const char*>();
+                    if (s && s[0]) { device_ieee = parseIeeeAddress(s); break; }
+                } else {
+                    uint64_t v = val.as<uint64_t>();
+                    if (v != 0) { device_ieee = v; break; }
+                }
+            }
         }
     }
     if (obj.containsKey("endpoint")) {
