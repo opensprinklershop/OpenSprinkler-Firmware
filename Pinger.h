@@ -27,10 +27,8 @@
   #include <sys/socket.h>
   #include <netdb.h>
   #include <unistd.h>
-  #include <cstring>
   using std::function;
   using String = std::string;
-  #include <cstring>
   // Mock IPAddress for Linux
   class IPAddress {
   public:
@@ -58,6 +56,7 @@
     }
     
     operator bool() const { return _address != 0; }
+    bool isSet() const { return _address != 0; }
     uint32_t operator*() const { return _address; }
   };
 #endif
@@ -261,7 +260,7 @@ bool Pinger::Ping(IPAddress ip, uint32_t count, uint32_t timeout_ms) {
   response.TotalReceivedResponses = 0;
   response.EchoMessageSize = 64;
   
-  uint32_t ip_addr = *ip;
+  uint32_t ip_addr = ip._address;
   
   // Perform pings
   for (uint32_t i = 0; i < count; i++) {
@@ -284,7 +283,7 @@ bool Pinger::Ping(IPAddress ip, uint32_t count, uint32_t timeout_ms) {
 
 bool Pinger::Ping(const char* hostname, uint32_t count, uint32_t timeout_ms) {
   uint32_t ip_addr = 0;
-  if (!resolve_hostname(hostname, &ip_addr)) {
+  if (!resolve_hostname(hostname, ip_addr)) {
     return false;
   }
   

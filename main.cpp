@@ -2553,7 +2553,7 @@ static void check_network() {
 					response.DestIPAddress.toString().c_str());
     			if(response.DestMacAddress != nullptr) {
       				Serial.printf("    MAC address: " MACSTR "\r\n",
-        			MAC2STR(response.DestMacAddress->addr));
+        			MAC2STR(response.DestMacAddress));
     			}
     			if(response.DestHostname != "") {
       				Serial.printf("    DNS name: %s\r\n",
