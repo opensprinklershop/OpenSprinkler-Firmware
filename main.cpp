@@ -544,6 +544,29 @@ void do_setup() {
 #if defined(ESP8266) || defined(ESP32)
 	WiFi.persistent(false);
 	led_blink_ms = LED_FAST_BLINK;
+	
+	#if defined(ESP32)
+	// Setup WiFi event handler for better connection monitoring
+	WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+		switch(event) {
+			case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+				DEBUG_PRINTLN(F("[WiFi-Event] Disconnected from WiFi"));
+				// Auto-reconnect is enabled in start_network_sta()
+				break;
+			case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+				DEBUG_PRINTLN(F("[WiFi-Event] Connected to WiFi"));
+				break;
+			case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+				DEBUG_PRINTF("[WiFi-Event] Got IP: %s\n", WiFi.localIP().toString().c_str());
+				break;
+			case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+				DEBUG_PRINTLN(F("[WiFi-Event] Lost IP address"));
+				break;
+			default:
+				break;
+		}
+	});
+	#endif
 #else
 	MCUSR &= ~(1<<WDRF);
 #endif
@@ -974,7 +997,21 @@ void do_loop()
 				otf->loop();
 				connecting_timeout = 0;
 			} else {
-				// WiFi disconnected, ESP8266 will handle re-connect
+				// WiFi disconnected in STA mode - attempt reconnection
+				#if defined(ESP32)
+				static unsigned long last_wifi_check = 0;
+				// Check WiFi status every 5 seconds when disconnected
+				if(millis() - last_wifi_check > 5000) {
+					last_wifi_check = millis();
+					DEBUG_PRINTLN(F("WiFi disconnected, attempting reconnection..."));
+					// Ensure auto-reconnect is enabled
+					WiFi.setAutoReconnect(true);
+					if(WiFi.status() != WL_CONNECTED) {
+						WiFi.reconnect();
+					}
+				}
+				#endif
+				// ESP8266 handles auto-reconnect internally
 			}
 		}
 		break;
@@ -2613,10 +2650,21 @@ static void check_network() {
 		// ESP8266 / ESP32: Check WiFi or Ethernet connectivity		
 		if (useEth && (!eth.connected() || !eth.gatewayIP() || !(bool)eth.gatewayIP())) {
 			os.status.network_fails++;
+			#if defined(ESP32) && defined(ENABLE_DEBUG)
+			DEBUG_PRINTLN(F("[NET_CHECK] Ethernet connectivity lost"));
+			#endif
 			return;
 		}
 		if (!useEth && (!WiFi.isConnected() || !WiFi.gatewayIP() || !(bool)WiFi.gatewayIP() || os.get_wifi_mode()==WIFI_MODE_AP)) {
 			os.status.network_fails++;
+			#if defined(ESP32)
+			// Attempt WiFi reconnection after check_network detects failure
+			if(os.get_wifi_mode() == WIFI_MODE_STA && os.status.network_fails >= 2) {
+				DEBUG_PRINTF("[NET_CHECK] WiFi check failed (count=%d), forcing reconnect\n", os.status.network_fails);
+				WiFi.setAutoReconnect(true);
+				WiFi.reconnect();
+			}
+			#endif
 			return;
 		}
 #else

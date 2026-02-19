@@ -1,0 +1,25 @@
+{
+  "name": "opensprinkler-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP (Model Context Protocol) server for OpenSprinkler irrigation controllers",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "opensprinkler-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": ["opensprinkler", "mcp", "irrigation", "model-context-protocol"],
+  "license": "GPL-3.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

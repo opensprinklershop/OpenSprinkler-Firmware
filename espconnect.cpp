@@ -162,6 +162,8 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 	WiFi.mode(WIFI_AP_STA);
 	#else
 	WiFi.mode(WIFI_MODE_APSTA);
+	// Enable auto-reconnect for ESP32 to handle connection drops
+	WiFi.setAutoReconnect(true);
 	#endif
 	WiFi.begin(ssid, pass, channel, bssid);
 
@@ -186,6 +188,8 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	#else
 	WiFi.mode(WIFI_MODE_STA);
 	WiFi.setSleep(false);
+	// Enable auto-reconnect for ESP32 to handle connection drops
+	WiFi.setAutoReconnect(true);
 	#endif
 
 	WiFi.begin(ssid, pass, channel, bssid);
