@@ -39,9 +39,9 @@
 #include "osinfluxdb.h"
 #include "opensprinkler_matter.h"
 #include "ieee802154_config.h"
+#include "radio_coex.h"
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
-#include "radio_arbiter.h"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -538,6 +538,11 @@ void do_setup() {
 	log_matter_ble_memory_optimization();
 	#endif
 
+	#if defined(ESP32C5)
+  	// Detect Ethernet mode: WiFi is off, Zigbee/BLE get permanent priority
+	coex_set_ethernet_mode(useEth);
+	#endif
+
 #endif
 
 	/* Clear WDT reset flag. */
@@ -551,6 +556,7 @@ void do_setup() {
 		switch(event) {
 			case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
 				DEBUG_PRINTLN(F("[WiFi-Event] Disconnected from WiFi"));
+				coex_update_wifi_info();
 				// Auto-reconnect is enabled in start_network_sta()
 				break;
 			case ARDUINO_EVENT_WIFI_STA_CONNECTED:
@@ -558,9 +564,11 @@ void do_setup() {
 				break;
 			case ARDUINO_EVENT_WIFI_STA_GOT_IP:
 				DEBUG_PRINTF("[WiFi-Event] Got IP: %s\n", WiFi.localIP().toString().c_str());
+				coex_update_wifi_info();  // Update coex strategy based on connected AP's band
 				break;
 			case ARDUINO_EVENT_WIFI_STA_LOST_IP:
 				DEBUG_PRINTLN(F("[WiFi-Event] Lost IP address"));
+				coex_update_wifi_info();
 				break;
 			default:
 				break;
@@ -744,6 +752,7 @@ void overcurrent_monitor() {
 					turn_off_running_station_immediate(sid, tn);
 					notif.add(NOTIFY_CURR_ALERT, sid, curr, CURR_ALERT_TYPE_OVER_STATION);
 					os.status.overcurrent_sid = curr_alert_sid;
+					os.status.overcurrent_ma = curr;
 					currpoll_timeout += 1000; // delay currpoll_timeout by 1 second to give time for solenoid to reset
 					break;
 				} else {
@@ -790,7 +799,6 @@ void do_loop()
 		DEBUG_PRINTF("[MEM] Heap: %d/%d KB free (min: %d KB) | PSRAM: %.1f/%.1f MB free\n",
 			free_heap/1024, ESP.getHeapSize()/1024, min_heap/1024,
 			free_psram/1048576.0, total_psram/1048576.0);
-		radio_arbiter_debug_state();
 		#else
 		DEBUG_PRINTF("[MEM] Heap: %d KB free (min: %d KB)\n", free_heap/1024, min_heap/1024);
 		#endif
@@ -859,6 +867,7 @@ void do_loop()
 				reset_all_stations_immediate(true);
 				notif.add(NOTIFY_CURR_ALERT, 0, curr, CURR_ALERT_TYPE_OVER_SYSTEM);
 				os.status.overcurrent_sid = 255; // 255 indicates system overcurrent
+				os.status.overcurrent_ma = curr;
 				currpoll_timeout = tn+1000; // pause currpoll for a second to give time for solenoids to reset
 			} else {
 				currpoll_timeout = tn+CURRPOLL_INTERVAL;

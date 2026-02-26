@@ -3,6 +3,7 @@
 
 #include "sensors.h"
 #include <string.h>
+#include <math.h>
 #include "ArduinoJson.hpp"
 
 // Forward declarations
@@ -11,6 +12,20 @@ class BufferFiller;
 // SensorBase now contains the persistent attributes previously stored in the old Sensor_t structure
 class SensorBase {
 public:
+  enum TrendState : int8_t {
+    TREND_UNAVAILABLE = 0,
+    TREND_STRONG_DOWN = -3,
+    TREND_SLIGHT_DOWN = -2,
+    TREND_NO_CHANGE = -1,
+    TREND_SLIGHT_UP = 1,
+    TREND_STRONG_UP = 2
+  };
+
+  static const uint8_t TREND_HISTORY_SIZE = 24;
+  static const uint32_t TREND_MIN_SPAN_SEC = 3600; // require at least 1h span
+  static constexpr double TREND_NO_CHANGE_REL = 0.02; // 2% change over window
+  static constexpr double TREND_STRONG_REL = 0.10;    // 10% change over window
+
   // Persistent fields
   uint nr = 0;                    // 1..n sensor-nr, 0=deleted
   char name[30] = {0};            // name
@@ -38,6 +53,14 @@ public:
   ulong last_read = 0;  // timestamp
   double last_logged_data = 0.0;
   ulong last_logged_time = 0;
+  ulong last = 0;
+
+  // runtime-only trend history (not persisted)
+  double trend_history[TREND_HISTORY_SIZE] = {0};
+  uint32_t trend_time[TREND_HISTORY_SIZE] = {0};
+  uint8_t trend_count = 0;
+  uint8_t trend_head = 0;  // next write index
+  int8_t trend_state = TREND_UNAVAILABLE;
 
   SensorBase() {}
   explicit SensorBase(uint type) {this->type = type; } // for derived classes compatibility
@@ -82,6 +105,86 @@ public:
    */
   virtual unsigned char getUnitId() const;
 
+  void trend_reset() {
+    trend_count = 0;
+    trend_head = 0;
+    trend_state = TREND_UNAVAILABLE;
+    memset(trend_history, 0, sizeof(trend_history));
+    memset(trend_time, 0, sizeof(trend_time));
+  }
+
+  void trend_add_sample(double value, uint32_t sample_time) {
+    if (!isfinite(value) || sample_time == 0) {
+      trend_state = TREND_UNAVAILABLE;
+      return;
+    }
+
+    trend_history[trend_head] = value;
+    trend_time[trend_head] = sample_time;
+    trend_head = (uint8_t)((trend_head + 1) % TREND_HISTORY_SIZE);
+    if (trend_count < TREND_HISTORY_SIZE) {
+      trend_count++;
+    }
+
+    if (trend_count < 3) {
+      trend_state = TREND_UNAVAILABLE;
+      return;
+    }
+
+    uint8_t oldest_idx = (uint8_t)((trend_head + TREND_HISTORY_SIZE - trend_count) % TREND_HISTORY_SIZE);
+    uint8_t newest_idx = (uint8_t)((trend_head + TREND_HISTORY_SIZE - 1) % TREND_HISTORY_SIZE);
+    uint32_t t_oldest = trend_time[oldest_idx];
+    uint32_t t_newest = trend_time[newest_idx];
+    if (t_newest <= t_oldest + TREND_MIN_SPAN_SEC) {
+      trend_state = TREND_UNAVAILABLE;
+      return;
+    }
+
+    // Linear regression slope over time window (literature: standard least-squares trend)
+    double mean_t = 0.0;
+    double mean_y = 0.0;
+    for (uint8_t i = 0; i < trend_count; i++) {
+      uint8_t idx = (uint8_t)((oldest_idx + i) % TREND_HISTORY_SIZE);
+      mean_t += (double)trend_time[idx];
+      mean_y += trend_history[idx];
+    }
+    mean_t /= (double)trend_count;
+    mean_y /= (double)trend_count;
+
+    double num = 0.0;
+    double den = 0.0;
+    for (uint8_t i = 0; i < trend_count; i++) {
+      uint8_t idx = (uint8_t)((oldest_idx + i) % TREND_HISTORY_SIZE);
+      double dt = (double)trend_time[idx] - mean_t;
+      double dy = trend_history[idx] - mean_y;
+      num += dt * dy;
+      den += dt * dt;
+    }
+    if (den <= 0.0) {
+      trend_state = TREND_UNAVAILABLE;
+      return;
+    }
+
+    double slope = num / den; // units per second
+    double window = (double)(t_newest - t_oldest);
+    double change = slope * window;
+    double baseline = fabs(mean_y);
+    if (baseline < 1.0) baseline = 1.0;
+    double rel = fabs(change) / baseline;
+
+    if (fabs(change) < 0.02 || rel < TREND_NO_CHANGE_REL) {
+      trend_state = TREND_NO_CHANGE;
+    } else if (rel >= TREND_STRONG_REL) {
+      trend_state = (change > 0) ? TREND_STRONG_UP : TREND_STRONG_DOWN;
+    } else {
+      trend_state = (change > 0) ? TREND_SLIGHT_UP : TREND_SLIGHT_DOWN;
+    }
+  }
+
+  int8_t get_trend_state() const {
+    return trend_state;
+  }
+
   /**
    * @brief Serialize sensor configuration to JSON object
    * @param obj JSON object to populate
@@ -110,9 +213,10 @@ public:
 
     // runtime fields
     obj["data_ok"] = (uint)flags.data_ok;
-    obj["last"] = last_read;
+    obj["last"] = last;
     obj["nativedata"] = last_native_data;
     obj["data"] = last_data;
+    obj["trend"] = trend_state;
   }
 
   /**
@@ -147,7 +251,7 @@ public:
     if (obj.containsKey("show")) flags.show = obj["show"];
 
     if (obj.containsKey("data_ok")) flags.data_ok = obj["data_ok"];
-    if (obj.containsKey("last")) last_read = obj["last"];
+    if (obj.containsKey("last")) last = obj["last"];
     if (obj.containsKey("nativedata")) last_native_data = obj["nativedata"];
     if (obj.containsKey("data")) last_data = obj["data"];
   }

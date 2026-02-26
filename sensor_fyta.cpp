@@ -27,7 +27,7 @@ void fyta_check_opts() {
  *
  */
 bool FytaApi::authenticate(const String &auth) {
-    DEBUG_PRINTLN("FYTA AUTH");
+    // DEBUG_PRINTLN("FYTA AUTH");
 
 #if defined(ESP8266) || defined(ESP32)
     if (auth.indexOf("token") >= 0) {
@@ -39,8 +39,8 @@ bool FytaApi::authenticate(const String &auth) {
         if (!error && doc.containsKey("token")) {
             authToken = doc["token"].as<String>();
             if (authToken.length() > 10) {
-                DEBUG_PRINTLN("AUTH-TOKEN:");
-                DEBUG_PRINTLN(authToken.c_str());
+                // DEBUG_PRINTLN("AUTH-TOKEN:");
+                // DEBUG_PRINTLN(authToken.c_str());
                 return true;
             }
             authToken = "";
@@ -91,19 +91,19 @@ bool FytaApi::authenticate(const String &auth) {
     naettClose(res);
     naettFree(req);
 #endif
-    DEBUG_PRINTLN("AUTH-TOKEN:");
-    DEBUG_PRINTLN(authToken.c_str());
+    // DEBUG_PRINTLN("AUTH-TOKEN:");
+    // DEBUG_PRINTLN(authToken.c_str());
     return true;
 }
 
 // Query sensor values
 bool FytaApi::getSensorData(ulong plantId, JsonDocument& doc) {
-    DEBUG_PRINTLN("FYTA getSensorData");
+    // DEBUG_PRINTLN("FYTA getSensorData");
 #if defined(ESP8266) || defined(ESP32)
     if (authToken.isEmpty()) return false;
     char url[50];
     sprintf(url, FYTA_URL_USER_PLANTF, plantId);
-    DEBUG_PRINTLN(url);
+    // DEBUG_PRINTLN(url);
     http.begin(client, url);
     http.addHeader("Authorization", "Bearer " + authToken);
     http.addHeader("Content-Type", "application/json");
@@ -126,7 +126,7 @@ bool FytaApi::getSensorData(ulong plantId, JsonDocument& doc) {
     std::string auth = "Bearer " + authToken;
     char url[50];
     sprintf(url, FYTA_URL_USER_PLANTF, plantId);
-    DEBUG_PRINTLN(url);
+    // DEBUG_PRINTLN(url);
     naettReq* req =
         naettRequest(url,
             naettMethod("GET"),
@@ -162,7 +162,7 @@ bool FytaApi::getSensorData(ulong plantId, JsonDocument& doc) {
 }
 
 bool FytaApi::getPlantList(JsonDocument& doc) {
-    DEBUG_PRINTLN("FYTA getPlantList");
+    // DEBUG_PRINTLN("FYTA getPlantList");
 #if defined(ESP8266) || defined(ESP32)
     if (authToken.isEmpty()) return false;
     http.begin(client, FYTA_URL_USER_PLANT);
@@ -218,7 +218,7 @@ bool FytaApi::getPlantList(JsonDocument& doc) {
         return false;
     }
 
-    DEBUG_PRINTLN("FYTA getPlantList OK");
+    // DEBUG_PRINTLN("FYTA getPlantList OK");
 
     naettClose(res);
     naettFree(req);

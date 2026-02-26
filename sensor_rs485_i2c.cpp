@@ -79,7 +79,7 @@ void sensor_rs485_i2c_init() {
   }
   if (detect_i2c(ASB_I2C_RS485_ADDR)) {    // 0x48
     i2c_rs485_addr = ASB_I2C_RS485_ADDR;
-    DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
+    // DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
     add_asb_detected_boards(ASB_I2C_RS485);
   }
 }
@@ -156,11 +156,11 @@ void set_RS485_Mode(bool transmitMode) {
     uint8_t ioState = readSC16Register(REG_IOS);
 
     if (transmitMode) {
-      DEBUG_PRINTLN(F("i2c_rs485: POWER ON"));
+      // DEBUG_PRINTLN(F("i2c_rs485: POWER ON"));
       // Bei RS485: DE=LOW, RE=HIGH -> Pin muss LOW sein
       ioState |= 0x80; // Setzt Bit 7 auf HIGH
     } else {
-      DEBUG_PRINTLN(F("i2c_rs485: POWER OFF"));
+      // DEBUG_PRINTLN(F("i2c_rs485: POWER OFF"));
       // Bei RS485: DE=HIGH, RE=LOW -> Pin muss HIGH sein
       ioState &= ~0x80; // Löscht Bit 7 auf LOW
     }
@@ -204,12 +204,12 @@ uint32_t generic_baud(uint8_t speed) {
 #define LCR_DLAB       0x80  // Divisor Latch Access Bit (für Baudrate)
 
 void init_SC16IS752(uint32_t baudrate, uint8_t use2stopbits, uint parity) {
-  DEBUG_PRINTLN(F("i2c_rs485: init"));
+  // DEBUG_PRINTLN(F("i2c_rs485: init"));
 
   uint8_t baudf = (uint32_t)(8000000 / (16 * baudrate)); // Assuming 8 MHz clock and 9600 baud rate
   uint8_t lcr = LCR_DATALEN_8 | (use2stopbits ? LCR_STOP_2 : LCR_STOP_1) | 
                 (parity == 0 ? LCR_PAR_NONE : (parity == 1 ? LCR_PAR_EVEN : LCR_PAR_ODD));
-  DEBUG_PRINTF(F("i2c_rs485: baudf=%02x lcr=%02x\n"), baudf, lcr);
+  // DEBUG_PRINTF(F("i2c_rs485: baudf=%02x lcr=%02x\n"), baudf, lcr);
   writeSC16Register(REG_LCR, LCR_DLAB);// Enable access to the baud rate registers
   writeSC16Register(REG_DLL, baudf); // Set baud rate to 9600 (assuming 8 MHz clock) (0x34=52=9600)
   writeSC16Register(REG_DLH, 0x00); // Set baud rate to 9600
@@ -244,7 +244,7 @@ int RS485I2CSensor::read(unsigned long time) {
     return HTTP_RQT_NOT_RECEIVED;
   }
 
-  DEBUG_PRINTF(F("read_sensor_i2c_rs485: %d %s m=%d\n"), nr, name, active_i2c_RS485_mode);
+  // DEBUG_PRINTF(F("read_sensor_i2c_rs485: %d %s m=%d\n"), nr, name, active_i2c_RS485_mode);
 
   if (active_i2c_RS485 != (int)nr) {  
     active_i2c_RS485 = nr;
@@ -256,7 +256,7 @@ int RS485I2CSensor::read(unsigned long time) {
 
   //Init chip
   if (active_i2c_RS485_mode == 0) { // Init SC16IS752 for RS485:
-    DEBUG_PRINTLN(F("i2c_rs485: INIT"));
+    // DEBUG_PRINTLN(F("i2c_rs485: INIT"));
     uint32_t baudrate = isGeneric ? generic_baud(rs485_flags.speed) : 9600;
     uint8_t stopbits = isGeneric ? rs485_flags.stopbits : 0; // 0=1 stopbit
     uint8_t parity = isGeneric ? rs485_flags.parity : 1; // 1=even parity default for truebner
@@ -282,7 +282,7 @@ int RS485I2CSensor::read(unsigned long time) {
 
   // Send Request
   if (active_i2c_RS485_mode == 2) {
-    DEBUG_PRINT(F("i2c_rs485: Send Request:"));
+    // DEBUG_PRINT(F("i2c_rs485: Send Request:"));
     uint8_t request[8];
     request[0] = id;
     request[1] = code; // Function Code
@@ -294,9 +294,9 @@ int RS485I2CSensor::read(unsigned long time) {
     request[6] = lowByte(crc); // CRC Low Byte
     request[7] = highByte(crc); // CRC High Byte
     for (int i = 0; i < 8; i++) {
-      DEBUG_PRINTF(F(" %02x"), request[i]);
+      // DEBUG_PRINTF(F(" %02x"), request[i]);
     }
-    DEBUG_PRINTLN();
+    // DEBUG_PRINTLN();
     writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
     UART_sendBytes(request, 8);
     active_i2c_RS485_mode = 3;
@@ -306,14 +306,14 @@ int RS485I2CSensor::read(unsigned long time) {
 
   // Read Response
   if (active_i2c_RS485_mode == 3) {
-    DEBUG_PRINT(F("i2c_rs485: Read Response:"));
+    // DEBUG_PRINT(F("i2c_rs485: Read Response:"));
     uint8_t response[20];
     uint8_t expected_length = 5 + (reg_count * 2); // 5 bytes overhead + 2 bytes per register
     uint8_t len = UART_readBytes(response, expected_length, 500); // timeout 500ms
     for (int i = 0; i < len; i++) {
-      DEBUG_PRINTF(F(" %02x"), response[i]);
+      // DEBUG_PRINTF(F(" %02x"), response[i]);
     }
-    DEBUG_PRINTLN();
+    // DEBUG_PRINTLN();
     // Expected Response (16bit):
     // Byte 0: Slave Address
     // Byte 1: Function Code
@@ -439,7 +439,7 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
   if (new_address == 0 || new_address > 247)
     return HTTP_RQT_CONNECT_ERR;
 
-  DEBUG_PRINTF(F("set_sensor_address_i2c_rs485: %d %s\n"), nr, name)
+  // DEBUG_PRINTF(F("set_sensor_address_i2c_rs485: %d %s\n"), nr, name)
   
   if (active_i2c_RS485 > 0 && active_i2c_RS485 != (int)nr) {
     repeat_read = 1;
@@ -458,7 +458,7 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
   writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
   writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
 
-  DEBUG_PRINT(F("i2c_rs485: Send Request:"));
+  // DEBUG_PRINT(F("i2c_rs485: Send Request:"));
   uint8_t request[8];
   request[0] = 253;
   request[1] = 0x06; // change adress
@@ -470,18 +470,18 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
   request[6] = lowByte(crc); // CRC Low Byte
   request[7] = highByte(crc); // CRC High Byte
   for (int i = 0; i < 8; i++) {
-    DEBUG_PRINTF(F(" %02x"), request[i]);
+    // DEBUG_PRINTF(F(" %02x"), request[i]);
   }
-  DEBUG_PRINTLN();
+  // DEBUG_PRINTLN();
 
   UART_sendBytes(request, 8);
   delay(10);
   uint8_t response[7];
   int len = UART_readBytes(response, 7, 100); // timeout 100ms
   for (int i = 0; i < len; i++) {
-    DEBUG_PRINTF(F(" %02x"), response[i]);
+    // DEBUG_PRINTF(F(" %02x"), response[i]);
   }
-  DEBUG_PRINTLN();
+  // DEBUG_PRINTLN();
 
   return HTTP_RQT_SUCCESS;
 }
@@ -513,7 +513,7 @@ int RS485I2CSensor::sendCommand(uint8_t address, uint16_t reg, uint16_t data, bo
   writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
   writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
 
-  DEBUG_PRINT(F("i2c_rs485: Send Request:"));
+  // DEBUG_PRINT(F("i2c_rs485: Send Request:"));
   uint8_t request[8];
   request[0] = address;  // Modbus ID
   request[1] = isbit?0x05:0x06;        // Write Registers
@@ -530,18 +530,18 @@ int RS485I2CSensor::sendCommand(uint8_t address, uint16_t reg, uint16_t data, bo
   request[6] = lowByte(crc); // CRC Low Byte
   request[7] = highByte(crc); // CRC High Byte
   for (int i = 0; i < 8; i++) {
-    DEBUG_PRINTF(F(" %02x"), request[i]);
+    // DEBUG_PRINTF(F(" %02x"), request[i]);
   }
-  DEBUG_PRINTLN();
+  // DEBUG_PRINTLN();
 
   UART_sendBytes(request, 8);
   delay(10);
   uint8_t response[7];
   int len = UART_readBytes(response, 7, 100); // timeout 100ms
   for (int i = 0; i < len; i++) {
-    DEBUG_PRINTF(F(" %02x"), response[i]);
+    // DEBUG_PRINTF(F(" %02x"), response[i]);
   }
-  DEBUG_PRINTLN();
+  // DEBUG_PRINTLN();
   
   return HTTP_RQT_SUCCESS;
 }

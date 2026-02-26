@@ -43,9 +43,9 @@
 
 /** Declare static data members */
 OSMqtt OpenSprinkler::mqtt;
-NVConData OpenSprinkler::nvdata;
-ConStatus OpenSprinkler::status;
-ConStatus OpenSprinkler::old_status;
+NVConData OpenSprinkler::nvdata = {0};
+ConStatus OpenSprinkler::status = {0};
+ConStatus OpenSprinkler::old_status = {0};
 
 unsigned char OpenSprinkler::hw_type;
 unsigned char OpenSprinkler::hw_rev;
@@ -1217,19 +1217,8 @@ void OpenSprinkler::begin() {
 		drio = new PCA9555(ACDR_I2CADDR);
 	}
 	mainio = drio;
-	mainio->i2c_write(NXP_CONFIG_REG, ESP32_IO_CONFIG);
-	mainio->i2c_write(NXP_OUTPUT_REG, ESP32_IO_OUTPUT);
-
-	PIN_BUTTON_1 = ESP32_PIN_BUTTON_1;
-	PIN_BUTTON_2 = ESP32_PIN_BUTTON_2;
-	PIN_BUTTON_3 = ESP32_PIN_BUTTON_3;
-	PIN_RFTX = ESP32_PIN_RFTX;
-	PIN_BOOST = ESP32_PIN_BOOST;
-	PIN_BOOST_EN = ESP32_PIN_BOOST_EN;
-	PIN_LATCH_COMK = ESP32_PIN_LATCH_COMK; // os3.2latch uses H-bridge separate cathode and anode design
-	PIN_LATCH_COMA = ESP32_PIN_LATCH_COMA;
-	PIN_SENSOR1 = ESP32_PIN_SENSOR1;
-	PIN_SENSOR2 = ESP32_PIN_SENSOR2;
+	mainio->i2c_write(NXP_CONFIG_REG, IO_CONFIG);
+	mainio->i2c_write(NXP_OUTPUT_REG, IO_OUTPUT);
 
 	/* detect expanders */
 	for(unsigned char i=0;i<(MAX_NUM_BOARDS)/2;i++)
@@ -1293,6 +1282,14 @@ void OpenSprinkler::begin() {
 	// so only need to initialize non-zero ones
 	status.enabled = 1;
 	status.safe_reboot = 0;
+	status.overcurrent_sid = 0;  // explicit zero (SPIRAM BSS not always zeroed on soft-reset)
+	status.overcurrent_ma = 0;
+
+	// Initialize rain sensor delay timers to 0
+	sensor1_on_timer = 0;
+	sensor1_off_timer = 0;
+	sensor2_on_timer = 0;
+	sensor2_off_timer = 0;
 
 	old_status = status;
 
@@ -1835,6 +1832,12 @@ void OpenSprinkler::detect_binarysensor_status(time_os_t curr_time) {
 		}
 	} else {
 		status.sensor1 = 0;
+		// Clear active state and timers immediately when sensor type is not RAIN/SOIL.
+		// Without this, sensor1_active can get stuck at 1 if the type is changed to NONE
+		// while the sensor was already active (e.g. misconfigured NC option with no sensor).
+		status.sensor1_active = 0;
+		sensor1_on_timer = 0;
+		sensor1_off_timer = 0;
 	}
 
 	// ESP8266 is guaranteed to have sensor 2
@@ -1867,6 +1870,9 @@ void OpenSprinkler::detect_binarysensor_status(time_os_t curr_time) {
 		}
 	} else {
 		status.sensor2 = 0;
+		status.sensor2_active = 0;
+		sensor2_on_timer = 0;
+		sensor2_off_timer = 0;
 	}
 
 #endif
@@ -1915,11 +1921,11 @@ void OpenSprinkler::sensor_resetall() {
 /** Read current sensing value
  * OpenSprinkler 2.3 and above have a 0.2 ohm current sensing resistor.
  * Therefore the conversion from analog reading to milli-amp is:
- * (r/1024)*3.3*1000/0.2 (DC-powered controller)
+ * (r/ADCmax)*Vref*1000/0.2 (DC-powered controller)
  * AC-powered controller has a built-in precision rectifier to sense
  * the peak AC current. Therefore the actual current is discounted by 0.707
- * ESP8266's analog reference voltage is 1.0 instead of 3.3, therefore
- * it's further discounted by 1/3.3
+ * ESP8266: Vref=1.0, ADCmax=1024  => DC 4.88, AC 3.45 (mA/count)
+ * ESP32:   Vref=3.3, ADCmax=4096  => DC 4.03, AC 2.85 (mA/count)
  */
 #if defined(ARDUINO)
 uint16_t OpenSprinkler::read_current(bool use_ema) {
@@ -1927,14 +1933,18 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 	static float scale = -1;
 	if(scale < 0) { // assign scale upon first call of this function
 		if (hw_type == HW_TYPE_DC) {
-			#if defined(ESP8266) || defined(ESP32)
+			#if defined(ESP8266)
 			scale = 4.88;
+			#elif defined(ESP32)
+			scale = 4.03;
 			#else
 			scale = 16.11;
 			#endif
 		} else if (hw_type == HW_TYPE_AC) {
-			#if defined(ESP8266) || defined(ESP32)
+			#if defined(ESP8266)
 			scale = 3.45;
+			#elif defined(ESP32)
+			scale = 2.85;
 			#else
 			scale = 11.39;
 			#endif

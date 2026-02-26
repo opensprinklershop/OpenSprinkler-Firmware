@@ -207,5 +207,22 @@ void server_influx_get_main();
 void free_tmp_memory();
 void restore_tmp_memory();
 
+// _main() data-building helpers — callable from mcp_server.cpp
+// (declared with explicit OTF types to avoid requiring OTF_PARAMS_DEF macro here)
+#if defined(USE_OTF)
+namespace OTF { class Request; class Response; }
+void server_json_controller_main(const OTF::Request& req, OTF::Response& res);
+void server_json_options_main();
+void server_json_status_main();
+void server_json_stations_main(const OTF::Request& req, OTF::Response& res);
+void server_json_programs_main(const OTF::Request& req, OTF::Response& res);
+#endif
+
+// MCP capture-mode globals (ESP32 only, defined in opensprinkler_server.cpp)
+#if defined(ESP32) && defined(USE_OTF)
+extern bool   g_mcp_capture_active;
+extern String g_mcp_capture_buf;
+#endif
+
 char* urlDecodeAndUnescape(char *buf);
 #endif // _OPENSPRINKLER_SERVER_H

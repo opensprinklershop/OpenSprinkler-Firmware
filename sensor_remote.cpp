@@ -58,7 +58,7 @@ int RemoteSensor::read(unsigned long time) {
   ip[0] = (unsigned char)((this->ip & 0xFF));
 #endif
 
-  DEBUG_PRINTLN(F("RemoteSensor::read"));
+  // DEBUG_PRINTLN(F("RemoteSensor::read"));
 
   char *p = tmp_buffer;
   BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE);
@@ -67,7 +67,7 @@ int RemoteSensor::read(unsigned long time) {
   bf.emit_p(PSTR(" HTTP/1.0\r\nHOST: $D.$D.$D.$D\r\n\r\n"), ip[0], ip[1], ip[2],
             ip[3]);
 
-  DEBUG_PRINTLN(p);
+  // DEBUG_PRINTLN(p);
 
   char server[20];
   sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);

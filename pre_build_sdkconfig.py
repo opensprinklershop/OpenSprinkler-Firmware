@@ -69,6 +69,13 @@ SDKCONFIG_OVERRIDES = {
     "CONFIG_MBEDTLS_IRAM_8BIT_MEM_ALLOC": None, # Disable IRAM allocation fallback
     
     # =====================================================================
+    # Arduino Loop Task Stack Size
+    # =====================================================================
+    # The default 8 KB loopTask stack overflows when ZigBee join + BLE loop
+    # + HTTP handler all run within a single loop() pass.  16 KB is safe.
+    "CONFIG_ARDUINO_LOOP_STACK_SIZE": "16384",
+
+    # =====================================================================
     # BLE Stack Size Reduction
     # =====================================================================
     # Reduce NimBLE host task stack: 5120 -> 3584 (saves ~1.5KB internal RAM)
@@ -123,11 +130,21 @@ def update_sdkconfig(source, target, env):
     Updates the sdkconfig file with the defined overrides.
     This function is registered as a pre-build action.
     """
-    project_dir = env.subst("$PROJECT_DIR")
-    sdkconfig_path = os.path.join(project_dir, "sdkconfig")
-    
+    # The built sdkconfig lives inside the Arduino ESP32 framework-libs package,
+    # under a chip-specific subdirectory (e.g. esp32c5/sdkconfig).
+    framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    if not framework_dir:
+        framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
+    board_mcu = env.BoardConfig().get("build.mcu", "esp32")  # e.g. esp32c5
+    sdkconfig_path = os.path.join(framework_dir, board_mcu, "sdkconfig") if framework_dir else None
+
+    # Fallback: project-root sdkconfig (legacy / native builds)
+    if not sdkconfig_path or not os.path.exists(sdkconfig_path):
+        project_dir = env.subst("$PROJECT_DIR")
+        sdkconfig_path = os.path.join(project_dir, "sdkconfig")
+
     if not os.path.exists(sdkconfig_path):
-        print(f"[SDKCONFIG] Warning: {sdkconfig_path} not found. Skipping sdkconfig update.")
+        print(f"[SDKCONFIG] Warning: sdkconfig not found. Skipping sdkconfig update.")
         return
 
     print(f"[SDKCONFIG] Updating {sdkconfig_path} with optimized settings...")

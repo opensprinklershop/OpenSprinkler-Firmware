@@ -57,6 +57,97 @@ This file helps AI coding agents get productive quickly in this repository. It f
 - `build.sh` / `build2.sh` (native build and runtime steps)  
 - `sensor_*.cpp` (sensor implementations) — e.g. `sensor_rs485_i2c.cpp` as a non-trivial example.
 
+## Debug / Test Environment 🔧
+
+### Device Connection
+- **Device IP**: `192.168.0.86`
+- **Admin Password**: Required for API access (MD5 hash needed)
+
+### Computing the Admin Password Hash
+
+The REST API requires the MD5 hash of the admin password. Calculate it locally:
+
+```bash
+# Linux/Mac
+echo -n "your_admin_password" | md5sum | awk '{print $1}'
+
+# Windows PowerShell
+$Text = "your_admin_password"
+$Bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+$Hash = [System.Security.Cryptography.MD5]::Create().ComputeHash($Bytes)
+([System.BitConverter]::ToString($Hash) -replace "-","").ToLower()
+```
+
+⚠️ **Security Note**: This hash is only computed and stored locally. Do NOT share it or commit it to public repositories.
+
+### Testing via MCP Server (recommended)
+The project includes an MCP server at `tools/mcp-server/` that exposes the OpenSprinkler REST API as MCP tools for AI assistants.
+
+```bash
+# Build the MCP server
+cd tools/mcp-server && npm install && npm run build
+
+# Run with your settings (replace HASH with your computed MD5)
+OS_BASE_URL=http://192.168.0.86 OS_PASSWORD_HASH=<YOUR_ADMIN_PASSWORD_HASH> npm start
+```
+
+VS Code MCP configuration is in `.vscode/mcp.json` — the server is auto-started by Copilot/Claude.
+
+Available MCP tools: `get_all`, `get_debug`, `get_sensors`, `get_zigbee_devices`, `get_ble_devices`, `get_system_resources`, `get_station_status`, `get_options`, `get_controller_variables`, etc. See `tools/mcp-server/README.md` for the full list.
+
+### Testing via direct REST API
+All OpenSprinkler endpoints accept `?pw=<md5hash>` (use the admin password hash computed above):
+```bash
+# Example (replace HASH with your computed MD5):
+ADMIN_HASH="<YOUR_ADMIN_PASSWORD_HASH>"
+
+# Get all data
+curl "http://192.168.0.86/ja?pw=${ADMIN_HASH}"
+
+# Get debug info
+curl "http://192.168.0.86/db?pw=${ADMIN_HASH}"
+
+# Get sensors
+curl "http://192.168.0.86/sl?pw=${ADMIN_HASH}"
+
+# Get Zigbee devices
+curl "http://192.168.0.86/zg?pw=${ADMIN_HASH}"
+
+# Get system resources (RAM, flash)
+curl "http://192.168.0.86/du?pw=${ADMIN_HASH}"
+```
+
+### Radio Coexistence (ESP32-C5)
+The ESP32-C5 shares one 2.4 GHz radio for WiFi, BLE, and IEEE 802.15.4 (Zigbee/Matter). The coex manager (`radio_coex.h`/`radio_coex.cpp`) uses a mutex-based design:
+- **WiFi has priority by default** — Zigbee/BLE PTI set to LOW
+- **Zigbee/BLE can acquire radio lock** via `coex_request_lock()` — max 10s for sensor reads, max 30s for join/pair
+- **Ethernet mode**: WiFi stays off, Zigbee/BLE get permanent priority (no lock needed)
+- Integration points: `sensors.cpp`, `sensor_zigbee_gw.cpp`, `sensor_zigbee.cpp`, `sensor_ble.cpp`, `opensprinkler_server.cpp`
+
+### BLE Background Scan (Critical WiFi Stability)
+**BACKGROUND SCANNING IS DISABLED** in `sensor_ble.cpp` (BG_SCAN_DURATION_NORMAL = 0).
+
+**Reason**: BLE periodic background scans were causing WiFi TCP/IP crashes at the LWIP level:
+- DNS failures (`error -54: connection refused`)
+- TCP connection timeouts (`errno: 118, "Host is unreachable"`)
+- UDP crashes in lwIP: `assert failed: udp_new_ip_type` with "Required to lock TCPIP core functionality!"
+
+**The Problem**: Even with aggressive reductions (3s scans with 20s pauses), the background scan thread was still releasing the coex mutex during active WiFi operations. This interrupted WiFi's TCP/IP stack mid-operation, causing LWIP's internal state machine to fail.
+
+**The Solution**: 
+- ✅ **Disable background scans entirely** — WiFi stability is prioritized
+- ✅ **On-demand discovery only** — `sensor_ble_start_discovery_scan()` for explicit discovery
+- ✅ **Passive reception still works** — BLE devices still broadcast, controller still receives them passively
+- ✅ **Zigbee/RS485 polling unaffected** — Only background BLE scanning disabled
+
+**Implementation**:
+- Set `BG_SCAN_DURATION_NORMAL = 0` (no background scanning)
+- Set `BG_SCAN_RESTART_MS = UINT32_MAX` (never auto-restart)
+- `sensor_ble_loop()` no longer attempts background scan restarts
+- User-initiated `sensor_ble_start_discovery_scan(10, false)` still works for UI discovery
+
+**When to Reconsider**: Only if a future hardware version separates the 2.4 GHz radio (e.g., dual-radio or dedicated BLE antenna) or if WiFi can hold the TCPIP mutex for the entire scan period.
+
 ---
 
 If any of these sections need more detail or an example PR (e.g. guidelines for adding an IOPT + web UI exposure), let me know and I will expand the file with step-by-step examples.

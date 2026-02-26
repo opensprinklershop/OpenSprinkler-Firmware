@@ -152,23 +152,23 @@ int ModbusRtuSensor::read(unsigned long time) {
         }
 #endif
         client->stop();
-        DEBUG_PRINT(F("Sensor "));
-        DEBUG_PRINT(nr);
+        // DEBUG_PRINT(F("Sensor "));
+        // DEBUG_PRINT(nr);
         if (n != 11) {
-          DEBUG_PRINT(F(" returned "));
-          DEBUG_PRINT(n);
-          DEBUG_PRINTLN(F(" bytes??"));
+          // DEBUG_PRINT(F(" returned "));
+          // DEBUG_PRINT(n);
+          // DEBUG_PRINTLN(F(" bytes??"));
           return n == 0 ? HTTP_RQT_EMPTY_RETURN : HTTP_RQT_TIMEOUT;
         }
         if (buffer[0] != (0xFF00 & modbusTcpId) >> 8 ||
             buffer[1] != (0x00FF & modbusTcpId)) {
-          DEBUG_PRINT(F(" returned transaction id "));
-          DEBUG_PRINTLN((uint16_t)((buffer[0] << 8) + buffer[1]));
+          // DEBUG_PRINT(F(" returned transaction id "));
+          // DEBUG_PRINTLN((uint16_t)((buffer[0] << 8) + buffer[1]));
           return HTTP_RQT_NOT_RECEIVED;
         }
         if ((buffer[6] != id && id != 253)) {  // 253 is broadcast
-          DEBUG_PRINT(F(" returned sensor id "));
-          DEBUG_PRINTLN((int)buffer[0]);
+          // DEBUG_PRINT(F(" returned sensor id "));
+          // DEBUG_PRINTLN((int)buffer[0]);
           return HTTP_RQT_NOT_RECEIVED;
         }
 
@@ -344,23 +344,23 @@ int ModbusRtuSensor::setAddressIp(SensorBase *sensor, uint8_t new_address) {
 
   int n = client->read(buffer, 12);
   client->stop();
-  DEBUG_PRINT(F("Sensor "));
-  DEBUG_PRINT(sensor->nr);
+  // DEBUG_PRINT(F("Sensor "));
+  // DEBUG_PRINT(sensor->nr);
   if (n != 12) {
-    DEBUG_PRINT(F(" returned "));
-    DEBUG_PRINT(n);
-    DEBUG_PRINT(F(" bytes??"));
+    // DEBUG_PRINT(F(" returned "));
+    // DEBUG_PRINT(n);
+    // DEBUG_PRINT(F(" bytes??"));
     return n == 0 ? HTTP_RQT_EMPTY_RETURN : HTTP_RQT_TIMEOUT;
   }
   if (buffer[0] != (0xFF00 & modbusTcpId) >> 8 ||
       buffer[1] != (0x00FF & modbusTcpId)) {
-    DEBUG_PRINT(F(" returned transaction id "));
-    DEBUG_PRINTLN((uint16_t)((buffer[0] << 8) + buffer[1]));
+    // DEBUG_PRINT(F(" returned transaction id "));
+    // DEBUG_PRINTLN((uint16_t)((buffer[0] << 8) + buffer[1]));
     return HTTP_RQT_NOT_RECEIVED;
   }
   if ((buffer[6] != sensor->id && sensor->id != 253)) {  // 253 is broadcast
-    DEBUG_PRINT(F(" returned sensor id "));
-    DEBUG_PRINT((int)buffer[0]);
+    // DEBUG_PRINT(F(" returned sensor id "));
+    // DEBUG_PRINT((int)buffer[0]);
     return HTTP_RQT_NOT_RECEIVED;
   }
   sensor->id = new_address;

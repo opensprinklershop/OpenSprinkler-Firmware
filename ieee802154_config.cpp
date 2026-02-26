@@ -164,6 +164,23 @@ bool ieee802154_select_otf_boot_variant(IEEE802154BootVariant variant) {
         return false;
     }
 
+    // Validate that the target slot contains a valid app image.
+    // This prevents selecting an empty OTA slot (common when only one variant
+    // has been flashed), which later fails with "invalid magic byte".
+    esp_app_desc_t app_desc;
+    esp_err_t v_err = esp_ota_get_partition_description(partition, &app_desc);
+    if (v_err != ESP_OK) {
+        DEBUG_PRINTF("[IEEE802154] Target partition %s has no valid app image: %d\n",
+                     ieee802154_boot_variant_name(variant),
+                     (int)v_err);
+        if (variant == IEEE802154BootVariant::ZIGBEE) {
+            DEBUG_PRINTLN(F("[IEEE802154] Hint: flash env esp32-c5-zigbee to OTA_1 before switching mode"));
+        } else {
+            DEBUG_PRINTLN(F("[IEEE802154] Hint: flash env esp32-c5-matter to OTA_0 before switching mode"));
+        }
+        return false;
+    }
+
     esp_err_t err = esp_ota_set_boot_partition(partition);
     if (err != ESP_OK) {
         DEBUG_PRINTF("[IEEE802154] Failed to set boot partition %s: %d\n",

@@ -36,6 +36,7 @@ struct ZigbeeDeviceInfo {
     uint8_t endpoint;             // Primary endpoint
     uint16_t device_id;           // Zigbee device ID
     bool is_new;                  // Flag for newly discovered device
+    bool has_responded;           // Device has responded to a query or report
 };
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
@@ -61,6 +62,16 @@ void sensor_zigbee_start();
  * @brief Returns true if Zigbee stack is currently active (any mode)
  */
 bool sensor_zigbee_is_active();
+
+/**
+ * @brief Returns true if Zigbee stack is connected to a network
+ */
+bool sensor_zigbee_is_connected();
+
+/**
+ * @brief Remaining join/scan window in seconds (0 if inactive)
+ */
+uint16_t sensor_zigbee_get_join_window_remaining();
 
 /**
  * @brief Start Zigbee if needed based on runtime mode (best-effort)
@@ -124,6 +135,27 @@ int sensor_zigbee_get_discovered_devices(ZigbeeDeviceInfo* devices, int max_devi
 void sensor_zigbee_clear_new_device_flags();
 
 /**
+ * @brief Trigger Configure Reporting for a Zigbee sensor immediately
+ * @param nr Sensor number
+ * @note Gateway mode only; no-op if Zigbee not active/connected or IEEE missing
+ */
+void sensor_zigbee_request_configure_reporting(uint nr);
+
+/**
+ * @brief Trigger a Tuya DP query for a Zigbee sensor immediately
+ * @param nr Sensor number
+ * @note Gateway mode only; no-op if Zigbee not active/connected or IEEE missing
+ */
+void sensor_zigbee_request_dp_query(uint nr);
+
+/**
+ * @brief Trigger an active read for a Zigbee sensor immediately
+ * @param nr Sensor number
+ * @note Gateway mode only; no-op if Zigbee not active/connected or IEEE missing
+ */
+void sensor_zigbee_request_active_read(uint nr);
+
+/**
  * @brief Actively read an attribute from a Zigbee device
  * @param device_ieee IEEE address of target device
  * @param endpoint Endpoint number
@@ -156,6 +188,26 @@ bool sensor_zigbee_read_attribute(uint64_t device_ieee, uint8_t endpoint,
  * - Cluster: 0x0408 (Soil Moisture)
  * - Attribute: 0x0000 (MeasuredValue)
  */
+
+/**
+ * @brief How a Zigbee sensor last communicated (persisted in JSON as "comm_mode")
+ *
+ *   UNKNOWN (0) – no data received yet; use active read until mode is determined
+ *   REPORT  (1) – device sends unsolicited attribute reports; never actively poll
+ *   ACTIVE  (2) – device only responds to ZCL Read Attributes; always poll
+ *
+ * Transitions:
+ *   UNKNOWN → REPORT  when data arrives without a preceding Read Attributes request
+ *   UNKNOWN → ACTIVE  when data first arrives in response to a Read Attributes request
+ *   ACTIVE  → REPORT  when a spontaneous report is received (device capability improved)
+ *   Any     → UNKNOWN is not done automatically (manual reset only)
+ */
+enum ZbCommMode : uint8_t {
+    ZB_COMM_UNKNOWN = 0,  ///< Not yet determined
+    ZB_COMM_REPORT  = 1,  ///< Device pushes unsolicited reports
+    ZB_COMM_ACTIVE  = 2,  ///< Device only responds to active reads
+};
+
 class ZigbeeSensor : public SensorBase {
 public:
     // Zigbee-specific fields
@@ -177,6 +229,13 @@ public:
     bool basic_cluster_queried = false; // True after Basic Cluster info has been read
     uint32_t last_battery = UINT32_MAX; // UINT32_MAX = not yet measured
     uint8_t last_lqi = 0;             // Last reported LQI (Link Quality Indicator, 0-255)
+    ZbCommMode comm_mode = ZB_COMM_UNKNOWN; // Persisted: how device communicates (report/active/unknown)
+
+    // Predictive boost: track configured report interval to schedule radio lock
+    uint32_t report_interval_s = 0;       // Configured ZCL report max-interval (seconds, 0 = unknown)
+    unsigned long last_report_at_ms = 0;  // millis() when last report arrived (0 = none yet)
+    uint32_t join_anchor_ts = 0;          // UNIX timestamp of first confirmed data report (phase anchor).
+                                          // Persisted ("join_anchor"). Reset to 0 when read_interval changes.
 
     /**
      * @brief Constructor

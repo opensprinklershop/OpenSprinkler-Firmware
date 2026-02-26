@@ -73,7 +73,7 @@ void GetSensorWeather() {
 	strcat(ether_buffer, user_agent_string);
 	strcat(ether_buffer, "\r\n\r\n");
 
-  DEBUG_PRINTLN(F("GetSensorWeather"));
+  // DEBUG_PRINTLN(F("GetSensorWeather"));
 
   int ret = os.send_http_request(host, ether_buffer);
   if (ret == HTTP_RQT_SUCCESS) {
@@ -140,7 +140,7 @@ void GetSensorWeatherEto() {
 	strcat(ether_buffer, user_agent_string);
 	strcat(ether_buffer, "\r\n\r\n");
 
-  DEBUG_PRINTLN(F("GetSensorWeatherEto"));
+  // DEBUG_PRINTLN(F("GetSensorWeatherEto"));
 
   int ret = os.send_http_request(host, ether_buffer);
   if (ret == HTTP_RQT_SUCCESS) {
@@ -175,8 +175,8 @@ int WeatherSensor::read(unsigned long time) {
       return HTTP_RQT_NOT_RECEIVED;
     }
 
-    DEBUG_PRINT(F("Reading sensor "));
-    DEBUG_PRINTLN(this->name);
+    // DEBUG_PRINT(F("Reading sensor "));
+    // DEBUG_PRINTLN(this->name);
 
     this->last_read = time;
     this->last_native_data = 0;
@@ -219,8 +219,8 @@ int WeatherSensor::read(unsigned long time) {
       return HTTP_RQT_NOT_RECEIVED;
     }
 
-    DEBUG_PRINT(F("Reading sensor "));
-    DEBUG_PRINTLN(this->name);
+    // DEBUG_PRINT(F("Reading sensor "));
+    // DEBUG_PRINTLN(this->name);
 
     this->last_read = time;
     this->last_native_data = 0;

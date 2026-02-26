@@ -48,11 +48,11 @@ static bool ble_initialized = false;
  */
 bool sensor_ospi_ble_init() {
     if (ble_initialized) {
-        DEBUG_PRINTLN("BLE already initialized");
+        // DEBUG_PRINTLN("BLE already initialized");
         return true;
     }
     
-    DEBUG_PRINTLN("Initializing BlueZ BLE subsystem...");
+    // DEBUG_PRINTLN("Initializing BlueZ BLE subsystem...");
     
     // Find first available Bluetooth adapter
     ble_adapter_id = hci_get_route(NULL);
@@ -61,8 +61,8 @@ bool sensor_ospi_ble_init() {
         return false;
     }
     
-    DEBUG_PRINT("Found Bluetooth adapter hci");
-    DEBUG_PRINTLN(ble_adapter_id);
+    // DEBUG_PRINT("Found Bluetooth adapter hci");
+    // DEBUG_PRINTLN(ble_adapter_id);
     
     // Open HCI socket
     ble_device_handle = hci_open_dev(ble_adapter_id);
@@ -72,7 +72,7 @@ bool sensor_ospi_ble_init() {
     }
     
     ble_initialized = true;
-    DEBUG_PRINTLN("BLE initialized successfully");
+    // DEBUG_PRINTLN("BLE initialized successfully");
     return true;
 }
 
@@ -86,9 +86,9 @@ void sensor_ospi_ble_scan(int duration) {
         }
     }
     
-    DEBUG_PRINT("Starting BLE scan for ");
-    DEBUG_PRINT(duration);
-    DEBUG_PRINTLN(" seconds...");
+    // DEBUG_PRINT("Starting BLE scan for ");
+    // DEBUG_PRINT(duration);
+    // DEBUG_PRINTLN(" seconds...");
     
     // Note: This is a simplified implementation
     // For production, use BlueZ D-Bus API for better device management
@@ -112,9 +112,9 @@ void sensor_ospi_ble_scan(int duration) {
         return;
     }
     
-    DEBUG_PRINT("Found ");
-    DEBUG_PRINT(num_devices);
-    DEBUG_PRINTLN(" devices");
+    // DEBUG_PRINT("Found ");
+    // DEBUG_PRINT(num_devices);
+    // DEBUG_PRINTLN(" devices");
     
     // Process discovered devices (store in global list)
     // This is simplified - full implementation would use D-Bus for BLE LE scanning
@@ -151,10 +151,10 @@ int sensor_ospi_ble_read_characteristic(
         return -1;
     }
     
-    DEBUG_PRINT("Reading BLE characteristic ");
-    DEBUG_PRINT(characteristic_uuid);
-    DEBUG_PRINT(" from device ");
-    DEBUG_PRINTLN(mac_address);
+    // DEBUG_PRINT("Reading BLE characteristic ");
+    // DEBUG_PRINT(characteristic_uuid);
+    // DEBUG_PRINT(" from device ");
+    // DEBUG_PRINTLN(mac_address);
     
     // Use gatttool to read characteristic (requires gatttool to be installed)
     char cmd[128];
@@ -195,9 +195,9 @@ int sensor_ospi_ble_read_characteristic(
         return -1;
     }
     
-    DEBUG_PRINT("Read ");
-    DEBUG_PRINT(bytes_read);
-    DEBUG_PRINTLN(" bytes");
+    // DEBUG_PRINT("Read ");
+    // DEBUG_PRINT(bytes_read);
+    // DEBUG_PRINTLN(" bytes");
     
     return bytes_read;
 }
@@ -302,8 +302,8 @@ int OspiBLESensor::read(unsigned long time) {
     repeat_native = last_native_data;
     repeat_read = 1;
     
-    DEBUG_PRINT("BLE sensor value: ");
-    DEBUG_PRINTLN(parsed_value);
+    // DEBUG_PRINT("BLE sensor value: ");
+    // DEBUG_PRINTLN(parsed_value);
     
     return HTTP_RQT_SUCCESS;
 }

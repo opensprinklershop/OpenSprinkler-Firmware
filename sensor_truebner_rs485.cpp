@@ -39,19 +39,19 @@ static uint i2c_rs485_allocated[MAX_RS485_DEVICES];
 
 void sensor_truebner_rs485_init() {
     if (detect_i2c(RS485_TRUEBNER1_ADDR)) {    
-        DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER1_ADDR);
+        // DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER1_ADDR);
         add_asb_detected_boards(RS485_TRUEBNER1);
     }
     if (detect_i2c(RS485_TRUEBNER2_ADDR)) {    
-        DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER2_ADDR);
+        // DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER2_ADDR);
         add_asb_detected_boards(RS485_TRUEBNER2);
     }
     if (detect_i2c(RS485_TRUEBNER3_ADDR)) {    
-        DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER3_ADDR);
+        // DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER3_ADDR);
         add_asb_detected_boards(RS485_TRUEBNER3);
     }
     if (detect_i2c(RS485_TRUEBNER4_ADDR)) {    
-        DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER4_ADDR);
+        // DEBUG_PRINTF(F("Found Truebner RS485 at address %02x\n"), RS485_TRUEBNER4_ADDR);
         add_asb_detected_boards(RS485_TRUEBNER4);
     }
 }
@@ -76,7 +76,7 @@ int TruebnerRS485Sensor::read(unsigned long /*time*/) {
     return HTTP_RQT_NOT_RECEIVED;
   }
 
-  DEBUG_PRINTLN(F("read_sensor_rs485: check-ok"));
+  // DEBUG_PRINTLN(F("read_sensor_rs485: check-ok"));
 
   bool isTemp = type == SENSOR_SMT100_TEMP || type == SENSOR_TH100_TEMP;
   bool isMois = type == SENSOR_SMT100_MOIS || type == SENSOR_TH100_MOIS;
@@ -87,8 +87,8 @@ int TruebnerRS485Sensor::read(unsigned long /*time*/) {
     Wire.write((uint8_t)id);
     Wire.write(senstype);
     if (Wire.endTransmission() == 0) {
-      DEBUG_PRINTF(F("read_sensor_rs485: request send: %d - %d\n"), id,
-                   senstype);
+      // DEBUG_PRINTF(F("read_sensor_rs485: request send: %d - %d\n"), id,
+                   // senstype);
       repeat_read = 1;
       i2c_rs485_allocated[device] = nr;
     }
@@ -141,14 +141,14 @@ int TruebnerRS485Sensor::read(unsigned long /*time*/) {
  * @return int
  */
 int TruebnerRS485Sensor::setAddress(uint8_t new_address) {
-  DEBUG_PRINTLN(F("set_sensor_address_rs485"));
+  // DEBUG_PRINTLN(F("set_sensor_address_rs485"));
   int device = port;
   if (device >= MAX_RS485_DEVICES || (get_asb_detected_boards() & (RS485_TRUEBNER1 << device)) == 0)
     return HTTP_RQT_NOT_RECEIVED;
 
   if (i2c_rs485_allocated[device] > 0) {
-    DEBUG_PRINT(F("sensor currently allocated by "));
-    DEBUG_PRINTLN(i2c_rs485_allocated[device]);
+    // DEBUG_PRINT(F("sensor currently allocated by "));
+    // DEBUG_PRINTLN(i2c_rs485_allocated[device]);
     SensorBase *t = sensor_by_nr(i2c_rs485_allocated[device]);
     if (!t || !t->flags.enable)
       i2c_rs485_allocated[device] = 0; //breakout

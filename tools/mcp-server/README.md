@@ -2,6 +2,32 @@
 
 Ein [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) Server, der die HTTP-API des OpenSprinkler Bewässerungscontrollers als MCP-Tools bereitstellt. Damit können KI-Assistenten (z. B. Claude, GitHub Copilot, ChatGPT) den Controller direkt abfragen und steuern.
 
+## Zwei Betriebsmodi
+
+### 1. Eingebetteter MCP-Server (Firmware, neu)
+
+Ab der aktuellen Firmware-Version enthält der ESP32-Controller einen **eingebauten MCP-HTTP-Server** direkt auf dem Gerät. Der Endpunkt ist:
+
+```
+POST http://<controller-ip>/mcp
+Content-Type: application/json
+```
+
+**Vorteile:** Kein Node.js nötig, kein separater Prozess — die KI kommuniziert direkt mit dem Controller via HTTP (Streamable-HTTP-Transport, JSON-RPC 2.0).
+
+**Authentifizierung** (wie bei allen anderen API-Endpunkten, MD5-Hash des Passworts):
+- Query-Parameter: `?pw=<md5>`
+- HTTP-Header: `X-OS-Password: <md5>`
+- Bearer-Token: `Authorization: Bearer <md5>`
+
+**Verfügbare Tools:** `get_all`, `get_controller_variables`, `get_options`, `get_stations`, `get_station_status`, `get_programs`, `get_debug`, `manual_station_run`, `change_controller_variables`, `pause_queue`
+
+Detaillierte Dokumentation: [`docs/mcp_firmware_api.md`](../../docs/mcp_firmware_api.md)
+
+### 2. Externer Node.js MCP-Server (dieser Server, stdio-Transport)
+
+Der Node.js-Server in diesem Verzeichnis bietet mehr Tools (alle REST-API-Endpunkte), ist aber erfordert eine Node.js-Installation und wird als separater Prozess gestartet. Er eignet sich für Umgebungen, in denen der HTTP-Transport nicht direkt verfügbar ist.
+
 ## Voraussetzungen
 
 - **Node.js** ≥ 18

@@ -35,9 +35,12 @@
 #include "osinfluxdb.h"
 #include "ArduinoJson.hpp"
 #include "sensor_fyta.h"
+#if defined(ESP32) && defined(USE_OTF)
+#include "mcp_server.h"
+#endif
 #include "sensor_mqtt.h"
 #include "LinkedMap.h"
-#include "radio_arbiter.h"
+#include <stdlib.h>
 
 #if defined(ESP32) && defined(OS_ENABLE_BLE)
 #include "sensor_ble.h"
@@ -52,6 +55,10 @@
 #endif
 
 #include "ieee802154_config.h"
+#include "radio_coex.h"
+#if defined(ESP32) && defined(USE_OTF)
+#include "cert.h"  // for /ca.der cert download endpoint
+#endif
 #if defined(ESP32) && defined(ENABLE_MATTER)
 #include "opensprinkler_matter.h"
 #endif
@@ -103,6 +110,15 @@ using ArduinoJson::JsonDocument;
 using ArduinoJson::DeserializationError;
 
 #if defined(USE_OTF)
+#endif
+
+// ── MCP capture-mode globals (used by mcp_server.cpp) ──────────────────────
+// When g_mcp_capture_active is true, send_packet() appends ether_buffer to
+// g_mcp_capture_buf instead of writing to the OTF response.  This lets the
+// embedded MCP server reuse all existing _main() helper functions.
+#if defined(ESP32)
+bool   g_mcp_capture_active = false;
+String g_mcp_capture_buf;
 #endif
 using ArduinoJson::JsonArray;
 using ArduinoJson::JsonVariant;
@@ -282,8 +298,16 @@ void send_packet(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	int len = (int)bfill.position();
 	if (len > 0) {
-		res.writeBodyData(ether_buffer, len);
-		radio_arbiter_mark_web_activity();
+#if defined(ESP32)
+		if (g_mcp_capture_active) {
+			// MCP capture mode: accumulate into string instead of HTTP response
+			g_mcp_capture_buf.concat(ether_buffer, (unsigned int)len);
+		} else {
+#endif
+			res.writeBodyData(ether_buffer, len);
+#if defined(ESP32)
+		}
+#endif
 	}
 	if (otf != nullptr) {
 		otf->pollCloud();
@@ -292,7 +316,6 @@ void send_packet(OTF_PARAMS_DEF) {
 	int len = (int)bfill.position();
 	if (len > 0 && m_client) {
 		m_client->write((const uint8_t *)ether_buffer, len);
-		radio_arbiter_mark_web_activity();
 	}
 #endif
 	rewind_ether_buffer();
@@ -305,6 +328,7 @@ char dec2hexchar(unsigned char dec) {
 
 #if defined(USE_OTF)
 void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
+	coex_notify_wifi_active(); // Signal radio coex: WiFi is serving a request
 	res.writeStatus(200, F("OK"));
 	res.writeHeader(F("Content-Type"), isJson?F("application/json"):F("text/html"));
 	if(len>0)
@@ -442,6 +466,21 @@ String get_ap_ssid() {
 }
 
 static String scanned_ssids;
+
+#if defined(USE_OTF) && defined(ESP32)
+// Serve the self-signed CA certificate in DER format so browsers/iOS can install it.
+// iOS: navigate to http://<device-ip>/ca.der in Safari, then install via Settings.
+// Android: install via Settings → Security → Install from storage.
+void on_serve_cert(OTF_PARAMS_DEF) {
+	res.writeStatus(200, F("OK"));
+	res.writeHeader(F("Content-Type"), F("application/x-x509-ca-cert"));
+	res.writeHeader(F("Content-Length"), (int)opensprinkler_crt_DER_len);
+	res.writeHeader(F("Content-Disposition"), F("attachment; filename=\"opensprinkler.cer\""));
+	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+	res.writeHeader(F("Cache-Control"), F("max-age=86400"));
+	res.writeBodyData((const char*)opensprinkler_crt_DER, opensprinkler_crt_DER_len);
+}
+#endif
 
 void on_ap_home(OTF_PARAMS_DEF) {
 	if(os.get_wifi_mode()!=WIFI_MODE_AP) return;
@@ -1432,7 +1471,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	time_os_t curr_time = os.now_tz();
 	bfill.emit_p(PSTR("\"devt\":$L,\"nbrd\":$D,\"en\":$D,\"sn1\":$D,\"sn2\":$D,\"rd\":$D,\"rdst\":$L,"
 										"\"sunrise\":$D,\"sunset\":$D,\"eip\":$L,\"lwc\":$L,\"lswc\":$L,"
-										"\"lupt\":$L,\"lrbtc\":$D,\"lrun\":[$D,$D,$D,$L],\"pq\":$D,\"pt\":$L,\"nq\":$D,\"ocs\":$D,"),
+									"\"lupt\":$L,\"lrbtc\":$D,\"lrun\":[$D,$D,$D,$L],\"pq\":$D,\"pt\":$L,\"nq\":$D,\"ocs\":$D,\"ocma\":$D,"),
 							(uint32_t)curr_time,
 							os.nboards,
 							os.status.enabled,
@@ -1454,7 +1493,8 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 							os.status.pause_state,
 							os.pause_timer,
 							pd.nqueue,
-							os.status.overcurrent_sid);
+							os.status.overcurrent_sid,
+							os.status.overcurrent_ma);
 
 #if defined(ESP8266) || defined(ESP32)
 	bfill.emit_p(PSTR("\"RSSI\":$D,"), (int16_t)WiFi.RSSI());
@@ -1650,6 +1690,7 @@ void server_change_values(OTF_PARAMS_DEF)
 
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rocs"), true) && atoi(tmp_buffer) > 0) {
 		os.status.overcurrent_sid = 0; // clear overcurrent status
+		os.status.overcurrent_ma = 0;
 	}
 
 #if !defined(ARDUINO)
@@ -2731,9 +2772,43 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
 		if (!sensor) break;
 		
 		if (first) first = false; else bfill.emit_p(PSTR(","));
-		
-		// Each sensor emits its own JSON via virtual method
-		sensor->emitJson(bfill);
+
+		ArduinoJson::JsonDocument doc;
+		ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+		sensor->toJson(obj);
+		const size_t json_len = ArduinoJson::measureJson(doc);
+
+		if (json_len <= bfill.avail()) {
+			const size_t written = ArduinoJson::serializeJson(doc, bfill.cursor(), bfill.avail() + 1);
+			bfill.advance(written);
+		} else {
+			send_packet(OTF_PARAMS);
+
+			if (json_len <= bfill.avail()) {
+				const size_t written = ArduinoJson::serializeJson(doc, bfill.cursor(), bfill.avail() + 1);
+				bfill.advance(written);
+			} else {
+				char *json_buf = (char*)malloc(json_len + 1);
+				if (json_buf) {
+					const size_t written = ArduinoJson::serializeJson(doc, json_buf, json_len + 1);
+					const char *src = json_buf;
+					size_t remaining = written;
+					while (remaining) {
+						if (bfill.avail() == 0) {
+							send_packet(OTF_PARAMS);
+						}
+						const size_t chunk = (remaining < bfill.avail()) ? remaining : bfill.avail();
+						bfill.append(src, chunk);
+						src += chunk;
+						remaining -= chunk;
+					}
+					free(json_buf);
+				} else {
+					// Fallback keeps response working even on temporary allocation failure.
+					sensor->emitJson(bfill);
+				}
+			}
+		}
 		send_packet(OTF_PARAMS);
 	}
 }
@@ -4284,12 +4359,14 @@ void server_ieee802154_get(OTF_PARAMS_DEF) {
 	                   "\"matter\":$D,"
 	                   "\"zigbee\":$D,"
 	                   "\"zigbee_gw\":$D,"
-	                   "\"zigbee_client\":$D}"),
+	                   "\"zigbee_client\":$D,"
+	                   "\"coex\":\"$S\"}"),
 	             ieee802154_is_enabled() ? 1 : 0,
 	             ieee802154_is_matter() ? 1 : 0,
 	             ieee802154_is_zigbee() ? 1 : 0,
 	             ieee802154_is_zigbee_gw() ? 1 : 0,
-	             ieee802154_is_zigbee_client() ? 1 : 0);
+	             ieee802154_is_zigbee_client() ? 1 : 0,
+	             coex_get_status());
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
@@ -4389,7 +4466,17 @@ void server_zigbee_join_network(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
 		duration = atoi(tmp_buffer);
 		if (duration < 1) duration = 1;
-		if (duration > 600) duration = 600;
+		if (duration > 10) duration = 10;
+	}
+
+	bool do_factory_reset = false;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("reset"), true)) {
+		do_factory_reset = (atoi(tmp_buffer) == 1);
+	}
+
+	// Optional reset request (must happen before ensure_started call)
+	if (do_factory_reset) {
+		sensor_zigbee_factory_reset();
 	}
 
 	// Ensure Zigbee is started, then trigger network search
@@ -4401,14 +4488,15 @@ void server_zigbee_join_network(OTF_PARAMS_DEF) {
 		return;
 	}
 
-	// Factory reset forces re-join on next start cycle
-	sensor_zigbee_factory_reset();
+	// Client mode: grant bounded (max 10s) radio priority for join/scan.
+	sensor_zigbee_open_network(duration);
 
 	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D,\"status\":\"searching\","
-	                   "\"active\":$D,\"connected\":$D}"),
+	                   "\"active\":$D,\"connected\":$D,\"reset_requested\":$D}"),
 	             duration,
 	             sensor_zigbee_is_active() ? 1 : 0,
-	             sensor_zigbee_is_active() ? 1 : 0);
+	             sensor_zigbee_is_connected() ? 1 : 0,
+	             do_factory_reset ? 1 : 0);
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
@@ -4429,6 +4517,8 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
+	DEBUG_PRINTF(F("[ZIGBEE] /zs request\n"));
+
 	if (!ieee802154_is_zigbee()) {
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"not in zigbee mode\"}"));
 		send_packet(OTF_PARAMS);
@@ -4436,10 +4526,13 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 		return;
 	}
 
-	bfill.emit_p(PSTR("{\"result\":1,\"active\":$D,\"connected\":$D,\"mode\":\"$S\"}"),
+	bfill.emit_p(PSTR("{\"result\":1,\"active\":$D,\"connected\":$D,"
+	                   "\"mode\":\"$S\",\"coex\":\"$S\",\"join_window_remaining\":$D}"),
 	             sensor_zigbee_is_active() ? 1 : 0,
-	             sensor_zigbee_is_active() ? 1 : 0,
-	             ieee802154_is_zigbee_gw() ? "gateway" : "client");
+	             sensor_zigbee_is_connected() ? 1 : 0,
+	             ieee802154_is_zigbee_gw() ? "gateway" : "client",
+	             coex_get_status(),
+	             sensor_zigbee_get_join_window_remaining());
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
@@ -4455,6 +4548,21 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
  *   action=remove&ieee=0x... - Remove a device by IEEE address
  * Returns JSON with device list or action result
  */
+
+/** Returns true if a ZigbeeSensor with the given IEEE address is registered. */
+static bool zigbee_device_is_registered(uint64_t ieee_addr) {
+	if (ieee_addr == 0) return false;
+	SensorIterator it = sensors_iterate_begin();
+	SensorBase* sensor;
+	while ((sensor = sensors_iterate_next(it)) != NULL) {
+		if (sensor->type == SENSOR_ZIGBEE) {
+			ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+			if (zb->device_ieee == ieee_addr) return true;
+		}
+	}
+	return false;
+}
+
 void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	if(!process_password(OTF_PARAMS)) return;
@@ -4528,8 +4636,10 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		int count = sensor_zigbee_get_discovered_devices(devices, 10);
 
 		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"list\",\"devices\":["));
+		int out_count = 0;
 		for (int i = 0; i < count; i++) {
-			if (i > 0) bfill.emit_p(PSTR(","));
+			if (!zigbee_device_is_registered(devices[i].ieee_addr)) continue;
+			if (out_count > 0) bfill.emit_p(PSTR(","));
 			char ieee_str[20];
 			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 			         (unsigned long long)devices[i].ieee_addr);
@@ -4542,8 +4652,9 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			             devices[i].endpoint,
 			             devices[i].device_id,
 			             devices[i].is_new ? 1 : 0);
+			out_count++;
 		}
-		bfill.emit_p(PSTR("],\"count\":$D}"), count);
+		bfill.emit_p(PSTR("],\"count\":$D}"), out_count);
 	}
 
 	send_packet(OTF_PARAMS);
@@ -4566,82 +4677,26 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 
 	ZigbeeDeviceInfo devices[10];
 	int count = sensor_zigbee_get_discovered_devices(devices, 10);
-	
-	// Build a set of IEEE addresses already in the discovered list
-	uint64_t discovered_ieee[10];
-	for (int i = 0; i < count; i++) {
-		discovered_ieee[i] = devices[i].ieee_addr;
-	}
 
 	bfill.emit_p(PSTR("{\"devices\":["));
-	
-	// First: emit discovered devices, annotate with sensor_name if configured
 	for (int i = 0; i < count; i++) {
 		if (i > 0) bfill.emit_p(PSTR(","));
-		
 		char ieee_str[20];
-		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX", 
+		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 		         (unsigned long long)devices[i].ieee_addr);
-
-		// Look up sensor name for this IEEE address
-		const char* sensor_name = "";
-		SensorIterator it = sensors_iterate_begin();
-		SensorBase* sensor;
-		while ((sensor = sensors_iterate_next(it)) != NULL) {
-			if (sensor && sensor->type == SENSOR_ZIGBEE) {
-				ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
-				if (zb->device_ieee == devices[i].ieee_addr && zb->name[0]) {
-					sensor_name = zb->name;
-					break;
-				}
-			}
-		}
-
 		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,"
-		                  "\"is_new\":$D,\"sensor_name\":\"$S\"}"),
+		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
 		             ieee_str,
 		             devices[i].short_addr,
 		             devices[i].model_id,
 		             devices[i].manufacturer,
 		             devices[i].endpoint,
 		             devices[i].device_id,
-		             devices[i].is_new ? 1 : 0,
-		             sensor_name);
+		             devices[i].is_new ? 1 : 0);
+		send_packet(OTF_PARAMS);
 	}
-	
-	// Second: emit configured ZigbeeSensors not yet in the discovered list
-	{
-		SensorIterator it = sensors_iterate_begin();
-		SensorBase* sensor;
-		while ((sensor = sensors_iterate_next(it)) != NULL) {
-			if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
-			ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
-			if (zb->device_ieee == 0) continue;
-			// Skip if already in discovered list
-			bool found = false;
-			for (int j = 0; j < count; j++) {
-				if (discovered_ieee[j] == zb->device_ieee) { found = true; break; }
-			}
-			if (found) continue;
-
-			if (count > 0 || bfill.position() > 20) bfill.emit_p(PSTR(","));
-			char ieee_str[20];
-			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX", (unsigned long long)zb->device_ieee);
-			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":0,\"model\":\"$S\","
-			                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":0,"
-			                  "\"is_new\":0,\"sensor_name\":\"$S\"}"),
-			             ieee_str,
-			             zb->zb_model[0] ? zb->zb_model : "",
-			             zb->zb_manufacturer[0] ? zb->zb_manufacturer : "",
-			             zb->endpoint,
-			             zb->name);
-			count++;
-		}
-	}
-
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);
-	
+
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
@@ -4665,9 +4720,9 @@ void server_zigbee_open_network(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
 		duration = atoi(tmp_buffer);
 		if (duration < 1) duration = 1;
-		if (duration > 30) duration = 30; // Max 30 seconds to limit WiFi disruption
+		if (duration > 10) duration = 10;
 	}
-	
+
 	sensor_zigbee_open_network(duration);
 	
 	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D}"), duration);
@@ -5045,6 +5100,13 @@ void start_server_client() {
 		otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET); // handle firmware update
 		update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
 		update_server->on("/update", HTTP_OPTIONS, on_update_options);
+#if defined(ESP32)
+		otf->on("/ca.der", on_serve_cert);  // CA cert download for HTTPS trust setup
+#endif
+#if defined(ESP32) && defined(USE_OTF)
+		// MCP (Model Context Protocol) JSON-RPC endpoint
+		otf->on("/mcp", server_mcp_handler, OTF::OTF_HTTP_POST);
+#endif
 
 		// set up all other handlers
 		char uri[4];

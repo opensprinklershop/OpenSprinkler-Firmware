@@ -254,9 +254,9 @@ struct ConStatus {
 	unsigned char req_mqtt_restart:1;// request mqtt restart
 	unsigned char pause_state:1;     // pause station runs
 	unsigned char overcurrent_sid:8; // overcurrent sid (0: no overcurrent; 1~254: overcurrent caused by opening zone; 255: system overcurrent)
-	
 	unsigned char forced_sensor1:1;  // forced sensor1 active (from Analog Sensor API)
 	unsigned char forced_sensor2:1;  // forced sensor2 active (from Analog Sensor API)
+	uint16_t overcurrent_ma;          // measured current (mA) at time of overcurrent fault
 };
 
 /** OTF configuration */

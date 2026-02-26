@@ -487,21 +487,6 @@ enum {
 	#define ETHER_BUFFER_SIZE_L   (ETHER_BUFFER_SIZE+100)
 #endif
 
-	/* To accommodate different OS30 versions, we use software defines pins */
-	extern unsigned char PIN_BUTTON_1;
-	extern unsigned char PIN_BUTTON_2;
-	extern unsigned char PIN_BUTTON_3;
-	extern unsigned char PIN_RFRX;
-	extern unsigned char PIN_RFTX;
-	extern unsigned char PIN_BOOST;
-	extern unsigned char PIN_BOOST_EN;
-	extern unsigned char PIN_LATCH_COM;
-	extern unsigned char PIN_LATCH_COMA;
-	extern unsigned char PIN_LATCH_COMK;
-	extern unsigned char PIN_SENSOR1;
-	extern unsigned char PIN_SENSOR2;
-	extern unsigned char PIN_IOEXP_INT;
-
 	/* Original OS30 pin defines */
 	//#define V0_MAIN_INPUTMASK 0b00001010 // main input pin mask
 	// pins on main PCF8574 IO expander have pin numbers IOEXP_PIN+i
@@ -564,57 +549,34 @@ enum {
 #else // ESP32
 #include <pins_arduino.h>
 
-#if defined(ESP32C3)
-	/* OS33 ESP32-C3 pin defines */
-	#define PIN_CURR_SENSE    0    // current sensing pin
-	#define PIN_LATCH_VOLT_SENSE 0 // latch voltage sensing pin
-	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
-	#define ESP32_IO_CONFIG         0x1000 // config bits
-	#define ESP32_IO_OUTPUT         0x1E00 // output bits
-	#define ESP32_PIN_BUTTON_1      8 // button 1 (8266:2)
-	#define ESP32_PIN_BUTTON_2      9 // button 2 (8266:0)
-	#define ESP32_PIN_BUTTON_3      IOEXP_PIN+12 // button 3
-	#define ESP32_PIN_RFTX          10 // 8266:15
-	#define ESP32_PIN_BOOST         IOEXP_PIN+13
-	#define ESP32_PIN_BOOST_EN      IOEXP_PIN+14
-	#define ESP32_PIN_LATCH_COMA    IOEXP_PIN+8  // latch COM+ (anode)
-	#define V2_PIN_SRLAT            IOEXP_PIN+9  // shift register latch
-	#define V2_PIN_SRCLK            IOEXP_PIN+10 // shift register clock
-	#define V2_PIN_SRDAT            IOEXP_PIN+11 // shift register data
-	#define ESP32_PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
-	#define ESP32_PIN_SENSOR1       20  // sensor 1 (8266:3)
-	#define ESP32_PIN_SENSOR2       7  // sensor 2	(8266:10)
-
-	#define PIN_ETHER_CS       1 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
-	#define PIN_EXT_FLASH_CS   6 // external flash CS pin
-	#define PIN_ETHER_IRQ     -1 //
-	#define PIN_ETHER_RESET   -1
-#elif defined(ESP32C5)
+#if defined(ESP32C5)
 /* OS33 ESP32-C6 pin defines */
 	#define PIN_CURR_SENSE    A1    // current sensing pin
 	#define PIN_LATCH_VOLT_SENSE A1 // latch voltage sensing pin
-	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
-	#define ESP32_IO_CONFIG         0x1000 // config bits
-	#define ESP32_IO_OUTPUT         0x1E00 // output bits
-	#define ESP32_PIN_BUTTON_1      10 // button 1 (8266:2)
-	#define ESP32_PIN_BUTTON_2      28 // button 2 (8266:0)
-	#define ESP32_PIN_BUTTON_3      IOEXP_PIN+12 // button 3
-	#define ESP32_PIN_RFTX          24 // 8266:15
-	#define ESP32_PIN_BOOST         IOEXP_PIN+13
-	#define ESP32_PIN_BOOST_EN      IOEXP_PIN+14
-	#define ESP32_PIN_LATCH_COMA    IOEXP_PIN+8  // latch COM+ (anode)
-	#define V2_PIN_SRLAT            IOEXP_PIN+9  // shift register latch
-	#define V2_PIN_SRCLK            IOEXP_PIN+10 // shift register clock
-	#define V2_PIN_SRDAT            IOEXP_PIN+11 // shift register data
-	#define ESP32_PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
-	#define ESP32_PIN_SENSOR1       12  // sensor 1 (8266:3)
-	#define ESP32_PIN_SENSOR2       9   // sensor 2	(8266:10)
-	#define MIO2                    4   // 13  // QIO IO2 for external flash
-	#define MIO3                    23  // 14  // QIO IO3 for external flash
+	#define PIN_LATCH_COM     -1  // set latch com pin
 
-	#define PIN_FREE1               25  
-	#define PIN_FREE2               26 
-	#define PIN_FREE3               7
+	// pins on PCA9555A IO expander have pin numbers IOEXP_PIN+i
+	#define IO_CONFIG         0x1000 // config bits
+	#define IO_OUTPUT         0x1E00 // output bits
+	#define PIN_BUTTON_1      10 // button 1 (8266:2)
+	#define PIN_BUTTON_2      28 // button 2 (8266:0)
+	#define PIN_BUTTON_3      IOEXP_PIN+12 // button 3
+	#define PIN_RFTX          24 // 8266:15
+	#define PIN_BOOST         IOEXP_PIN+13
+	#define PIN_BOOST_EN      IOEXP_PIN+14
+	#define PIN_LATCH_COMA    IOEXP_PIN+8  // latch COM+ (anode)
+	#define V2_PIN_SRLAT      IOEXP_PIN+9  // shift register latch
+	#define V2_PIN_SRCLK      IOEXP_PIN+10 // shift register clock
+	#define V2_PIN_SRDAT      IOEXP_PIN+11 // shift register data
+	#define PIN_LATCH_COMK    IOEXP_PIN+15 // latch COM- (cathode)
+	#define PIN_SENSOR1       12  // sensor 1 (8266:3)
+	#define PIN_SENSOR2       9   // sensor 2	(8266:10)
+	#define MIO2              4   // 13  // QIO IO2 for external flash
+	#define MIO3              23  // 14  // QIO IO3 for external flash
+
+	#define PIN_FREE1         25  
+	#define PIN_FREE2         26 
+	#define PIN_FREE3         7
 
 	// W5500 Ethernet: SCK=6, MISO=14, MOSI=13, CS=3, RST=EN(hardwired HIGH)
 	#define PIN_ETHER_CS       3  // Ethernet CS (chip select pin)

@@ -68,8 +68,6 @@
   #include "sensor_ble.h"
 #endif
 
-#include "radio_arbiter.h"
-
 #if defined(OSPI)
   #include "sensor_ospi_ble.h"
 #endif
@@ -119,6 +117,9 @@
 #ifdef ESP32
 #include <fstream>
 #endif
+#include "esp_coex_i154.h"
+#include "esp_ieee802154.h"
+#include "radio_coex.h"
 
 unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const char *key,
                 bool key_in_pgm = false, uint8_t *keyfound = NULL);
@@ -213,24 +214,24 @@ void detect_asb_board() {
 #if defined(ADS1115)
   asb_detected_boards |= OSPI_ADS1115;
 #endif
-  DEBUG_PRINT("ASB DETECT=");
-  DEBUG_PRINTLN(asb_detected_boards);
+  // DEBUG_PRINT("ASB DETECT=");
+  // DEBUG_PRINTLN(asb_detected_boards);
 
   for (int log = 0; log <= 2; log++) {
     checkLogSwitch(log);
 #if defined(ENABLE_DEBUG)
-    DEBUG_PRINT("log=");
-    DEBUG_PRINTLN(log);
+    // DEBUG_PRINT("log=");
+    // DEBUG_PRINTLN(log);
     const char *f1 = getlogfile(log);
-    DEBUG_PRINT("logfile1=");
-    DEBUG_PRINTLN(f1);
-    DEBUG_PRINT("size1=");
-    DEBUG_PRINTLN(file_size(f1));
+    // DEBUG_PRINT("logfile1=");
+    // DEBUG_PRINTLN(f1);
+    // DEBUG_PRINT("size1=");
+    // DEBUG_PRINTLN(file_size(f1));
     const char *f2 = getlogfile2(log);
-    DEBUG_PRINT("logfile2=");
-    DEBUG_PRINTLN(f2);
-    DEBUG_PRINT("size2=");
-    DEBUG_PRINTLN(file_size(f2));
+    // DEBUG_PRINT("logfile2=");
+    // DEBUG_PRINTLN(f2);
+    // DEBUG_PRINT("size2=");
+    // DEBUG_PRINTLN(file_size(f2));
 #endif
   }
 }
@@ -265,17 +266,17 @@ boolean sensor_type_supported(int type) {
  * init sensor api and load data
  */
 void sensor_api_init(boolean detect_boards) {
-  DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_init() started"));
+  // DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_init() started"));
   apiInit = true;
   if (detect_boards) {
-    DEBUG_PRINTLN(F("[SENSOR_API] Detecting ASB boards..."));
+    // DEBUG_PRINTLN(F("[SENSOR_API] Detecting ASB boards..."));
     detect_asb_board();
   }
-  DEBUG_PRINTLN(F("[SENSOR_API] Loading sensors..."));
+  // DEBUG_PRINTLN(F("[SENSOR_API] Loading sensors..."));
   sensor_load();
-  DEBUG_PRINTLN(F("[SENSOR_API] Loading prog_adjust..."));
+  // DEBUG_PRINTLN(F("[SENSOR_API] Loading prog_adjust..."));
   prog_adjust_load();
-  DEBUG_PRINTLN(F("[SENSOR_API] Loading monitors..."));
+  // DEBUG_PRINTLN(F("[SENSOR_API] Loading monitors..."));
   monitor_load();
 
 #if defined(OSPI)
@@ -286,7 +287,7 @@ void sensor_api_init(boolean detect_boards) {
     std::string tty;
     int idx = 0;
     int n = 0;
-    DEBUG_PRINTLN(F("Opening USB RS485 Adapters:"));
+    // DEBUG_PRINTLN(F("Opening USB RS485 Adapters:"));
     while (std::getline(file, tty)) {
       modbus_t * ctx;
       if (tty.find(".") > 0 || tty.find(":") > 0) {
@@ -302,9 +303,9 @@ void sensor_api_init(boolean detect_boards) {
       }
       else
         ctx = modbus_new_rtu(tty.c_str(), 9600, 'E', 8, 1);
-      DEBUG_PRINT(idx);
-      DEBUG_PRINT(": ");
-      DEBUG_PRINTLN(tty.c_str());
+      // DEBUG_PRINT(idx);
+      // DEBUG_PRINT(": ");
+      // DEBUG_PRINTLN(tty.c_str());
 
       //unavailable on Raspi? modbus_enable_quirks(ctx, MODBUS_QUIRK_MAX_SLAVE);
       modbus_rtu_set_serial_mode(ctx, MODBUS_RTU_RS485);
@@ -320,19 +321,19 @@ void sensor_api_init(boolean detect_boards) {
         asb_detected_boards |= OSPI_USB_RS485;
         #ifdef ENABLE_DEBUG
         modbus_set_debug(ctx, TRUE);
-        DEBUG_PRINTLN(F("DEBUG ENABLED"));
+        // DEBUG_PRINTLN(F("DEBUG ENABLED"));
         #endif
       }
       idx++;
       if (idx >= MAX_RS485_DEVICES)
         break;
     }
-    DEBUG_PRINT(F("Found "));
-    DEBUG_PRINT(n);
-    DEBUG_PRINTLN(F(" RS485 Adapters"));
+    // DEBUG_PRINT(F("Found "));
+    // DEBUG_PRINT(n);
+    // DEBUG_PRINTLN(F(" RS485 Adapters"));
   }
 #endif
-  DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_init() completed"));
+  // DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_init() completed"));
 }
 
 bool is_api_init() {
@@ -357,16 +358,12 @@ void sensor_radio_early_init() {
 #if defined(ESP32C5)
   // Only for non-Matter modes: init BLE + Zigbee immediately at boot
   if (ieee802154_is_matter()) {
-    DEBUG_PRINTLN(F("[RADIO] Matter mode — skipping early radio init (Matter manages BLE)"));
+    // DEBUG_PRINTLN(F("[RADIO] Matter mode — skipping early radio init (Matter manages BLE)"));
     return;
   }
 #endif
 
-  DEBUG_PRINTLN(F("[RADIO] Early radio init: BLE + Zigbee"));
-
-#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-  radio_arbiter_apply_balanced_coex_once();
-#endif
+  // DEBUG_PRINTLN(F("[RADIO] Early radio init: BLE + Zigbee"));
 
   // BLE MUST be initialized BEFORE Zigbee — NimBLE controller needs
   // DMA-capable internal SRAM that Zigbee would otherwise consume.
@@ -381,16 +378,21 @@ void sensor_radio_early_init() {
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
   if (ieee802154_is_zigbee()) {
-    DEBUG_PRINTF("[RADIO] Starting Zigbee (%s mode)...\n",
-                 ieee802154_is_zigbee_gw() ? "gateway" : "client");
+    // DEBUG_PRINTF("[RADIO] Starting Zigbee (%s mode)...\n",
+                 // ieee802154_is_zigbee_gw() ? "gateway" : "client");
     sensor_zigbee_start();
   }
 #endif
 
+// Initialise dynamic coexistence manager (replaces static PTI config).
+  // This MUST run AFTER Zigbee.begin() because ieee802154_mac_init()
+  // inside esp_zb_start() resets all PTI values to defaults.
+  coex_init();
+
   radioEarlyInitDone = true;
   // Also mark apiConnected so Zigbee ensure_started() is unblocked
   apiConnected = true;
-  DEBUG_PRINTLN(F("[RADIO] Early radio init complete"));
+  // DEBUG_PRINTLN(F("[RADIO] Early radio init complete"));
 }
 
 void sensor_api_connect() {
@@ -400,12 +402,12 @@ void sensor_api_connect() {
   // ESP32-C5: Ethernet mode has WiFi.getMode()==WIFI_MODE_NULL
   wifi_mode_t wmode = WiFi.getMode();
   if (wmode != WIFI_MODE_STA && wmode != WIFI_MODE_NULL) {
-    DEBUG_PRINTF("[SENSOR_API] sensor_api_connect skipped (wifi_mode=%d, not STA/ETH)\n", wmode);
+    // DEBUG_PRINTF("[SENSOR_API] sensor_api_connect skipped (wifi_mode=%d, not STA/ETH)\n", wmode);
     return;
   }
   #else
   if (os.get_wifi_mode() != WIFI_MODE_STA) {
-    DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_connect skipped (not STA mode)"));
+    // DEBUG_PRINTLN(F("[SENSOR_API] sensor_api_connect skipped (not STA mode)"));
     return;
   }
   #endif
@@ -417,9 +419,9 @@ void sensor_api_connect() {
   }
 
   #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
-  DEBUG_PRINTLN(F("[SENSOR_API] Initializing MQTT..."));
+  // DEBUG_PRINTLN(F("[SENSOR_API] Initializing MQTT..."));
   sensor_mqtt_init();
-  DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
+  // DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
   fyta_check_opts();
   #endif
 
@@ -428,6 +430,7 @@ void sensor_api_connect() {
   if (!radioEarlyInitDone) {
     sensor_radio_early_init();
   }
+
   apiConnected = true;
 }
 // sensor_api_connect() initializes all network-dependent sensor subsystems
@@ -439,6 +442,11 @@ void sensor_api_connect() {
  * @note Calls subsystem-specific loop functions (BLE, Zigbee auto-stop timers, etc.)
  */
 void sensor_api_loop() {
+#if defined(ESP32C5)
+  // Dynamic coexistence: periodically re-evaluate radio priorities
+  coex_loop();
+#endif
+
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
   if (ieee802154_is_zigbee() && sensor_zigbee_is_active()) {
     sensor_zigbee_loop();
@@ -472,7 +480,7 @@ void sensor_save_all() {
  * 
  */
 void sensor_api_free() {
-  DEBUG_PRINTLN("sensor_api_free1");
+  // DEBUG_PRINTLN("sensor_api_free1");
   apiInit = false;
   current_sensor = NULL;
   os.mqtt.setCallback(2, NULL);
@@ -482,16 +490,16 @@ void sensor_api_free() {
   }
   progSensorAdjustsMap.clear();
 
-  DEBUG_PRINTLN("sensor_api_free2");
+  // DEBUG_PRINTLN("sensor_api_free2");
 
-  DEBUG_PRINTLN("sensor_api_free3");
+  // DEBUG_PRINTLN("sensor_api_free3");
 
   for (auto &kv : monitorsMap) {
     delete kv.second;
   }
   monitorsMap.clear();
 
-  DEBUG_PRINTLN("sensor_api_free4");
+  // DEBUG_PRINTLN("sensor_api_free4");
 
   for (auto &kv : sensorsMap) {
     delete kv.second;
@@ -504,7 +512,7 @@ void sensor_api_free() {
   #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   sensor_modbus_rtu_free();
   #endif
-  DEBUG_PRINTLN("sensor_api_free5");
+  // DEBUG_PRINTLN("sensor_api_free5");
 }
 
 /*
@@ -587,7 +595,7 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
   uint nr = json["nr"];
   if (nr == 0) return HTTP_RQT_NOT_RECEIVED;
   
-  DEBUG_PRINTLN(F("sensor_define"));
+  // DEBUG_PRINTLN(F("sensor_define"));
   
   // Check if this is a partial update (no type field) or full definition
   bool is_partial_update = !json.containsKey("type");
@@ -604,6 +612,13 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     sensor->fromJson(json);
     
     if (save) sensor_save();
+    #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+      if (sensor->type == SENSOR_ZIGBEE) {
+        sensor_zigbee_request_configure_reporting(sensor->nr);
+        sensor_zigbee_request_dp_query(sensor->nr);
+        sensor_zigbee_request_active_read(sensor->nr);
+      }
+    #endif
     else last_save_time = os.now_tz() - 3600 + 5; // force save next time
     
     return HTTP_RQT_SUCCESS;
@@ -617,7 +632,7 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     // Sensor exists - check if type changed
     SensorBase *old_sensor = it->second;
     if (old_sensor->type != type) {
-      DEBUG_PRINTLN(F("sensor_define: type changed, recreating"));
+      // DEBUG_PRINTLN(F("sensor_define: type changed, recreating"));
       delete old_sensor;
       sensorsMap.erase(it);
       // Fall through to create new sensor
@@ -626,6 +641,13 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
       old_sensor->fromJson(json);
       
       if (save) sensor_save();
+      #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+        if (old_sensor->type == SENSOR_ZIGBEE) {
+          sensor_zigbee_request_configure_reporting(old_sensor->nr);
+          sensor_zigbee_request_dp_query(old_sensor->nr);
+          sensor_zigbee_request_active_read(old_sensor->nr);
+        }
+      #endif
       return HTTP_RQT_SUCCESS;
     }
   }
@@ -643,6 +665,13 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
   
   sensorsMap[nr] = new_sensor;
   if (save) sensor_save();
+  #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+    if (new_sensor->type == SENSOR_ZIGBEE) {
+      sensor_zigbee_request_configure_reporting(new_sensor->nr);
+      sensor_zigbee_request_dp_query(new_sensor->nr);
+      sensor_zigbee_request_active_read(new_sensor->nr);
+    }
+  #endif
   
   return HTTP_RQT_SUCCESS;
 }
@@ -671,6 +700,38 @@ int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
  */
 #include "ArduinoJson.hpp"
 
+static void sensor_trend_init_from_log(SensorBase *sensor) {
+  if (!sensor) return;
+
+  const uint32_t TREND_INIT_LOOKBACK_SEC = 24UL * 3600UL; // 24h window
+  const uint16_t TREND_INIT_BLOCK = 64;
+  const uint16_t TREND_INIT_MAX_ENTRIES = 512;
+
+  ulong total = sensorlog_size(LOG_STD);
+  if (total == 0) return;
+
+  ulong now = os.now_tz();
+  ulong cutoff = (now > TREND_INIT_LOOKBACK_SEC) ? (now - TREND_INIT_LOOKBACK_SEC) : 0;
+  ulong start = findLogPosition(LOG_STD, cutoff);
+
+  // Clamp to last N entries to avoid long scans on large logs
+  if (total > TREND_INIT_MAX_ENTRIES && (total - start) > TREND_INIT_MAX_ENTRIES) {
+    start = total - TREND_INIT_MAX_ENTRIES;
+  }
+
+  SensorLog_t *buffer = new SensorLog_t[TREND_INIT_BLOCK];
+  for (ulong idx = start; idx < total; idx += TREND_INIT_BLOCK) {
+    int count = sensorlog_load2(LOG_STD, idx, TREND_INIT_BLOCK, buffer);
+    if (count <= 0) break;
+    for (int i = 0; i < count; i++) {
+      if (buffer[i].nr == sensor->nr) {
+        sensor->trend_add_sample(buffer[i].data, buffer[i].time);
+      }
+    }
+  }
+  delete[] buffer;
+}
+
 void sensor_load() {
   // DEBUG_PRINTLN(F("sensor_load"));
   sensorsMap.clear();
@@ -681,6 +742,13 @@ void sensor_load() {
   sensor_load_legacy(sensorsMap);
   
   if (!sensorsMap.empty()) {
+    for (auto &kv : sensorsMap) {
+      SensorBase *s = kv.second;
+      if (s) {
+        s->trend_reset();
+        sensor_trend_init_from_log(s);
+      }
+    }
     last_save_time = os.now_tz();
     return;
   }
@@ -720,7 +788,16 @@ void sensor_load() {
     // Initialize sensor drivers
     for (auto &kv : sensorsMap) {
       SensorBase *s = kv.second;
+      s->trend_reset();
       s->init();
+    }
+
+    // Initialize trend history from logs (longer time window)
+    for (auto &kv : sensorsMap) {
+      SensorBase *s = kv.second;
+      if (s) {
+        sensor_trend_init_from_log(s);
+      }
     }
 
     last_save_time = os.now_tz();
@@ -736,7 +813,7 @@ void sensor_load() {
  */
 void sensor_save() {
   if (!apiInit) return;
-  DEBUG_PRINTLN(F("sensor_save (json)"));
+  // DEBUG_PRINTLN(F("sensor_save (json)"));
 
   // Remove old json file if present (write fresh)
   if (file_exists(SENSOR_FILENAME_JSON)) remove_file(SENSOR_FILENAME_JSON);
@@ -756,7 +833,7 @@ void sensor_save() {
   serializeJson(doc, writer);
 
   last_save_time = os.now_tz();
-  DEBUG_PRINTLN(F("sensor_save2"));
+  // DEBUG_PRINTLN(F("sensor_save2"));
   current_sensor = NULL;
 }
 
@@ -862,13 +939,13 @@ bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog) {
   error_count = 0;
 #endif
   
-  DEBUG_PRINT(F("sensorlog_add "));
-  DEBUG_PRINT(log);
+  // DEBUG_PRINT(F("sensorlog_add "));
+  // DEBUG_PRINT(log);
   checkLogSwitch(log);
   file_append_block(getlogfile(log), sensorlog, SENSORLOG_STORE_SIZE);
   checkLogSwitchAfterWrite(log);
-  DEBUG_PRINT(F("="));
-  DEBUG_PRINTLN(sensorlog_filesize(log));
+  // DEBUG_PRINT(F("="));
+  // DEBUG_PRINTLN(sensorlog_filesize(log));
   
   return true;
 }
@@ -877,6 +954,7 @@ bool sensorlog_add(uint8_t log, SensorBase *sensor, ulong time) {
   if (sensor->flags.data_ok && sensor->flags.log && time > 1000) {
 
     // Write to log file only if necessary
+    sensor->last = time;
     if (time-sensor->last_logged_time > 86400 || abs(sensor->last_data - sensor->last_logged_data) > 0.00999) {
       SensorLog_t sensorlog;
       memset(&sensorlog, 0, sizeof(SensorLog_t));
@@ -915,10 +993,10 @@ ulong sensorlog_size(uint8_t log) {
 void sensorlog_clear_all() { sensorlog_clear(true, true, true); }
 
 void sensorlog_clear(bool std, bool week, bool month) {
-  DEBUG_PRINTLN(F("sensorlog_clear "));
-  DEBUG_PRINT(std);
-  DEBUG_PRINT(week);
-  DEBUG_PRINT(month);
+  // DEBUG_PRINTLN(F("sensorlog_clear "));
+  // DEBUG_PRINT(std);
+  // DEBUG_PRINT(week);
+  // DEBUG_PRINT(month);
   if (std) {
     remove_file(SENSORLOG_FILENAME1);
     remove_file(SENSORLOG_FILENAME2);
@@ -948,8 +1026,8 @@ ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
   const char *f;
   ulong idxr = 0;
   ulong n = 0;
-  DEBUG_PRINTLN(F("clearlog1"));
-  DEBUG_PRINTF("nr: %d log: %d under:%lf over: %lf before: %lld after: %lld size: %ld size2: %ld\n", sensorNr, log, under, over, before, after, size, size2);
+  // DEBUG_PRINTLN(F("clearlog1"));
+  // DEBUG_PRINTF("nr: %d log: %d under:%lf over: %lf before: %lld after: %lld size: %ld size2: %ld\n", sensorNr, log, under, over, before, after, size, size2);
   while (idxr < size2) {
     ulong idx = idxr;
     if (idx >= size) {
@@ -965,7 +1043,7 @@ ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
     for (int i = 0; i < entries; i++, idxr++) {
       SensorLog_t * sl = &sensorlog[i];
       if (sl->nr > 0 && (sl->nr == sensorNr || sensorNr == 0)) {
-        DEBUG_PRINTF("clearlog2 idx=%ld idx2=%ld\n", idx, idxr);
+        // DEBUG_PRINTF("clearlog2 idx=%ld idx2=%ld\n", idx, idxr);
         boolean found = false;
         if (use_under && sl->data < under) found = true;
         if (use_over && sl->data > over) found = true;
@@ -976,14 +1054,14 @@ ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
         if (found) {
           sl->nr = 0;
           file_write_block(f, sl, (idx+i) * SENSORLOG_STORE_SIZE, sizeof(sl->nr));
-          DEBUG_PRINTF("clearlog3 idx=%ld idxr=%ld\n", idx, idxr);
+          // DEBUG_PRINTF("clearlog3 idx=%ld idxr=%ld\n", idx, idxr);
           n++;
         }
       }
     }
   }
   delete[] sensorlog;
-  DEBUG_PRINTF("clearlog4 n=%ld\n", n);
+  // DEBUG_PRINTF("clearlog4 n=%ld\n", n);
   return n;
 }
 
@@ -1094,7 +1172,7 @@ void calc_sensorlogs() {
   time_t last_day = time;
 
   if (time >= next_week_calc) {
-    DEBUG_PRINTLN(F("calc_sensorlogs WEEK start"));
+    // DEBUG_PRINTLN(F("calc_sensorlogs WEEK start"));
 #if defined(ESP32) && defined(BOARD_HAS_PSRAM)
     sensorlog = (SensorLog_t *)heap_caps_malloc(sizeof(SensorLog_t) * BLOCKSIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
@@ -1150,7 +1228,7 @@ void calc_sensorlogs() {
       todate += CALCRANGE_WEEK;
     }
     next_week_calc = todate;
-    DEBUG_PRINTLN(F("calc_sensorlogs WEEK end"));
+    // DEBUG_PRINTLN(F("calc_sensorlogs WEEK end"));
   }
 
   if (time >= next_month_calc) {
@@ -1166,7 +1244,7 @@ void calc_sensorlogs() {
       sensorlog = (SensorLog_t *)malloc(sizeof(SensorLog_t) * BLOCKSIZE);
 #endif
 
-    DEBUG_PRINTLN(F("calc_sensorlogs MONTH start"));
+    // DEBUG_PRINTLN(F("calc_sensorlogs MONTH start"));
     ulong size = sensorlog_size(LOG_MONTH);
     if (size == 0) {
       sensorlog_load(LOG_WEEK, 0, sensorlog);
@@ -1216,7 +1294,7 @@ void calc_sensorlogs() {
       todate += CALCRANGE_MONTH;
     }
     next_month_calc = todate;
-    DEBUG_PRINTLN(F("calc_sensorlogs MONTH end"));
+    // DEBUG_PRINTLN(F("calc_sensorlogs MONTH end"));
   }
   if (sensorlog) free(sensorlog);
 }
@@ -1233,7 +1311,7 @@ void push_message(SensorBase *sensor) {
   char *postval = tmp_buffer;
 
   if (os.mqtt.enabled()) {
-    DEBUG_PRINTLN("push mqtt1");
+    // DEBUG_PRINTLN("push mqtt1");
     strncpy_P(topic, PSTR("analogsensor/"), sizeof(topic) - 1);
     strncat(topic, sensor->name, sizeof(topic) - 1);
     snprintf_P(payload, TMP_BUFFER_SIZE,
@@ -1245,7 +1323,7 @@ void push_message(SensorBase *sensor) {
 
     if (!os.mqtt.connected()) os.mqtt.reconnect();
     os.mqtt.publish(topic, payload);
-    DEBUG_PRINTLN("push mqtt2");
+    // DEBUG_PRINTLN("push mqtt2");
   }
   
   //ifttt is enabled, when the ifttt key is present!
@@ -1276,15 +1354,27 @@ void push_message(SensorBase *sensor) {
               SOPT_IFTTT_KEY, DEFAULT_IFTTT_URL, strlen(postval), postval);
 
     os.send_http_request(DEFAULT_IFTTT_URL, 80, ether_buffer, sensor_remote_http_callback);
-    DEBUG_PRINTLN("push ifttt2");
+    // DEBUG_PRINTLN("push ifttt2");
   }
 
   add_influx_data(sensor);
 }
 
 void read_all_sensors(boolean online) {
-  if (sensorsMap.empty()) return;
-  //DEBUG_PRINTLN(F("read_all_sensors"));
+  if (sensorsMap.empty()) {
+    static unsigned long last_warn = 0;
+    if (millis() - last_warn > 120000) {
+      last_warn = millis();
+      // DEBUG_PRINTLN(F("[SENSOR] sensorsMap is empty - no sensors configured"));
+    }
+    return;
+  }
+  
+  static boolean first_read = true;
+  if (first_read) {
+    first_read = false;
+    // DEBUG_PRINTF(F("[SENSOR] read_all_sensors() started, %d sensors configured\n"), sensorsMap.size());
+  }
 
   ulong time = os.now_tz();
 
@@ -1293,7 +1383,20 @@ void read_all_sensors(boolean online) {
 #else
   if (time < os.powerup_lasttime + 30)
 #endif
+  {
+    static unsigned long last_boot_msg = 0;
+    if (millis() - last_boot_msg > 5000) {
+      last_boot_msg = millis();
+      // DEBUG_PRINTF(F("[SENSOR] Waiting for boot delay: %lu/%u seconds\n"), time - os.powerup_lasttime, 
+// #ifdef ENABLE_DEBUG
+                   // 3
+// #else
+                   // 30
+// #endif
+      // );
+    }
     return;  // wait 30s before first sensor read
+  }
 
   // Initialize iterator if we're starting over
   if (!current_sensor && !sensorsMap.empty()) {
@@ -1302,9 +1405,16 @@ void read_all_sensors(boolean online) {
   }
 
   while (current_sensor && current_sensor_it != sensorsMap.end()) {
-    if (time >= current_sensor->last_read + current_sensor->read_interval ||
-        current_sensor->repeat_read) {
+    ulong time_since_last = (current_sensor->last_read == 0) ? 99999 : (time - current_sensor->last_read);
+    boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval || current_sensor->repeat_read);
+    
+    if (should_read) {
       if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
+        boolean was_repeat = current_sensor->repeat_read;
+        // DEBUG_PRINTF(F("[SENSOR] Reading #%d (type=%d, ri=%u, last=%lu, now=%lu, since=%lu, repeat=%d)\n"),
+                    // current_sensor->nr, current_sensor->type, current_sensor->read_interval, 
+                    // current_sensor->last_read, time, time_since_last, was_repeat);
+        
         int result = read_sensor(current_sensor, time);
         if (!current_sensor) {
           // Reset iterator if sensor was deleted during save
@@ -1313,23 +1423,31 @@ void read_all_sensors(boolean online) {
         }
         if (result == HTTP_RQT_SUCCESS) {
           current_sensor->last_read = time;
+          current_sensor->trend_add_sample(current_sensor->last_data, time);
           sensorlog_add(LOG_STD, current_sensor, time);
           push_message(current_sensor);
         } else if (result == HTTP_RQT_TIMEOUT) {
           // delay next read on timeout:
           current_sensor->last_read = time + max((uint)60, current_sensor->read_interval);
           current_sensor->repeat_read = 0;
-          DEBUG_PRINTF("Delayed1: %s\n", current_sensor->name);
+          // DEBUG_PRINTF("Delayed1: %s\n", current_sensor->name);
         } else if (result == HTTP_RQT_CONNECT_ERR) {
           // delay next read on error:
           current_sensor->last_read = time + max((uint)60, current_sensor->read_interval);
           current_sensor->repeat_read = 0;
-          DEBUG_PRINTF("Delayed2: %s\n", current_sensor->name);
+          // DEBUG_PRINTF("Delayed2: %s\n", current_sensor->name);
         } else if (result == HTTP_RQT_NOT_RECEIVED) {
-          // Ensure minimum delay to prevent tight spin when sensor
-          // returns NOT_RECEIVED repeatedly (e.g., BLE scan blocked).
-          if (current_sensor->last_read < time) {
-            current_sensor->last_read = time;
+          // ZigBee sensors manage their own read timing via last_read:
+          // the sensor sets last_read when it sends an active read request,
+          // and uses (time >= last_read + poll_interval) to decide the next
+          // active read. Overwriting last_read here would reset that timer
+          // every second, making should_read inside ZigbeeSensor::read()
+          // permanently false. For other sensors (BLE etc.), update last_read
+          // to avoid tight spin loops.
+          if (current_sensor->type != SENSOR_ZIGBEE) {
+            if (current_sensor->last_read < time) {
+              current_sensor->last_read = time;
+            }
           }
         }
         ulong passed = os.now_tz() - time;
@@ -1529,9 +1647,31 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
 }
 
 int read_sensor(SensorBase *sensor, ulong time) {
-  if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
+  if (!sensor) {
+    DEBUG_PRINTLN(F("[SENSOR] read_sensor: sensor is NULL!"));
+    return HTTP_RQT_NOT_RECEIVED;
+  }
+  if (!sensor->flags.enable) {
+    // DEBUG_PRINTF(F("[SENSOR] read_sensor #%d: disabled\n"), sensor->nr);
+    return HTTP_RQT_NOT_RECEIVED;
+  }
 
-  return sensor->read(time);
+  int result = sensor->read(time);
+  const char *result_str = "?";
+  switch(result) {
+    case HTTP_RQT_SUCCESS: result_str = "SUCCESS"; break;
+    case HTTP_RQT_NOT_RECEIVED: result_str = "NOT_RECEIVED"; break;
+    case HTTP_RQT_TIMEOUT: result_str = "TIMEOUT"; break;
+    case HTTP_RQT_CONNECT_ERR: result_str = "CONNECT_ERR"; break;
+    default: result_str = "UNKNOWN"; break;
+  }
+  // Suppress routine NOT_RECEIVED noise for ZigBee sensors: they return
+  // NOT_RECEIVED while passively waiting for a device report or rejoining,
+  // which is entirely normal and not an error worth logging every interval.
+  if (result != HTTP_RQT_NOT_RECEIVED || sensor->type != SENSOR_ZIGBEE) {
+    DEBUG_PRINTF(F("[SENSOR] read #%d result=%s (=%d)\n"), sensor->nr, result_str, result);
+  }
+  return result;
 }
 
 /**
@@ -1775,7 +1915,7 @@ int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save) {
   uint nr = json["nr"];
   if (nr == 0) return HTTP_RQT_NOT_RECEIVED;
   
-  DEBUG_PRINTLN(F("prog_adjust_define"));
+  // DEBUG_PRINTLN(F("prog_adjust_define"));
   
   // Check if type is 0 (delete request)
   if (json.containsKey("type") && json["type"].as<uint>() == 0) {
@@ -1849,7 +1989,7 @@ int prog_adjust_delete(uint nr) {
 void prog_adjust_save() {
   if (!apiInit) return;
   
-  DEBUG_PRINTLN(F("prog_adjust_save"));
+  // DEBUG_PRINTLN(F("prog_adjust_save"));
   
   // Delete old file if exists
   if (file_exists(PROG_SENSOR_FILENAME)) {
@@ -1875,7 +2015,7 @@ void prog_adjust_save() {
 }
 
 void prog_adjust_load() {
-  DEBUG_PRINTLN(F("prog_adjust_load"));
+  // DEBUG_PRINTLN(F("prog_adjust_load"));
   
   // Clean up existing map
   for (auto &kv : progSensorAdjustsMap) {
@@ -1928,9 +2068,9 @@ void prog_adjust_load() {
     progSensorAdjustsMap[pa->nr] = pa;
   }
   
-  DEBUG_PRINT(F("Loaded "));
-  DEBUG_PRINT(prog_adjust_count());
-  DEBUG_PRINTLN(F(" prog adjustments"));
+  // DEBUG_PRINT(F("Loaded "));
+  // DEBUG_PRINT(prog_adjust_count());
+  // DEBUG_PRINTLN(F(" prog adjustments"));
 }
 
 uint prog_adjust_count() {
@@ -2069,13 +2209,36 @@ void add_influx_data(SensorBase *sensor) {
     return;
 
   #if defined(ESP8266) || defined(ESP32)
+  if (!sensor)
+    return;
+
+  char devname_safe[64];
+  char sensor_name_safe[sizeof(sensor->name) + 1];
+  char unit_safe[16];
+
+  devname_safe[0] = '\0';
+  sensor_name_safe[0] = '\0';
+  unit_safe[0] = '\0';
+
   Point sensor_data("analogsensor");
   os.sopt_load(SOPT_DEVICE_NAME, tmp_buffer);
-  sensor_data.addTag("devicename", tmp_buffer);
+  strncpy(devname_safe, tmp_buffer, sizeof(devname_safe) - 1);
+  devname_safe[sizeof(devname_safe) - 1] = '\0';
+
+  strncpy(sensor_name_safe, sensor->name, sizeof(sensor_name_safe) - 1);
+  sensor_name_safe[sizeof(sensor_name_safe) - 1] = '\0';
+
+  const char* unit = getSensorUnit(sensor);
+  if (unit) {
+    strncpy(unit_safe, unit, sizeof(unit_safe) - 1);
+    unit_safe[sizeof(unit_safe) - 1] = '\0';
+  }
+
+  sensor_data.addTag("devicename", devname_safe);
   snprintf(tmp_buffer, 10, "%d", sensor->nr);
   sensor_data.addTag("nr", tmp_buffer);
-  sensor_data.addTag("name", sensor->name);
-  sensor_data.addTag("unit", getSensorUnit(sensor));
+  sensor_data.addTag("name", sensor_name_safe);
+  sensor_data.addTag("unit", unit_safe);
 
   sensor_data.addField("native_data", sensor->last_native_data);
   sensor_data.addField("data", sensor->last_data);
@@ -2101,15 +2264,38 @@ influxdb_cpp::builder()
   if (!client)
     return;
 
+  if (!sensor)
+    return;
+
+  char devname_safe[64];
+  char sensor_name_safe[sizeof(sensor->name) + 1];
+  char unit_safe[16];
+
+  devname_safe[0] = '\0';
+  sensor_name_safe[0] = '\0';
+  unit_safe[0] = '\0';
+
   os.sopt_load(SOPT_DEVICE_NAME, tmp_buffer);
+  strncpy(devname_safe, tmp_buffer, sizeof(devname_safe) - 1);
+  devname_safe[sizeof(devname_safe) - 1] = '\0';
+
+  strncpy(sensor_name_safe, sensor->name, sizeof(sensor_name_safe) - 1);
+  sensor_name_safe[sizeof(sensor_name_safe) - 1] = '\0';
+
+  const char* unit = getSensorUnit(sensor);
+  if (unit) {
+    strncpy(unit_safe, unit, sizeof(unit_safe) - 1);
+    unit_safe[sizeof(unit_safe) - 1] = '\0';
+  }
+
   char nr_buf[10];
   snprintf(nr_buf, 10, "%d", sensor->nr);
   influxdb_cpp::builder()
     .meas("analogsensor")
-    .tag("devicename", tmp_buffer)
+    .tag("devicename", devname_safe)
     .tag("nr", nr_buf)
-    .tag("name", sensor->name)
-    .tag("unit", getSensorUnit(sensor))
+    .tag("name", sensor_name_safe)
+    .tag("unit", unit_safe)
     .field("native_data", (long)sensor->last_native_data)
     .field("data", sensor->last_data, 2)
     .timestamp(millis())
@@ -2248,7 +2434,7 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
 }
 
 void monitor_load() {
-  DEBUG_PRINTLN(F("monitor_load"));
+  // DEBUG_PRINTLN(F("monitor_load"));
   
   // Clean up existing map
   for (auto &kv : monitorsMap) {
@@ -2301,15 +2487,15 @@ void monitor_load() {
     monitorsMap[mon->nr] = mon;
   }
   
-  DEBUG_PRINT(F("Loaded "));
-  DEBUG_PRINT(monitor_count());
-  DEBUG_PRINTLN(F(" monitors"));
+  // DEBUG_PRINT(F("Loaded "));
+  // DEBUG_PRINT(monitor_count());
+  // DEBUG_PRINTLN(F(" monitors"));
 }
 
 void monitor_save() {
   if (!apiInit) return;
   
-  DEBUG_PRINTLN(F("monitor_save"));
+  // DEBUG_PRINTLN(F("monitor_save"));
   
   // Delete old file if exists
   if (file_exists(MONITOR_FILENAME)) {
@@ -2413,11 +2599,11 @@ void start_monitor_action(Monitor_t * mon) {
   if (mon->prog > 0)
     manual_start_program(mon->prog, 255, QUEUE_OPTION_APPEND);
 
-  DEBUG_PRINTLN(F("start_monitor_action"));
-  DEBUG_PRINT(F("Zone: "));
-  DEBUG_PRINTLN(mon->zone);
-  DEBUG_PRINT(F("Max Runtime: "));
-  DEBUG_PRINTLN(mon->maxRuntime);
+  // DEBUG_PRINTLN(F("start_monitor_action"));
+  // DEBUG_PRINT(F("Zone: "));
+  // DEBUG_PRINTLN(mon->zone);
+  // DEBUG_PRINT(F("Max Runtime: "));
+  // DEBUG_PRINTLN(mon->maxRuntime);
 
   if (mon->zone > 0) {
     uint sid = mon->zone-1;
@@ -2438,14 +2624,14 @@ void start_monitor_action(Monitor_t * mon) {
 			q = pd.enqueue();
 		}
 		// if the queue is not full
-    DEBUG_PRINTLN(F("start_monitor_action: queue not full"));
+    // DEBUG_PRINTLN(F("start_monitor_action: queue not full"));
 		if (q) {
 			q->st = 0;
 			q->dur = timer;
 			q->sid = sid;
 			q->pid = 253;
 			schedule_all_stations(mon->time);
-      DEBUG_PRINTLN(F("start_monitor_action: schedule_all_stations"));
+      // DEBUG_PRINTLN(F("start_monitor_action: schedule_all_stations"));
 		} 
   }
 }
@@ -2458,7 +2644,7 @@ void stop_monitor_action(Monitor_t * mon) {
     if (q) {
 		  q->deque_time = mon->time;
 		  turn_off_station(sid, mon->time, 0);
-      DEBUG_PRINTLN(F("stop_monitor_action: turn_off_station"));
+      // DEBUG_PRINTLN(F("stop_monitor_action: turn_off_station"));
     }
   }
 }
@@ -2498,7 +2684,7 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   ip[0] = (unsigned char)((mon->m.remote.ip & 0xFF));
 #endif
 
-  DEBUG_PRINTLN(F("read_monitor_http"));
+  // DEBUG_PRINTLN(F("read_monitor_http"));
 
   char *p = tmp_buffer;
   BufferFiller bf = BufferFiller(tmp_buffer, TMP_BUFFER_SIZE);
@@ -2506,7 +2692,7 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   bf.emit_p(PSTR("GET /ml?pw=$O&nr=$D"), SOPT_PASSWORD, mon->m.remote.rmonitor);
   bf.emit_p(PSTR(" HTTP/1.0\r\nHOST: $D.$D.$D.$D\r\n\r\n"), ip[0], ip[1], ip[2], ip[3]);
 
-  DEBUG_PRINTLN(p);
+  // DEBUG_PRINTLN(p);
 
   char server[20];
   sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
@@ -2632,12 +2818,12 @@ void check_monitors() {
     }
 
     if (mon->active != wasActive) {
-      DEBUG_PRINT(F("Monitor "));
-      DEBUG_PRINT(mon->nr);
-      DEBUG_PRINT(F(" changed from "));
-      DEBUG_PRINT(wasActive ? "active" : "inactive");
-      DEBUG_PRINT(F(" to "));
-      DEBUG_PRINTLN(mon->active ? "active" : "inactive");
+      // DEBUG_PRINT(F("Monitor "));
+      // DEBUG_PRINT(mon->nr);
+      // DEBUG_PRINT(F(" changed from "));
+      // DEBUG_PRINT(wasActive ? "active" : "inactive");
+      // DEBUG_PRINT(F(" to "));
+      // DEBUG_PRINTLN(mon->active ? "active" : "inactive");
       if (mon->active) {
         if (mon->reset_seconds > 0) {
           mon->reset_time = timeNow + mon->reset_seconds; 
@@ -2653,10 +2839,10 @@ void check_monitors() {
     } else if (mon->active) {
       if (mon->reset_time > 0 && mon->reset_time < timeNow) { //time is over
         mon->active = false;
-        DEBUG_PRINT(F("Monitor "));
-        DEBUG_PRINT(mon->nr);
-        DEBUG_PRINT(F(" time is over at "));
-        DEBUG_PRINTLN(timeNow);
+        // DEBUG_PRINT(F("Monitor "));
+        // DEBUG_PRINT(mon->nr);
+        // DEBUG_PRINT(F(" time is over at "));
+        // DEBUG_PRINTLN(timeNow);
         stop_monitor_action(mon);
         mon->reset_time = timeNow + mon->reset_seconds; 
       } else if (mon->reset_time == 0 && mon->reset_seconds > 0) { //reset time not set, but reset seconds is set
@@ -2672,20 +2858,20 @@ void replace_pid(uint old_pid, uint new_pid) {
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
     if (mon->prog == old_pid) {
-      DEBUG_PRINT(F("replace_pid: "));
-      DEBUG_PRINT(old_pid);
-      DEBUG_PRINT(F(" with "));
-      DEBUG_PRINTLN(new_pid);
+      // DEBUG_PRINT(F("replace_pid: "));
+      // DEBUG_PRINT(old_pid);
+      // DEBUG_PRINT(F(" with "));
+      // DEBUG_PRINTLN(new_pid);
       mon->prog = new_pid;
     }
   }
   for (auto &kv : progSensorAdjustsMap) {
     ProgSensorAdjust *psa = kv.second;
     if (psa && psa->prog == old_pid) {
-      DEBUG_PRINT(F("replace_pid psa: "));
-      DEBUG_PRINT(old_pid);
-      DEBUG_PRINT(F(" with "));
-      DEBUG_PRINTLN(new_pid);
+      // DEBUG_PRINT(F("replace_pid psa: "));
+      // DEBUG_PRINT(old_pid);
+      // DEBUG_PRINT(F(" with "));
+      // DEBUG_PRINTLN(new_pid);
       psa->prog = new_pid;
     }
   }

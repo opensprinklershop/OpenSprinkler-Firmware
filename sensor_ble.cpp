@@ -29,6 +29,7 @@
 #include <vector>
 #include <ctype.h>
 #include "ieee802154_config.h"
+#include "radio_coex.h"
 #ifdef ENABLE_MATTER
 #include "opensprinkler_matter.h"
 #endif
@@ -40,7 +41,6 @@ extern OpenSprinkler os;
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <freertos/semphr.h>
-#include "radio_arbiter.h"
 
 // Forward declarations
 void ble_semaphore_init();
@@ -51,12 +51,26 @@ static bool ble_uuid_extract_16bit(const char* uuid_in, uint16_t* out_uuid16);
 // BLE state
 static bool ble_initialized = false;
 static BLEScan* pBLEScan = nullptr;
+static constexpr size_t BLE_DISCOVERED_MAX = 128;
 
 // Background passive scan: runs continuously to catch broadcast sensors (Govee, Xiaomi)
+// DISABLED FOR WIFI STABILITY: Background scans were interrupting WiFi TCP/IP operations at LWIP level,
+// causing DNS failures, connection aborts (errno 113), and finally UDP crashes in lwIP.
+// Only on-demand discovery scans (sensor_ble_start_discovery_scan) will now be used.
 static bool bg_scan_active = false;
 static uint32_t bg_scan_restart_at = 0;
-static const uint32_t BG_SCAN_DURATION = 30;    // 30 seconds per cycle
-static const uint32_t BG_SCAN_RESTART_MS = 2000; // 2s pause between cycles
+static const uint32_t BG_SCAN_DURATION_NORMAL  = 0;     // DISABLED: 0 seconds (no background scanning)
+static const uint32_t BG_SCAN_DURATION_CONTEND = 0;     // DISABLED: 0 seconds
+static const uint32_t BG_SCAN_RESTART_MS = UINT32_MAX;  // Never restart background scan
+
+/// Helper: compute adaptive background scan duration based on Zigbee state
+static uint32_t ble_get_adaptive_scan_duration() {
+    // If Zigbee is locked, use very short scan to prioritize Zigbee
+    if (coex_is_zigbee_locked()) {
+        return BG_SCAN_DURATION_CONTEND;  // 2s when Zigbee active
+    }
+    return BG_SCAN_DURATION_NORMAL;      // 5s when Zigbee idle
+}
 
 // User-requested discovery scan (active, high duty cycle)
 static bool discovery_scan_active = false;
@@ -107,7 +121,7 @@ static void ble_bg_scan_complete_cb(BLEScanResults results) {
 static void ble_discovery_scan_complete_cb(BLEScanResults results) {
     discovery_scan_active = false;
     discovery_scan_end = 0;
-    radio_arbiter_release(RADIO_OWNER_BLE_SCAN);
+    coex_release_lock(COEX_OWNER_BLE);
     // Background scan will auto-restart from sensor_ble_loop()
 }
 
@@ -121,7 +135,9 @@ static void ble_bg_scan_start() {
     pBLEScan->setInterval(320);       // 200ms interval
     pBLEScan->setWindow(160);         // 100ms window → 50% duty cycle
     pBLEScan->clearResults();
-    pBLEScan->start(BG_SCAN_DURATION, ble_bg_scan_complete_cb, false);
+    
+    uint32_t scan_duration = ble_get_adaptive_scan_duration();
+    pBLEScan->start(scan_duration, ble_bg_scan_complete_cb, false);
     bg_scan_active = true;
 }
 
@@ -145,6 +161,14 @@ static std::vector<BLEDeviceInfo> discovered_ble_devices;
 #define BLE_IGNORE_SLOTS 128  // must be power of 2
 struct BleIgnoreSlot { uint8_t mac[6]; uint8_t occupied; };
 static BleIgnoreSlot EXT_RAM_BSS_ATTR ble_ignore_table[BLE_IGNORE_SLOTS];
+
+static uint16_t ble_ignore_count() {
+    uint16_t count = 0;
+    for (uint16_t i = 0; i < BLE_IGNORE_SLOTS; i++) {
+        if (ble_ignore_table[i].occupied) count++;
+    }
+    return count;
+}
 
 static uint32_t ble_ignore_hash(const uint8_t* mac) {
     // FNV-1a 32-bit over 6 bytes
@@ -872,7 +896,7 @@ static bool ble_read_device_info_service(const char* mac_address, char* out_manu
 
     bool lock_acquired = ble_sensor_lock_acquire(1500);
     if (!lock_acquired) {
-        DEBUG_PRINTLN(F("[BLE] DIS query skipped: semaphore busy"));
+        // DEBUG_PRINTLN(F("[BLE] DIS query skipped: semaphore busy"));
         return false;
     }
 
@@ -897,8 +921,8 @@ static bool ble_read_device_info_service(const char* mac_address, char* out_manu
         return false;
     }
 
-    DEBUG_PRINT(F("[BLE] DIS: Connected to "));
-    DEBUG_PRINTLN(mac_address);
+    // DEBUG_PRINT(F("[BLE] DIS: Connected to "));
+    // DEBUG_PRINTLN(mac_address);
 
     // Get Device Information Service (0x180A)
     BLERemoteService* pDIS = pClient->getService(BLEUUID((uint16_t)0x180A));
@@ -911,8 +935,8 @@ static bool ble_read_device_info_service(const char* mac_address, char* out_manu
                 strncpy(out_manufacturer, val.c_str(), 31);
                 out_manufacturer[31] = 0;
                 success = true;
-                DEBUG_PRINT(F("[BLE] DIS Manufacturer: "));
-                DEBUG_PRINTLN(out_manufacturer);
+                // DEBUG_PRINT(F("[BLE] DIS Manufacturer: "));
+                // DEBUG_PRINTLN(out_manufacturer);
             }
         }
 
@@ -924,8 +948,8 @@ static bool ble_read_device_info_service(const char* mac_address, char* out_manu
                 strncpy(out_model, val.c_str(), 31);
                 out_model[31] = 0;
                 success = true;
-                DEBUG_PRINT(F("[BLE] DIS Model: "));
-                DEBUG_PRINTLN(out_model);
+                // DEBUG_PRINT(F("[BLE] DIS Model: "));
+                // DEBUG_PRINTLN(out_model);
             }
         }
     } else {
@@ -1488,6 +1512,18 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             new_dev.adv_battery = adv_battery;
             new_dev.has_adv_data = has_adv_data;
             new_dev.adv_data_pending_push = has_adv_data;
+
+            if (discovered_ble_devices.size() >= BLE_DISCOVERED_MAX) {
+                size_t oldest_idx = 0;
+                uint32_t oldest_seen = discovered_ble_devices[0].last_seen;
+                for (size_t i = 1; i < discovered_ble_devices.size(); i++) {
+                    if (discovered_ble_devices[i].last_seen < oldest_seen) {
+                        oldest_seen = discovered_ble_devices[i].last_seen;
+                        oldest_idx = i;
+                    }
+                }
+                discovered_ble_devices.erase(discovered_ble_devices.begin() + oldest_idx);
+            }
             
             discovered_ble_devices.push_back(new_dev);
 
@@ -1502,10 +1538,10 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 ble_queue_dis_query(mac_str);
             }
 
-            DEBUG_PRINT("New BLE sensor added: ");
-            DEBUG_PRINT(new_dev.name);
-            DEBUG_PRINT(" type=");
-            DEBUG_PRINTLN((int)sensor_type);
+            // DEBUG_PRINT("New BLE sensor added: ");
+            // DEBUG_PRINT(new_dev.name);
+            // DEBUG_PRINT(" type=");
+            // DEBUG_PRINTLN((int)sensor_type);
         }
     }
 };
@@ -1514,16 +1550,18 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 static MyAdvertisedDeviceCallbacks ble_scan_callbacks;
 bool sensor_ble_init()
 {
-    // When IEEE 802.15.4 mode is Matter, wait for Matter to initialize first.
-    // Matter uses the shared NimBLE controller for CHIPoBLE commissioning.
-    if (ieee802154_is_matter()) {
+    // In Matter mode the shared BLE controller is owned by Matter.
+    // Do NOT initialize the BLE sensor stack to avoid NimBLE init conflicts.
 #ifdef ENABLE_MATTER
-        uint32_t m_init = matter_get_init_time_ms();
-        if (m_init == 0 || (millis() - m_init) < 15000) {
-            return false; // Matter not ready yet
+    if (ieee802154_is_matter()) {
+        static bool warned_matter_mode = false;
+        if (!warned_matter_mode) {
+            // DEBUG_PRINTLN("[BLE] Matter mode active: BLE sensor stack disabled");
+            warned_matter_mode = true;
         }
-#endif
+        return false;
     }
+#endif
 
     if (!ble_initialized && BLEDevice::getInitialized()) {
         ble_initialized = true;
@@ -1533,7 +1571,7 @@ bool sensor_ble_init()
         ble_semaphore_init();
         if (!pBLEScan) {
             pBLEScan = BLEDevice::getScan();
-            DEBUG_PRINTLN("[BLE] Reusing existing NimBLE stack - attaching scan callbacks");
+            // DEBUG_PRINTLN("[BLE] Reusing existing NimBLE stack - attaching scan callbacks");
             pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks, true);
         }
         // Start background scan if not already running
@@ -1548,7 +1586,7 @@ bool sensor_ble_init()
         return false;
     }
 
-    DEBUG_PRINTLN("Initializing BLE...");
+    // DEBUG_PRINTLN("Initializing BLE...");
 
     ble_initialized = BLEDevice::init("OpenSprinkler");
     if (!ble_initialized && BLEDevice::getInitialized()) {
@@ -1561,7 +1599,7 @@ bool sensor_ble_init()
         return false;
     }
 
-    DEBUG_PRINTLN("BLE initialized successfully");
+    // DEBUG_PRINTLN("BLE initialized successfully");
     ble_init_failed = false;
 
     ble_semaphore_init();
@@ -1571,7 +1609,7 @@ bool sensor_ble_init()
 
     // Start background passive scan immediately - BLE stays permanently active
     ble_bg_scan_start();
-    DEBUG_PRINTLN("[BLE] Background passive scan started after init");
+    // DEBUG_PRINTLN("[BLE] Background passive scan started after init");
 
     return true;
 }
@@ -1581,8 +1619,8 @@ static bool ble_ensure_initialized(const char* reason) {
         return true;
     }
     if (reason && reason[0]) {
-        DEBUG_PRINT(F("[BLE] Init requested by: "));
-        DEBUG_PRINTLN(reason);
+        // DEBUG_PRINT(F("[BLE] Init requested by: "));
+        // DEBUG_PRINTLN(reason);
     }
     return sensor_ble_init();
 }
@@ -1618,7 +1656,7 @@ static void sensor_ble_stop_now() {
         ble_client = nullptr;
     }
 
-    DEBUG_PRINTLN("[BLE] Scans stopped (BLE stays initialized)");
+    // DEBUG_PRINTLN("[BLE] Scans stopped (BLE stays initialized)");
 }
 
 /**
@@ -1639,14 +1677,9 @@ void sensor_ble_stop() {
 void sensor_ble_start_scan(uint16_t duration, bool passive) {
     if (!ble_ensure_initialized("scan")) return;
 
-    if (!radio_arbiter_allow_ble_scan()) {
-        DEBUG_PRINTLN("[BLE] Scan deferred: web traffic has priority");
-        return;
-    }
-
     bool acquired_new = false;
     if (!ble_sensor_lock_acquire(1500, &acquired_new)) {
-        DEBUG_PRINTLN("[BLE] Scan skipped: semaphore busy");
+        // DEBUG_PRINTLN("[BLE] Scan skipped: semaphore busy");
         return;
     }
 
@@ -1659,7 +1692,7 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     }
 
     if (discovery_scan_active) {
-        DEBUG_PRINTLN("[BLE] Discovery scan already active");
+        // DEBUG_PRINTLN("[BLE] Discovery scan already active");
         ble_sensor_lock_release();
         return;
     }
@@ -1679,7 +1712,6 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     uint16_t actual_duration = (duration > MAX_DISCOVERY) ? MAX_DISCOVERY : duration;
 
     pBLEScan->clearResults();
-    radio_arbiter_acquire(RADIO_OWNER_BLE_SCAN, actual_duration * 1000 + 2000);
 
     // Clear ignore table so discovery scan can see all devices
     memset(ble_ignore_table, 0, sizeof(ble_ignore_table));
@@ -1688,9 +1720,22 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     discovery_scan_active = true;
     discovery_scan_end = millis() + (actual_duration * 1000);
 
+    // Request coex radio lock for the discovery scan duration
+    // If lock fails (Zigbee is active), abort discovery scan and retry later
+    if (!coex_request_lock(COEX_OWNER_BLE, actual_duration * 1000)) {
+        // DEBUG_PRINTF("[BLE] Discovery scan deferred (Zigbee active)\n");
+        if (pBLEScan && pBLEScan->isScanning()) {
+            pBLEScan->stop();
+        }
+        discovery_scan_active = false;
+        discovery_scan_end = 0;
+        ble_sensor_lock_release();
+        return;
+    }
+
     ble_sensor_lock_release();
 
-    DEBUG_PRINTF("[BLE] Discovery scan started (duration=%ds, passive=%d)\n", actual_duration, (int)passive);
+    // DEBUG_PRINTF("[BLE] Discovery scan started (duration=%ds, passive=%d)\n", actual_duration, (int)passive);
 }
 
 /**
@@ -1702,24 +1747,25 @@ void sensor_ble_loop() {
 
     uint32_t now = millis();
 
+    static uint32_t last_list_log = 0;
+    if (now - last_list_log > 60000) {
+        last_list_log = now;
+        // DEBUG_PRINTF("[BLE] Lists: discovered=%u ignore=%u dis_queue=%u\n",
+                     // (unsigned)discovered_ble_devices.size(),
+                     // (unsigned)ble_ignore_count(),
+                     // (unsigned)ble_dis_query_queue.size());
+    }
+
     // Periodically refresh the managed-MAC cache for onResult filtering
     if ((int32_t)(now - managed_ble_mac_refresh_at) >= 0) {
         ble_refresh_managed_macs();
     }
 
-    // Check radio arbiter - pause bg scan if web traffic needs priority
-    if (bg_scan_active && !radio_arbiter_allow_ble_scan()) {
-        ble_bg_scan_stop();
-    }
-
-    // Auto-restart background passive scan when idle
-    if (!bg_scan_active && !discovery_scan_active && now >= bg_scan_restart_at) {
-        if (radio_arbiter_allow_ble_scan()) {
-            ble_bg_scan_start();
-        } else {
-            bg_scan_restart_at = now + 5000; // Retry in 5s
-        }
-    }
+    // BACKGROUND SCANNING DISABLED: WiFi stability requires zero background BLE scan activity
+    // The background scan was causing WiFi drops due to interrupted LWIP TCP/IP operations.
+    // OnResult callbacks from advertisements will still work (passive reception), but
+    // the periodic active scans have been completely disabled.
+    // Users can still use sensor_ble_start_discovery_scan() for on-demand discovery.
 
     // Safety: force-stop discovery scan if overdue
     if (discovery_scan_active && discovery_scan_end > 0 && now > discovery_scan_end + 5000) {
@@ -1729,7 +1775,7 @@ void sensor_ble_loop() {
         }
         discovery_scan_active = false;
         discovery_scan_end = 0;
-        radio_arbiter_release(RADIO_OWNER_BLE_SCAN);
+        coex_release_lock(COEX_OWNER_BLE);
     }
 
     // Process one DIS query at a time (only when not in active GATT operations)
@@ -2068,7 +2114,7 @@ int BLESensor::read(unsigned long time) {
     if (is_bms && cached_dev->sensor_type == BLE_TYPE_BMS_JBD) {
         bool lock_ok = ble_sensor_lock_acquire(500);
         if (!lock_ok) {
-            DEBUG_PRINTLN(F("[BLE] BMS read skipped: semaphore busy"));
+            // DEBUG_PRINTLN(F("[BLE] BMS read skipped: semaphore busy"));
             flags.data_ok = false;
             last_read = time;
             return HTTP_RQT_NOT_RECEIVED;
@@ -2096,7 +2142,7 @@ int BLESensor::read(unsigned long time) {
             return HTTP_RQT_NOT_RECEIVED;
         }
 
-        DEBUG_PRINTLN(F("[BLE] Connected to JBD BMS"));
+        // DEBUG_PRINTLN(F("[BLE] Connected to JBD BMS"));
 
         BLERemoteService* pService = pClient->getService(BLEUUID(JBD_SERVICE_UUID));
         if (!pService) {
@@ -2186,7 +2232,7 @@ int BLESensor::read(unsigned long time) {
     if (has_gatt_config && strlen(characteristic_uuid) > 0) {
         bool lock_ok = ble_sensor_lock_acquire(500);
         if (!lock_ok) {
-            DEBUG_PRINTLN(F("[BLE] GATT read skipped: semaphore busy"));
+            // DEBUG_PRINTLN(F("[BLE] GATT read skipped: semaphore busy"));
             flags.data_ok = false;
             last_read = time;
             return HTTP_RQT_NOT_RECEIVED;
@@ -2214,7 +2260,7 @@ int BLESensor::read(unsigned long time) {
             return HTTP_RQT_NOT_RECEIVED;
         }
 
-        DEBUG_PRINTF("[BLE] Connected for GATT read: %s char=%s\n", mac_address, characteristic_uuid);
+        // DEBUG_PRINTF("[BLE] Connected for GATT read: %s char=%s\n", mac_address, characteristic_uuid);
 
         // Sanitize and create UUID
         char uuid_clean[128] = {0};
@@ -2231,7 +2277,7 @@ int BLESensor::read(unsigned long time) {
         // Search all services if not found
         if (!pChar) {
 #if defined(ESP32C5)
-            DEBUG_PRINTLN(F("[BLE] Skipping full service scan on ESP32-C5"));
+            // DEBUG_PRINTLN(F("[BLE] Skipping full service scan on ESP32-C5"));
 #else
             std::map<std::string, BLERemoteService*>* services = pClient->getServices();
             if (services) {
@@ -2282,7 +2328,7 @@ int BLESensor::read(unsigned long time) {
 
     // No usable config - ADV sensor not yet seen or unknown device
     if (!cached_dev) {
-        DEBUG_PRINTF("[BLE] %s: device not yet discovered (background scan active)\n", name);
+        // DEBUG_PRINTF("[BLE] %s: device not yet discovered (background scan active)\n", name);
     }
     flags.data_ok = false;
     last_read = time;
@@ -2313,7 +2359,7 @@ bool sensor_ble_reinit_after_matter() {
 
     pBLEScan = BLEDevice::getScan();
     if (pBLEScan) {
-        DEBUG_PRINTLN("[BLE] Reinit after Matter - attaching scan callbacks, starting bg scan");
+        // DEBUG_PRINTLN("[BLE] Reinit after Matter - attaching scan callbacks, starting bg scan");
         pBLEScan->setAdvertisedDeviceCallbacks(&ble_scan_callbacks, true);
         // Start background passive scan
         ble_bg_scan_start();
@@ -2334,7 +2380,7 @@ void ble_semaphore_init() {
         if (ble_access_semaphore) {
             // Initial state: BLE is available (semaphore = 1)
             xSemaphoreGive(ble_access_semaphore);
-            DEBUG_PRINTLN("[BLE] Semaphore initialized");
+            // DEBUG_PRINTLN("[BLE] Semaphore initialized");
         }
     }
 }

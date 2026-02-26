@@ -153,6 +153,16 @@ void start_network_ap(const char *ssid, const char *pass) {
 void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
 	DEBUG_PRINTLN("Starting STA with AP mode");
 	if(!ssid || !pass) return;
+#if defined(OS_ENABLE_ZIGBEE)
+	// Channels 1-13 are 2.4 GHz — warning: ZigBee also uses 2.4 GHz on this band.
+	// If channel is specified and is 2.4 GHz, ZigBee will operate in active-poll
+	// mode only (reduced range/reliability compared to 5 GHz or Ethernet mode).
+	if (channel > 0 && channel <= 13) {
+		DEBUG_PRINTLN(F("[WiFi] WARNING: Connecting on 2.4 GHz — ZigBee shares this band. "
+		                "ZigBee will operate in active-poll-only mode (reduced reliability). "
+		                "For best ZigBee performance use 5 GHz WiFi or Ethernet."));
+	}
+#endif
 	#if defined(ESP8266)
 	wifi_set_sleep_type(NONE_SLEEP_T);
 	WiFi.setOutputPower(20.5);
@@ -178,6 +188,13 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 void start_network_sta(const char *ssid, const char *pass, int32_t channel, const unsigned char *bssid) {
 	DEBUG_PRINTLN("Starting STA mode");
 	if(!ssid || !pass) return;
+#if defined(OS_ENABLE_ZIGBEE)
+	// Force 5 GHz to avoid ZigBee / WiFi 2.4 GHz interference.
+	// ZigBee and 2.4 GHz WiFi share the same radio on ESP32-C5 — using 5 GHz
+	// allows the coex manager to give ZigBee balanced 50/50 radio time instead
+	// of the restricted active-poll-only mode.
+	DEBUG_PRINTLN(F("[WiFi] STA mode: forcing 5 GHz band to avoid ZigBee 2.4 GHz interference."));
+#endif
 	#if defined(ESP8266)
 	wifi_set_sleep_type(NONE_SLEEP_T);
 	WiFi.setOutputPower(20.5);
@@ -192,6 +209,8 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	WiFi.setAutoReconnect(true);
 	#endif
 
+	//WiFi.setBandMode(WIFI_BAND_MODE_5G_ONLY);
+	//channel = 0;
 	WiFi.begin(ssid, pass, channel, bssid);
 
 	// NOTE: Do NOT restore PSRAM here — WiFi scan/connect is async.

@@ -110,13 +110,13 @@ bool MqttSensor::filterMatches(const char* mtopic, const char* pattern) {
 void MqttSensor::callback(char* mtopic, byte* payload, unsigned int length) {
 #else
 void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
-    DEBUG_PRINTLN("sensor_mqtt_callback0");
+    // DEBUG_PRINTLN("sensor_mqtt_callback0");
 	char* mtopic = (char*)msg->topic;
 	byte* payload = (byte*)msg->payload;
 	unsigned int length = msg->payloadlen;
 #endif
 
-    DEBUG_PRINTLN("sensor_mqtt_callback1");
+    // DEBUG_PRINTLN("sensor_mqtt_callback1");
 
 	if (!mtopic || !payload) return;
 	time_t now = os.now_tz();
@@ -144,13 +144,13 @@ void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosqui
 					sensor->last_read = now;	
 					mqtt->mqtt_push = true;
 					sensor->repeat_read = 1; //This will call read_sensor_mqtt
-					DEBUG_PRINTLN("sensor_mqtt_callback2");
+					// DEBUG_PRINTLN("sensor_mqtt_callback2");
 				}
 			}
 		}
 		sensor = sensors_iterate_next(it);
 	}
-    DEBUG_PRINTLN("sensor_mqtt_callback3");
+    // DEBUG_PRINTLN("sensor_mqtt_callback3");
 }
 
 int MqttSensor::read(unsigned long time) {
@@ -165,11 +165,11 @@ int MqttSensor::read(unsigned long time) {
 	} else {
 		repeat_read = 0;
 		last_read = time;
-        DEBUG_PRINT("read_sensor_mqtt1: ");
-		DEBUG_PRINTLN(name);
+        // DEBUG_PRINT("read_sensor_mqtt1: ");
+		// DEBUG_PRINTLN(name);
 		if (topic[0]) {
-            DEBUG_PRINT("subscribe: ");
-            DEBUG_PRINTLN(topic);
+            // DEBUG_PRINT("subscribe: ");
+            // DEBUG_PRINTLN(topic);
 			os.mqtt.subscribe(topic);
 			mqtt_init = true;
 		}

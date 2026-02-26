@@ -50,7 +50,7 @@ extern SensorBase* sensor_make_obj(uint type, boolean ip_based);
 bool sensor_load_legacy(std::map<uint, SensorBase*>& sensorsMap) {
   if (!file_exists(SENSOR_FILENAME)) return false;
   
-  DEBUG_PRINTLN(F("sensor_load_legacy: importing binary format"));
+  // DEBUG_PRINTLN(F("sensor_load_legacy: importing binary format"));
   
   // Legacy Sensor_t structure (old binary format)
   struct Sensor_t {
@@ -148,13 +148,13 @@ bool sensor_load_legacy(std::map<uint, SensorBase*>& sensorsMap) {
     if (pos > 500000 || imported_count > 200) break;
   }
   
-  DEBUG_PRINT(F("sensor_load_legacy: imported "));
-  DEBUG_PRINT(imported_count);
-  DEBUG_PRINTLN(F(" sensors"));
+  // DEBUG_PRINT(F("sensor_load_legacy: imported "));
+  // DEBUG_PRINT(imported_count);
+  // DEBUG_PRINTLN(F(" sensors"));
   
   // Load MQTT sensor URLs from separate file (sensorurl.dat)
   if (file_exists(SENSORURL_FILENAME)) {
-    DEBUG_PRINTLN(F("sensor_load_legacy: loading MQTT URLs"));
+    // DEBUG_PRINTLN(F("sensor_load_legacy: loading MQTT URLs"));
     ulong url_pos = 0;
     
     while (true) {
@@ -184,11 +184,11 @@ bool sensor_load_legacy(std::map<uint, SensorBase*>& sensorsMap) {
         urlstr[urlEntry.length] = 0;
         url_pos += urlEntry.length;
         
-        DEBUG_PRINT(urlEntry.nr);
-        DEBUG_PRINT(F("/"));
-        DEBUG_PRINT(urlEntry.type);
-        DEBUG_PRINT(F(": "));
-        DEBUG_PRINTLN(urlstr);
+        // DEBUG_PRINT(urlEntry.nr);
+        // DEBUG_PRINT(F("/"));
+        // DEBUG_PRINT(urlEntry.type);
+        // DEBUG_PRINT(F(": "));
+        // DEBUG_PRINTLN(urlstr);
         
         // Find the sensor and update its JSON data
         auto it = sensorsMap.find(urlEntry.nr);
@@ -228,7 +228,7 @@ bool sensor_load_legacy(std::map<uint, SensorBase*>& sensorsMap) {
   remove_file(SENSOR_FILENAME);
   remove_file(SENSORURL_FILENAME);
   
-  DEBUG_PRINTLN(F("sensor_load_legacy: migration complete, legacy files deleted"));
+  // DEBUG_PRINTLN(F("sensor_load_legacy: migration complete, legacy files deleted"));
   return true;
 }
 
@@ -249,7 +249,7 @@ bool prog_adjust_load_legacy(std::map<uint, ProgSensorAdjust*>& progSensorAdjust
     return false;
   }
   
-  DEBUG_PRINTLN(F("prog_adjust_load_legacy: importing binary format"));
+  // DEBUG_PRINTLN(F("prog_adjust_load_legacy: importing binary format"));
   
   // Legacy ProgSensorAdjust structure (old binary format)
   struct ProgSensorAdjustLegacy_t {
@@ -309,9 +309,9 @@ bool prog_adjust_load_legacy(std::map<uint, ProgSensorAdjust*>& progSensorAdjust
     if (pos > 100000 || imported_count > 500) break;
   }
   
-  DEBUG_PRINT(F("prog_adjust_load_legacy: imported "));
-  DEBUG_PRINT(imported_count);
-  DEBUG_PRINTLN(F(" program adjustments"));
+  // DEBUG_PRINT(F("prog_adjust_load_legacy: imported "));
+  // DEBUG_PRINT(imported_count);
+  // DEBUG_PRINTLN(F(" program adjustments"));
   
   if (imported_count > 0) {
     // Save in new JSON format
@@ -320,7 +320,7 @@ bool prog_adjust_load_legacy(std::map<uint, ProgSensorAdjust*>& progSensorAdjust
     // Delete old binary file to prevent re-import
     remove_file(PROG_SENSOR_FILENAME_LEGACY);
     
-    DEBUG_PRINTLN(F("prog_adjust_load_legacy: migration complete, legacy file deleted"));
+    // DEBUG_PRINTLN(F("prog_adjust_load_legacy: migration complete, legacy file deleted"));
     return true;
   }
   
@@ -345,10 +345,10 @@ bool monitor_load_legacy(std::map<uint, Monitor*>& monitorsMap) {
   
   ulong legacy_file_size = file_size(MONITOR_FILENAME_LEGACY);
   
-  DEBUG_PRINT(F("monitor_load_legacy: found legacy file, size="));
-  DEBUG_PRINTLN(legacy_file_size);
-  DEBUG_PRINT(F("monitor_load_legacy: MONITOR_STORE_SIZE="));
-  DEBUG_PRINTLN(MONITOR_STORE_SIZE);
+  // DEBUG_PRINT(F("monitor_load_legacy: found legacy file, size="));
+  // DEBUG_PRINTLN(legacy_file_size);
+  // DEBUG_PRINT(F("monitor_load_legacy: MONITOR_STORE_SIZE="));
+  // DEBUG_PRINTLN(MONITOR_STORE_SIZE);
   
   // Validate file size
   if (legacy_file_size % MONITOR_STORE_SIZE != 0) {
@@ -381,13 +381,13 @@ bool monitor_load_legacy(std::map<uint, Monitor*>& monitorsMap) {
     if (pos > 100000 || imported_count > 500) break;
   }
   
-  DEBUG_PRINT(F("monitor_load_legacy: imported "));
-  DEBUG_PRINT(imported_count);
-  DEBUG_PRINTLN(F(" monitors"));
+  // DEBUG_PRINT(F("monitor_load_legacy: imported "));
+  // DEBUG_PRINT(imported_count);
+  // DEBUG_PRINTLN(F(" monitors"));
   
   if (imported_count > 0) {
     // Save in new JSON format
-    DEBUG_PRINTLN(F("monitor_load_legacy: saving in JSON format"));
+    // DEBUG_PRINTLN(F("monitor_load_legacy: saving in JSON format"));
     
     // Create JSON document
     ArduinoJson::JsonDocument doc;
@@ -408,7 +408,7 @@ bool monitor_load_legacy(std::map<uint, Monitor*>& monitorsMap) {
     // Delete old binary file to prevent re-import
     remove_file(MONITOR_FILENAME_LEGACY);
     
-    DEBUG_PRINTLN(F("monitor_load_legacy: migration complete, legacy file deleted"));
+    // DEBUG_PRINTLN(F("monitor_load_legacy: migration complete, legacy file deleted"));
     return true;
   }
   

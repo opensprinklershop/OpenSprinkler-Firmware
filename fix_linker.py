@@ -155,7 +155,7 @@ def configure_zigbee_libs(env):
     if is_zigbee_zczr:
         zigbee_libs[0] = "esp_zb_api.zczr"
         zigbee_libs[1] = "zboss_stack.zczr"
-        print("WARNING: Using ZBOSS Coordinator/Router stack - WiFi will NOT work!")
+        print("Using ZBOSS Coordinator/Router stack")
     else:
         print("Using ZBOSS End Device stack (WiFi coexistence compatible)")
     

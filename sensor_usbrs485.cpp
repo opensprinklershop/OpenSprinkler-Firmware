@@ -42,13 +42,13 @@ modbus_t *modbusDevs[MAX_RS485_DEVICES] = {nullptr};
  * @return int HTTP_RQT_* status code
  */
 int UsbRs485Sensor::read(unsigned long time) {
-  DEBUG_PRINTLN(F("UsbRs485Sensor::read"));
+  // DEBUG_PRINTLN(F("UsbRs485Sensor::read"));
   
   int device = this->port;
   if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
     return HTTP_RQT_NOT_RECEIVED;
 
-  DEBUG_PRINTLN(F("UsbRs485Sensor::read check-ok"));
+  // DEBUG_PRINTLN(F("UsbRs485Sensor::read check-ok"));
 
   uint8_t buffer[10];
   bool isTemp = this->type == SENSOR_SMT100_TEMP || this->type == SENSOR_TH100_TEMP;
@@ -67,7 +67,7 @@ int UsbRs485Sensor::read(unsigned long time) {
     this->flags.data_ok = true;
     return HTTP_RQT_SUCCESS;
   }
-  DEBUG_PRINTLN(F("UsbRs485Sensor::read exit"));
+  // DEBUG_PRINTLN(F("UsbRs485Sensor::read exit"));
   return HTTP_RQT_NOT_RECEIVED;
 }
 
@@ -78,7 +78,7 @@ int UsbRs485Sensor::read(unsigned long time) {
  * @return int HTTP_RQT_* status code
  */
 int UsbRs485Sensor::setAddress(uint8_t newAddress) {
-  DEBUG_PRINTLN(F("UsbRs485Sensor::setAddress"));
+  // DEBUG_PRINTLN(F("UsbRs485Sensor::setAddress"));
   
   int device = this->port;
   if (device >= MAX_RS485_DEVICES || !modbusDevs[device])
