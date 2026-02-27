@@ -1083,14 +1083,14 @@ void do_loop()
 #endif
 #endif	// Process Ethernet packets
 
-	// Start up MQTT when we have a network connection
-	if (os.status.req_mqtt_restart && os.network_connected() && boot_elapsed >= 15000) {
+	// Start up MQTT when we have a network connection (skip during ZigBee lock or join)
+	if (!coex_is_zigbee_locked() && !coex_is_join_mode() && os.status.req_mqtt_restart && os.network_connected() && boot_elapsed >= 15000) {
 		DEBUG_PRINTLN(F("req_mqtt_restart"));
 		os.mqtt.begin();
 		os.status.req_mqtt_restart = false;
 		os.mqtt.subscribe();
 	}
-	os.mqtt.loop();
+	if (!coex_is_zigbee_locked() && !coex_is_join_mode()) os.mqtt.loop();
 	
 	// Legacy sensor maintenance loop (BLE/Zigbee auto-stop timers)
 	sensor_api_loop();
@@ -1495,34 +1495,45 @@ void do_loop()
 			os.reboot_dev(REBOOT_CAUSE_TIMER);
 		}
 
+		// When ZigBee has a coex lock (predictive boost) or join mode is active,
+		// treat as offline: DNS, NTP, MQTT, HTTP all interfere with the single
+		// 2.4 GHz radio.  Join mode persists for the full join window whereas
+		// the rolling lock may expire after 30s — check both.
+		bool zigbee_radio_busy = coex_is_zigbee_locked() || coex_is_join_mode();
+
 		// perform ntp sync
 		// instead of using curr_time, which may change due to NTP sync itself
 		// we use Arduino's millis() method
-		if (curr_time % NTP_SYNC_INTERVAL == 0) os.status.req_ntpsync = 1;
-		//if((millis()/1000) % NTP_SYNC_INTERVAL==15) os.status.req_ntpsync = 1;
-		perform_ntp_sync();
+		if (!zigbee_radio_busy) {
+			if (curr_time % NTP_SYNC_INTERVAL == 0) os.status.req_ntpsync = 1;
+			perform_ntp_sync();
+		}
 
 		// Service web clients between potentially blocking operations
 		// to keep HTTPS/HTTP response times low on single-core ESP32-C5
-		if(otf) otf->loop();
+		if(!zigbee_radio_busy && otf) otf->loop();
 
 		// check network connection
-		if (curr_time && (curr_time % CHECK_NETWORK_INTERVAL==0))  os.status.req_network = 1;
-		check_network();
+		if (!zigbee_radio_busy) {
+			if (curr_time && (curr_time % CHECK_NETWORK_INTERVAL==0))  os.status.req_network = 1;
+			check_network();
+		}
 
-		if(otf) otf->loop();
+		if(!zigbee_radio_busy && otf) otf->loop();
 
 		// check weather
-		check_weather();
+		if (!zigbee_radio_busy) {
+			check_weather();
+		}
 
-		if(otf) otf->loop();
+		if(!zigbee_radio_busy && otf) otf->loop();
 
 		// process notifier events
-		if(os.network_connected()) {
+		if(!zigbee_radio_busy && os.network_connected()) {
 			notif.run();
 		}
 
-		if(otf) otf->loop();
+		if(!zigbee_radio_busy && otf) otf->loop();
 
 		if(os.weather_update_flag & WEATHER_UPDATE_WL) {
 			// at the moment, we only send notification if water level changed
@@ -1531,8 +1542,8 @@ void do_loop()
 			os.weather_update_flag = 0;
 		}
 
-		// read analog sensors
-		read_all_sensors(curr_time && os.network_connected());
+		// read analog sensors — treat as offline while ZigBee lock is held
+		read_all_sensors(curr_time && os.network_connected() && !zigbee_radio_busy);
 
 		static unsigned char reboot_notification = 1;
 		if(reboot_notification) {

@@ -4685,14 +4685,15 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 		         (unsigned long long)devices[i].ieee_addr);
 		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
+		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,\"discovered_at\":$L}"),
 		             ieee_str,
 		             devices[i].short_addr,
 		             devices[i].model_id,
 		             devices[i].manufacturer,
 		             devices[i].endpoint,
 		             devices[i].device_id,
-		             devices[i].is_new ? 1 : 0);
+		             devices[i].is_new ? 1 : 0,
+		             (unsigned long)devices[i].discovered_at);
 		send_packet(OTF_PARAMS);
 	}
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);

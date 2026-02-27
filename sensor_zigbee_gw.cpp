@@ -119,13 +119,32 @@ static unsigned long gw_last_config_report_ms = 0;
 #define TUYA_DP_TYPE_BITMAP 0x05
 
 // Tuya DP numbers for soil moisture sensors (varies by model)
-#define TUYA_DP_SOIL_MOISTURE     3   // raw % (0-100)
-#define TUYA_DP_SOIL_MOISTURE_ALT1 2  // raw % (0-100)
-#define TUYA_DP_SOIL_MOISTURE_ALT2 7  // raw % (0-100)
-#define TUYA_DP_SOIL_MOISTURE_ALT3 14 // enum/bool moisture status on some Tuya sensors
-#define TUYA_DP_TEMPERATURE       5   // raw °C (integer, already scaled)
-#define TUYA_DP_TEMPERATURE_UNIT  9   // 0 = Celsius, 1 = Fahrenheit
-#define TUYA_DP_BATTERY          15   // raw % (0-100)
+// Reference: GIEX GX04 (TS0601 / _TZE284_nhgdf6qr)
+// Official Z2M table (TS0601_soil_3):
+//   DP  3 = soil_moisture VALUE raw % (0-100)    — may not be transmitted by all revisions
+//   DP  5 = temperature VALUE ÷10 = °C
+//   DP  9 = temperature_unit ENUM (0=°C, 1=°F)
+//   DP 14 = soil_moisture_state ENUM (0=dry, 1=normal, 2=wet)*
+//   DP 15 = battery VALUE raw % (0-100)
+//
+// * Z2M labels DP 14 "battery_state" in its converter, but on the physical GX04
+//   DP 15 already carries precise battery %, and DP 14 ENUM is confirmed as the
+//   3-level soil moisture category.  See firmware issue log for details.
+//   Mapping: 0(dry)→20%, 1(normal)→50%, 2(wet)→80% (representative midpoints).
+#define TUYA_DP_SOIL_MOISTURE      3   // VALUE raw % (0-100)  — GX04 DP3/TS0601_soil variants
+#define TUYA_DP_SOIL_MOISTURE_ALT1 2   // VALUE raw % (0-100)  — some variants
+#define TUYA_DP_SOIL_MOISTURE_ALT2 7   // VALUE raw % (0-100)  — some variants
+// DP 14: GX04 uses ENUM for 3-level soil moisture category (dry/normal/wet).
+// Other Tuya sensors may use DP 14 as VALUE raw % — both cases map to soil moisture.
+#define TUYA_DP_SOIL_MOISTURE_ALT3 14  // ENUM → soil category; VALUE → soil raw %
+#define TUYA_DP_TEMPERATURE        5   // VALUE ÷10 = °C
+#define TUYA_DP_TEMPERATURE_UNIT   9   // ENUM 0=Celsius 1=Fahrenheit
+#define TUYA_DP_BATTERY           15   // VALUE raw % (0-100)
+
+// GX04 DP 14 soil moisture state enum values
+#define TUYA_SOIL_STATE_DRY    0  // → ~20 % representative
+#define TUYA_SOIL_STATE_NORMAL 1  // → ~50 % representative
+#define TUYA_SOIL_STATE_WET    2  // → ~80 % representative
 
 // Flag to mark reports originating from Tuya DP parsing (value already scaled)
 #define TUYA_REPORT_FLAG_PRESCALED  0x8000
@@ -149,6 +168,7 @@ static constexpr unsigned long REPORT_VALIDITY_MS = 60000;
 
 // Forward declarations for functions used in class methods and device management
 static void gw_schedule_configure_reporting_for_ieee(uint64_t ieee, unsigned long delay_ms);
+static void gw_schedule_default_configure_reporting(uint64_t ieee, uint8_t ep, unsigned long delay_ms);
 static bool gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint);
 
 class GwZigbeeReportReceiver;
@@ -196,6 +216,7 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     info.endpoint = endpoint;
     info.is_new = true;
     info.has_responded = true;
+    info.discovered_at = (uint32_t)os.now_tz();
     strncpy(info.manufacturer, "unknown", sizeof(info.manufacturer) - 1);
     strncpy(info.model_id, "unknown", sizeof(info.model_id) - 1);
     
@@ -207,6 +228,24 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     uint64_t resolved_ieee = gw_resolve_ieee(short_addr);
     if (resolved_ieee) {
         gw_schedule_configure_reporting_for_ieee(resolved_ieee, 1000);
+    }
+    
+    // If in join mode and no sensor exists yet for this device, send default
+    // Configure Reporting (900s) for common measurement clusters.  The device
+    // is still awake right now, so the commands arrive immediately.
+    if (coex_is_join_mode()) {
+        bool has_sensor = false;
+        SensorIterator it = sensors_iterate_begin();
+        SensorBase* s;
+        while ((s = sensors_iterate_next(it)) != NULL) {
+            if (s && s->type == SENSOR_ZIGBEE) {
+                ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
+                if (zb->device_ieee == ieee_addr) { has_sensor = true; break; }
+            }
+        }
+        if (!has_sensor) {
+            gw_schedule_default_configure_reporting(ieee_addr, endpoint, 500);
+        }
     }
 }
 
@@ -600,6 +639,14 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         return true;
     }
 
+    // Mark this device as a Tuya device (so the loop can send periodic DP queries)
+    for (auto& dev : gw_discovered_devices) {
+        if (dev.ieee_addr == ieee_addr) {
+            dev.is_tuya = true;
+            break;
+        }
+    }
+
     // DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Processing DP frame: cmd=0x%02X len=%u src=0x%04X\n"),
                 // command_id, ind.asdu_length, ind.src_short_addr);
 
@@ -641,13 +688,41 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
             case TUYA_DP_SOIL_MOISTURE:
             case TUYA_DP_SOIL_MOISTURE_ALT1:
             case TUYA_DP_SOIL_MOISTURE_ALT2:
-            case TUYA_DP_SOIL_MOISTURE_ALT3:
                 // Tuya soil_moisture is raw % (0-100), map to soil moisture cluster
                 DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Mapped DP %u -> cluster=0x%04X attr=0x%04X\n"),
                              dp_number, ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000);
                 gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
                                      ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000,
                                      dp_value, ind.lqi);
+                break;
+
+            case TUYA_DP_SOIL_MOISTURE_ALT3:  // DP 14
+                // VALUE type → soil moisture raw % (some Tuya sensor variants)
+                // ENUM type  → GX04 soil_moisture_state: 0=dry, 1=normal, 2=wet
+                //               Maps to representative % midpoints so the value
+                //               is stored in the soil moisture cluster like any other reading.
+                if (dp_type == TUYA_DP_TYPE_VALUE) {
+                    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Mapped DP %u -> soil moisture (VALUE)\n"),
+                                 dp_number);
+                    gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
+                                         ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000,
+                                         dp_value, ind.lqi);
+                } else if (dp_type == TUYA_DP_TYPE_ENUM) {
+                    // 3-level soil moisture category → representative % midpoints
+                    int32_t soil_pct = (dp_value == TUYA_SOIL_STATE_WET)    ? 80 :
+                                       (dp_value == TUYA_SOIL_STATE_NORMAL) ? 50 : 20;
+                    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP %u soil_state=%ld (%s) → %ld%%\n"),
+                                 dp_number, dp_value,
+                                 dp_value == TUYA_SOIL_STATE_WET    ? "wet"    :
+                                 dp_value == TUYA_SOIL_STATE_NORMAL ? "normal" : "dry",
+                                 soil_pct);
+                    gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
+                                         ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000,
+                                         soil_pct, ind.lqi);
+                } else {
+                    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP %u unknown type=%u value=%ld — skipped\n"),
+                                 dp_number, dp_type, dp_value);
+                }
                 break;
 
             case TUYA_DP_TEMPERATURE:
@@ -798,6 +873,53 @@ static void gw_schedule_configure_reporting_for_ieee(uint64_t ieee, unsigned lon
         zb->report_interval_s = max_interval;
         delay_ms += 700;
     }
+}
+
+// Schedule Configure Reporting for common measurement clusters on a newly
+// discovered device that has no matching sensor yet.  The device is still awake
+// during the join window so the commands will be received immediately.
+// This ensures sleeping end devices (e.g. Aqara) configure their reporting
+// interval BEFORE going to sleep — solving the chicken-and-egg problem where
+// sensors only get created after scan finishes.
+static constexpr uint16_t GW_DEFAULT_REPORT_INTERVAL = 900;  // 15 min
+
+static void gw_schedule_default_configure_reporting(uint64_t ieee, uint8_t ep, unsigned long delay_ms) {
+    if (ieee == 0) return;
+
+    // Common ZCL measurement clusters + attribute 0x0000 (MeasuredValue)
+    static const uint16_t common_clusters[] = {
+        0x0402,  // Temperature Measurement
+        0x0405,  // Relative Humidity
+        0x0408,  // Soil Moisture (Leaf Wetness)
+        0x0400,  // Illuminance Measurement
+        0x0403,  // Pressure Measurement
+    };
+
+    unsigned long now = millis();
+    for (size_t i = 0; i < sizeof(common_clusters) / sizeof(common_clusters[0]); i++) {
+        // Check for duplicate entries
+        bool found = false;
+        for (const auto& ex : gw_config_report_queue) {
+            if (ex.ieee_addr == ieee && ex.cluster_id == common_clusters[i] && ex.attr_id == 0x0000) {
+                found = true;
+                break;
+            }
+        }
+        if (found) continue;
+
+        GwConfigReportRequest req;
+        req.ieee_addr      = ieee;
+        req.endpoint       = ep;
+        req.cluster_id     = common_clusters[i];
+        req.attr_id        = 0x0000;
+        req.min_interval   = 10;
+        req.max_interval   = GW_DEFAULT_REPORT_INTERVAL;
+        req.scheduled_time = now + delay_ms;
+        gw_config_report_queue.push_back(req);
+        delay_ms += 700;
+    }
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Queued default ConfigReport (900s) for ieee=%016llX ep=%d (%d clusters)\n"),
+                 (unsigned long long)ieee, ep, (int)(sizeof(common_clusters) / sizeof(common_clusters[0])));
 }
 
 class GwZigbeeReportReceiver : public ZigbeeEP {
@@ -1052,14 +1174,23 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
     zb_sensor->last = zb_sensor->last_read;
     zb_sensor->last_report_at_ms = millis();  // for predictive boost (millis-path)
 
-    // Anchor first-ever report timestamp so UNIX-based predictive boost
-    // works even after a reboot (when last_report_at_ms resets to 0).
-    if (zb_sensor->join_anchor_ts == 0) {
-        zb_sensor->join_anchor_ts = (uint32_t)zb_sensor->last_read;
-        gw_comm_mode_changed = true;  // piggyback on existing save trigger
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Predictive anchor set for '%s': %lu (ri=%u)\n"),
-                     zb_sensor->name, (unsigned long)zb_sensor->join_anchor_ts,
-                     zb_sensor->read_interval);
+    // Always update the UNIX anchor to the actual reception time so the next
+    // prediction is based on real data, not the initial discovery estimate.
+    {
+        uint32_t new_anchor = (uint32_t)zb_sensor->last_read;
+        if (zb_sensor->join_anchor_ts != new_anchor) {
+            zb_sensor->join_anchor_ts = new_anchor;
+            gw_comm_mode_changed = true;  // piggyback on existing save trigger
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Predictive anchor updated for '%s': %lu (ri=%u)\n"),
+                         zb_sensor->name, (unsigned long)zb_sensor->join_anchor_ts,
+                         zb_sensor->read_interval);
+        }
+    }
+
+    // Data received — release predictive boost lock early so WiFi is restored.
+    // During join mode the lock must stay held for the full join window.
+    if (coex_is_zigbee_locked() && !coex_is_join_mode()) {
+        coex_release_lock(COEX_OWNER_ZIGBEE);
     }
 
     // Update communication mode based on whether this report was solicited
@@ -1669,11 +1800,13 @@ void sensor_zigbee_gw_loop() {
 
     // Always process pending reports regardless of web priority.
     // Zigbee ZCL reports are lightweight and must not be starved.
+    // During join mode the radio is already dedicated to ZigBee — skip the
+    // lock acquire/release cycle to avoid noisy strategy reapply calls.
     if (pending_report_count > 0) {
         // DEBUG_PRINTF(F("[ZIGBEE-GW] LOOP: %d reports waiting → processing now...\n"), pending_report_count);
-        coex_request_lock(COEX_OWNER_ZIGBEE, 2000);
+        if (!coex_is_join_mode()) coex_request_lock(COEX_OWNER_ZIGBEE, 2000);
         sensor_zigbee_gw_process_reports(0, 0, 0, 0, 0, 0);
-        coex_release_lock(COEX_OWNER_ZIGBEE);
+        if (!coex_is_join_mode()) coex_release_lock(COEX_OWNER_ZIGBEE);
         // DEBUG_PRINTF(F("[ZIGBEE-GW] LOOP: processing done, %d reports remaining\n"), pending_report_count);
     }
     
@@ -1697,7 +1830,9 @@ void sensor_zigbee_gw_loop() {
     // Zigbee.stop() + Zigbee.begin() restart (causes Load access fault).
     // Once started, Zigbee stays running until reboot.
 
-    // Release radio lock and restore WiFi after join window expires
+    // Release radio lock and restore WiFi after join window expires.
+    // coex_set_join_mode(false) internally records s_last_join_ended_ms so
+    // coex_zigbee_boost_tick() suppresses per-sensor boosts for one interval.
     if (gw_join_window_end != 0 && millis() > gw_join_window_end) {
         gw_join_window_end = 0;
         coex_release_lock(COEX_OWNER_ZIGBEE);
@@ -1705,51 +1840,160 @@ void sensor_zigbee_gw_loop() {
         // DEBUG_PRINTLN(F("[ZIGBEE-GW] Join window closed, radio released"));
     }
 
-    // Predictive boost: if any ZigBee sensor's next expected report is within ±1s,
-    // acquire a 2s radio lock so the report arrives with full ZigBee priority.
-    // Two methods: millis-based (accurate but resets at boot) and UNIX-anchor-based
-    // (persisted across reboots; ±2s window to absorb clock drift).
-    if (connected && !coex_is_zigbee_locked()) {
-        unsigned long now_p = millis();
+    // Predictive boost: acquire a radio lock shortly before each ZigBee sensor's
+    // next expected report so data arrives with full ZigBee priority.
+    // Two methods: millis-based (Method A, accurate after first report this boot)
+    // and UNIX-anchor-based (Method B, persisted across reboots).
+    // Window is kept narrow (±10s) so WiFi is never starved for the full interval.
+    // Per-sensor backoff: after a boost with no report, suppress for one full intv.
+    static unsigned long gw_first_connected_ms = 0;
+    if (connected && gw_first_connected_ms == 0) gw_first_connected_ms = millis();
+    bool boot_settled = gw_first_connected_ms > 0 && (millis() - gw_first_connected_ms) > 90000;
+
+    if (connected && boot_settled && !coex_is_zigbee_locked()) {
+        unsigned long now_p           = millis();
+        uint32_t      now_s           = (uint32_t)os.now_tz();
+        unsigned long last_join_ended = coex_get_last_join_ended_ms();
+
+        // Track physical devices already evaluated this tick (by IEEE address) to
+        // ensure exactly one boost decision per physical device even when multiple
+        // logical sensors (different clusters) map to the same hardware.
+        static const int BOOST_MAX_DEVS = 16;
+        uint64_t boost_seen[BOOST_MAX_DEVS];
+        int      boost_seen_n = 0;
+
         SensorIterator pit = sensors_iterate_begin();
         SensorBase* ps;
         while ((ps = sensors_iterate_next(pit)) != NULL) {
             if (!ps || ps->type != SENSOR_ZIGBEE) continue;
             ZigbeeSensor* zb_p = static_cast<ZigbeeSensor*>(ps);
+            if (zb_p->comm_mode != ZB_COMM_REPORT) continue;
 
-            // Use ZCL-configured interval if known, otherwise fall back to read_interval.
-            uint32_t intv = zb_p->report_interval_s ? zb_p->report_interval_s
-                                                     : (uint32_t)zb_p->read_interval;
+            // Skip if this physical device was already evaluated this tick.
+            bool already_seen = false;
+            for (int i = 0; i < boost_seen_n; i++) {
+                if (boost_seen[i] == zb_p->device_ieee) { already_seen = true; break; }
+            }
+            if (already_seen) continue;
+            if (boost_seen_n < BOOST_MAX_DEVS) boost_seen[boost_seen_n++] = zb_p->device_ieee;
+
+            // Aggregate across all logical sensors for this physical device:
+            //   intv            = minimum configured interval (most conservative)
+            //   latest_report   = most recent last_report_at_ms (device last spoke)
+            //   anchor_ts       = first non-zero join_anchor_ts found
+            //   latest_boost    = most recent last_boost_fired_ms (shared backoff)
+            uint32_t intv              = 0;
+            unsigned long latest_report   = 0;
+            uint32_t      anchor_ts       = 0;
+            unsigned long latest_boost    = 0;
+
+            SensorIterator sit = sensors_iterate_begin();
+            SensorBase* ss;
+            while ((ss = sensors_iterate_next(sit)) != NULL) {
+                if (!ss || ss->type != SENSOR_ZIGBEE) continue;
+                ZigbeeSensor* zb_s = static_cast<ZigbeeSensor*>(ss);
+                if (zb_s->device_ieee != zb_p->device_ieee) continue;
+                if (zb_s->comm_mode != ZB_COMM_REPORT) continue;
+
+                uint32_t s_intv = zb_s->report_interval_s ? zb_s->report_interval_s
+                                                           : (uint32_t)zb_s->read_interval;
+                // Use the smallest interval across all logical sensors (tightest schedule).
+                if (s_intv > 0 && (intv == 0 || s_intv < intv)) intv = s_intv;
+                if (zb_s->last_report_at_ms > latest_report) latest_report = zb_s->last_report_at_ms;
+                if (zb_s->join_anchor_ts > 0 && anchor_ts == 0) anchor_ts = zb_s->join_anchor_ts;
+                if (zb_s->last_boost_fired_ms > latest_boost) latest_boost = zb_s->last_boost_fired_ms;
+            }
+
             if (intv == 0) continue;
+            unsigned long intv_ms = (unsigned long)intv * 1000UL;
+
+            // Post-join cooldown: give the device one full interval to rejoin.
+            if (last_join_ended > 0 && (now_p - last_join_ended) < intv_ms) continue;
+
+            // Per-device backoff: if last boost produced no new report from this
+            // device, suppress for one full interval to avoid the perpetual-lock loop.
+            if (latest_boost > 0 &&
+                latest_report <= latest_boost &&
+                (now_p - latest_boost) < intv_ms) continue;
 
             bool boosted = false;
 
-            // Method A: millis-based — most accurate, valid once first report arrives this boot.
-            if (zb_p->last_report_at_ms > 0) {
-                unsigned long expected_ms = zb_p->last_report_at_ms + (unsigned long)intv * 1000UL;
-                int32_t time_until_ms = (int32_t)(expected_ms - now_p);
-                if (time_until_ms >= -1000 && time_until_ms <= 1000) {
+            // Method A: millis-based — uses latest report time across all logical sensors.
+            if (latest_report > 0) {
+                unsigned long next_ms = latest_report + intv_ms;
+                int32_t until_ms = (int32_t)(next_ms - now_p);
+                if (until_ms >= -(int32_t)COEX_BOOST_OVERSHOOT_MS &&
+                    until_ms <=  (int32_t)COEX_BOOST_ADVANCE_MS) {
                     boosted = true;
                 }
             }
-            // Method B: UNIX-anchor — survives reboots; ±2s window for clock drift.
-            else if (zb_p->join_anchor_ts > 0) {
-                uint32_t now_s = (uint32_t)os.now_tz();
-                if (now_s > zb_p->join_anchor_ts) {
-                    uint32_t periods    = (now_s - zb_p->join_anchor_ts) / intv;
-                    uint32_t next_s     = zb_p->join_anchor_ts + (periods + 1) * intv;
-                    int32_t  secs_until = (int32_t)(next_s - now_s);
-                    if (secs_until >= -2 && secs_until <= 2) {
-                        boosted = true;
-                    }
+            // Method B: UNIX-anchor — narrow window, survives reboots.
+            else if (anchor_ts > 0 && now_s > anchor_ts) {
+                uint32_t elapsed = now_s - anchor_ts;
+                int32_t secs_before_next = (int32_t)intv - (int32_t)(elapsed % intv);
+                if (secs_before_next >= -(int32_t)COEX_BOOST_OVERSHOOT_S &&
+                    secs_before_next <=  (int32_t)COEX_BOOST_ADVANCE_S) {
+                    boosted = true;
                 }
             }
 
             if (boosted) {
-                coex_request_lock(COEX_OWNER_ZIGBEE, 2000);
-                DEBUG_PRINTF(F("[ZIGBEE-GW] Predictive boost: sensor '%s' (anchor=%lu intv=%us)\n"),
-                             ps->name, (unsigned long)zb_p->join_anchor_ts, intv);
-                break;  // one lock covers all sensors
+                // Stamp last_boost_fired_ms on ALL logical sensors for this device
+                // so backoff is shared — one sensor's report clears it for all.
+                SensorIterator bit = sensors_iterate_begin();
+                SensorBase* bs;
+                while ((bs = sensors_iterate_next(bit)) != NULL) {
+                    if (!bs || bs->type != SENSOR_ZIGBEE) continue;
+                    ZigbeeSensor* zb_b = static_cast<ZigbeeSensor*>(bs);
+                    if (zb_b->device_ieee == zb_p->device_ieee)
+                        zb_b->last_boost_fired_ms = now_p;
+                }
+                coex_request_lock(COEX_OWNER_ZIGBEE, COEX_LOCK_MAX_SENSOR_MS);
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Predictive boost: ieee=%016llX (intv=%us method=%c)\n"),
+                             (unsigned long long)zb_p->device_ieee, intv,
+                             latest_report > 0 ? 'A' : 'B');
+                break;  // one lock covers all physical devices for this tick
+            }
+        }
+    }
+
+    // Periodic Tuya DP refresh: send a "get all datapoints" query (cmd 0x00) to
+    // every confirmed Tuya device that has at least one stale REPORT-mode sensor.
+    // This mirrors the Z2M behaviour (dp: true in tuyaBase) and ensures sensors
+    // that only send DP 3 (soil moisture) on significant changes still get polled.
+    // Rate-limited to once per 90 s globally; this is also the earliest we will
+    // fire after boot-settle, so the first query arrives very shortly after WiFi
+    // has stabilised (boot_settled = 90 s after first connection).
+    static unsigned long gw_tuya_refresh_ms = 0;
+    if (connected && boot_settled && !coex_is_join_mode()) {
+        unsigned long now_tr = millis();
+        if (now_tr - gw_tuya_refresh_ms >= 90000UL) {
+            gw_tuya_refresh_ms = now_tr;
+            for (const auto& dev : gw_discovered_devices) {
+                if (!dev.is_tuya || !dev.has_responded) continue;
+                // Check if any REPORT-mode sensor for this device is stale
+                bool needs_refresh = false;
+                SensorIterator it_tr = sensors_iterate_begin();
+                SensorBase* s_tr;
+                while ((s_tr = sensors_iterate_next(it_tr)) != NULL) {
+                    if (!s_tr || s_tr->type != SENSOR_ZIGBEE) continue;
+                    ZigbeeSensor* zb_tr = static_cast<ZigbeeSensor*>(s_tr);
+                    if (zb_tr->device_ieee != dev.ieee_addr) continue;
+                    if (zb_tr->comm_mode == ZB_COMM_REPORT) {
+                        uint32_t intv_tr = zb_tr->read_interval ? zb_tr->read_interval : 60;
+                        // Stale = no report this boot, or last report > 2× read_interval ago
+                        if (zb_tr->last_report_at_ms == 0 ||
+                            (now_tr - zb_tr->last_report_at_ms) > (unsigned long)intv_tr * 2000UL) {
+                            needs_refresh = true;
+                            break;
+                        }
+                    }
+                }
+                if (needs_refresh) {
+                    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Refresh query → ieee=%016llX ep=%d\n"),
+                                 (unsigned long long)dev.ieee_addr, dev.endpoint);
+                    sensor_zigbee_gw_request_dp_query(dev.ieee_addr, dev.endpoint);
+                }
             }
         }
     }

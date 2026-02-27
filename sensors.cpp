@@ -1303,6 +1303,42 @@ void sensor_remote_http_callback(char *) {
   // unused
 }
 
+// ---- Deferred MQTT push queue ----
+// When ZigBee data arrives during predictive boost, WiFi may be down.
+// Queue the sensor nr and flush when WiFi/MQTT reconnects.
+static constexpr int MAX_MQTT_DEFERRED = 8;
+static uint mqtt_deferred_nrs[MAX_MQTT_DEFERRED];
+static int mqtt_deferred_count = 0;
+
+static void mqtt_defer_push(uint nr) {
+  for (int i = 0; i < mqtt_deferred_count; i++) {
+    if (mqtt_deferred_nrs[i] == nr) return;
+  }
+  if (mqtt_deferred_count < MAX_MQTT_DEFERRED) {
+    mqtt_deferred_nrs[mqtt_deferred_count++] = nr;
+    DEBUG_PRINTF("[MQTT] Deferred push for sensor %u (WiFi down, queue=%d)\n", nr, mqtt_deferred_count);
+  }
+}
+
+static void flush_deferred_mqtt() {
+  if (mqtt_deferred_count == 0) return;
+  if (!os.mqtt.enabled() || !os.mqtt.connected()) return;
+
+  // Copy and clear queue — push_message may re-add on failure
+  uint nrs[MAX_MQTT_DEFERRED];
+  int count = mqtt_deferred_count;
+  memcpy(nrs, mqtt_deferred_nrs, sizeof(uint) * count);
+  mqtt_deferred_count = 0;
+
+  DEBUG_PRINTF("[MQTT] Flushing %d deferred push(es)\n", count);
+  for (int i = 0; i < count; i++) {
+    SensorBase* sensor = sensor_by_nr(nrs[i]);
+    if (sensor && sensor->last_read) {
+      push_message(sensor);
+    }
+  }
+}
+
 void push_message(SensorBase *sensor) {
   if (!sensor || !sensor->last_read) return;
 
@@ -1322,7 +1358,11 @@ void push_message(SensorBase *sensor) {
               abs((int)(sensor->last_data * 100) % 100), getSensorUnit(sensor));
 
     if (!os.mqtt.connected()) os.mqtt.reconnect();
-    os.mqtt.publish(topic, payload);
+    if (os.mqtt.connected()) {
+      os.mqtt.publish(topic, payload);
+    } else {
+      mqtt_defer_push(sensor->nr);
+    }
     // DEBUG_PRINTLN("push mqtt2");
   }
   
@@ -1361,6 +1401,9 @@ void push_message(SensorBase *sensor) {
 }
 
 void read_all_sensors(boolean online) {
+  // Flush deferred MQTT pushes when network is back
+  if (online) flush_deferred_mqtt();
+
   if (sensorsMap.empty()) {
     static unsigned long last_warn = 0;
     if (millis() - last_warn > 120000) {

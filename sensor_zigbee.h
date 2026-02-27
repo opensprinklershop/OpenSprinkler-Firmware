@@ -37,6 +37,8 @@ struct ZigbeeDeviceInfo {
     uint16_t device_id;           // Zigbee device ID
     bool is_new;                  // Flag for newly discovered device
     bool has_responded;           // Device has responded to a query or report
+    bool is_tuya;                 // True if device has sent Tuya cluster 0xEF00 frames
+    uint32_t discovered_at;       // UNIX timestamp (os.now_tz()) when device was discovered during scan
 };
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
@@ -234,6 +236,9 @@ public:
     // Predictive boost: track configured report interval to schedule radio lock
     uint32_t report_interval_s = 0;       // Configured ZCL report max-interval (seconds, 0 = unknown)
     unsigned long last_report_at_ms = 0;  // millis() when last report arrived (0 = none yet)
+    unsigned long last_boost_fired_ms = 0;// millis() when coex_zigbee_boost_tick() last fired for this sensor
+                                          // Used for per-sensor backoff: if no new report arrived after the
+                                          // boost, suppress the next boost attempt for one full interval.
     uint32_t join_anchor_ts = 0;          // UNIX timestamp of first confirmed data report (phase anchor).
                                           // Persisted ("join_anchor"). Reset to 0 when read_interval changes.
 

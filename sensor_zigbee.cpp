@@ -1128,14 +1128,22 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
             zb_sensor->last_read = os.now_tz();
             zb_sensor->last = zb_sensor->last_read;
 
-            // Anchor first-ever report timestamp so UNIX-based predictive boost
-            // works even after a reboot (when last_report_at_ms resets to 0).
-            if (zb_sensor->join_anchor_ts == 0) {
-                zb_sensor->join_anchor_ts = (uint32_t)zb_sensor->last_read;
-                s_comm_mode_changed = true;  // piggyback on existing save trigger
-                DEBUG_PRINTF(F("[ZIGBEE] Predictive anchor set for '%s': %lu (ri=%u)\n"),
-                             zb_sensor->name, (unsigned long)zb_sensor->join_anchor_ts,
-                             zb_sensor->read_interval);
+            // Always update the UNIX anchor to the actual reception time so
+            // the next prediction uses real data, not the initial estimate.
+            {
+                uint32_t new_anchor = (uint32_t)zb_sensor->last_read;
+                if (zb_sensor->join_anchor_ts != new_anchor) {
+                    zb_sensor->join_anchor_ts = new_anchor;
+                    s_comm_mode_changed = true;
+                    DEBUG_PRINTF(F("[ZIGBEE] Predictive anchor updated for '%s': %lu (ri=%u)\n"),
+                                 zb_sensor->name, (unsigned long)zb_sensor->join_anchor_ts,
+                                 zb_sensor->read_interval);
+                }
+            }
+
+            // Data received — release predictive boost lock early so WiFi is restored.
+            if (coex_is_zigbee_locked()) {
+                coex_release_lock(COEX_OWNER_ZIGBEE);
             }
 
             // Update communication mode: distinguish unsolicited reports from
@@ -1391,7 +1399,9 @@ int ZigbeeSensor::read(unsigned long time) {
     // =========================================================================
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
         if (flags.data_ok) {
-            // Have valid report data - return it (trust passive reports)
+            // Have valid report data — consume the flag so the next read cycle
+            // waits for a fresh report instead of re-using stale data.
+            flags.data_ok = false;
             repeat_read = 0;
             return HTTP_RQT_SUCCESS;
         }
@@ -1436,6 +1446,8 @@ int ZigbeeSensor::read(unsigned long time) {
     // Data will be updated by zigbee_attribute_callback when the next report arrives.
     if (comm_mode == ZB_COMM_REPORT) {
         if (flags.data_ok) {
+            // Consume the flag — next read waits for fresh report.
+            flags.data_ok = false;
             repeat_read = 0;
             return HTTP_RQT_SUCCESS;
         }
@@ -1488,7 +1500,11 @@ int ZigbeeSensor::read(unsigned long time) {
         active_sensor = 0;
         last_read = time;
         
-        return flags.data_ok ? HTTP_RQT_SUCCESS : HTTP_RQT_NOT_RECEIVED;
+        if (flags.data_ok) {
+            flags.data_ok = false;  // consume — next active cycle sends a fresh request
+            return HTTP_RQT_SUCCESS;
+        }
+        return HTTP_RQT_NOT_RECEIVED;
     }
 }
 

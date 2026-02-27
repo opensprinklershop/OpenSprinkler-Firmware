@@ -39,6 +39,16 @@ static const uint32_t COEX_LOCK_MAX_SENSOR_MS = 10000;  // max 10s for sensor re
 static const uint32_t COEX_LOCK_MAX_JOIN_MS   = 30000;  // max 30s for join/pair
 static const uint32_t COEX_WIFI_INFO_UPDATE_INTERVAL = 5000;  // Check WiFi band every 5s
 
+/// Predictive boost window constants.
+/// ADVANCE: boost starts this many ms/s *before* the next expected report.
+/// OVERSHOOT: allow this many ms/s *after* the expected time (packet jitter).
+/// Keeping the window narrow (ADVANCE=10s) is critical for WiFi stability:
+/// if the window equals the interval (old behaviour) the lock is held 100% of the time.
+static const uint32_t COEX_BOOST_ADVANCE_MS   = 10000;  // 10s look-ahead
+static const uint32_t COEX_BOOST_OVERSHOOT_MS =  5000;  // 5s grace after expected
+static const uint32_t COEX_BOOST_ADVANCE_S    =    10;  // seconds version (Method B)
+static const uint32_t COEX_BOOST_OVERSHOOT_S  =     5;  // seconds version (Method B)
+
 /// WiFi band detection
 enum coex_wifi_band_t : uint8_t {
     COEX_WIFI_UNKNOWN = 0,
@@ -125,6 +135,11 @@ coex_strategy_t coex_get_strategy();
 /// Human-readable status for debug output
 const char* coex_get_status();
 
+/// Returns millis() timestamp when the last join window closed, 0 if none this boot.
+/// Used by the ZigBee GW loop to suppress predictive boost for one interval
+/// after join ends so the device has time to rejoin and deliver its first report.
+unsigned long coex_get_last_join_ended_ms();
+
 #else
 // Non-ESP32C5 stubs
 inline void coex_init() {}
@@ -141,6 +156,7 @@ inline bool coex_is_zigbee_locked() { return false; }
 inline coex_wifi_band_t coex_get_wifi_band() { return COEX_WIFI_UNKNOWN; }
 inline coex_strategy_t coex_get_strategy() { return COEX_STRATEGY_WIFI_PRIO; }
 inline const char* coex_get_status() { return "n/a"; }
+inline unsigned long coex_get_last_join_ended_ms() { return 0; }
 #endif
 
 #endif // _RADIO_COEX_H

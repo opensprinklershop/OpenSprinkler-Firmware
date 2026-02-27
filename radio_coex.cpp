@@ -63,6 +63,9 @@ static uint32_t            s_wifi_pause_cooldown   = 0;    // millis() — no ne
 // On 2.4GHz: WiFi is also disconnected via coex_request_wifi_pause.
 static bool                s_join_mode_active      = false; // join mode currently active
 static uint32_t            s_join_mode_until       = 0;    // millis() deadline (0 = manual exit)
+static unsigned long       s_last_join_ended_ms    = 0;    // millis() when last join window closed
+                                                           // used by coex_zigbee_boost_tick() to
+                                                           // suppress boost for one interval post-join
 
 // =========================================================================
 // Internal: Helper functions
@@ -252,9 +255,12 @@ void coex_init() {
 void coex_loop() {
     if (!s_initialized) return;
 
-    // Periodically update WiFi band detection (every 5 seconds)
+    // Periodically update WiFi band detection (every 5 seconds).
+    // During join mode the band is irrelevant — WiFi is intentionally paused
+    // and any band change (→OFF→2.4GHz) would cause noisy strategy oscillation.
     uint32_t now = millis();
-    if ((int32_t)(now - s_last_wifi_check) >= (int32_t)COEX_WIFI_INFO_UPDATE_INTERVAL) {
+    if (!s_join_mode_active &&
+        (int32_t)(now - s_last_wifi_check) >= (int32_t)COEX_WIFI_INFO_UPDATE_INTERVAL) {
         s_last_wifi_check = now;
         
         coex_wifi_band_t new_band = coex_detect_wifi_band();
@@ -276,8 +282,9 @@ void coex_loop() {
         }
     }
 
-    // Check lock expiry
-    if (s_lock_owner != COEX_OWNER_NONE) {
+    // Check lock expiry.  While join mode is active the lock must NOT expire —
+    // the join window itself governs the radio priority lifetime.
+    if (s_lock_owner != COEX_OWNER_NONE && !s_join_mode_active) {
         if ((int32_t)(millis() - s_lock_until) >= 0) {
             DEBUG_PRINTF("[COEX] Lock expired (owner=%d) → apply strategy\n", s_lock_owner);
             s_lock_owner = COEX_OWNER_NONE;
@@ -289,12 +296,16 @@ void coex_loop() {
     // Check join mode expiry (independent of the 30s lock cap)
     if (s_join_mode_active && s_join_mode_until != 0 &&
         (int32_t)(millis() - s_join_mode_until) >= 0) {
-        s_join_mode_active = false;
-        s_join_mode_until  = 0;
-        DEBUG_PRINTLN(F("[COEX] Join mode expired → returning to normal strategy"));
-        if (s_lock_owner == COEX_OWNER_NONE) {
-            coex_apply_strategy();
+        s_join_mode_active  = false;
+        s_join_mode_until   = 0;
+        s_last_join_ended_ms = millis();  // arms post-join boost backoff
+        // Also release the held lock — it was kept alive for the join window.
+        if (s_lock_owner != COEX_OWNER_NONE) {
+            s_lock_owner = COEX_OWNER_NONE;
+            s_lock_until = 0;
         }
+        DEBUG_PRINTLN(F("[COEX] Join mode expired → returning to normal strategy"));
+        coex_apply_strategy();
     }
 
     // WiFi pause: deferred disconnect (allows HTTP response to flush first)
@@ -306,8 +317,11 @@ void coex_loop() {
             DEBUG_PRINTLN(F("[COEX] WiFi disconnected for ZigBee pairing"));
         }
     }
-    // WiFi pause expiry: reconnect WiFi and return to normal
+    // WiFi pause expiry: reconnect WiFi and return to normal.
+    // While join mode is active keep WiFi disconnected — pairing needs the
+    // full RF bandwidth.  WiFi is only reconnected after join mode exits.
     if (s_wifi_pause_until != 0 && s_wifi_pause_start == 0 &&
+        !s_join_mode_active &&
         (int32_t)(millis() - s_wifi_pause_until) >= 0) {
         s_wifi_pause_until = 0;
         if (s_wifi_was_on) {
@@ -486,8 +500,9 @@ void coex_set_join_mode(bool active, uint32_t duration_ms) {
         coex_set_zigbee_join_mode();
     } else {
         if (!s_join_mode_active) return;  // already exited (e.g. auto-expired)
-        s_join_mode_active = false;
-        s_join_mode_until  = 0;
+        s_join_mode_active   = false;
+        s_join_mode_until    = 0;
+        s_last_join_ended_ms = millis();  // arms post-join boost backoff
         DEBUG_PRINTLN(F("[COEX] Join mode exited"));
         // Force immediate band re-detection so strategy is re-derived from
         // actual WiFi state (which may now be reconnected).
@@ -517,6 +532,10 @@ bool coex_is_zigbee_locked() {
 
 coex_wifi_band_t coex_get_wifi_band() {
     return s_wifi_band;
+}
+
+unsigned long coex_get_last_join_ended_ms() {
+    return s_last_join_ended_ms;
 }
 
 coex_strategy_t coex_get_strategy() {
