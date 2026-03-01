@@ -433,8 +433,8 @@ static uint64_t client_resolve_ieee(uint16_t short_addr) {
     info.short_addr = short_addr;
     info.endpoint = 1;
     info.is_new = true;
-    strncpy(info.manufacturer, "unknown", sizeof(info.manufacturer) - 1);
-    strncpy(info.model_id, "unknown", sizeof(info.model_id) - 1);
+    info.manufacturer[0] = '\0';
+    info.model_id[0] = '\0';
     if (client_discovered_devices.size() >= CLIENT_DISCOVERED_MAX) {
         client_discovered_devices.erase(client_discovered_devices.begin());
     }
@@ -919,6 +919,23 @@ void sensor_zigbee_factory_reset() {
         // DEBUG_PRINTLN(F("[ZIGBEE] Factory reset scheduled for next start"));
     }
     // DISABLED or MATTER: no-op
+}
+
+
+void sensor_zigbee_pause() {
+    IEEE802154Mode mode = ieee802154_get_mode();
+    if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY || mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
+        Zigbee.stop();
+        esp_ieee802154_sleep();
+    }
+}
+
+void sensor_zigbee_resume() {
+    IEEE802154Mode mode = ieee802154_get_mode();
+    if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY || mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
+        esp_ieee802154_receive();
+        Zigbee.start();
+    }
 }
 
 void sensor_zigbee_stop() {
@@ -1549,6 +1566,7 @@ void sensor_zigbee_bind_device(uint nr, const char *device_ieee_str) {
         if (sensor && sensor->type == SENSOR_ZIGBEE) {
             ZigbeeSensor* zb_sensor = static_cast<ZigbeeSensor*>(sensor);
             zb_sensor->device_ieee = ZigbeeSensor::parseIeeeAddress(device_ieee_str);
+            sensor_save();
         }
     }
 }

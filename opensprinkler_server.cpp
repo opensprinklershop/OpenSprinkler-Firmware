@@ -2469,8 +2469,9 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,"), LittleFS.totalBytes(), LittleFS.usedBytes());
 	if(useEth) {
 		#if defined(OS_ENABLE_BLE)
-		bfill.emit_p(PSTR("\"ETH\":$D,\"ble_ok\":$D,\"ble_scan\":$D,\"ble_found\":$D,\"ble_sens\":$D,\"ble_rx\":$D,\"coex\":\"$S\"}"),
-			1, sensor_ble_is_active()?1:0, sensor_ble_is_scanning()?1:0, sensor_ble_discovered_count(), sensor_ble_managed_count(), sensor_ble_onresult_total(), "disabled");
+		bfill.emit_p(PSTR("\"ETH\":$D,\"ble_ok\":$D,\"ble_scan\":$D,\"ble_found\":$D,\"ble_sens\":$D,\"ble_rx\":$D,\"coex\":\"$S\",\"sensor_count\":$D,\"sensor_file_sz\":$L}"),
+			1, sensor_ble_is_active()?1:0, sensor_ble_is_scanning()?1:0, sensor_ble_discovered_count(), sensor_ble_managed_count(), sensor_ble_onresult_total(), "disabled",
+			(int)sensor_count(), (unsigned long)file_size(SENSOR_FILENAME_JSON));
 		#else
 		bfill.emit_p(PSTR("\"ETH\":$D}"), 1);
 		#endif
@@ -4577,6 +4578,33 @@ static bool zigbee_device_is_registered(uint64_t ieee_addr) {
 	return false;
 }
 
+/**
+ * @brief Enrich a ZigbeeDeviceInfo entry with manufacturer/model from a matching saved sensor.
+ *
+ * When the in-memory device list still has empty (or stale "unknown") strings — for instance
+ * right after a firmware reboot before the Basic Cluster response has arrived — we fall back
+ * to the values stored in the sensor file so the HTTP response is still meaningful.
+ */
+static void enrich_device_info_from_sensor(ZigbeeDeviceInfo& dev) {
+	if (dev.ieee_addr == 0) return;
+	bool need_mfr = (dev.manufacturer[0] == '\0' || strcmp(dev.manufacturer, "unknown") == 0);
+	bool need_mdl = (dev.model_id[0] == '\0' || strcmp(dev.model_id, "unknown") == 0);
+	if (!need_mfr && !need_mdl) return;
+
+	SensorIterator it = sensors_iterate_begin();
+	SensorBase* s;
+	while ((s = sensors_iterate_next(it)) != NULL) {
+		if (!s || s->type != SENSOR_ZIGBEE) continue;
+		ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
+		if (zb->device_ieee != dev.ieee_addr) continue;
+		if (need_mfr && zb->zb_manufacturer[0] != '\0')
+			strncpy(dev.manufacturer, zb->zb_manufacturer, sizeof(dev.manufacturer) - 1);
+		if (need_mdl && zb->zb_model[0] != '\0')
+			strncpy(dev.model_id, zb->zb_model, sizeof(dev.model_id) - 1);
+		return;
+	}
+}
+
 void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	if(!process_password(OTF_PARAMS)) return;
@@ -4653,6 +4681,7 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		int out_count = 0;
 		for (int i = 0; i < count; i++) {
 			if (!zigbee_device_is_registered(devices[i].ieee_addr)) continue;
+			enrich_device_info_from_sensor(devices[i]);
 			if (out_count > 0) bfill.emit_p(PSTR(","));
 			char ieee_str[20];
 			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
@@ -4695,6 +4724,7 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("{\"devices\":["));
 	for (int i = 0; i < count; i++) {
 		if (i > 0) bfill.emit_p(PSTR(","));
+		enrich_device_info_from_sensor(devices[i]);
 		char ieee_str[20];
 		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 		         (unsigned long long)devices[i].ieee_addr);
@@ -5045,6 +5075,10 @@ void on_firmware_update(OTF_PARAMS_DEF) {
 	res.writeBodyData((const __FlashStringHelper*)update_html_gz, update_html_gz_len);
 }
 
+// Selected OTA partition label for current upload ("matter" | "zigbee" | "").
+// Stored here so on_firmware_upload_fin can access it after the multipart is done.
+static String s_ota_slot;
+
 void on_firmware_upload_fin() {
 	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
 		// don't check password
@@ -5059,6 +5093,15 @@ void on_firmware_upload_fin() {
 		delay(250); // allow UI to receive the error code
 		return;
 	}
+
+#if defined(ESP32C5)
+	// Update the boot-variant config to match the slot that was just flashed
+	if (s_ota_slot == "zigbee") {
+		ieee802154_select_otf_boot_variant(IEEE802154BootVariant::ZIGBEE);
+	} else if (s_ota_slot == "matter") {
+		ieee802154_select_otf_boot_variant(IEEE802154BootVariant::MATTER);
+	}
+#endif
 
 	update_server_send_result(HTML_SUCCESS);
 	delay(1000); // so the UI has time to receive the success code
@@ -5083,11 +5126,26 @@ void on_firmware_upload() {
 		}
 		DEBUG_PRINT(F("upload: "));
 		DEBUG_PRINTLN(upload.filename);
+		// Read target OTA slot ("matter" or "zigbee") sent by the UI slot selector.
+		// Fall back to empty string on non-dual-OTA devices.
+		s_ota_slot = update_server->hasArg("slot") ? update_server->arg("slot") : "";
+#if defined(ESP32C5)
+		// On the dual-OTA ESP32-C5 board, target the explicit partition label so
+		// matter firmware always goes to the 'matter' partition and vice-versa.
+		const char* partLabel = (s_ota_slot == "zigbee") ? "zigbee" : "matter";
+		DEBUG_PRINT(F("OTA target partition: "));
+		DEBUG_PRINTLN(partLabel);
+		if(!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH, -1, LOW, partLabel)) {
+			DEBUG_PRINT(F("begin failed for partition: "));
+			DEBUG_PRINTLN(partLabel);
+		}
+#else
 		uint32_t maxSketchSpace = (ESP.getFreeSketchSpace()-0x1000)&0xFFFFF000;
 		if(!Update.begin(maxSketchSpace)) {
 			DEBUG_PRINT(F("begin failed "));
 			DEBUG_PRINTLN(maxSketchSpace);
 		}
+#endif
 
 	} else if(upload.status == UPLOAD_FILE_WRITE) {
 		DEBUG_PRINT(".");

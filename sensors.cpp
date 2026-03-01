@@ -775,7 +775,13 @@ void sensor_load() {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, reader);
     if (err) {
-      DEBUG_PRINTLN(F("sensor_load: JSON parse error"));
+      DEBUG_PRINTF("sensor_load: JSON parse error (%s), file size=%lu — renaming to /sensors_bad.json\n",
+                   err.c_str(), size);
+      // Rename corrupted file so next boot doesn't repeat the error and
+      // the user can re-add sensors via the UI.
+      if (file_exists("/sensors_bad.json")) remove_file("/sensors_bad.json");
+      // No rename API available; delete so the device can start clean.
+      remove_file(SENSOR_FILENAME_JSON);
       return;
     }
 
@@ -792,8 +798,24 @@ void sensor_load() {
       if (!sensor) {
         sensor = new GenericSensor(sensorType);
       }
-      
+
       sensor->fromJson(v);
+
+      // If the type is not supported in this firmware variant (e.g. a ZigBee
+      // sensor loaded on a Matter build), store the full raw JSON so all
+      // variant-specific fields (device_ieee, cluster_id, …) survive the
+      // roundtrip back to the original firmware.
+      if (!sensor_type_supported(sensorType)) {
+        DEBUG_PRINTF("sensor_load: type %u not supported in this firmware variant "
+                     "\u2014 loaded as generic sensor (all data preserved)\n", sensorType);
+        if (sensor->isGeneric()) {
+          GenericSensor* gs = static_cast<GenericSensor*>(sensor);
+          String raw;
+          serializeJson(v, raw);
+          gs->setRawJson(raw.c_str(), raw.length());
+        }
+      }
+
       sensorsMap[sensor->nr] = sensor;
       sensor->flags.data_ok = false;
     }
@@ -838,6 +860,23 @@ void sensor_save() {
   for (auto &kv : sensorsMap) {
     SensorBase *sensor = kv.second;
     JsonObject obj = arr.add<JsonObject>();
+
+    // For GenericSensors that preserve a raw JSON snapshot (unsupported type
+    // in this firmware variant), first restore ALL original fields so that
+    // variant-specific data (e.g. ZigBee device_ieee, cluster_id) is not lost.
+    // Base-class fields written below will overwrite with current values.
+    GenericSensor* gs = sensor->isGeneric() ? static_cast<GenericSensor*>(sensor) : nullptr;
+    if (gs && gs->_raw_json) {
+      JsonDocument tmp;
+      if (deserializeJson(tmp, gs->_raw_json) == DeserializationError::Ok) {
+        JsonObject tmpObj = tmp.as<JsonObject>();
+        for (auto kv_pair : tmpObj) {
+          obj[kv_pair.key()] = kv_pair.value();
+        }
+      }
+    }
+
+    // Always write current base-class values (name, enable, log, etc.).
     sensor->toJson(obj);
   }
 

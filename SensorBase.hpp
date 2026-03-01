@@ -68,6 +68,7 @@ public:
 
   /** Initialize sensor hardware/connection */
   virtual bool init() { return true; }
+  virtual bool isGeneric() const { return false; }
   
   /** Cleanup sensor resources */
   virtual void deinit() {}
@@ -257,11 +258,38 @@ public:
   }
 };
 
-// Generic sensor for types without specific behavior
+// Generic sensor for types without specific behaviour.
+// Used as a fallback when a sensor type is not compiled into the current
+// firmware variant (e.g. a ZigBee sensor saved on a Matter build).
+//
+// The full raw JSON is captured at load-time by sensor_load() via setRawJson()
+// and replayed at save-time by sensor_save(), so all variant-specific fields
+// (e.g. ZigBee device_ieee, cluster_id, endpoint) survive a firmware-switch
+// roundtrip without any data loss.
+//
+// All ArduinoJson serialization/deserialization is kept in sensors.cpp (where
+// the ArduinoJson namespace is fully in scope) rather than here, to avoid
+// template-disambiguation and namespace-qualification issues in a shared header.
 class GenericSensor : public SensorBase {
 public:
-  GenericSensor(uint type) : SensorBase(type) {}
-  virtual ~GenericSensor() {}
+  // Raw JSON snapshot stored by sensor_load() — preserves variant-specific
+  // fields across firmware switches.  Heap-allocated so it works on both
+  // ESP32 (Arduino) and Linux (OSPI) without string-type dependencies.
+  char* _raw_json = nullptr;
+
+  explicit GenericSensor(uint type) : SensorBase(type), _raw_json(nullptr) {}
+  virtual ~GenericSensor() {
+    if (_raw_json) { free(_raw_json); _raw_json = nullptr; }
+  }
+
+  // Called from sensors.cpp to store the serialised JSON for later replay on save.
+  void setRawJson(const char* json, size_t len) {
+    if (_raw_json) { free(_raw_json); _raw_json = nullptr; }
+    _raw_json = (char*)malloc(len + 1);
+    if (_raw_json) { memcpy(_raw_json, json, len); _raw_json[len] = '\0'; }
+  }
+
+  virtual bool isGeneric() const override { return true; }
   virtual int read(unsigned long /*time*/) override { return HTTP_RQT_NOT_RECEIVED; }
 };
 

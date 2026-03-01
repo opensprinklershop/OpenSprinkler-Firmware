@@ -222,8 +222,8 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     info.discovered_at = (uint32_t)os.now_tz();
     info.last_rx_at_ms = millis();
     info.silent_query_count = 0;
-    strncpy(info.manufacturer, "unknown", sizeof(info.manufacturer) - 1);
-    strncpy(info.model_id, "unknown", sizeof(info.model_id) - 1);
+    info.manufacturer[0] = '\0';
+    info.model_id[0] = '\0';
     
     gw_discovered_devices.push_back(info);
     // DEBUG_PRINTF(F("[ZIGBEE-GW] Added responsive device: short=0x%04X ieee=%08lX%08lX ep=%d\n"),

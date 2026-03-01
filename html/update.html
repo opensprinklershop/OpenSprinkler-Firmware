@@ -100,7 +100,23 @@
 
 <main>
     <h1>OpenSprinkler Firmware Update</h1>
+    <!-- Current variant badge (ESP32-C5 only, shown after fetch) -->
+    <div id="variant_banner" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:6px;font-size:14px;font-weight:600;border:1px solid var(--border);">
+      <span id="variant_text"></span>
+    </div>
+
     <form method='POST' action='/update' id='fm' enctype='multipart/form-data'>
+        <!-- Slot selector – only shown on dual-OTA devices (ESP32-C5) -->
+        <div class="form-group" id="slot_group" style="display:none">
+            <label for="slot">Target Partition</label>
+            <select name="slot" id="slot" style="width:100%;padding:10px;font-size:16px;border:1px solid var(--border);border-radius:5px;box-sizing:border-box;background:transparent;color:inherit;">
+                <option value="zigbee">ZigBee  — Firmware 1 (OTA ota_1 @ 0x3A0000)</option>
+                <option value="matter">Matter  — Firmware 2 (OTA ota_0 @ 0x10000)</option>
+            </select>
+            <small style="color:var(--muted);display:block;margin-top:5px;">
+                Select the firmware variant that matches the .bin file you are uploading.
+            </small>
+        </div>
         <div class="form-group">
             <label for="file">Firmware File (.bin)</label>
             <input type='file' name='file' accept='.bin' id='file'>
@@ -111,7 +127,7 @@
         </div>
 
         <div class="warning-box">
-            <b>IMPORTANT:</b> Firmware updates across major revisions (e.g., from 2.2.1 to 2.2.2) will trigger a factory reset. Please save a copy of your current configurations before proceeding.
+            <b>IMPORTANT:</b> Select the correct partition matching your .bin file (Matter or ZigBee). Uploading the wrong variant to the wrong slot will render that slot unbootable. Firmware updates across major revisions will trigger a factory reset — save your configuration first.
         </div>
 
         <p id='msg'></p>
@@ -314,6 +330,32 @@
         msgEl.innerHTML = `<font color=${c}>${s}</font>`;
     }
 
+    // Auto-detect dual-OTA device and pre-fill slot selector
+    (function detectVariant() {
+        fetch('/ir').then(function(r){ return r.ok ? r.json() : null; }).then(function(d) {
+            if (!d || d.bootVariant === undefined) return;
+            // bootVariant: 1 = Matter, 2 = ZigBee
+            const isZigbee = d.bootVariant === 2;
+            const isMatter = d.bootVariant === 1;
+            const name     = d.bootVariantName || (isZigbee ? 'ZigBee' : 'Matter');
+            const colors   = { bg: isZigbee ? '#ecfdf5' : '#eff6ff',
+                                fg: isZigbee ? '#065f46' : '#1e40af',
+                                border: isZigbee ? '#6ee7b7' : '#93c5fd' };
+            const banner = id('variant_banner');
+            banner.style.display = 'block';
+            banner.style.backgroundColor = colors.bg;
+            banner.style.color = colors.fg;
+            banner.style.borderColor = colors.border;
+            id('variant_text').textContent = '▶ Currently running: ' + name + ' firmware';
+
+            // Show slot selector and default to current slot (user can change)
+            id('slot_group').style.display = 'block';
+            id('slot').value = isZigbee ? 'zigbee' : 'matter';
+        }).catch(function(){
+            // Not an ESP32-C5 or endpoint unavailable – hide selector, harmless
+        });
+    })();
+
     id('btn_submit').addEventListener('click', function(e){
         e.preventDefault();
         const files = id('file').files;
@@ -334,6 +376,11 @@
         fd.append('file', file, file.name);
         // Hash the password if it's not empty, otherwise send empty string
         fd.append('pw', password ? md5(password) : '');
+        // Include target OTA slot if the selector is visible (ESP32-C5 dual-OTA)
+        const slotSel = id('slot');
+        if (slotSel && id('slot_group').style.display !== 'none') {
+            fd.append('slot', slotSel.value);
+        }
 
         const xhr = new XMLHttpRequest();
         xhr.onreadystatechange = function() {

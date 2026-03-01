@@ -34,6 +34,26 @@
 #endif
 
 extern OpenSprinkler os;
+extern bool useEth;
+
+// ---------------------------------------------------------------------------
+// Zigbee coex helper: in Ethernet+Zigbee mode lower 802.15.4 PTI while BLE
+// is scanning so BLE wins radio arbitration; restore when scan ends.
+// In WiFi mode the coex hardware handles this automatically; only needed when
+// WiFi is completely off (Ethernet path) and Zigbee shares the same radio.
+// ---------------------------------------------------------------------------
+#if defined(ESP32C5)
+extern "C" {
+#include "esp_coex_i154.h"
+}
+static inline void zigbee_coex_yield_for_ble(bool yield) {
+    if (useEth && ieee802154_is_zigbee()) {
+        esp_coex_ieee802154_txrx_pti_set(yield ? IEEE802154_IDLE : IEEE802154_HIGH);
+    }
+}
+#else
+static inline void zigbee_coex_yield_for_ble(bool) {}
+#endif
 
 #include <BLEDevice.h>
 #include <BLEUtils.h>
@@ -106,12 +126,14 @@ static uint32_t ble_init_retry_at = 0;
 static void ble_bg_scan_complete_cb(BLEScanResults results) {
     bg_scan_active = false;
     bg_scan_restart_at = millis() + BG_SCAN_RESTART_MS;
+    zigbee_coex_yield_for_ble(false);  // restore Zigbee priority
 }
 
 // Discovery scan completion callback
 static void ble_discovery_scan_complete_cb(BLEScanResults results) {
     discovery_scan_active = false;
     discovery_scan_end = 0;
+    zigbee_coex_yield_for_ble(false);  // restore Zigbee priority
     DEBUG_PRINTF("[BLE] Discovery scan complete: %d raw results\n", (int)results.getCount());
     // Background scan will auto-restart from sensor_ble_loop()
 }
@@ -131,6 +153,7 @@ static void ble_bg_scan_start() {
     if (scan_duration == 0) return;  // Background scanning disabled (BG_SCAN_DURATION_NORMAL=0)
     // NOTE: duration=0 in NimBLE means INFINITE scan, NOT "no scan".
     // Always guard with this check before calling pBLEScan->start().
+    zigbee_coex_yield_for_ble(true);   // lower Zigbee PTI during BLE scan
     pBLEScan->start(scan_duration, ble_bg_scan_complete_cb, false);
     bg_scan_active = true;
 }
@@ -142,6 +165,7 @@ static void ble_bg_scan_stop() {
         pBLEScan->stop();
     }
     bg_scan_active = false;
+    zigbee_coex_yield_for_ble(false);  // restore Zigbee priority
 }
 
 // Discovered devices storage
@@ -1262,7 +1286,7 @@ const char* ble_uuid_to_name(const char* uuid) {
  */
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
-        ble_onresult_total++;  // count every advertisement received
+        ble_onresult_total = ble_onresult_total + 1;  // count every advertisement received
         // Get device address (format: "aa:bb:cc:dd:ee:ff")
         String addr_str = advertisedDevice.getAddress().toString();
         uint8_t addr_bytes[6];
@@ -1718,8 +1742,10 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     // Clear ignore table so discovery scan can see all devices
     memset(ble_ignore_table, 0, sizeof(ble_ignore_table));
 
+    zigbee_coex_yield_for_ble(true);   // lower Zigbee PTI during BLE discovery scan
     bool scan_started = pBLEScan->start(actual_duration, ble_discovery_scan_complete_cb, false);
     if (!scan_started) {
+        zigbee_coex_yield_for_ble(false);  // restore on failure
         DEBUG_PRINTF("[BLE] pBLEScan->start() FAILED (duration=%ds, passive=%d)\n", actual_duration, (int)passive);
         ble_sensor_lock_release();
         return;
