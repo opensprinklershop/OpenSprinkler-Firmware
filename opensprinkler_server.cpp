@@ -55,7 +55,7 @@
 #endif
 
 #include "ieee802154_config.h"
-#include "radio_coex.h"
+
 #if defined(ESP32) && defined(USE_OTF)
 #include "cert.h"  // for /ca.der cert download endpoint
 #endif
@@ -328,7 +328,7 @@ char dec2hexchar(unsigned char dec) {
 
 #if defined(USE_OTF)
 void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
-	coex_notify_wifi_active(); // Signal radio coex: WiFi is serving a request
+	 // Signal radio coex: WiFi is serving a request
 	res.writeStatus(200, F("OK"));
 	res.writeHeader(F("Content-Type"), isJson?F("application/json"):F("text/html"));
 	if(len>0)
@@ -2468,7 +2468,12 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	#elif defined(ESP32)
 	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,"), LittleFS.totalBytes(), LittleFS.usedBytes());
 	if(useEth) {
+		#if defined(OS_ENABLE_BLE)
+		bfill.emit_p(PSTR("\"ETH\":$D,\"ble_ok\":$D,\"ble_scan\":$D,\"ble_found\":$D,\"ble_sens\":$D,\"ble_rx\":$D,\"coex\":\"$S\"}"),
+			1, sensor_ble_is_active()?1:0, sensor_ble_is_scanning()?1:0, sensor_ble_discovered_count(), sensor_ble_managed_count(), sensor_ble_onresult_total(), "disabled");
+		#else
 		bfill.emit_p(PSTR("\"ETH\":$D}"), 1);
+		#endif
 	} else {
 		bfill.emit_p(PSTR("\"rssi\":$D,\"bssid\":\"$S\",\"bssidchl\":\"$O\"}"),
 		WiFi.RSSI(), WiFi.BSSIDstr().c_str(), SOPT_STA_BSSID_CHL);
@@ -4366,7 +4371,7 @@ void server_ieee802154_get(OTF_PARAMS_DEF) {
 	             ieee802154_is_zigbee() ? 1 : 0,
 	             ieee802154_is_zigbee_gw() ? 1 : 0,
 	             ieee802154_is_zigbee_client() ? 1 : 0,
-	             coex_get_status());
+	             "disabled");
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
@@ -4405,6 +4410,15 @@ void server_ieee802154_set(OTF_PARAMS_DEF) {
 	}
 
 	IEEE802154Mode new_mode = static_cast<IEEE802154Mode>(mode_val);
+
+	// ZigBee gateway requires Ethernet — WiFi shares the 2.4GHz radio
+	if (new_mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && !useEth) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"ZigBee gateway requires Ethernet connection\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
 	IEEE802154BootVariant target_boot_variant = ieee802154_boot_variant_for_mode(new_mode);
 
 	if (!ieee802154_select_otf_boot_variant(target_boot_variant)) {
@@ -4531,7 +4545,7 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 	             sensor_zigbee_is_active() ? 1 : 0,
 	             sensor_zigbee_is_connected() ? 1 : 0,
 	             ieee802154_is_zigbee_gw() ? "gateway" : "client",
-	             coex_get_status(),
+	             "disabled",
 	             sensor_zigbee_get_join_window_remaining());
 
 	send_packet(OTF_PARAMS);
@@ -4684,8 +4698,13 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		char ieee_str[20];
 		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 		         (unsigned long long)devices[i].ieee_addr);
+		unsigned long last_rx_age_s = (devices[i].last_rx_at_ms > 0)
+		    ? (millis() - devices[i].last_rx_at_ms) / 1000UL : 65535UL;
+		int is_online = (devices[i].last_rx_at_ms > 0) &&
+		    (millis() - devices[i].last_rx_at_ms) < 15UL * 60UL * 1000UL ? 1 : 0;
 		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,\"discovered_at\":$L}"),
+		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
+		                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D}"),
 		             ieee_str,
 		             devices[i].short_addr,
 		             devices[i].model_id,
@@ -4693,7 +4712,9 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		             devices[i].endpoint,
 		             devices[i].device_id,
 		             devices[i].is_new ? 1 : 0,
-		             (unsigned long)devices[i].discovered_at);
+		             (unsigned long)devices[i].discovered_at,
+		             last_rx_age_s,
+		             is_online);
 		send_packet(OTF_PARAMS);
 	}
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);

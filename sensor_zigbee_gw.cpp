@@ -19,7 +19,7 @@
 #include "OpenSprinkler.h"
 #include "opensprinkler_server.h"
 #include "ieee802154_config.h"
-#include "radio_coex.h"
+
 
 extern OpenSprinkler os;
 
@@ -30,7 +30,7 @@ extern OpenSprinkler os;
 #include <WiFi.h>
 #include <esp_err.h>
 extern "C" {
-#include <esp_coex_i154.h>
+
 }
 #include <esp_ieee802154.h>
 #include "esp_zigbee_core.h"
@@ -47,6 +47,7 @@ extern "C" {
 // Zigbee Gateway state
 static bool gw_zigbee_initialized = false;
 static bool gw_zigbee_connected = false;
+static unsigned long gw_join_window_end = 0;
 static bool gw_zigbee_needs_nvram_reset = false;
 
 // Discovered devices storage
@@ -197,6 +198,8 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
             dev.short_addr = short_addr;
             dev.endpoint = endpoint;
             dev.has_responded = true;
+            dev.last_rx_at_ms = millis();     // stamp last reception
+            dev.silent_query_count = 0;       // device is alive — reset silence counter
             // Device re-announced (e.g. after power cycle / re-join).
             // Re-schedule Configure Reporting so sleeping end-devices
             // resume sending proactive reports on their fresh network slot.
@@ -217,12 +220,19 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     info.is_new = true;
     info.has_responded = true;
     info.discovered_at = (uint32_t)os.now_tz();
+    info.last_rx_at_ms = millis();
+    info.silent_query_count = 0;
     strncpy(info.manufacturer, "unknown", sizeof(info.manufacturer) - 1);
     strncpy(info.model_id, "unknown", sizeof(info.model_id) - 1);
     
     gw_discovered_devices.push_back(info);
     // DEBUG_PRINTF(F("[ZIGBEE-GW] Added responsive device: short=0x%04X ieee=%08lX%08lX ep=%d\n"),
                 // short_addr, (unsigned long)(ieee_addr >> 32), (unsigned long)(ieee_addr & 0xFFFFFFFF), endpoint);
+
+    // Query Basic Cluster immediately to get manufacturer/model from the device.
+    // This ensures already-paired devices (that don't re-announce after a GW reboot)
+    // still have their manufacturer/model filled in once they start sending data.
+    gw_query_basic_cluster(short_addr, endpoint);
     
     // Schedule Configure Reporting for all sensors matching this device
     uint64_t resolved_ieee = gw_resolve_ieee(short_addr);
@@ -233,7 +243,7 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     // If in join mode and no sensor exists yet for this device, send default
     // Configure Reporting (900s) for common measurement clusters.  The device
     // is still awake right now, so the commands arrive immediately.
-    if (coex_is_join_mode()) {
+    if ((gw_join_window_end != 0)) {
         bool has_sensor = false;
         SensorIterator it = sensors_iterate_begin();
         SensorBase* s;
@@ -652,6 +662,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
 
     // Parse DP records starting after ZCL header (3 bytes) + Tuya seq (2 bytes) = offset 5
     uint32_t offset = 5;
+    bool dp3_soil_received = false;  // DP 3/2/7 (exact %) takes priority over DP 14 (categorical ENUM)
     while (offset + 4 <= ind.asdu_length) {  // Minimum DP record: 4 bytes header
         uint8_t dp_number = ind.asdu[offset];
         uint8_t dp_type = ind.asdu[offset + 1];
@@ -694,9 +705,16 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                 gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
                                      ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000,
                                      dp_value, ind.lqi);
+                dp3_soil_received = true;  // mark: exact % available — DP 14 ENUM is lower priority
                 break;
 
             case TUYA_DP_SOIL_MOISTURE_ALT3:  // DP 14
+                // DP 3/2/7 (exact %) takes priority: skip the ENUM conversion
+                // if an exact soil moisture value was already processed in this packet.
+                if (dp3_soil_received && dp_type == TUYA_DP_TYPE_ENUM) {
+                    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP 14 ENUM skipped (DP 3 already received)\n"));
+                    break;
+                }
                 // VALUE type → soil moisture raw % (some Tuya sensor variants)
                 // ENUM type  → GX04 soil_moisture_state: 0=dry, 1=normal, 2=wet
                 //               Maps to representative % midpoints so the value
@@ -821,7 +839,6 @@ bool sensor_zigbee_gw_configure_reporting(uint64_t device_ieee, uint8_t endpoint
     }
     esp_zb_zcl_config_report_cmd_req(&cmd);
     esp_zb_lock_release();
-    coex_request_lock(COEX_OWNER_ZIGBEE, 3000);
 
     // DEBUG_PRINTF("[ZIGBEE-GW] \xE2\x9C\x93 Configure Reporting SENT: ieee=%016llX short=0x%04X ep=%d "
                  // "cluster=0x%04X attr=0x%04X min=%ds max=%ds\n",
@@ -1172,26 +1189,7 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
     zb_sensor->repeat_read = 1;
     zb_sensor->last_read = os.now_tz();
     zb_sensor->last = zb_sensor->last_read;
-    zb_sensor->last_report_at_ms = millis();  // for predictive boost (millis-path)
-
-    // Always update the UNIX anchor to the actual reception time so the next
-    // prediction is based on real data, not the initial discovery estimate.
-    {
-        uint32_t new_anchor = (uint32_t)zb_sensor->last_read;
-        if (zb_sensor->join_anchor_ts != new_anchor) {
-            zb_sensor->join_anchor_ts = new_anchor;
-            gw_comm_mode_changed = true;  // piggyback on existing save trigger
-            DEBUG_PRINTF(F("[ZIGBEE-GW] Predictive anchor updated for '%s': %lu (ri=%u)\n"),
-                         zb_sensor->name, (unsigned long)zb_sensor->join_anchor_ts,
-                         zb_sensor->read_interval);
-        }
-    }
-
-    // Data received — release predictive boost lock early so WiFi is restored.
-    // During join mode the lock must stay held for the full join window.
-    if (coex_is_zigbee_locked() && !coex_is_join_mode()) {
-        coex_release_lock(COEX_OWNER_ZIGBEE);
-    }
+    zb_sensor->last_report_at_ms = millis();
 
     // Update communication mode based on whether this report was solicited
     // (response to our ZCL Read Attributes) or unsolicited (device-pushed report).
@@ -1325,7 +1323,6 @@ bool sensor_zigbee_gw_read_attribute(uint64_t device_ieee, uint8_t endpoint,
     gw_read_time = millis();
     gw_read_pending_ieee = device_ieee;
     gw_read_pending_cluster = cluster_id;
-    coex_request_lock(COEX_OWNER_ZIGBEE, 5000);
     esp_zb_lock_release();
 
     DEBUG_PRINTF(F("[ZIGBEE-GW] ✓ Active read SENT: ieee=%016llX short=0x%04X ep=%d cluster=0x%04X attr=0x%04X\n"),
@@ -1512,7 +1509,6 @@ void sensor_zigbee_gw_start() {
                  // heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     // Dynamic coex: re-initialise after Zigbee.begin() which resets PTI defaults
-    coex_init();
 
     // Log channel and PAN ID for diagnostics
     esp_zb_lock_acquire(portMAX_DELAY);
@@ -1735,7 +1731,6 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
 }
 
 // Track when the join window closes so radio lock can be released
-static unsigned long gw_join_window_end = 0;
 
 void sensor_zigbee_gw_open_network(uint16_t duration) {
     if (!gw_zigbee_initialized) {
@@ -1768,13 +1763,10 @@ void sensor_zigbee_gw_open_network(uint16_t duration) {
         gw_join_window_end = requested_end;
     }
 
-    coex_request_lock(COEX_OWNER_ZIGBEE, window_ms > COEX_LOCK_MAX_JOIN_MS ? COEX_LOCK_MAX_JOIN_MS : window_ms);
 
     // Enter join mode: applies maximum radio priority (txrx=HIGH) for the full
     // join window duration.  On 2.4 GHz this also disconnects WiFi for up to 10s.
     // The coex manager auto-exits join mode when duration_ms elapses, and
-    // sensor_zigbee_gw_loop also calls coex_set_join_mode(false) when gw_join_window_end expires.
-    coex_set_join_mode(true, window_ms);
 
     esp_zb_lock_acquire(portMAX_DELAY);
     Zigbee.openNetwork(dur);
@@ -1804,9 +1796,9 @@ void sensor_zigbee_gw_loop() {
     // lock acquire/release cycle to avoid noisy strategy reapply calls.
     if (pending_report_count > 0) {
         // DEBUG_PRINTF(F("[ZIGBEE-GW] LOOP: %d reports waiting → processing now...\n"), pending_report_count);
-        if (!coex_is_join_mode()) coex_request_lock(COEX_OWNER_ZIGBEE, 2000);
+        
         sensor_zigbee_gw_process_reports(0, 0, 0, 0, 0, 0);
-        if (!coex_is_join_mode()) coex_release_lock(COEX_OWNER_ZIGBEE);
+        
         // DEBUG_PRINTF(F("[ZIGBEE-GW] LOOP: processing done, %d reports remaining\n"), pending_report_count);
     }
     
@@ -1819,6 +1811,38 @@ void sensor_zigbee_gw_loop() {
             // Sleeping end devices (AQARA, etc.) will receive this on their next wake
             // and start pushing reports proactively.
             gw_schedule_configure_reporting_all(5000);
+
+            // Auto-open network once on startup so previously-paired devices can
+            // rejoin after a coordinator restart (firmware update, power cycle, etc.)
+            // without the user sending the "zj" command manually.
+            static bool gw_startup_open_done = false;
+            if (!gw_startup_open_done) {
+                gw_startup_open_done = true;
+                DEBUG_PRINTLN(F("[ZIGBEE-GW] Auto-opening network 180s for device rejoin after restart"));
+                sensor_zigbee_gw_open_network(180);
+            }
+
+            // Proactively query known Tuya sensors via ZBOSS address table.
+            // If ZBOSS NVRAM is intact after a restart, esp_zb_address_short_by_ieee()
+            // resolves the short address and we send a DP query immediately, before
+            // the device announces itself, so data starts flowing right away.
+            {
+                SensorIterator it_sq = sensors_iterate_begin();
+                SensorBase* s_sq;
+                while ((s_sq = sensors_iterate_next(it_sq)) != NULL) {
+                    if (!s_sq || s_sq->type != SENSOR_ZIGBEE) continue;
+                    ZigbeeSensor* zb_sq = static_cast<ZigbeeSensor*>(s_sq);
+                    if (zb_sq->device_ieee == 0) continue;
+                    // Tuya devices have manufacturer names starting with "_TZ"
+                    if (zb_sq->zb_manufacturer[0] != '_' || zb_sq->zb_manufacturer[1] != 'T') continue;
+                    bool sent = sensor_zigbee_gw_request_dp_query(
+                        zb_sq->device_ieee, zb_sq->endpoint ? zb_sq->endpoint : 1);
+                    if (sent) {
+                        DEBUG_PRINTF(F("[ZIGBEE-GW] Startup DP query → '%s' (ieee=%016llX)\n"),
+                                     s_sq->name, (unsigned long long)zb_sq->device_ieee);
+                    }
+                }
+            }
         } else {
             DEBUG_PRINTLN(F("[ZIGBEE-GW] Coordinator network LOST"));
         }
@@ -1831,131 +1855,16 @@ void sensor_zigbee_gw_loop() {
     // Once started, Zigbee stays running until reboot.
 
     // Release radio lock and restore WiFi after join window expires.
-    // coex_set_join_mode(false) internally records s_last_join_ended_ms so
-    // coex_zigbee_boost_tick() suppresses per-sensor boosts for one interval.
     if (gw_join_window_end != 0 && millis() > gw_join_window_end) {
         gw_join_window_end = 0;
-        coex_release_lock(COEX_OWNER_ZIGBEE);
-        coex_set_join_mode(false);
         // DEBUG_PRINTLN(F("[ZIGBEE-GW] Join window closed, radio released"));
     }
 
-    // Predictive boost: acquire a radio lock shortly before each ZigBee sensor's
-    // next expected report so data arrives with full ZigBee priority.
-    // Two methods: millis-based (Method A, accurate after first report this boot)
-    // and UNIX-anchor-based (Method B, persisted across reboots).
-    // Window is kept narrow (±10s) so WiFi is never starved for the full interval.
-    // Per-sensor backoff: after a boost with no report, suppress for one full intv.
+    // Boot-settle guard: wait 90s after first ZigBee connection before
+    // sending Tuya DP refresh queries (avoids hammering devices during startup).
     static unsigned long gw_first_connected_ms = 0;
     if (connected && gw_first_connected_ms == 0) gw_first_connected_ms = millis();
     bool boot_settled = gw_first_connected_ms > 0 && (millis() - gw_first_connected_ms) > 90000;
-
-    if (connected && boot_settled && !coex_is_zigbee_locked()) {
-        unsigned long now_p           = millis();
-        uint32_t      now_s           = (uint32_t)os.now_tz();
-        unsigned long last_join_ended = coex_get_last_join_ended_ms();
-
-        // Track physical devices already evaluated this tick (by IEEE address) to
-        // ensure exactly one boost decision per physical device even when multiple
-        // logical sensors (different clusters) map to the same hardware.
-        static const int BOOST_MAX_DEVS = 16;
-        uint64_t boost_seen[BOOST_MAX_DEVS];
-        int      boost_seen_n = 0;
-
-        SensorIterator pit = sensors_iterate_begin();
-        SensorBase* ps;
-        while ((ps = sensors_iterate_next(pit)) != NULL) {
-            if (!ps || ps->type != SENSOR_ZIGBEE) continue;
-            ZigbeeSensor* zb_p = static_cast<ZigbeeSensor*>(ps);
-            if (zb_p->comm_mode != ZB_COMM_REPORT) continue;
-
-            // Skip if this physical device was already evaluated this tick.
-            bool already_seen = false;
-            for (int i = 0; i < boost_seen_n; i++) {
-                if (boost_seen[i] == zb_p->device_ieee) { already_seen = true; break; }
-            }
-            if (already_seen) continue;
-            if (boost_seen_n < BOOST_MAX_DEVS) boost_seen[boost_seen_n++] = zb_p->device_ieee;
-
-            // Aggregate across all logical sensors for this physical device:
-            //   intv            = minimum configured interval (most conservative)
-            //   latest_report   = most recent last_report_at_ms (device last spoke)
-            //   anchor_ts       = first non-zero join_anchor_ts found
-            //   latest_boost    = most recent last_boost_fired_ms (shared backoff)
-            uint32_t intv              = 0;
-            unsigned long latest_report   = 0;
-            uint32_t      anchor_ts       = 0;
-            unsigned long latest_boost    = 0;
-
-            SensorIterator sit = sensors_iterate_begin();
-            SensorBase* ss;
-            while ((ss = sensors_iterate_next(sit)) != NULL) {
-                if (!ss || ss->type != SENSOR_ZIGBEE) continue;
-                ZigbeeSensor* zb_s = static_cast<ZigbeeSensor*>(ss);
-                if (zb_s->device_ieee != zb_p->device_ieee) continue;
-                if (zb_s->comm_mode != ZB_COMM_REPORT) continue;
-
-                uint32_t s_intv = zb_s->report_interval_s ? zb_s->report_interval_s
-                                                           : (uint32_t)zb_s->read_interval;
-                // Use the smallest interval across all logical sensors (tightest schedule).
-                if (s_intv > 0 && (intv == 0 || s_intv < intv)) intv = s_intv;
-                if (zb_s->last_report_at_ms > latest_report) latest_report = zb_s->last_report_at_ms;
-                if (zb_s->join_anchor_ts > 0 && anchor_ts == 0) anchor_ts = zb_s->join_anchor_ts;
-                if (zb_s->last_boost_fired_ms > latest_boost) latest_boost = zb_s->last_boost_fired_ms;
-            }
-
-            if (intv == 0) continue;
-            unsigned long intv_ms = (unsigned long)intv * 1000UL;
-
-            // Post-join cooldown: give the device one full interval to rejoin.
-            if (last_join_ended > 0 && (now_p - last_join_ended) < intv_ms) continue;
-
-            // Per-device backoff: if last boost produced no new report from this
-            // device, suppress for one full interval to avoid the perpetual-lock loop.
-            if (latest_boost > 0 &&
-                latest_report <= latest_boost &&
-                (now_p - latest_boost) < intv_ms) continue;
-
-            bool boosted = false;
-
-            // Method A: millis-based — uses latest report time across all logical sensors.
-            if (latest_report > 0) {
-                unsigned long next_ms = latest_report + intv_ms;
-                int32_t until_ms = (int32_t)(next_ms - now_p);
-                if (until_ms >= -(int32_t)COEX_BOOST_OVERSHOOT_MS &&
-                    until_ms <=  (int32_t)COEX_BOOST_ADVANCE_MS) {
-                    boosted = true;
-                }
-            }
-            // Method B: UNIX-anchor — narrow window, survives reboots.
-            else if (anchor_ts > 0 && now_s > anchor_ts) {
-                uint32_t elapsed = now_s - anchor_ts;
-                int32_t secs_before_next = (int32_t)intv - (int32_t)(elapsed % intv);
-                if (secs_before_next >= -(int32_t)COEX_BOOST_OVERSHOOT_S &&
-                    secs_before_next <=  (int32_t)COEX_BOOST_ADVANCE_S) {
-                    boosted = true;
-                }
-            }
-
-            if (boosted) {
-                // Stamp last_boost_fired_ms on ALL logical sensors for this device
-                // so backoff is shared — one sensor's report clears it for all.
-                SensorIterator bit = sensors_iterate_begin();
-                SensorBase* bs;
-                while ((bs = sensors_iterate_next(bit)) != NULL) {
-                    if (!bs || bs->type != SENSOR_ZIGBEE) continue;
-                    ZigbeeSensor* zb_b = static_cast<ZigbeeSensor*>(bs);
-                    if (zb_b->device_ieee == zb_p->device_ieee)
-                        zb_b->last_boost_fired_ms = now_p;
-                }
-                coex_request_lock(COEX_OWNER_ZIGBEE, COEX_LOCK_MAX_SENSOR_MS);
-                DEBUG_PRINTF(F("[ZIGBEE-GW] Predictive boost: ieee=%016llX (intv=%us method=%c)\n"),
-                             (unsigned long long)zb_p->device_ieee, intv,
-                             latest_report > 0 ? 'A' : 'B');
-                break;  // one lock covers all physical devices for this tick
-            }
-        }
-    }
 
     // Periodic Tuya DP refresh: send a "get all datapoints" query (cmd 0x00) to
     // every confirmed Tuya device that has at least one stale REPORT-mode sensor.
@@ -1965,11 +1874,11 @@ void sensor_zigbee_gw_loop() {
     // fire after boot-settle, so the first query arrives very shortly after WiFi
     // has stabilised (boot_settled = 90 s after first connection).
     static unsigned long gw_tuya_refresh_ms = 0;
-    if (connected && boot_settled && !coex_is_join_mode()) {
+    if (connected && boot_settled && !(gw_join_window_end != 0)) {
         unsigned long now_tr = millis();
         if (now_tr - gw_tuya_refresh_ms >= 90000UL) {
             gw_tuya_refresh_ms = now_tr;
-            for (const auto& dev : gw_discovered_devices) {
+            for (auto& dev : gw_discovered_devices) {  // non-const: we update silent_query_count
                 if (!dev.is_tuya || !dev.has_responded) continue;
                 // Check if any REPORT-mode sensor for this device is stale
                 bool needs_refresh = false;
@@ -1990,9 +1899,25 @@ void sensor_zigbee_gw_loop() {
                     }
                 }
                 if (needs_refresh) {
-                    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Refresh query → ieee=%016llX ep=%d\n"),
-                                 (unsigned long long)dev.ieee_addr, dev.endpoint);
-                    sensor_zigbee_gw_request_dp_query(dev.ieee_addr, dev.endpoint);
+                    bool sent = sensor_zigbee_gw_request_dp_query(dev.ieee_addr, dev.endpoint);
+                    if (sent) {
+                        dev.silent_query_count++;
+                        unsigned long silent_s = dev.last_rx_at_ms > 0
+                            ? (now_tr - dev.last_rx_at_ms) / 1000UL : 9999UL;
+                        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Refresh query → ieee=%016llX ep=%d (silent=%lus, count=%d)\n"),
+                                     (unsigned long long)dev.ieee_addr, dev.endpoint,
+                                     silent_s, dev.silent_query_count);
+
+                        // After 5 unanswered queries (~7.5 min), open network so the device
+                        // can rejoin if it lost its network slot after a coordinator restart.
+                        // Reset counter after opening to wait another 5 cycles before retrying.
+                        if (dev.silent_query_count >= 5 && !(gw_join_window_end != 0)) {
+                            DEBUG_PRINTF(F("[ZIGBEE-GW] ⚠ Device %016llX silent %lus — auto-opening network for rejoin (60s)\n"),
+                                         (unsigned long long)dev.ieee_addr, silent_s);
+                            sensor_zigbee_gw_open_network(60);
+                            dev.silent_query_count = 0;  // avoid re-opening every cycle
+                        }
+                    }
                 }
             }
         }

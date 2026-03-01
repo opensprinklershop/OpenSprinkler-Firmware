@@ -39,7 +39,9 @@
 #if defined(ESP32C5)
 #include "soc/lp_aon_reg.h"
 #endif
+#include "esp_wifi.h"
 #endif
+#include "sensor_ble.h"
 
 /** Declare static data members */
 OSMqtt OpenSprinkler::mqtt;
@@ -568,7 +570,7 @@ unsigned char OpenSprinkler::start_network() {
 
 	if (start_ether()) {
 		useEth = true;
-		WiFi.mode(WIFI_OFF);
+		WiFi.mode(WIFI_OFF); // turn off WiFi to release the WiFi MAC for Ethernet use
 	} else {
 		useEth = false;
 	}
@@ -768,11 +770,11 @@ byte OpenSprinkler::start_ether() {
 	// with the ESP-IDF spi_bus driver used by both external flash and W5500 MAC.
 	// Use eth.begin() variant with explicit SPI host, pin numbers, and frequency.
 	delay(100);
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI, 8)) {
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
 	}
-	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 8 MHz)"));
+	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 20 MHz)"));
 	#endif
 
 

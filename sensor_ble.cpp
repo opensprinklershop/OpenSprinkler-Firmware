@@ -29,7 +29,6 @@
 #include <vector>
 #include <ctype.h>
 #include "ieee802154_config.h"
-#include "radio_coex.h"
 #ifdef ENABLE_MATTER
 #include "opensprinkler_matter.h"
 #endif
@@ -59,18 +58,10 @@ static constexpr size_t BLE_DISCOVERED_MAX = 128;
 // Only on-demand discovery scans (sensor_ble_start_discovery_scan) will now be used.
 static bool bg_scan_active = false;
 static uint32_t bg_scan_restart_at = 0;
-static const uint32_t BG_SCAN_DURATION_NORMAL  = 0;     // DISABLED: 0 seconds (no background scanning)
+static const uint32_t BG_SCAN_DURATION_NORMAL  = 5;     // DISABLED: 0 seconds (no background scanning)
 static const uint32_t BG_SCAN_DURATION_CONTEND = 0;     // DISABLED: 0 seconds
-static const uint32_t BG_SCAN_RESTART_MS = UINT32_MAX;  // Never restart background scan
+static const uint32_t BG_SCAN_RESTART_MS = 20000;  // Never restart background scan
 
-/// Helper: compute adaptive background scan duration based on Zigbee state
-static uint32_t ble_get_adaptive_scan_duration() {
-    // If Zigbee is locked, use very short scan to prioritize Zigbee
-    if (coex_is_zigbee_locked()) {
-        return BG_SCAN_DURATION_CONTEND;  // 2s when Zigbee active
-    }
-    return BG_SCAN_DURATION_NORMAL;      // 5s when Zigbee idle
-}
 
 // User-requested discovery scan (active, high duty cycle)
 static bool discovery_scan_active = false;
@@ -121,7 +112,7 @@ static void ble_bg_scan_complete_cb(BLEScanResults results) {
 static void ble_discovery_scan_complete_cb(BLEScanResults results) {
     discovery_scan_active = false;
     discovery_scan_end = 0;
-    coex_release_lock(COEX_OWNER_BLE);
+    DEBUG_PRINTF("[BLE] Discovery scan complete: %d raw results\n", (int)results.getCount());
     // Background scan will auto-restart from sensor_ble_loop()
 }
 
@@ -136,7 +127,10 @@ static void ble_bg_scan_start() {
     pBLEScan->setWindow(160);         // 100ms window → 50% duty cycle
     pBLEScan->clearResults();
     
-    uint32_t scan_duration = ble_get_adaptive_scan_duration();
+    uint32_t scan_duration = BG_SCAN_DURATION_NORMAL;
+    if (scan_duration == 0) return;  // Background scanning disabled (BG_SCAN_DURATION_NORMAL=0)
+    // NOTE: duration=0 in NimBLE means INFINITE scan, NOT "no scan".
+    // Always guard with this check before calling pBLEScan->start().
     pBLEScan->start(scan_duration, ble_bg_scan_complete_cb, false);
     bg_scan_active = true;
 }
@@ -210,6 +204,9 @@ static void ble_ignore_insert(const uint8_t* mac) {
 static uint8_t  managed_ble_macs[BLE_MAX_MANAGED_MACS][6];
 static volatile int managed_ble_mac_count = 0;
 static uint32_t managed_ble_mac_refresh_at = 0;
+
+// Diagnostic: count how many times onResult() was called (any advertisement received)
+static volatile int ble_onresult_total = 0;
 
 /** Rebuild the managed-MAC cache from the sensor list (main-loop only). */
 static void ble_refresh_managed_macs() {
@@ -1265,6 +1262,7 @@ const char* ble_uuid_to_name(const char* uuid) {
  */
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
+        ble_onresult_total++;  // count every advertisement received
         // Get device address (format: "aa:bb:cc:dd:ee:ff")
         String addr_str = advertisedDevice.getAddress().toString();
         uint8_t addr_bytes[6];
@@ -1542,6 +1540,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             // DEBUG_PRINT(new_dev.name);
             // DEBUG_PRINT(" type=");
             // DEBUG_PRINTLN((int)sensor_type);
+            DEBUG_PRINTF("[BLE] New device: %s [%02X:%02X:%02X:%02X:%02X:%02X] type=%d rssi=%d\n",
+                         device_name,
+                         addr_bytes[0], addr_bytes[1], addr_bytes[2],
+                         addr_bytes[3], addr_bytes[4], addr_bytes[5],
+                         (int)sensor_type, (int)advertisedDevice.getRSSI());
         }
     }
 };
@@ -1598,8 +1601,7 @@ bool sensor_ble_init()
         ble_init_retry_at = millis() + 10000;
         return false;
     }
-
-    // DEBUG_PRINTLN("BLE initialized successfully");
+    DEBUG_PRINTLN("BLE initialized successfully");
     ble_init_failed = false;
 
     ble_semaphore_init();
@@ -1679,7 +1681,7 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
 
     bool acquired_new = false;
     if (!ble_sensor_lock_acquire(1500, &acquired_new)) {
-        // DEBUG_PRINTLN("[BLE] Scan skipped: semaphore busy");
+        DEBUG_PRINTLN("[BLE] Scan skipped: semaphore busy");
         return;
     }
 
@@ -1692,7 +1694,7 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     }
 
     if (discovery_scan_active) {
-        // DEBUG_PRINTLN("[BLE] Discovery scan already active");
+        DEBUG_PRINTLN("[BLE] Discovery scan already active");
         ble_sensor_lock_release();
         return;
     }
@@ -1716,26 +1718,19 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     // Clear ignore table so discovery scan can see all devices
     memset(ble_ignore_table, 0, sizeof(ble_ignore_table));
 
-    pBLEScan->start(actual_duration, ble_discovery_scan_complete_cb, false);
-    discovery_scan_active = true;
-    discovery_scan_end = millis() + (actual_duration * 1000);
-
-    // Request coex radio lock for the discovery scan duration
-    // If lock fails (Zigbee is active), abort discovery scan and retry later
-    if (!coex_request_lock(COEX_OWNER_BLE, actual_duration * 1000)) {
-        // DEBUG_PRINTF("[BLE] Discovery scan deferred (Zigbee active)\n");
-        if (pBLEScan && pBLEScan->isScanning()) {
-            pBLEScan->stop();
-        }
-        discovery_scan_active = false;
-        discovery_scan_end = 0;
+    bool scan_started = pBLEScan->start(actual_duration, ble_discovery_scan_complete_cb, false);
+    if (!scan_started) {
+        DEBUG_PRINTF("[BLE] pBLEScan->start() FAILED (duration=%ds, passive=%d)\n", actual_duration, (int)passive);
         ble_sensor_lock_release();
         return;
     }
+    discovery_scan_active = true;
+    discovery_scan_end = millis() + (actual_duration * 1000);
 
     ble_sensor_lock_release();
 
-    // DEBUG_PRINTF("[BLE] Discovery scan started (duration=%ds, passive=%d)\n", actual_duration, (int)passive);
+    DEBUG_PRINTF("[BLE] Discovery scan started (duration=%ds, passive=%d)\n",
+                 actual_duration, (int)passive);
 }
 
 /**
@@ -1761,11 +1756,18 @@ void sensor_ble_loop() {
         ble_refresh_managed_macs();
     }
 
-    // BACKGROUND SCANNING DISABLED: WiFi stability requires zero background BLE scan activity
-    // The background scan was causing WiFi drops due to interrupted LWIP TCP/IP operations.
-    // OnResult callbacks from advertisements will still work (passive reception), but
-    // the periodic active scans have been completely disabled.
-    // Users can still use sensor_ble_start_discovery_scan() for on-demand discovery.
+    // Safety: if bg_scan_active is stuck true but NimBLE reports no active scan
+    // (happens when WiFi.mode(WIFI_OFF) or Zigbee.begin() disrupts an infinite
+    // NimBLE scan before the completion callback fires), clear the stale flag.
+    // Without this, the periodic data-refresh scan below would never run.
+    if (bg_scan_active && pBLEScan && !pBLEScan->isScanning()) {
+        bg_scan_active = false;
+    }
+
+    // Background scan auto-restart
+    if (!discovery_scan_active && !bg_scan_active && (int32_t)(now - bg_scan_restart_at) >= 0) {
+        ble_bg_scan_start();
+    }
 
     // Safety: force-stop discovery scan if overdue
     if (discovery_scan_active && discovery_scan_end > 0 && now > discovery_scan_end + 5000) {
@@ -1775,7 +1777,6 @@ void sensor_ble_loop() {
         }
         discovery_scan_active = false;
         discovery_scan_end = 0;
-        coex_release_lock(COEX_OWNER_BLE);
     }
 
     // Process one DIS query at a time (only when not in active GATT operations)
@@ -1854,6 +1855,23 @@ void sensor_ble_loop() {
 
 bool sensor_ble_is_active() {
     return ble_initialized;
+}
+
+bool sensor_ble_is_scanning() {
+    return discovery_scan_active || bg_scan_active ||
+           (pBLEScan != nullptr && pBLEScan->isScanning());
+}
+
+int sensor_ble_discovered_count() {
+    return (int)discovered_ble_devices.size();
+}
+
+int sensor_ble_managed_count() {
+    return managed_ble_mac_count;
+}
+
+int sensor_ble_onresult_total() {
+    return ble_onresult_total;
 }
 
 /**

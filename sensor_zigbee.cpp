@@ -38,11 +38,11 @@
 
 #include "sensor_zigbee.h"
 #include "sensor_zigbee_gw.h"
+#include "sensor_zigbee_client_expose.h"
 #include "sensors.h"
 #include "OpenSprinkler.h"
 #include "opensprinkler_server.h"
 #include "ieee802154_config.h"
-#include "radio_coex.h"
 
 extern OpenSprinkler os;
 
@@ -53,7 +53,6 @@ extern OpenSprinkler os;
 #include <WiFi.h>
 #include <esp_err.h>
 extern "C" {
-#include <esp_coex_i154.h>
 }
 #include <esp_ieee802154.h>
 #include "esp_zigbee_core.h"
@@ -104,14 +103,14 @@ static unsigned long client_join_window_end = 0;
 #define TUYA_DP_TYPE_BITMAP 0x05
 // Common Tuya DP numbers for soil/environment sensors (varies by model)
 #define TUYA_DP_SOIL_MOISTURE      3
-#define TUYA_DP_SOIL_MOISTURE_ALT1 2
-#define TUYA_DP_SOIL_MOISTURE_ALT2 7
-#define TUYA_DP_SOIL_MOISTURE_ALT3 14
 #define TUYA_DP_TEMPERATURE        5
 #define TUYA_DP_TEMPERATURE_UNIT   9
+#define TUYA_DP_SOIL_MOISTURE_STATE 14  // GX04: ENUM 0=dry→20%, 1=normal→50%, 2=wet→80%
 #define TUYA_DP_BATTERY           15
+// Flag to prefer 3 over 14 for soil moisture if both are present
+#define TUYA_REPORT_FLAG_IGNORE_STATE  0x4000
 // Flag to mark Tuya reports as pre-scaled (no ZCL scaling needed)
-#define TUYA_REPORT_FLAG_PRESCALED  0x8000
+#define TUYA_REPORT_FLAG_PRESCALED     0x8000
 
 // Basic Cluster attribute IDs
 #define ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID       0x0004
@@ -502,9 +501,16 @@ static bool client_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         bool mapped = true;
         switch (dp_number) {
             case TUYA_DP_SOIL_MOISTURE:
-            case TUYA_DP_SOIL_MOISTURE_ALT1:
-            case TUYA_DP_SOIL_MOISTURE_ALT2:
-            case TUYA_DP_SOIL_MOISTURE_ALT3:
+                mapped_cluster = ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE;
+                mapped_attr = 0x0000 | TUYA_REPORT_FLAG_PRESCALED | TUYA_REPORT_FLAG_IGNORE_STATE;
+                break;
+            case TUYA_DP_SOIL_MOISTURE_STATE:
+                if (mapped_attr & TUYA_REPORT_FLAG_IGNORE_STATE) {
+                    mapped = false;
+                    break;
+                }
+                // GX04 categorical soil level: 0=dry → 20%, 1=normal → 50%, 2=wet → 80%
+                dp_value = (dp_value == 0) ? 20 : (dp_value == 1) ? 50 : 80;
                 mapped_cluster = ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE;
                 mapped_attr = 0x0000 | TUYA_REPORT_FLAG_PRESCALED;
                 break;
@@ -633,6 +639,10 @@ static void client_zigbee_start_internal() {
     Zigbee.addEndpoint(client_reportReceiver);
     client_reportReceiver->setManufacturerAndModel("OpenSprinkler", "ZigbeeReceiver");
 
+    // Create ZCL endpoints that expose OS sensor values, zone control,
+    // program control, and rain sensor state to the ZigBee hub.
+    client_expose_create_endpoints();
+
     // Optionally restrict Zigbee to a specific channel.
 #ifdef ZIGBEE_COEX_CHANNEL_MASK
     Zigbee.setPrimaryChannelMask(ZIGBEE_COEX_CHANNEL_MASK);
@@ -709,8 +719,6 @@ static void client_zigbee_loop_internal() {
     // End temporary join/scan window.
     if (client_join_window_end != 0 && millis() > client_join_window_end) {
         client_join_window_end = 0;
-        coex_release_lock(COEX_OWNER_ZIGBEE);
-        coex_set_join_mode(false);
         // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Join/scan window closed"));
     }
 
@@ -790,6 +798,11 @@ static void client_zigbee_loop_internal() {
                              // zb->name, (unsigned long long)zb->device_ieee);
             }
         }
+    }
+
+    // Update exposed ZCL endpoints (sensor values, zone states, rain sensor)
+    if (connected) {
+        client_expose_update_loop();
     }
 }
 
@@ -930,6 +943,12 @@ void sensor_zigbee_start() {
         return;
     }
     
+    // ZigBee gateway requires Ethernet — WiFi shares the 2.4GHz radio
+    if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && !useEth) {
+        DEBUG_PRINTLN(F("[ZIGBEE] Gateway mode requires Ethernet — not starting"));
+        return;
+    }
+
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
         sensor_zigbee_gw_start();
     } else if (mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
@@ -974,6 +993,11 @@ uint16_t sensor_zigbee_get_join_window_remaining() {
 bool sensor_zigbee_ensure_started() {
     IEEE802154Mode mode = ieee802154_get_mode();
 
+    // ZigBee gateway requires Ethernet
+    if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && !useEth) {
+        return false;
+    }
+
     // If Zigbee is already running, allow immediate access.
     // Otherwise, block until sensor_api_connect() has been called.
     // This prevents Zigbee from auto-starting (via sensor reads) before
@@ -1012,8 +1036,6 @@ void sensor_zigbee_open_network(uint16_t duration) {
 
         unsigned long window_ms = (unsigned long)dur * 1000UL;
         client_join_window_end = millis() + window_ms;
-        coex_request_lock(COEX_OWNER_ZIGBEE, window_ms > COEX_LOCK_MAX_JOIN_MS ? COEX_LOCK_MAX_JOIN_MS : window_ms);
-        coex_set_join_mode(true, window_ms);
         // DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Join/scan window started for %u seconds\n"), dur);
     } else {
         // DEBUG_PRINTLN(F("[ZIGBEE] open_network only available in ZIGBEE_GATEWAY mode"));
@@ -1142,9 +1164,6 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
             }
 
             // Data received — release predictive boost lock early so WiFi is restored.
-            if (coex_is_zigbee_locked()) {
-                coex_release_lock(COEX_OWNER_ZIGBEE);
-            }
 
             // Update communication mode: distinguish unsolicited reports from
             // responses to active Read Attributes requests.
@@ -1374,21 +1393,31 @@ int ZigbeeSensor::read(unsigned long time) {
     
     // Enforce mutual exclusivity: reject reads in non-Zigbee modes
     if (mode != IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && mode != IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
-        DEBUG_PRINTF(F("[ZB] Sensor #%d NOT in Zigbee mode\n"), nr);
+        if (last_read == 0 || time >= last_read + 60) {
+            DEBUG_PRINTF(F("[ZB] Sensor #%d NOT in Zigbee mode\n"), nr);
+            last_read = time;
+        }
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
     
     // CRITICAL: Do NOT use Zigbee in WiFi SOFTAP mode
     if (WiFi.getMode() == WIFI_MODE_AP) {
-        DEBUG_PRINTF(F("[ZB] Sensor #%d WiFi in AP mode - REJECTED\n"), nr);
+        if (last_read == 0 || time >= last_read + 60) {
+            DEBUG_PRINTF(F("[ZB] Sensor #%d WiFi in AP mode - REJECTED\n"), nr);
+            last_read = time;
+        }
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
     
     // Start Zigbee if not yet running
     if (!sensor_zigbee_is_active() && !sensor_zigbee_ensure_started()) {
-        DEBUG_PRINTF(F("[ZB] Sensor #%d FAILED to start Zigbee\n"), nr);
+        // Back off to avoid tight spin loop (re-check every 60s)
+        if (last_read == 0 || time >= last_read + 60) {
+            DEBUG_PRINTF(F("[ZB] Sensor #%d FAILED to start Zigbee\n"), nr);
+            last_read = time;
+        }
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
@@ -1399,9 +1428,11 @@ int ZigbeeSensor::read(unsigned long time) {
     // =========================================================================
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
         if (flags.data_ok) {
-            // Have valid report data — consume the flag so the next read cycle
-            // waits for a fresh report instead of re-using stale data.
-            flags.data_ok = false;
+            // Have valid report data — return it directly.
+            // Do NOT consume data_ok here: the sensor should keep returning the
+            // last known value until a fresh ZigBee report overwrites last_data.
+            // Consuming it would leave data_ok=false between reports, making the
+            // sensor appear to have "no data" for the entire inter-report interval.
             repeat_read = 0;
             return HTTP_RQT_SUCCESS;
         }
@@ -1446,8 +1477,9 @@ int ZigbeeSensor::read(unsigned long time) {
     // Data will be updated by zigbee_attribute_callback when the next report arrives.
     if (comm_mode == ZB_COMM_REPORT) {
         if (flags.data_ok) {
-            // Consume the flag — next read waits for fresh report.
-            flags.data_ok = false;
+            // Report-mode sensor has fresh data — return it.
+            // Keep data_ok=true so the sensor continues to serve the last known
+            // value until an updated ZigBee report arrives.
             repeat_read = 0;
             return HTTP_RQT_SUCCESS;
         }

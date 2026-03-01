@@ -216,6 +216,27 @@ void sensor_ble_loop();
 bool sensor_ble_is_active();
 
 /**
+ * @brief Returns true if a BLE scan (discovery or background) is currently running
+ */
+bool sensor_ble_is_scanning();
+
+/**
+ * @brief Returns the number of devices in the discovered BLE device list
+ */
+int sensor_ble_discovered_count();
+
+/**
+ * @brief Returns the number of configured BLE sensors (managed MACs)
+ */
+int sensor_ble_managed_count();
+
+/**
+ * @brief Returns total number of BLE advertisement packets received since boot
+ * (diagnostic — 0 means the radio has never received any BLE advertisement)
+ */
+int sensor_ble_onresult_total();
+
+/**
  * @brief Get list of discovered BLE devices
  * @param devices Array to store discovered devices
  * @param max_devices Maximum number of devices to return

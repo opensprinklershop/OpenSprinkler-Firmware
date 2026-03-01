@@ -39,6 +39,8 @@ struct ZigbeeDeviceInfo {
     bool has_responded;           // Device has responded to a query or report
     bool is_tuya;                 // True if device has sent Tuya cluster 0xEF00 frames
     uint32_t discovered_at;       // UNIX timestamp (os.now_tz()) when device was discovered during scan
+    unsigned long last_rx_at_ms;  // millis() when last APS frame received (0 = never this session)
+    uint8_t  silent_query_count;  // consecutive DP queries sent with no response (reset on any RX)
 };
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
@@ -233,14 +235,9 @@ public:
     uint8_t last_lqi = 0;             // Last reported LQI (Link Quality Indicator, 0-255)
     ZbCommMode comm_mode = ZB_COMM_UNKNOWN; // Persisted: how device communicates (report/active/unknown)
 
-    // Predictive boost: track configured report interval to schedule radio lock
     uint32_t report_interval_s = 0;       // Configured ZCL report max-interval (seconds, 0 = unknown)
     unsigned long last_report_at_ms = 0;  // millis() when last report arrived (0 = none yet)
-    unsigned long last_boost_fired_ms = 0;// millis() when coex_zigbee_boost_tick() last fired for this sensor
-                                          // Used for per-sensor backoff: if no new report arrived after the
-                                          // boost, suppress the next boost attempt for one full interval.
-    uint32_t join_anchor_ts = 0;          // UNIX timestamp of first confirmed data report (phase anchor).
-                                          // Persisted ("join_anchor"). Reset to 0 when read_interval changes.
+    uint32_t join_anchor_ts = 0;          // UNIX timestamp of first confirmed data report.
 
     /**
      * @brief Constructor

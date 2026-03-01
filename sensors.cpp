@@ -117,9 +117,9 @@
 #ifdef ESP32
 #include <fstream>
 #endif
-#include "esp_coex_i154.h"
+
 #include "esp_ieee802154.h"
-#include "radio_coex.h"
+
 
 unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const char *key,
                 bool key_in_pgm = false, uint8_t *keyfound = NULL);
@@ -255,6 +255,12 @@ boolean sensor_type_supported(int type) {
       return true;
 #endif
 
+  // ZigBee sensors require Ethernet (WiFi shares the 2.4GHz radio)
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+  if (type == SENSOR_ZIGBEE && !useEth)
+      return false;
+#endif
+
   if (type >= INDEPENDENT_SENSORS_START)
       return true;
 
@@ -387,7 +393,14 @@ void sensor_radio_early_init() {
 // Initialise dynamic coexistence manager (replaces static PTI config).
   // This MUST run AFTER Zigbee.begin() because ieee802154_mac_init()
   // inside esp_zb_start() resets all PTI values to defaults.
-  coex_init();
+  
+
+  // Apply actual Ethernet state AFTER coex_init() so the correct strategy
+  // (ZIGBEE_HIGH) is used in Ethernet mode.  coex_init() no longer resets
+  // s_ethernet, so this call is authoritative for the current boot session.
+#if defined(ESP32C5)
+  
+#endif
 
   radioEarlyInitDone = true;
   // Also mark apiConnected so Zigbee ensure_started() is unblocked
@@ -444,7 +457,7 @@ void sensor_api_connect() {
 void sensor_api_loop() {
 #if defined(ESP32C5)
   // Dynamic coexistence: periodically re-evaluate radio priorities
-  coex_loop();
+  
 #endif
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
