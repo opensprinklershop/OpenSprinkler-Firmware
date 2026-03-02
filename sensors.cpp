@@ -2277,11 +2277,55 @@ boolean sensor_isgroup(const SensorBase *sensor) {
   }
 }
 
-// Wrapper for backward compatibility - delegates to sensor type
+// Static type-to-unit-id lookup — avoids allocating a sensor object on the stack.
+// Mirrors the getUnitId() overrides in each sensor subclass.
 unsigned char getSensorUnitId(int type) {
-  // Create temporary sensor to get unit ID for type
-  GenericSensor temp(type);
-  return temp.getUnitId();
+  switch (type) {
+    // Truebner / TH100 RS485 Modbus
+    case SENSOR_SMT100_MOIS:       return UNIT_PERCENT;
+    case SENSOR_SMT100_TEMP:       return UNIT_DEGREE;
+    case SENSOR_SMT100_PMTY:       return UNIT_DK;
+    case SENSOR_TH100_MOIS:        return UNIT_HUM_PERCENT;
+    case SENSOR_TH100_TEMP:        return UNIT_DEGREE;
+    // ASB analog extension board
+    case SENSOR_ANALOG_EXTENSION_BOARD:   return UNIT_VOLT;
+    case SENSOR_ANALOG_EXTENSION_BOARD_P: return UNIT_LEVEL;
+    case SENSOR_SMT50_MOIS:        return UNIT_PERCENT;
+    case SENSOR_SMT50_TEMP:        return UNIT_DEGREE;
+    case SENSOR_SMT100_ANALOG_MOIS: return UNIT_PERCENT;
+    case SENSOR_SMT100_ANALOG_TEMP: return UNIT_DEGREE;
+    case SENSOR_VH400:             return UNIT_PERCENT;
+    case SENSOR_THERM200:          return UNIT_DEGREE;
+    case SENSOR_AQUAPLUMB:         return UNIT_PERCENT;
+    case SENSOR_USERDEF:           return UNIT_USERDEF;
+    // OSPi ADC
+    case SENSOR_OSPI_ANALOG:       return UNIT_VOLT;
+    case SENSOR_OSPI_ANALOG_P:     return UNIT_PERCENT;
+    case SENSOR_OSPI_ANALOG_SMT50_MOIS: return UNIT_PERCENT;
+    case SENSOR_OSPI_ANALOG_SMT50_TEMP: return UNIT_DEGREE;
+    // Internal / system
+    case SENSOR_INTERNAL_TEMP:     return UNIT_DEGREE;
+    case SENSOR_FREE_MEMORY:       return UNIT_USERDEF;
+    case SENSOR_FREE_STORE:        return UNIT_USERDEF;
+    // FYTA
+    case SENSOR_FYTA_MOISTURE:     return UNIT_PERCENT;
+    case SENSOR_FYTA_TEMPERATURE:  return UNIT_DEGREE;
+    // Weather
+    case SENSOR_WEATHER_TEMP_F:    return UNIT_FAHRENHEIT;
+    case SENSOR_WEATHER_TEMP_C:    return UNIT_DEGREE;
+    case SENSOR_WEATHER_HUM:       return UNIT_HUM_PERCENT;
+    case SENSOR_WEATHER_PRECIP_IN: return UNIT_INCH;
+    case SENSOR_WEATHER_PRECIP_MM: return UNIT_MM;
+    case SENSOR_WEATHER_WIND_MPH:  return UNIT_MPH;
+    case SENSOR_WEATHER_WIND_KMH:  return UNIT_KMH;
+    // Variable-unit or runtime-determined types
+    case SENSOR_MQTT:
+    case SENSOR_REMOTE:
+    case SENSOR_MODBUS_RTU:
+    case SENSOR_BLE:
+    case SENSOR_ZIGBEE:
+    default:                       return UNIT_USERDEF;
+  }
 }
 
 unsigned char getSensorUnitId(SensorBase *sensor) {

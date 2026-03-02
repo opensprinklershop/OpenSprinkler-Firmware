@@ -33,8 +33,8 @@ enum class IEEE802154Mode : uint8_t {
  * @brief Firmware boot variants (mapped to OTA slots)
  */
 enum class IEEE802154BootVariant : uint8_t {
-    MATTER = 1,  ///< OTA slot 0 (ota_0)
-    ZIGBEE = 2   ///< OTA slot 1 (ota_1)
+    ZIGBEE = 1,  ///< OTA slot 0 (ota_0)
+    MATTER = 2   ///< OTA slot 1 (ota_1)
 };
 
 #if defined(ESP32C5)
