@@ -4589,7 +4589,8 @@ static void enrich_device_info_from_sensor(ZigbeeDeviceInfo& dev) {
 	if (dev.ieee_addr == 0) return;
 	bool need_mfr = (dev.manufacturer[0] == '\0' || strcmp(dev.manufacturer, "unknown") == 0);
 	bool need_mdl = (dev.model_id[0] == '\0' || strcmp(dev.model_id, "unknown") == 0);
-	if (!need_mfr && !need_mdl) return;
+	bool need_vnd = (dev.vendor[0] == '\0');
+	if (!need_mfr && !need_mdl && !need_vnd) return;
 
 	SensorIterator it = sensors_iterate_begin();
 	SensorBase* s;
@@ -4601,6 +4602,8 @@ static void enrich_device_info_from_sensor(ZigbeeDeviceInfo& dev) {
 			strncpy(dev.manufacturer, zb->zb_manufacturer, sizeof(dev.manufacturer) - 1);
 		if (need_mdl && zb->zb_model[0] != '\0')
 			strncpy(dev.model_id, zb->zb_model, sizeof(dev.model_id) - 1);
+		if (need_vnd && zb->zb_vendor[0] != '\0')
+			strncpy(dev.vendor, zb->zb_vendor, sizeof(dev.vendor) - 1);
 		return;
 	}
 }
@@ -4687,11 +4690,12 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 			         (unsigned long long)devices[i].ieee_addr);
 			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-			                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
+			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
 			             ieee_str,
 			             devices[i].short_addr,
 			             devices[i].model_id,
 			             devices[i].manufacturer,
+			             devices[i].vendor,
 			             devices[i].endpoint,
 			             devices[i].device_id,
 			             devices[i].is_new ? 1 : 0);
@@ -4733,12 +4737,13 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		int is_online = (devices[i].last_rx_at_ms > 0) &&
 		    (millis() - devices[i].last_rx_at_ms) < 15UL * 60UL * 1000UL ? 1 : 0;
 		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-		                  "\"manufacturer\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
+		                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
 		                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D}"),
 		             ieee_str,
 		             devices[i].short_addr,
 		             devices[i].model_id,
 		             devices[i].manufacturer,
+		             devices[i].vendor,
 		             devices[i].endpoint,
 		             devices[i].device_id,
 		             devices[i].is_new ? 1 : 0,

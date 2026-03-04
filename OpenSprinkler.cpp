@@ -770,7 +770,7 @@ byte OpenSprinkler::start_ether() {
 	// with the ESP-IDF spi_bus driver used by both external flash and W5500 MAC.
 	// Use eth.begin() variant with explicit SPI host, pin numbers, and frequency.
 	delay(100);
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI)) {
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI, 10)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
 	}

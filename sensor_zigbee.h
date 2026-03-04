@@ -41,6 +41,7 @@ struct ZigbeeDeviceInfo {
     uint32_t discovered_at;       // UNIX timestamp (os.now_tz()) when device was discovered during scan
     unsigned long last_rx_at_ms;  // millis() when last APS frame received (0 = never this session)
     uint8_t  silent_query_count;  // consecutive DP queries sent with no response (reset on any RX)
+    char vendor[32];              // Human-readable vendor name from devices API (e.g. "GIEX")
 };
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
@@ -227,10 +228,12 @@ public:
     // Basic Cluster information (read from remote device on first contact)
     char zb_manufacturer[32] = {0};   // Manufacturer name (Basic Cluster attr 0x0004)
     char zb_model[32] = {0};          // Model identifier (Basic Cluster attr 0x0005)
+    char zb_vendor[32] = {0};         // Human-readable vendor name from devices API (persisted)
 
     // Runtime state
     bool device_bound = false;        // Track binding state
     bool basic_cluster_queried = false; // True after Basic Cluster info has been read
+    bool zb_vendor_pending = false;   // Schedule API vendor lookup in main loop
     uint32_t last_battery = UINT32_MAX; // UINT32_MAX = not yet measured
     uint8_t last_lqi = 0;             // Last reported LQI (Link Quality Indicator, 0-255)
     ZbCommMode comm_mode = ZB_COMM_UNKNOWN; // Persisted: how device communicates (report/active/unknown)

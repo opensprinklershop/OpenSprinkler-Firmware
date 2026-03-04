@@ -2652,6 +2652,10 @@ static void check_network() {
 		// ESP8266 / ESP32: Check WiFi or Ethernet connectivity		
 		if (useEth && (!eth.connected() || !eth.gatewayIP() || !(bool)eth.gatewayIP())) {
 			os.status.network_fails++;
+			if (os.status.network_fails >= 3) {
+				os.nvdata.reboot_cause = REBOOT_CAUSE_NETWORK_FAIL;
+				os.status.safe_reboot = 1;
+			}
 			#if defined(ESP32) && defined(ENABLE_DEBUG)
 			DEBUG_PRINTLN(F("[NET_CHECK] Ethernet connectivity lost"));
 			#endif

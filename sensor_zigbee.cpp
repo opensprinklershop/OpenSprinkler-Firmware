@@ -1059,7 +1059,106 @@ void sensor_zigbee_open_network(uint16_t duration) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Vendor API lookup — called from sensor_zigbee_loop() once per interval.
+// Queries opensprinklershop.de/zigbee/devices_api.php?firmware=1 for sensors
+// that have mfr+model but no vendor name yet.  One request per call so we do
+// not block the main loop.
+// ---------------------------------------------------------------------------
+#if defined(ESP32)
+static void sensor_zigbee_do_vendor_lookups() {
+    if (WiFi.status() != WL_CONNECTED) return;
+    static unsigned long s_last_attempt_ms = 0;
+    // Don't hammer the API — try at most once every 15 s
+    if (s_last_attempt_ms != 0 && millis() - s_last_attempt_ms < 15000UL) return;
+
+    SensorIterator it = sensors_iterate_begin();
+    SensorBase* s;
+    while ((s = sensors_iterate_next(it)) != NULL) {
+        if (!s || s->type != SENSOR_ZIGBEE) continue;
+        ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
+        if (!zb->zb_vendor_pending) continue;
+        if (!zb->zb_manufacturer[0] || !zb->zb_model[0]) {
+            zb->zb_vendor_pending = false; // nothing to look up
+            continue;
+        }
+
+        zb->zb_vendor_pending = false; // clear flag regardless of result
+        s_last_attempt_ms = millis();
+
+        // URL-encode the manufacturer and model strings (simple: replace space
+        // with %20; the values from Basic Cluster rarely contain other chars)
+        char mfr_enc[64], mdl_enc[64];
+        // Cheap percent-encoding for space and a few common chars
+        auto pct_encode = [](const char* src, char* dst, size_t dsz) {
+            size_t j = 0;
+            for (size_t i = 0; src[i] && j + 4 < dsz; i++) {
+                unsigned char c = (unsigned char)src[i];
+                if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+                    dst[j++] = (char)c;
+                } else {
+                    j += snprintf(dst + j, dsz - j, "%%%02X", c);
+                }
+            }
+            dst[j] = '\0';
+        };
+        pct_encode(zb->zb_manufacturer, mfr_enc, sizeof(mfr_enc));
+        pct_encode(zb->zb_model,        mdl_enc, sizeof(mdl_enc));
+
+        snprintf(ether_buffer, ETHER_BUFFER_SIZE - 1,
+            "GET /zigbee/devices_api.php?manufacturer=%s&model=%s&firmware=1"
+            " HTTP/1.0\r\nHost: opensprinklershop.de\r\n"
+            "User-Agent: %s\r\nConnection: close\r\n\r\n",
+            mfr_enc, mdl_enc, user_agent_string);
+
+        DEBUG_PRINTF(F("[ZB] Vendor lookup: mfr=%s model=%s\n"), zb->zb_manufacturer, zb->zb_model);
+
+        int ret = os.send_http_request("opensprinklershop.de", 443, ether_buffer, NULL, true, 8000);
+        if (ret == HTTP_RQT_SUCCESS) {
+            // Response body is in ether_buffer — find "vendor":"..."
+            const char *p = strstr(ether_buffer, "\"vendor\":");
+            if (p) {
+                p += 9;
+                while (*p == ' ' || *p == '\t') p++;
+                if (*p == '"') {
+                    p++;
+                    char vnd[32];
+                    int i = 0;
+                    while (*p && *p != '"' && i < (int)sizeof(vnd) - 1)
+                        vnd[i++] = *p++;
+                    vnd[i] = '\0';
+                    if (i > 0) {
+                        DEBUG_PRINTF(F("[ZB] Vendor found: \"%s\" for %s|%s\n"),
+                                     vnd, zb->zb_manufacturer, zb->zb_model);
+                        // Apply to all sensors sharing the same IEEE address
+                        uint64_t ieee = zb->device_ieee;
+                        SensorIterator it2 = sensors_iterate_begin();
+                        SensorBase* s2;
+                        while ((s2 = sensors_iterate_next(it2)) != NULL) {
+                            if (!s2 || s2->type != SENSOR_ZIGBEE) continue;
+                            ZigbeeSensor* zb2 = static_cast<ZigbeeSensor*>(s2);
+                            if (zb2->device_ieee != ieee) continue;
+                            strncpy(zb2->zb_vendor, vnd, sizeof(zb2->zb_vendor) - 1);
+                            zb2->zb_vendor[sizeof(zb2->zb_vendor) - 1] = '\0';
+                            zb2->zb_vendor_pending = false;
+                        }
+                        sensor_save();
+                    }
+                }
+            }
+        } else {
+            DEBUG_PRINTF(F("[ZB] Vendor lookup failed (ret=%d)\n"), ret);
+        }
+        return; // one lookup per call
+    }
+}
+#endif // ESP32
+
 void sensor_zigbee_loop() {
+#if defined(ESP32)
+    sensor_zigbee_do_vendor_lookups();
+#endif
     IEEE802154Mode mode = ieee802154_get_mode();
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
         sensor_zigbee_gw_loop();
@@ -1325,6 +1424,13 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             zb_model[sizeof(zb_model) - 1] = '\0';
         }
     }
+    if (obj.containsKey("zb_vendor")) {
+        const char *vnd = obj["zb_vendor"].as<const char*>();
+        if (vnd) {
+            strncpy(zb_vendor, vnd, sizeof(zb_vendor) - 1);
+            zb_vendor[sizeof(zb_vendor) - 1] = '\0';
+        }
+    }
     // Restore battery level (UINT32_MAX = not yet measured)
     if (obj.containsKey("battery")) {
         last_battery = obj["battery"].as<uint32_t>();
@@ -1356,6 +1462,10 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     // If we already have Basic Cluster info from config, mark as queried
     if (zb_manufacturer[0] != '\0' || zb_model[0] != '\0') {
         basic_cluster_queried = true;
+    }
+    // Schedule vendor API lookup if we have mfr+model but no vendor yet
+    if (zb_manufacturer[0] != '\0' && zb_model[0] != '\0' && zb_vendor[0] == '\0') {
+        zb_vendor_pending = true;
     }
 }
 
@@ -1393,6 +1503,9 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     }
     if (zb_model[0] != '\0') {
         obj["zb_model"] = zb_model;
+    }
+    if (zb_vendor[0] != '\0') {
+        obj["zb_vendor"] = zb_vendor;
     }
 }
 
@@ -1728,6 +1841,10 @@ void ZigbeeSensor::updateBasicClusterInfo(uint64_t ieee_addr, const char* manufa
             updated = true;
         }
         zb->basic_cluster_queried = true;
+        // If we now have mfr+model but no vendor yet, schedule an API lookup
+        if (zb->zb_manufacturer[0] != '\0' && zb->zb_model[0] != '\0' && zb->zb_vendor[0] == '\0') {
+            zb->zb_vendor_pending = true;
+        }
         
         // DEBUG_PRINTF(F("[ZIGBEE] Updated sensor '%s' Basic Cluster info: mfr=\"%s\" model=\"%s\"\n"),
                      // zb->name, zb->zb_manufacturer, zb->zb_model);
