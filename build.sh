@@ -59,7 +59,7 @@ if git submodule status | grep --quiet '^-'; then
     git submodule update --recursive --init
 else
     echo "Updating submodules."
-    git submodule update --recursive --remote
+    git submodule update --recursive
 fi
 
 if [ "$1" == "demo" ]; then
