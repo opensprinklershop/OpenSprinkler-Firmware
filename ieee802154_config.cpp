@@ -35,9 +35,9 @@ static IEEE802154BootVariant detect_running_boot_variant() {
 
     switch (running->subtype) {
         case ESP_PARTITION_SUBTYPE_APP_OTA_0:
-            return IEEE802154BootVariant::MATTER;
+            return IEEE802154BootVariant::ZIGBEE;  // ZigBee firmware lives on OTA_0
         case ESP_PARTITION_SUBTYPE_APP_OTA_1:
-            return IEEE802154BootVariant::ZIGBEE;
+            return IEEE802154BootVariant::MATTER;  // Matter firmware lives on OTA_1
         default:
             return IEEE802154BootVariant::MATTER;
     }
@@ -148,9 +148,10 @@ IEEE802154BootVariant ieee802154_get_boot_variant() {
 }
 
 bool ieee802154_select_otf_boot_variant(IEEE802154BootVariant variant) {
+    // ZigBee firmware → OTA_0, Matter firmware → OTA_1
     esp_partition_subtype_t subtype = (variant == IEEE802154BootVariant::ZIGBEE)
-        ? ESP_PARTITION_SUBTYPE_APP_OTA_1
-        : ESP_PARTITION_SUBTYPE_APP_OTA_0;
+        ? ESP_PARTITION_SUBTYPE_APP_OTA_0
+        : ESP_PARTITION_SUBTYPE_APP_OTA_1;
 
     const esp_partition_t* partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_APP,
@@ -174,9 +175,9 @@ bool ieee802154_select_otf_boot_variant(IEEE802154BootVariant variant) {
                      ieee802154_boot_variant_name(variant),
                      (int)v_err);
         if (variant == IEEE802154BootVariant::ZIGBEE) {
-            DEBUG_PRINTLN(F("[IEEE802154] Hint: flash env esp32-c5-zigbee to OTA_1 before switching mode"));
+            DEBUG_PRINTLN(F("[IEEE802154] Hint: flash env esp32-c5-zigbee to OTA_0 before switching mode"));
         } else {
-            DEBUG_PRINTLN(F("[IEEE802154] Hint: flash env esp32-c5-matter to OTA_0 before switching mode"));
+            DEBUG_PRINTLN(F("[IEEE802154] Hint: flash env esp32-c5-matter to OTA_1 before switching mode"));
         }
         return false;
     }
@@ -197,7 +198,21 @@ bool ieee802154_select_otf_boot_variant(IEEE802154BootVariant variant) {
 void ieee802154_config_init() {
     if (config_loaded) return;
     current_boot_variant = detect_running_boot_variant();
-    current_mode = ieee802154_load_mode();
+
+    if (!file_exists(IEEE802154_CONFIG_FILENAME)) {
+        // No config file on first flash: derive default mode from running OTA slot
+        // so the correct radio stack starts automatically without manual configuration.
+        if (current_boot_variant == IEEE802154BootVariant::MATTER) {
+            current_mode = IEEE802154Mode::IEEE_MATTER;
+            DEBUG_PRINTLN(F("[IEEE802154] No config file, defaulting to MATTER (OTA_1)"));
+        } else {
+            current_mode = IEEE802154Mode::IEEE_ZIGBEE_GATEWAY;
+            DEBUG_PRINTLN(F("[IEEE802154] No config file, defaulting to ZIGBEE_GATEWAY (OTA_0)"));
+        }
+    } else {
+        current_mode = ieee802154_load_mode();
+    }
+
     config_loaded = true;
     DEBUG_PRINTF("[IEEE802154] Config initialized: mode=%d (%s), running_boot=%d (%s), configured_boot=%d (%s)\n",
                  static_cast<uint8_t>(current_mode),

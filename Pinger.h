@@ -18,6 +18,11 @@
   // ESP32 Arduino provides native IPAddress class - use it directly
   // IPAddress has operator uint32_t() or can cast to it
   using std::function;
+#elif defined(ESP8266)
+  #include <Arduino.h>
+  #include <ESP8266WiFi.h>
+  #include <functional>
+  using std::function;
 #elif defined(OSPI) || defined(OSBO)
   #include <string>
   #include <functional>
@@ -122,12 +127,21 @@ public:
 // ============ Implementation ============
 
 bool Pinger::resolve_hostname(const char* hostname, uint32_t& ip_addr) {
+#if defined(ESP8266)
+  IPAddress addr;
+  if (WiFi.hostByName(hostname, addr)) {
+    ip_addr = (uint32_t)addr;
+    return true;
+  }
+  return false;
+#else
   struct hostent* host = gethostbyname(hostname);
   if (!host || host->h_length != 4) {
     return false;
   }
   memcpy(&ip_addr, host->h_addr, 4);
   return true;
+#endif
 }
 
 #if defined(ESP32)
@@ -342,10 +356,10 @@ bool Pinger::Ping(IPAddress ip, uint32_t count, uint32_t timeout_ms) {
     ping_ip_linux(ip_addr);
 #endif
     
-#if defined(ESP32)
-    delay(100);
-#else
+#if defined(OSPI) || defined(OSBO)
     usleep(100000);
+#else
+    delay(100);
 #endif
   }
   

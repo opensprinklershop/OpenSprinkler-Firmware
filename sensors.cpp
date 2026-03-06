@@ -118,7 +118,9 @@
 #include <fstream>
 #endif
 
+#ifdef ESP32
 #include "esp_ieee802154.h"
+#endif
 
 
 unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const char *key,

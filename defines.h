@@ -81,11 +81,11 @@ typedef unsigned long ulong;
 #define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
 /** Firmware version, hardware version, and maximal values */
-#define OS_FW_VERSION  233  // Firmware version: 220 means 2.2.0
+#define OS_FW_VERSION  233  // Firmware version: 233 means 2.3.3
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      184  // Firmware minor version
+#define OS_FW_MINOR      185  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -545,6 +545,21 @@ enum {
 
 	#define PIN_ETHER_CS       16 // Ethernet CS (chip select pin) is 16 on OS 3.2 and above
 	#define ETHER_SPI_CLOCK    10000000L // SPI clock for Ethernet (e.g. 10MHz)
+
+	/* To accommodate different OS30 versions, we use software defines pins */
+    extern unsigned char PIN_BUTTON_1;
+    extern unsigned char PIN_BUTTON_2;
+    extern unsigned char PIN_BUTTON_3;
+    extern unsigned char PIN_RFRX;
+    extern unsigned char PIN_RFTX;
+    extern unsigned char PIN_BOOST;
+    extern unsigned char PIN_BOOST_EN;
+    extern unsigned char PIN_LATCH_COM;
+    extern unsigned char PIN_LATCH_COMA;
+    extern unsigned char PIN_LATCH_COMK;
+    extern unsigned char PIN_SENSOR1;
+    extern unsigned char PIN_SENSOR2;
+    extern unsigned char PIN_IOEXP_INT;
 
 #else // ESP32
 #include <pins_arduino.h>

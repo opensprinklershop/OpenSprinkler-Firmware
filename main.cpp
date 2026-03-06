@@ -636,7 +636,9 @@ void do_setup() {
 	// Initialize legacy sensor API (for prog_adjust, monitors, MQTT subscriptions)
 	sensor_api_init(true);
 
-
+	#ifdef ENABLE_MATTER
+	OSMatter::instance().init();
+	#endif
 }
 
 
@@ -955,14 +957,6 @@ void do_loop()
 			os.save_wifi_ip();
 			start_server_client();
 			
-			// Im STA-Modus: Matter initialisieren (BLE wird nach Matter-Disconnect aktiviert)
-			if(os.get_wifi_mode() == WIFI_MODE_STA) {
-				#ifdef ENABLE_MATTER
-				OSMatter::instance().init();
-				#endif
-			}
-
-			// Non-Matter: init BLE + Zigbee immediately after WiFi connects
 			#if defined(ESP32C5)
 			if (!ieee802154_is_matter()) {
 				sensor_radio_early_init();

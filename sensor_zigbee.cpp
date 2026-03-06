@@ -739,6 +739,36 @@ static void client_zigbee_loop_internal() {
     if (connected != last_connected) {
         if (connected) {
             DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Connected to Zigbee network!"));
+            // On connect: immediately queue Basic Cluster queries for all paired sensors
+            // that are still missing manufacturer/model info (e.g. after reboot before
+            // the device has re-announced itself).
+            SensorIterator it_boot = sensors_iterate_begin();
+            SensorBase* sb;
+            while ((sb = sensors_iterate_next(it_boot)) != NULL) {
+                if (!sb || sb->type != SENSOR_ZIGBEE) continue;
+                ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sb);
+                if (zb->device_ieee == 0 || zb->basic_cluster_queried) continue;
+                // Already has info — just mark queried
+                if (zb->zb_manufacturer[0] != '\0' || zb->zb_model[0] != '\0') {
+                    zb->basic_cluster_queried = true;
+                    continue;
+                }
+                bool already_queued = false;
+                for (const auto& q : client_basic_query_queue) {
+                    if (q.ieee_addr == zb->device_ieee) { already_queued = true; break; }
+                }
+                if (!already_queued) {
+                    ClientBasicQueryItem item = {};
+                    item.ieee_addr = zb->device_ieee;
+                    item.short_addr = 0;
+                    item.endpoint = zb->endpoint;
+                    // Use a short delay (2s) so the stack has time to settle
+                    item.discovered_time = millis() - CLIENT_BASIC_QUERY_DELAY_MS + 2000UL;
+                    client_basic_query_queue.push_back(item);
+                    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Boot: queued Basic Cluster query for sensor '%s' (0x%016llX)\n"),
+                                 zb->name, (unsigned long long)zb->device_ieee);
+                }
+            }
         } else {
             DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Disconnected from Zigbee network"));
         }
@@ -769,7 +799,8 @@ static void client_zigbee_loop_internal() {
     }
     
     // Auto-discover: scan configured sensors for devices needing Basic Cluster query
-    static unsigned long last_basic_scan = 0;
+    // Start at millis()-25000 so first check fires ~5s after boot rather than 30s.
+    static unsigned long last_basic_scan = (unsigned long)-25000UL;
     if (connected && millis() - last_basic_scan > 30000) {  // Check every 30s
         last_basic_scan = millis();
         SensorIterator it = sensors_iterate_begin();
@@ -1707,6 +1738,41 @@ int sensor_zigbee_get_discovered_devices(ZigbeeDeviceInfo* devices, int max_devi
                     ? (int)client_discovered_devices.size() : max_devices;
         for (int i = 0; i < count; i++) {
             memcpy(&devices[i], &client_discovered_devices[i], sizeof(ZigbeeDeviceInfo));
+        }
+    }
+
+    // Supplement from saved sensors: add any paired ZigbeeSensor whose IEEE address is
+    // not already in the live list (e.g. after reboot before the device re-announces).
+    // This ensures /zd always returns known paired devices with their stored metadata.
+    if (count < max_devices) {
+        SensorIterator it = sensors_iterate_begin();
+        SensorBase* s;
+        while ((s = sensors_iterate_next(it)) != NULL && count < max_devices) {
+            if (!s || s->type != SENSOR_ZIGBEE) continue;
+            ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
+            if (zb->device_ieee == 0) continue;
+            // Check if this IEEE is already in the result list
+            bool already_present = false;
+            for (int i = 0; i < count; i++) {
+                if (devices[i].ieee_addr == zb->device_ieee) {
+                    already_present = true;
+                    break;
+                }
+            }
+            if (already_present) continue;
+            // Synthesise an entry from the saved sensor data
+            ZigbeeDeviceInfo info = {};
+            info.ieee_addr = zb->device_ieee;
+            info.short_addr = 0;
+            info.endpoint = zb->endpoint;
+            info.is_new = false;
+            if (zb->zb_manufacturer[0])
+                strncpy(info.manufacturer, zb->zb_manufacturer, sizeof(info.manufacturer) - 1);
+            if (zb->zb_model[0])
+                strncpy(info.model_id, zb->zb_model, sizeof(info.model_id) - 1);
+            if (zb->zb_vendor[0])
+                strncpy(info.vendor, zb->zb_vendor, sizeof(info.vendor) - 1);
+            devices[count++] = info;
         }
     }
 

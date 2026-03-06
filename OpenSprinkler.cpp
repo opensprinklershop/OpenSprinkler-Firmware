@@ -774,7 +774,7 @@ byte OpenSprinkler::start_ether() {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
 	}
-	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 20 MHz)"));
+	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 10 MHz)"));
 	#endif
 
 
