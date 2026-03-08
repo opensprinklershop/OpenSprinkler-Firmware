@@ -40,6 +40,7 @@
 #include "soc/lp_aon_reg.h"
 #endif
 #include "esp_wifi.h"
+#include "custom_cert.h"
 #endif
 #include "sensor_ble.h"
 
@@ -580,6 +581,7 @@ unsigned char OpenSprinkler::start_network() {
 	// platformio.ini instead. The calls below are kept for any IDF-native log_e().
 	#if defined(ESP32)
 	esp_log_level_set("NetworkClient", ESP_LOG_NONE);
+	custom_cert_init();
 	#endif
 
 	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {

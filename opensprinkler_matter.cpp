@@ -16,6 +16,7 @@
 
 #if defined(ESP32)
 #include <Matter.h>
+#include <app/server/Server.h>
 #include <new>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -443,7 +444,14 @@ void OSMatter::init() {
   
   DEBUG_PRINTLN("[Matter] Starting Matter.begin()...");
   Matter.begin();
-  delay(100);
+  
+  // Give CHIP stack time to process initialization events and set up mDNS.
+  // Multiple short yields are better than one long delay, as each yield()
+  // allows the CHIP FreeRTOS task to process queued platform events.
+  for (int i = 0; i < 5; i++) {
+    delay(100);
+    yield();
+  }
   
   #if defined(BOARD_HAS_PSRAM)
   DEBUG_PRINTF("[Matter] Post-init: Heap %d KB, PSRAM %.2f MB\n",
@@ -545,6 +553,27 @@ String OSMatter::get_qr_code_url() {
 
 String OSMatter::get_manual_pairing_code() {
   return manual_pairing_code;
+}
+
+bool OSMatter::open_commissioning_window(uint16_t timeout_seconds) {
+  if (!matter_started) {
+    DEBUG_PRINTLN("[Matter] Cannot open commissioning window: Matter not started");
+    return false;
+  }
+  chip::CommissioningWindowManager &mgr = chip::Server::GetInstance().GetCommissioningWindowManager();
+  if (mgr.IsCommissioningWindowOpen()) {
+    DEBUG_PRINTLN("[Matter] Commissioning window already open");
+    return true;
+  }
+  constexpr auto kAdv = chip::CommissioningWindowAdvertisement::kDnssdOnly;
+  CHIP_ERROR err = mgr.OpenBasicCommissioningWindow(
+      chip::System::Clock::Seconds16(timeout_seconds), kAdv);
+  if (err != CHIP_NO_ERROR) {
+    DEBUG_PRINTF("[Matter] OpenBasicCommissioningWindow failed: %s\n", err.AsString());
+    return false;
+  }
+  DEBUG_PRINTF("[Matter] Commissioning window opened (%u s)\n", timeout_seconds);
+  return true;
 }
 
 void OSMatter::station_on(unsigned char sid) {

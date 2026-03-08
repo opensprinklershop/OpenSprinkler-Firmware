@@ -39,8 +39,12 @@
 #include "osinfluxdb.h"
 #include "opensprinkler_matter.h"
 #include "ieee802154_config.h"
+#if defined(OS_ENABLE_ZIGBEE)
+#include "sensor_zigbee.h"
+#endif
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
+#include "online_update.h"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -117,6 +121,7 @@
 
 const char *user_agent_string = "OpenSprinkler/" TOSTRING(OS_FW_VERSION) "#" TOSTRING(OS_FW_MINOR);
 
+#ifdef ENABLE_DEBUG
 static const char* os_state_to_string(uint8_t state) {
 	switch(state) {
 		case OS_STATE_INITIAL: return "INITIAL";
@@ -135,6 +140,9 @@ static void debug_os_state_transition(const char* where, uint8_t from_state, uin
 		os_state_to_string(to_state), (unsigned)to_state
 	);
 }
+#else
+static inline void debug_os_state_transition(const char*, uint8_t, uint8_t) {}
+#endif
 
 void manual_start_program(unsigned char, unsigned char, unsigned char);
 void stop_program(unsigned char);
@@ -636,8 +644,17 @@ void do_setup() {
 	// Initialize legacy sensor API (for prog_adjust, monitors, MQTT subscriptions)
 	sensor_api_init(true);
 
-	#ifdef ENABLE_MATTER
-	OSMatter::instance().init();
+	#if defined(ESP32)
+	// Resume two-phase OTA if a continuation file exists from phase 1
+	online_update_resume();
+	#endif
+
+	#if defined(OS_ENABLE_ZIGBEE)
+	// In ZigBee Client mode: automatically start network search on boot
+	if (ieee802154_is_zigbee_client() && sensor_zigbee_ensure_started()) {
+		sensor_zigbee_open_network(60);
+		DEBUG_PRINTLN("[ZigBee] Auto-join started on boot (60 s)");
+	}
 	#endif
 }
 
@@ -904,6 +921,12 @@ void do_loop()
 				sensor_radio_early_init();
 			}
 			#endif
+			#ifdef ENABLE_MATTER
+			if (ieee802154_is_matter()) {
+				DEBUG_PRINTLN("[Matter] Network up (Ethernet) - initializing Matter");
+				OSMatter::instance().init();
+			}
+			#endif
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
@@ -915,6 +938,13 @@ void do_loop()
 			dns->start(53, "*", WiFi.softAPIP());
 			// WiFi AP is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
+			#ifdef ENABLE_MATTER
+			// AP mode: init Matter for BLE commissioning (mDNS not available in AP mode)
+			if (ieee802154_is_matter()) {
+				DEBUG_PRINTLN("[Matter] AP mode - initializing Matter for BLE commissioning");
+				OSMatter::instance().init();
+			}
+			#endif
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else {
@@ -944,6 +974,12 @@ void do_loop()
 		os.config_ip();
 		// WiFi AP is up — safe to route malloc back to PSRAM
 		psram_restore_after_wifi_init();
+		#ifdef ENABLE_MATTER
+		if (ieee802154_is_matter()) {
+			DEBUG_PRINTLN("[Matter] Network up (STA+AP) - initializing Matter");
+			OSMatter::instance().init();
+		}
+		#endif
 		os.state = OS_STATE_CONNECTED;
 		break;
 
@@ -960,6 +996,13 @@ void do_loop()
 			#if defined(ESP32C5)
 			if (!ieee802154_is_matter()) {
 				sensor_radio_early_init();
+			}
+			#endif
+			
+			#ifdef ENABLE_MATTER
+			if (ieee802154_is_matter()) {
+				DEBUG_PRINTLN("[Matter] WiFi connected - initializing Matter");
+				OSMatter::instance().init();
 			}
 			#endif
 			

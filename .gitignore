@@ -15,6 +15,7 @@ influx.json
 !build.sh
 !startOpenSprinkler.sh
 !updater.sh
+!fw.sh
 DEADJOE
 build
 *.bak
@@ -22,3 +23,4 @@ node_modules
 *.json
 !package.json
 .DS_Store
+matter_mfg/

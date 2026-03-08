@@ -345,7 +345,9 @@ bool Pinger::Ping(IPAddress ip, uint32_t count, uint32_t timeout_ms) {
   response.EchoMessageSize = 64;
   
   // Convert IPAddress to uint32_t using operator cast
+#if defined(ESP32) || defined(OSPI) || defined(OSBO)
   uint32_t ip_addr = (uint32_t)ip;
+#endif
   
   // Perform pings
   for (uint32_t i = 0; i < count; i++) {

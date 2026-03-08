@@ -55,9 +55,11 @@
 #endif
 
 #include "ieee802154_config.h"
+#include "online_update.h"
 
 #if defined(ESP32) && defined(USE_OTF)
 #include "cert.h"  // for /ca.der cert download endpoint
+#include "custom_cert.h"  // for custom certificate management endpoints
 #endif
 #if defined(ESP32) && defined(ENABLE_MATTER)
 #include "opensprinkler_matter.h"
@@ -472,13 +474,15 @@ static String scanned_ssids;
 // iOS: navigate to http://<device-ip>/ca.der in Safari, then install via Settings.
 // Android: install via Settings → Security → Install from storage.
 void on_serve_cert(OTF_PARAMS_DEF) {
+	const unsigned char* cert_data = custom_cert_get_cert_data();
+	uint16_t cert_len = custom_cert_get_cert_len();
 	res.writeStatus(200, F("OK"));
 	res.writeHeader(F("Content-Type"), F("application/x-x509-ca-cert"));
-	res.writeHeader(F("Content-Length"), (int)opensprinkler_crt_DER_len);
+	res.writeHeader(F("Content-Length"), (int)cert_len);
 	res.writeHeader(F("Content-Disposition"), F("attachment; filename=\"opensprinkler.cer\""));
 	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
 	res.writeHeader(F("Cache-Control"), F("max-age=86400"));
-	res.writeBodyData((const char*)opensprinkler_crt_DER, opensprinkler_crt_DER_len);
+	res.writeBodyData((const char*)cert_data, cert_len);
 }
 #endif
 
@@ -2547,8 +2551,285 @@ void server_json_matter(OTF_PARAMS_DEF) {
 }
 #endif
 
+#if defined(ESP32) && defined(ENABLE_MATTER)
+/** Open Matter commissioning window to allow a new controller to pair.
+ * GET /mm?pw=xxx[&t=300]
+ *   t  – window timeout in seconds (default 300)
+ * Response: {"result":1} on success, {"result":0} on failure.
+ */
+void server_matter_commission(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	uint16_t timeout = 300;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("t"), true)) {
+		int v = atoi(tmp_buffer);
+		if (v > 0 && v <= 900) timeout = (uint16_t)v;
+	}
+
+	bool ok = OSMatter::instance().open_commissioning_window(timeout);
+	bfill.emit_p(PSTR("{\"result\":$D}"), ok ? 1 : 0);
+	handle_return(HTML_OK);
+}
+#endif
+
+#if defined(ESP32)
+/** Emit a string into bfill with JSON escaping (newlines, quotes, backslashes, control chars). */
+static void bfill_emit_json_escaped(const char* s) {
+	if (!s) return;
+	while (*s) {
+		char c = *s++;
+		switch (c) {
+			case '"':  bfill.append("\\\"", 2); break;
+			case '\\': bfill.append("\\\\", 2); break;
+			case '\n': bfill.append("\\n", 2); break;
+			case '\r': bfill.append("\\r", 2); break;
+			case '\t': bfill.append("\\t", 2); break;
+			default:
+				if ((unsigned char)c < 0x20) break;
+				bfill.append(&c, 1);
+				break;
+		}
+	}
+}
+
+/** Check for online firmware update.
+ * GET /uc?pw=xxx
+ * Response: {"status":N,"fw_version":V,"fw_minor":M,"cur_version":CV,"cur_minor":CM,"changelog":"...","available":0|1}
+ */
+void server_update_check(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	if (online_update_in_progress()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"message\":\"Update in progress\"}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	OnlineUpdateManifest manifest;
+	bool newer = online_update_check(manifest);
+
+	if (manifest.valid) {
+		online_update_cache_manifest(manifest);
+	}
+
+	bfill.emit_p(PSTR("{\"status\":$D,\"fw_version\":$D,\"fw_minor\":$D,\"cur_version\":$D,\"cur_minor\":$D,\"versions_url\":\"" OTA_UPDATE_BASE_URL "/versions.json\",\"changelog\":\""),
+		(int)online_update_get_state().status,
+		manifest.valid ? manifest.fw_version : 0,
+		manifest.valid ? manifest.fw_minor : 0,
+		(int)OS_FW_VERSION,
+		(int)OS_FW_MINOR);
+	if (manifest.valid) bfill_emit_json_escaped(manifest.changelog);
+	bfill.emit_p(PSTR("\",\"available\":$D}"), newer ? 1 : 0);
+	handle_return(HTML_OK);
+}
+
+/** Start online firmware update (downloads & flashes both partitions).
+ * GET /uu?pw=xxx[&zu=<zigbee_url>&mu=<matter_url>]
+ * Optional zu/mu params override the URLs from the cached manifest,
+ * enabling reinstall of the current version or downgrade to an older one.
+ * Response: {"result":1} on success, {"result":0} if already running.
+ */
+void server_update_upgrade(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	if (online_update_in_progress()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"message\":\"Update already in progress\"}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	// Optional URL override: zu=zigbee_url, mu=matter_url
+	// When provided, build a synthetic manifest and cache it so the OTA task
+	// fetches the caller-specified binaries instead of the latest manifest.
+	char zu_buf[200] = {0};
+	char mu_buf[200] = {0};
+	bool has_zu = findKeyVal(FKV_SOURCE, zu_buf, sizeof(zu_buf), PSTR("zu"), true) && zu_buf[0];
+	bool has_mu = findKeyVal(FKV_SOURCE, mu_buf, sizeof(mu_buf), PSTR("mu"), true) && mu_buf[0];
+	if (has_zu || has_mu) {
+		OnlineUpdateManifest override_manifest = {};
+		strncpy(override_manifest.zigbee_url, has_zu ? zu_buf : "", sizeof(override_manifest.zigbee_url) - 1);
+		strncpy(override_manifest.matter_url,  has_mu ? mu_buf : "", sizeof(override_manifest.matter_url)  - 1);
+		override_manifest.fw_version = 0;  // not checked by the task
+		override_manifest.fw_minor   = 0;
+		override_manifest.valid      = (override_manifest.zigbee_url[0] != 0);
+		online_update_cache_manifest(override_manifest);
+	}
+
+	online_update_start();
+	bfill.emit_p(PSTR("{\"result\":1}"));
+	handle_return(HTML_OK);
+}
+
+/** Get online update status (for progress polling).
+ * GET /us?pw=xxx
+ * Response: {"status":N,"progress":P,"message":"..."}
+ */
+void server_update_status(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	OnlineUpdateState st = online_update_get_state();
+	bfill.emit_p(PSTR("{\"status\":$D,\"progress\":$D,\"message\":\""),
+		(int)st.status, (int)st.progress);
+	bfill_emit_json_escaped(st.message);
+	bfill.emit_p(PSTR("\"}"));
+	handle_return(HTML_OK);
+}
+
+/** Get HTTPS certificate info.
+ * GET /tg?pw=xxx
+ * Response: {"type":"internal"|"custom","subject":"...","issuer":"...","not_before":"...","not_after":"..."}
+ */
+void server_cert_get(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	CertInfo info = custom_cert_get_info();
+	bfill.emit_p(PSTR("{\"type\":\"$S\",\"subject\":\""),
+		info.is_custom ? "custom" : "internal");
+	if (info.valid) bfill.emit_p(info.subject);
+	bfill.emit_p(PSTR("\",\"issuer\":\""));
+	if (info.valid) bfill.emit_p(info.issuer);
+	bfill.emit_p(PSTR("\",\"not_before\":\""));
+	if (info.valid) bfill.emit_p(info.not_before);
+	bfill.emit_p(PSTR("\",\"not_after\":\""));
+	if (info.valid) bfill.emit_p(info.not_after);
+	bfill.emit_p(PSTR("\"}"));
+	handle_return(HTML_OK);
+}
+
+/** Upload custom HTTPS certificate and key (PEM format).
+ * GET /tl?pw=xxx&cert=<url-encoded-pem>&key=<url-encoded-pem>
+ * Response: {"result":1} on success, {"result":0,"error":"..."} on failure.
+ * Requires device reboot to take effect.
+ */
+void server_cert_upload(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	char *cert_pem = req.getQueryParameter("cert");
+	char *key_pem = req.getQueryParameter("key");
+
+	if (!cert_pem || !key_pem || strlen(cert_pem) < 50 || strlen(key_pem) < 50) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"Missing or too short cert/key parameters\"}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	char error_buf[128] = {0};
+	bool ok = custom_cert_upload(cert_pem, key_pem, error_buf, sizeof(error_buf));
+
+	if (ok) {
+		bfill.emit_p(PSTR("{\"result\":1}"));
+	} else {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\""));
+		bfill.emit_p(error_buf);
+		bfill.emit_p(PSTR("\"}"));
+	}
+	handle_return(HTML_OK);
+}
+
+/** Delete custom HTTPS certificate, reverting to internal cert.
+ * GET /td?pw=xxx
+ * Response: {"result":1}
+ * Requires device reboot to take effect.
+ */
+void server_cert_delete(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	custom_cert_delete();
+	bfill.emit_p(PSTR("{\"result\":1}"));
+	handle_return(HTML_OK);
+}
+
+/** Get OTA backup data as JSON (for app-side storage before firmware update).
+ * GET /ub?pw=xxx
+ * Response: JSON with all config data that should be backed up before OTA.
+ */
+void server_backup_get(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	// Return the controller configuration similar to /ja but as a backup blob
+	// The app will store this in localStorage
+	bfill.emit_p(PSTR("{\"backup\":1"));
+
+	// Include options (iopts)
+	bfill.emit_p(PSTR(",\"iopts\":["));
+	for (int i = 0; i < NUM_IOPTS; i++) {
+		if (i > 0) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("$D"), (int)os.iopts[i]);
+	}
+	bfill.emit_p(PSTR("]"));
+
+	// Include string options (sopts) — important ones: WiFi SSID, password, hostname
+	bfill.emit_p(PSTR(",\"sopts\":{"));
+	bool first = true;
+	for (int i = 0; i < NUM_SOPTS; i++) {
+		char buf[MAX_SOPTS_SIZE + 1];
+		file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+		buf[MAX_SOPTS_SIZE] = 0;
+		if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {  // Always include WiFi-related options
+			if (!first) bfill.emit_p(PSTR(","));
+			bfill.emit_p(PSTR("\"$D\":\""), i);
+			bfill_emit_json_escaped(buf);
+			bfill.emit_p(PSTR("\""));
+			first = false;
+		}
+	}
+	bfill.emit_p(PSTR("}"));
+
+	// Close backup JSON
+	bfill.emit_p(PSTR("}"));
+	handle_return(HTML_OK);
+}
+#endif // ESP32
+
 /*
-// fill ESP8266 flash with some dummy files
 void server_fill_files(OTF_PARAMS_DEF) {
 	memset(ether_buffer, 65, 75);
 	ether_buffer[75] = 0;
@@ -4991,6 +5272,16 @@ const char _url_keys[] PROGMEM =
 #endif
 #if defined(ESP32) && defined(ENABLE_MATTER)
 	"jm"  // Matter: get pairing information
+	"mm"  // Matter: open commissioning window
+#endif
+#if defined(ESP32)
+	"uc"  // Online update: check for update
+	"uu"  // Online update: start update
+	"us"  // Online update: get status
+	"tg"  // TLS cert: get certificate info
+	"tl"  // TLS cert: upload custom cert+key (PEM)
+	"td"  // TLS cert: delete custom cert
+	"ub"  // OTA backup: get config backup JSON
 #endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	"fy"
@@ -5064,6 +5355,16 @@ URLHandler urls[] = {
 #endif
 #if defined(ESP32) && defined(ENABLE_MATTER)
 	server_json_matter, // jm
+	server_matter_commission, // mm
+#endif
+#if defined(ESP32)
+	server_update_check, // uc
+	server_update_upgrade, // uu
+	server_update_status, // us
+	server_cert_get, // tg
+	server_cert_upload, // tl
+	server_cert_delete, // td
+	server_backup_get, // ub
 #endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	server_fyta_query_plants, // fy

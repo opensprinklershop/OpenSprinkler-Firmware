@@ -60,7 +60,7 @@ This file helps AI coding agents get productive quickly in this repository. It f
 ## Debug / Test Environment 🔧
 
 ### Device Connection
-- **Device IP**: `192.168.0.86`
+- **Device IP**: `192.168.0.151`
 - **Admin Password**: Required for API access (MD5 hash needed)
 
 ### Computing the Admin Password Hash

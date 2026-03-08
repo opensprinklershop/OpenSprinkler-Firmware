@@ -24,6 +24,9 @@ public:
   // Get Matter pairing information
   String get_qr_code_url();
   String get_manual_pairing_code();
+
+  // Open commissioning window (re-registration)
+  bool open_commissioning_window(uint16_t timeout_seconds = 300);
   
   // Internal callbacks
   void station_on(unsigned char sid);
