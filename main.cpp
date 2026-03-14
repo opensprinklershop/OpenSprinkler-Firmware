@@ -184,6 +184,14 @@ uint32_t reboot_timer = 0;
 unsigned char curr_alert_sid = 0;
 uint32_t ping_ok = 0;
 
+// Flow anomaly detection state
+static ulong noflow_check_time = 0;       // millis timestamp when to check for no-flow
+static ulong noflow_flow_snapshot = 0;     // flow_count baseline at station start
+static int16_t noflow_check_sid = -1;      // station being monitored for no-flow
+static ulong pipeburst_check_time = 0;    // millis timestamp when to check for pipe burst
+static ulong pipeburst_flow_snapshot = 0; // flow_count baseline when all stations off
+#define FLOW_ANOMALY_DELAY_MS 10000       // 10 seconds delay for both checks
+
 void flow_poll() {
 	ulong curr = millis();
 
@@ -591,6 +599,7 @@ void do_setup() {
 
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
+	os.mwdata_load();    // Load monthly water usage data
 
 	#if defined(ESP8266)
 	// Restore password/WiFi settings after OTA reboot if a restore marker exists.
@@ -688,6 +697,7 @@ void do_setup() {
 	initialiseEpoch();   // initialize time reference for millis() and micros()
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
+	os.mwdata_load();    // Load monthly water usage data
 
 	pd.init();           // ProgramData init
 
@@ -1227,6 +1237,25 @@ void do_loop()
 			if(pd.nprograms > 1)	manual_start_program(2, 0, QUEUE_OPTION_INSERT_FRONT);
 		}
 
+		// ====== Flow anomaly detection checks ======
+		if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_FLOW) {
+			ulong now_ms = millis();
+			// No-flow check: a standard station is on but no flow detected after delay
+			if (noflow_check_time && now_ms >= noflow_check_time) {
+				if (flow_count == noflow_flow_snapshot && noflow_check_sid >= 0 && os.is_running(noflow_check_sid)) {
+					notif.add(NOTIFY_NOFLOW, noflow_check_sid);
+				}
+				noflow_check_time = 0; // one-shot: only alert once per station start
+			}
+			// Pipe burst check: no station running but flow sensor still counting
+			if (pipeburst_check_time && now_ms >= pipeburst_check_time) {
+				if (flow_count != pipeburst_flow_snapshot) {
+					notif.add(NOTIFY_PIPE_BURST, (int32_t)(flow_count - pipeburst_flow_snapshot));
+				}
+				pipeburst_check_time = 0; // one-shot: only alert once per all-off event
+			}
+		}
+
 		// ====== Schedule program data ======
 		ulong curr_minute = curr_time / 60;
 		boolean match_found = false;
@@ -1237,6 +1266,19 @@ void do_loop()
 			last_minute = curr_minute;
 
 			apply_monthly_adjustment(curr_time); // check and apply monthly adjustment here, if it's selected
+
+			// ====== Check monthly water report ======
+			{
+				uint16_t prev_ym = os.mwdata.curr_ym;
+				os.mwdata_check_month(curr_time);
+				// if month changed and we had a valid previous month, send notification
+				if(prev_ym != 0 && prev_ym != os.mwdata.curr_ym && os.mwdata.nrecords > 0) {
+					MonthlyWaterEntry &last = os.mwdata.records[os.mwdata.nrecords - 1];
+					uint32_t flowrate100 = ((uint32_t)os.iopts[IOPT_PULSE_RATE_1] << 8) + os.iopts[IOPT_PULSE_RATE_0];
+					float volume = last.flow_count * flowrate100 / 100.f;
+					notif.add(NOTIFY_MONTHLY_REPORT, last.flow_count, volume);
+				}
+			}
 
 			// check through all programs
 			for(pid=0; pid<pd.nprograms; pid++) {
@@ -1439,8 +1481,17 @@ void do_loop()
 				// log flow sensor reading if flow sensor is used
 				if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
 					write_log(LOGDATA_FLOWSENSE, curr_time);
-					notif.add(NOTIFY_FLOWSENSOR, (flow_count>os.flowcount_log_start)?(flow_count-os.flowcount_log_start):0);
+					uint32_t flow_delta = (flow_count>os.flowcount_log_start)?(flow_count-os.flowcount_log_start):0;
+					notif.add(NOTIFY_FLOWSENSOR, flow_delta);
+					os.mwdata_add_flow(flow_delta); // accumulate into monthly water counter
+
+					// Pipe burst detection: start monitoring for unexpected flow after all stations off
+					pipeburst_check_time = millis() + FLOW_ANOMALY_DELAY_MS;
+					pipeburst_flow_snapshot = flow_count;
 				}
+				// Cancel no-flow check since no station is running
+				noflow_check_time = 0;
+				noflow_check_sid = -1;
 
 				// in case some options have changed while executing the program
 				os.status.mas = os.iopts[IOPT_MASTER_STATION]; // update master station
@@ -1693,6 +1744,15 @@ void turn_on_station(unsigned char sid, ulong duration) {
 		OSMatter::instance().update_station(sid, true);
 #endif
 	}
+
+	// No-flow detection: start monitoring if this is a standard station and flow sensor is enabled
+	if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_FLOW && os.get_station_type(sid) == STN_TYPE_STANDARD) {
+		noflow_check_time = millis() + FLOW_ANOMALY_DELAY_MS;
+		noflow_flow_snapshot = flow_count;
+		noflow_check_sid = sid;
+	}
+	// Cancel pipe burst check since a station is now running
+	pipeburst_check_time = 0;
 }
 
 // after removing element q, update remaining stations in its group

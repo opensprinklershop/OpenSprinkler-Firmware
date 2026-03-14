@@ -215,6 +215,7 @@ static bool ads1115_scratch_test(int addr) {
 // SC16IS752 Scratch-Test über das SPR-Register (0x07) mit dem SC16IS752-typischen
 // Befehlsbyte-Format (reg << 3). Wird als Negativ-Test genutzt: Schlägt er fehl,
 // ist kein SC16IS752 auf der Adresse – was für einen ADS1115 spricht.
+#if defined(ESP32)
 static bool sc16is752_scratch_test_at(int addr) {
   const uint8_t TEST_VAL = 0xA5;
   Wire.beginTransmission(addr);
@@ -229,13 +230,20 @@ static bool sc16is752_scratch_test_at(int addr) {
   if (!Wire.available()) return false;
   return (Wire.read() == TEST_VAL);
 }
+#endif
 
 // Prüft, ob auf addr ein ADS1115 sitzt:
 // Primär: positiver ADS1115-Scratch-Test.
 // Fallback: negativer SC16IS752-Scratch-Test (kein SC16IS752 → kein Fehlalarm).
 static bool is_ads1115(int addr) {
   if (ads1115_scratch_test(addr)) return true;
+#if defined(ESP8266)
+  // On ESP8266, the negative SC16 scratch probe can alias on some ADS1115 clones.
+  // Fall back to simple ACK detection to avoid false negatives.
+  return detect_i2c(addr);
+#else
   return !sc16is752_scratch_test_at(addr);
+#endif
 }
 #endif  // defined(ESP8266) || defined(ESP32)
 
@@ -2822,7 +2830,7 @@ void stop_monitor_action(Monitor_t * mon) {
 }
 
 void push_message(Monitor_t * mon, float value, int monidx) {
-  uint16_t type; 
+  uint32_t type; 
   switch(mon->prio) {
     case 0: type = NOTIFY_MONITOR_LOW; break;
     case 1: type = NOTIFY_MONITOR_MID; break;

@@ -171,6 +171,20 @@ static void ble_bg_scan_stop() {
 // Discovered devices storage
 static std::vector<BLEDeviceInfo> discovered_ble_devices;
 
+// Mutex protecting discovered_ble_devices from concurrent access.
+// The NimBLE host task modifies the vector via onResult callback,
+// while the main task reads it via sensor_ble_loop / HTTP handlers.
+static SemaphoreHandle_t discovered_devices_mutex = nullptr;
+
+static inline bool discovered_devices_lock(uint32_t timeout_ms = 100) {
+    if (!discovered_devices_mutex) return false;
+    return xSemaphoreTake(discovered_devices_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+static inline void discovered_devices_unlock() {
+    if (discovered_devices_mutex) xSemaphoreGive(discovered_devices_mutex);
+}
+
 // ============================================================================
 // Ignored BLE MAC hash set — lives in PSRAM, suppresses repeated log output
 // for unmanaged devices that are seen during background scan.
@@ -1467,6 +1481,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         }
         
         // Check if device already exists in list
+        if (!discovered_devices_lock(50)) return; // skip if vector is busy
         bool already_exists = false;
         BLEDeviceInfo* existing_device = nullptr;
         for (auto& dev : discovered_ble_devices) {
@@ -1480,6 +1495,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         // Filter: outside discovery scan, only accept managed (configured) devices
         if (!already_exists && !discovery_scan_active) {
             if (!ble_is_managed_mac(addr_bytes)) {
+                discovered_devices_unlock();
                 ble_ignore_insert(addr_bytes); // suppress future log output
                 return; // not a configured sensor – ignore during background scan
             }
@@ -1570,6 +1586,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                          addr_bytes[3], addr_bytes[4], addr_bytes[5],
                          (int)sensor_type, (int)advertisedDevice.getRSSI());
         }
+        discovered_devices_unlock();
     }
 };
 
@@ -1596,6 +1613,9 @@ bool sensor_ble_init()
 
     if (ble_initialized) {
         ble_semaphore_init();
+        if (!discovered_devices_mutex) {
+            discovered_devices_mutex = xSemaphoreCreateMutex();
+        }
         if (!pBLEScan) {
             pBLEScan = BLEDevice::getScan();
             // DEBUG_PRINTLN("[BLE] Reusing existing NimBLE stack - attaching scan callbacks");
@@ -1812,15 +1832,18 @@ void sensor_ble_loop() {
             ble_dis_query_queue.erase(ble_dis_query_queue.begin());
 
             bool needs_query = false;
-            for (auto& dev : discovered_ble_devices) {
-                char mac_str[18];
-                snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         dev.address[0], dev.address[1], dev.address[2],
-                         dev.address[3], dev.address[4], dev.address[5]);
-                if (strcasecmp(mac_str, item.mac) == 0 && !dev.dis_queried) {
-                    needs_query = true;
-                    break;
+            if (discovered_devices_lock(200)) {
+                for (auto& dev : discovered_ble_devices) {
+                    char mac_str[18];
+                    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                             dev.address[0], dev.address[1], dev.address[2],
+                             dev.address[3], dev.address[4], dev.address[5]);
+                    if (strcasecmp(mac_str, item.mac) == 0 && !dev.dis_queried) {
+                        needs_query = true;
+                        break;
+                    }
                 }
+                discovered_devices_unlock();
             }
 
             if (needs_query) {
@@ -1831,19 +1854,22 @@ void sensor_ble_loop() {
                 char model[32] = {0};
                 bool success = ble_read_device_info_service(item.mac, manufacturer, model);
 
-                for (auto& dev : discovered_ble_devices) {
-                    char mac_str[18];
-                    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                             dev.address[0], dev.address[1], dev.address[2],
-                             dev.address[3], dev.address[4], dev.address[5]);
-                    if (strcasecmp(mac_str, item.mac) == 0) {
-                        dev.dis_queried = true;
-                        if (success) {
-                            strncpy(dev.manufacturer, manufacturer, sizeof(dev.manufacturer) - 1);
-                            strncpy(dev.model, model, sizeof(dev.model) - 1);
+                if (discovered_devices_lock(200)) {
+                    for (auto& dev : discovered_ble_devices) {
+                        char mac_str[18];
+                        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                                 dev.address[0], dev.address[1], dev.address[2],
+                                 dev.address[3], dev.address[4], dev.address[5]);
+                        if (strcasecmp(mac_str, item.mac) == 0) {
+                            dev.dis_queried = true;
+                            if (success) {
+                                strncpy(dev.manufacturer, manufacturer, sizeof(dev.manufacturer) - 1);
+                                strncpy(dev.model, model, sizeof(dev.model) - 1);
+                            }
+                            break;
                         }
-                        break;
                     }
+                    discovered_devices_unlock();
                 }
 
                 if (success && (manufacturer[0] || model[0])) {
@@ -1858,25 +1884,31 @@ void sensor_ble_loop() {
 
     // Push new advertisement data to all matching BLE sensors.
     // This runs on the main task, safe to access sensor objects.
-    for (auto& dev : discovered_ble_devices) {
-        if (dev.adv_data_pending_push && dev.has_adv_data) {
-            dev.adv_data_pending_push = false;
-            char mac_str[18];
-            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     dev.address[0], dev.address[1], dev.address[2],
-                     dev.address[3], dev.address[4], dev.address[5]);
-            BLESensor::pushAdvData(mac_str, &dev);
+    if (discovered_devices_lock(100)) {
+        for (auto& dev : discovered_ble_devices) {
+            if (dev.adv_data_pending_push && dev.has_adv_data) {
+                dev.adv_data_pending_push = false;
+                char mac_str[18];
+                snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         dev.address[0], dev.address[1], dev.address[2],
+                         dev.address[3], dev.address[4], dev.address[5]);
+                BLESensor::pushAdvData(mac_str, &dev);
+            }
         }
+        discovered_devices_unlock();
     }
 
     // Remove stale devices (not seen in 5 minutes)
-    discovered_ble_devices.erase(
-        std::remove_if(discovered_ble_devices.begin(), discovered_ble_devices.end(),
-            [now](const BLEDeviceInfo& dev) {
-                return (now - dev.last_seen > 300000);
-            }),
-        discovered_ble_devices.end()
-    );
+    if (discovered_devices_lock(100)) {
+        discovered_ble_devices.erase(
+            std::remove_if(discovered_ble_devices.begin(), discovered_ble_devices.end(),
+                [now](const BLEDeviceInfo& dev) {
+                    return (now - dev.last_seen > 300000);
+                }),
+            discovered_ble_devices.end()
+        );
+        discovered_devices_unlock();
+    }
 }
 
 bool sensor_ble_is_active() {
@@ -1889,7 +1921,10 @@ bool sensor_ble_is_scanning() {
 }
 
 int sensor_ble_discovered_count() {
-    return (int)discovered_ble_devices.size();
+    if (!discovered_devices_lock(50)) return 0;
+    int count = (int)discovered_ble_devices.size();
+    discovered_devices_unlock();
+    return count;
 }
 
 int sensor_ble_managed_count() {
@@ -1906,10 +1941,12 @@ int sensor_ble_onresult_total() {
 int sensor_ble_get_discovered_devices(BLEDeviceInfo* devices, int max_devices) {
     if (!devices || max_devices <= 0) return 0;
 
+    if (!discovered_devices_lock(200)) return 0;
     int count = (discovered_ble_devices.size() < (size_t)max_devices) ? discovered_ble_devices.size() : max_devices;
     for (int i = 0; i < count; i++) {
         memcpy(&devices[i], &discovered_ble_devices[i], sizeof(BLEDeviceInfo));
     }
+    discovered_devices_unlock();
     return count;
 }
 
@@ -1917,30 +1954,36 @@ int sensor_ble_get_discovered_devices(BLEDeviceInfo* devices, int max_devices) {
  * @brief Clear new device flags
  */
 void sensor_ble_clear_new_device_flags() {
+    if (!discovered_devices_lock(200)) return;
     for (auto& dev : discovered_ble_devices) {
         dev.is_new = false;
     }
+    discovered_devices_unlock();
 }
 
 /**
- * @brief Find a cached device by MAC address
+ * @brief Find a cached device by MAC address (thread-safe copy)
  */
-const BLEDeviceInfo* sensor_ble_find_device(const char* mac_address) {
-    if (!mac_address || !mac_address[0]) return nullptr;
+bool sensor_ble_find_device(const char* mac_address, BLEDeviceInfo* out_device) {
+    if (!mac_address || !mac_address[0] || !out_device) return false;
     
     uint8_t addr_bytes[6];
     if (sscanf(mac_address, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                &addr_bytes[0], &addr_bytes[1], &addr_bytes[2],
                &addr_bytes[3], &addr_bytes[4], &addr_bytes[5]) != 6) {
-        return nullptr;
+        return false;
     }
     
+    if (!discovered_devices_lock(200)) return false;
     for (const auto& dev : discovered_ble_devices) {
         if (memcmp(dev.address, addr_bytes, 6) == 0) {
-            return &dev;
+            memcpy(out_device, &dev, sizeof(BLEDeviceInfo));
+            discovered_devices_unlock();
+            return true;
         }
     }
-    return nullptr;
+    discovered_devices_unlock();
+    return false;
 }
 
 /**
@@ -2122,8 +2165,9 @@ int BLESensor::read(unsigned long time) {
         characteristic_uuid[0] = 0;
     }
 
-    // Check device cache
-    const BLEDeviceInfo* cached_dev = sensor_ble_find_device(mac_address);
+    // Check device cache (thread-safe copy)
+    BLEDeviceInfo cached_dev_buf;
+    const BLEDeviceInfo* cached_dev = sensor_ble_find_device(mac_address, &cached_dev_buf) ? &cached_dev_buf : nullptr;
     bool is_adv_sensor = cached_dev && sensor_ble_is_adv_sensor(cached_dev);
     bool is_bms = cached_dev && sensor_ble_is_bms_type(cached_dev->sensor_type);
 
@@ -2249,17 +2293,20 @@ int BLESensor::read(unsigned long time) {
                      voltage, current, soc, temperature, cycles);
 
         // Update device cache
-        for (auto& dev : discovered_ble_devices) {
-            if (memcmp(dev.address, cached_dev->address, 6) == 0) {
-                dev.bms_voltage = voltage;
-                dev.bms_current = current;
-                dev.bms_soc = soc;
-                dev.bms_temperature = temperature;
-                dev.bms_cycles = cycles;
-                dev.has_bms_data = true;
-                dev.last_seen = millis();
-                break;
+        if (discovered_devices_lock(200)) {
+            for (auto& dev : discovered_ble_devices) {
+                if (memcmp(dev.address, cached_dev->address, 6) == 0) {
+                    dev.bms_voltage = voltage;
+                    dev.bms_current = current;
+                    dev.bms_soc = soc;
+                    dev.bms_temperature = temperature;
+                    dev.bms_cycles = cycles;
+                    dev.has_bms_data = true;
+                    dev.last_seen = millis();
+                    break;
+                }
             }
+            discovered_devices_unlock();
         }
 
         last_battery = soc;
@@ -2400,6 +2447,9 @@ bool sensor_ble_reinit_after_matter() {
     }
 
     ble_semaphore_init();
+    if (!discovered_devices_mutex) {
+        discovered_devices_mutex = xSemaphoreCreateMutex();
+    }
 
     pBLEScan = BLEDevice::getScan();
     if (pBLEScan) {

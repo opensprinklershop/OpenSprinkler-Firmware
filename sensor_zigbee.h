@@ -336,6 +336,15 @@ public:
      * @note Also calls sensor_save() if any sensor was updated
      */
     static void updateBasicClusterInfo(uint64_t ieee_addr, const char* manufacturer, const char* model);
+
+    /**
+     * @brief Update resolved profile info (manufacturer/model/vendor) on all sensors matching the IEEE address
+     * @param ieee_addr Device IEEE address
+     * @param manufacturer Manufacturer string for database lookup
+     * @param model Model identifier string for database lookup
+     * @param vendor Human readable vendor string (NULL to skip)
+     */
+    static void updateProfileInfo(uint64_t ieee_addr, const char* manufacturer, const char* model, const char* vendor);
 };
 
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE

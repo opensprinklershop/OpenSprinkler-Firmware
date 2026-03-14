@@ -59,7 +59,7 @@ public:
         }
     }
     bool isEnabled() { return false; }
-    void push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
+    void push_message(uint32_t type, uint32_t lval, float fval, const char* sval) {
         (void)type; (void)lval; (void)fval; (void)sval;
     }
 };
@@ -109,7 +109,7 @@ public:
     #elif defined(OSPI)
     influxdb_cpp::server_info * get_client();
     #endif
-    void push_message(uint16_t type, uint32_t lval, float fval, const char* sval);
+    void push_message(uint32_t type, uint32_t lval, float fval, const char* sval);
 };
 
 #endif // DISABLE_INFLUXDB

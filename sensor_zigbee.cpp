@@ -1110,6 +1110,11 @@ static void sensor_zigbee_do_vendor_lookups() {
         ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
         if (!zb->zb_vendor_pending) continue;
         if (!zb->zb_manufacturer[0] || !zb->zb_model[0]) {
+            DEBUG_PRINTF(F("[ZB] Vendor lookup skipped for '%s': incomplete Basic Cluster data mfr=\"%s\" model=\"%s\" ieee=0x%016llX\n"),
+                         zb->name,
+                         zb->zb_manufacturer[0] ? zb->zb_manufacturer : "",
+                         zb->zb_model[0] ? zb->zb_model : "",
+                         (unsigned long long)zb->device_ieee);
             zb->zb_vendor_pending = false; // nothing to look up
             continue;
         }
@@ -1177,6 +1182,9 @@ static void sensor_zigbee_do_vendor_lookups() {
                         sensor_save();
                     }
                 }
+            } else {
+                DEBUG_PRINTF(F("[ZB] Vendor lookup returned no vendor for %s|%s. Response: %.120s\n"),
+                             zb->zb_manufacturer, zb->zb_model, ether_buffer);
             }
         } else {
             DEBUG_PRINTF(F("[ZB] Vendor lookup failed (ret=%d)\n"), ret);
@@ -1911,14 +1919,70 @@ void ZigbeeSensor::updateBasicClusterInfo(uint64_t ieee_addr, const char* manufa
         if (zb->zb_manufacturer[0] != '\0' && zb->zb_model[0] != '\0' && zb->zb_vendor[0] == '\0') {
             zb->zb_vendor_pending = true;
         }
-        
-        // DEBUG_PRINTF(F("[ZIGBEE] Updated sensor '%s' Basic Cluster info: mfr=\"%s\" model=\"%s\"\n"),
-                     // zb->name, zb->zb_manufacturer, zb->zb_model);
+
+        DEBUG_PRINTF(F("[ZIGBEE] Basic Cluster for '%s': ieee=0x%016llX mfr=\"%s\" model=\"%s\" vendor_pending=%d\n"),
+                     zb->name,
+                     (unsigned long long)zb->device_ieee,
+                     zb->zb_manufacturer,
+                     zb->zb_model,
+                     zb->zb_vendor_pending ? 1 : 0);
     }
     
     if (updated) {
         sensor_save();
-        // DEBUG_PRINTLN(F("[ZIGBEE] Sensor config saved with Basic Cluster info"));
+        DEBUG_PRINTLN(F("[ZIGBEE] Sensor config saved with Basic Cluster info"));
+    }
+}
+
+void ZigbeeSensor::updateProfileInfo(uint64_t ieee_addr, const char* manufacturer, const char* model, const char* vendor) {
+    if (ieee_addr == 0) return;
+
+    bool updated = false;
+    SensorIterator it = sensors_iterate_begin();
+    SensorBase* sensor;
+    while ((sensor = sensors_iterate_next(it)) != NULL) {
+        if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+        ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+        if (zb->device_ieee != ieee_addr) continue;
+
+        bool mfr_missing = (zb->zb_manufacturer[0] == '\0' || strcmp(zb->zb_manufacturer, "unknown") == 0);
+        bool model_missing = (zb->zb_model[0] == '\0' || strcmp(zb->zb_model, "unknown") == 0);
+        bool vendor_missing = (zb->zb_vendor[0] == '\0' || strcmp(zb->zb_vendor, "unknown") == 0);
+
+        if (manufacturer && manufacturer[0] && mfr_missing) {
+            strncpy(zb->zb_manufacturer, manufacturer, sizeof(zb->zb_manufacturer) - 1);
+            zb->zb_manufacturer[sizeof(zb->zb_manufacturer) - 1] = '\0';
+            updated = true;
+        }
+        if (model && model[0] && model_missing) {
+            strncpy(zb->zb_model, model, sizeof(zb->zb_model) - 1);
+            zb->zb_model[sizeof(zb->zb_model) - 1] = '\0';
+            updated = true;
+        }
+        if (vendor && vendor[0] && vendor_missing) {
+            strncpy(zb->zb_vendor, vendor, sizeof(zb->zb_vendor) - 1);
+            zb->zb_vendor[sizeof(zb->zb_vendor) - 1] = '\0';
+            zb->zb_vendor_pending = false;
+            updated = true;
+        } else if (zb->zb_manufacturer[0] != '\0' && zb->zb_model[0] != '\0' && zb->zb_vendor[0] == '\0') {
+            zb->zb_vendor_pending = true;
+        }
+
+        if (zb->zb_manufacturer[0] != '\0' && zb->zb_model[0] != '\0') {
+            zb->basic_cluster_queried = true;
+        }
+
+        DEBUG_PRINTF(F("[ZIGBEE] Profile for '%s': ieee=0x%016llX mfr=\"%s\" model=\"%s\" vendor=\"%s\"\n"),
+                     zb->name,
+                     (unsigned long long)zb->device_ieee,
+                     zb->zb_manufacturer,
+                     zb->zb_model,
+                     zb->zb_vendor);
+    }
+
+    if (updated) {
+        sensor_save();
+        DEBUG_PRINTLN(F("[ZIGBEE] Sensor config saved with profile info"));
     }
 }
 

@@ -69,6 +69,7 @@ ulong  OpenSprinkler::pause_timer;
 
 ulong   OpenSprinkler::flowcount_log_start;
 ulong   OpenSprinkler::flowcount_rt;
+MonthlyWaterData OpenSprinkler::mwdata = {0};
 unsigned char    OpenSprinkler::button_timeout;
 time_os_t  OpenSprinkler::checkwt_lasttime;
 time_os_t  OpenSprinkler::checkwt_success_lasttime;
@@ -212,6 +213,7 @@ const char iopt_json_names[] PROGMEM =
 	"belha"
 	"belw1"
 	"belw2"
+	"ife3\0"
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -609,7 +611,8 @@ unsigned char OpenSprinkler::start_network() {
 
 	if (start_ether()) {
 		if(m_server)	{ delete m_server; m_server = NULL; }
-		m_server = new EthernetServer(httpport);
+		m_serve
+		r = new EthernetServer(httpport);
 		m_server->begin();
 		useEth = true;
 		return 1;
@@ -640,9 +643,9 @@ bool init_W5500(boolean initSPI) {
 		SPI.setDataMode(SPI_MODE0);
 		SPI.setFrequency(40000000); // 80MHz is the maximum SPI clock for W5500 - we init for 40MHz
 	}
-	
+
 		pinMode(PIN_ETHER_CS, OUTPUT);
-	
+
 		// ==> setMR(MR_RST)
 		digitalWrite(PIN_ETHER_CS, LOW);
 		SPI.transfer((0x00 & 0xFF00) >> 8);
@@ -662,8 +665,8 @@ bool init_W5500(boolean initSPI) {
 
 	if(ret!=0) { // ret is expected to be 0
 		return false;
-	}  
-		
+	}
+
 	eth.isW5500 = true;
 	DEBUG_PRINTLN(F("found W5500"));
 	return true;
@@ -709,7 +712,7 @@ bool init_ENC28J60() {
 		digitalWrite(PIN_ETHER_CS, HIGH);
 	if(r==0 || r==255) { // r is expected to be a non-255 revision number
 		return false;
-	} 
+	}
 
 	eth.isW5500 = false;
 	DEBUG_PRINTLN(F("found ENC28J60"));
@@ -754,7 +757,7 @@ void etherOnEvent(arduino_event_id_t event, arduino_event_info_t info)
 byte OpenSprinkler::start_ether() {
 #if defined(ESP8266) || defined(ESP32)
 	if(hw_rev<2) return 0;  // ethernet capability is only available when hw_rev>=2
-	
+
 	// os 3.2 uses enc28j60 and 3.3 uses w5500
 	#if defined(ESP8266)
 	if (hw_rev==2) {
@@ -766,7 +769,7 @@ byte OpenSprinkler::start_ether() {
 	}
 	#else
 	Network.onEvent(etherOnEvent);
-	
+
 	DEBUG_PRINTLN(F("W5500 initialization..."));
 	DEBUG_PRINTF("CS=%d, IRQ=%d, RST=%d\n", PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET);
 
@@ -775,11 +778,11 @@ byte OpenSprinkler::start_ether() {
 	// with the ESP-IDF spi_bus driver used by both external flash and W5500 MAC.
 	// Use eth.begin() variant with explicit SPI host, pin numbers, and frequency.
 	delay(100);
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI, 10)) {
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI, 20)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
 	}
-	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 10 MHz)"));
+	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 20 MHz)"));
 	#endif
 
 
@@ -794,7 +797,7 @@ byte OpenSprinkler::start_ether() {
 			return 0;
 	}
 	eth.setDefault();
-	
+
 	if(!eth.begin((uint8_t*)tmp_buffer)) return 0;
 	#else
 	if (iopts[IOPT_USE_DHCP]==0) { // config static IP before calling eth.begin
@@ -806,17 +809,17 @@ byte OpenSprinkler::start_ether() {
 			return 0;
 	}
 	#endif
-	
+
 	lcd_print_line_clear_pgm(PSTR("Start wired link"), 1);
 	#if defined(ESP8266)
 	lcd_print_line_clear_pgm(eth.isW5500 ? PSTR("  [w5500]    ") : PSTR(" [enc28j60]  "), 2);
 	#else
 	lcd_print_line_clear_pgm(PSTR("  [w5500]    "), 2);
 	#endif
-	
+
 	ulong timeout = millis()+60000; // 60 seconds time out
 	unsigned char timecount = 1;
-	while ((!eth.connected() 
+	while ((!eth.connected()
 	|| eth.localIP().toString().equals("255.255.255.255")
 	|| eth.localIP().toString().equals("0.0.0.0")) && millis()<timeout) {
 		DEBUG_PRINT(".");
@@ -1232,7 +1235,7 @@ void OpenSprinkler::begin() {
 		expanders[i] = NULL;
 	detect_expanders();
 
-	DEBUG_PRINTLN(F("OpenSprinkler begin3"));		
+	DEBUG_PRINTLN(F("OpenSprinkler begin3"));
 #else
 
 	// shift register setup
@@ -1384,7 +1387,7 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6c"));
 		lcd.setCursor(0,0);
 		lcd.print(F("Init file system"));
 		lcd.setCursor(0,1);
-		#if defined(ESP8266) 
+		#if defined(ESP8266)
 		if(!LittleFS.begin()) {
 			// After an "erase flash", LittleFS may be unformatted.
 			// Try formatting once, then stall if we still can't mount.
@@ -1405,14 +1408,14 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6c"));
 				lcd.setCursor(0, 0);
 				lcd_print_pgm(PSTR("Error Code: 0x2D"));
 				delay(5000);
-			}	
+			}
 		}
 		if (!file_exists(SOPTS_FILENAME)){
 			// format external littlefs if not existing
 			lcd_print_pgm(PSTR("Formating ext FS"));
-			DEBUG_PRINTF(F("Formatting external LittleFS...\n"));	
+			DEBUG_PRINTF(F("Formatting external LittleFS...\n"));
 			LittleFS.format();
-			DEBUG_PRINTF(F("completed.\n"));	
+			DEBUG_PRINTF(F("completed.\n"));
 		}
 		#endif
 DEBUG_PRINTLN(F("OpenSprinkler begin6e"));
@@ -2413,7 +2416,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
   			bool mfln = _c->probeMaxFragmentLength(server, port, 512);
   			DEBUG_PRINTF("MFLN supported: %s\n", mfln ? "yes" : "no");
   			if (mfln) {
-				_c->setBufferSizes(512, 512); 
+				_c->setBufferSizes(512, 512);
 			} else {
 				// Keep fallback TLS buffers conservative on ESP8266 to coexist with MQTT.
 				_c->setBufferSizes(ESP8266_TLS_BUFFER_FALLBACK, ESP8266_TLS_BUFFER_FALLBACK);
@@ -2470,7 +2473,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	}
 #else
 	EthernetClient *client = NULL;
-	
+
 	if (usessl) {
 		client = new EthernetClientSsl();
 	} else {
@@ -3000,6 +3003,68 @@ void OpenSprinkler::nvdata_save() {
 	file_write_block(NVCON_FILENAME, &nvdata, 0, sizeof(NVConData));
 }
 
+/** Load monthly water usage data from file */
+void OpenSprinkler::mwdata_load() {
+	memset(&mwdata, 0, sizeof(MonthlyWaterData));
+	file_read_block(MWATER_FILENAME, &mwdata, 0, sizeof(MonthlyWaterData));
+	if(mwdata.nrecords > MONTHLY_WATER_NMONTHS) {
+		// invalid data, reset
+		memset(&mwdata, 0, sizeof(MonthlyWaterData));
+	}
+}
+
+/** Save monthly water usage data to file */
+void OpenSprinkler::mwdata_save() {
+	file_write_block(MWATER_FILENAME, &mwdata, 0, sizeof(MonthlyWaterData));
+}
+
+/** Add flow pulses to current month's count */
+void OpenSprinkler::mwdata_add_flow(uint32_t pulses) {
+	if(pulses == 0) return;
+	mwdata.curr_flow += pulses;
+	// save periodically (every flow event) to survive reboots
+	mwdata_save();
+}
+
+/** Check if the month changed; if so, finalize previous month and rotate */
+void OpenSprinkler::mwdata_check_month(time_os_t curr_time) {
+	uint16_t curr_ym;
+#if defined(ARDUINO)
+	curr_ym = (uint16_t)year(curr_time) * 12 + (month(curr_time) - 1);
+#else
+	time_os_t ct = curr_time;
+	struct tm *ti = gmtime(&ct);
+	curr_ym = (uint16_t)(ti->tm_year + 1900) * 12 + ti->tm_mon;
+#endif
+
+	if(mwdata.curr_ym == 0) {
+		// first run or fresh data: just set the current month
+		mwdata.curr_ym = curr_ym;
+		mwdata_save();
+		return;
+	}
+
+	if(curr_ym != mwdata.curr_ym) {
+		// month changed - finalize the previous month
+		// shift records: drop oldest, insert newest at end
+		if(mwdata.nrecords >= MONTHLY_WATER_NMONTHS) {
+			// shift left to make room
+			for(uint8_t i = 0; i < MONTHLY_WATER_NMONTHS - 1; i++) {
+				mwdata.records[i] = mwdata.records[i + 1];
+			}
+			mwdata.nrecords = MONTHLY_WATER_NMONTHS - 1;
+		}
+		mwdata.records[mwdata.nrecords].ym = mwdata.curr_ym;
+		mwdata.records[mwdata.nrecords].flow_count = mwdata.curr_flow;
+		mwdata.nrecords++;
+
+		// reset for new month
+		mwdata.curr_flow = 0;
+		mwdata.curr_ym = curr_ym;
+		mwdata_save();
+	}
+}
+
 bool parse_wto(char* wto);
 
 /** Load integer options from file */
@@ -3174,7 +3239,7 @@ void OpenSprinkler::lcd_print_time(time_os_t t)
 #endif
 	lcd.setCursor(0, 0);
 	lcd_print_2digit(hour(t));
-	
+
 	lcd_print_pgm(PSTR(":"));
 
 	lcd_print_2digit(minute(t));
@@ -3207,7 +3272,7 @@ void OpenSprinkler::lcd_print_ip(const unsigned char *ip, unsigned char endian) 
 	lcd.setCursor(0, 0);
 	for (unsigned char i=0; i<4; i++) {
 		lcd.print(endian ? (int)ip[3-i] : (int)ip[i]);
-		
+
 		if(i<3) {
 			lcd_print_pgm(PSTR("."));
 		}

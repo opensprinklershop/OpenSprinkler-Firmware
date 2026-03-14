@@ -40,25 +40,26 @@ extern float flow_last_gpm;
 
 extern const char *user_agent_string;
 
-bool is_notif_enabled(uint16_t type) {
-	uint16_t notif = (uint16_t)os.iopts[IOPT_NOTIF_ENABLE] | ((uint16_t)os.iopts[IOPT_NOTIF2_ENABLE] << 8);
+bool is_notif_enabled(uint32_t type) {
+	uint32_t notif = (uint32_t)os.iopts[IOPT_NOTIF_ENABLE] | ((uint32_t)os.iopts[IOPT_NOTIF2_ENABLE] << 8) | ((uint32_t)os.iopts[IOPT_NOTIF3_ENABLE] << 16);
 	return  (notif&type) != 0;
 }
 
-uint16_t get_notif_enabled() {
-	return (uint16_t)os.iopts[IOPT_NOTIF_ENABLE]|((uint16_t)os.iopts[IOPT_NOTIF2_ENABLE]<<8);
+uint32_t get_notif_enabled() {
+	return (uint32_t)os.iopts[IOPT_NOTIF_ENABLE]|((uint32_t)os.iopts[IOPT_NOTIF2_ENABLE]<<8)|((uint32_t)os.iopts[IOPT_NOTIF3_ENABLE]<<16);
 }
 
-void set_notif_enabled(uint16_t notif) {
+void set_notif_enabled(uint32_t notif) {
 	os.iopts[IOPT_NOTIF_ENABLE] = notif&0xFF;
-	os.iopts[IOPT_NOTIF2_ENABLE] = notif >> 8;
+	os.iopts[IOPT_NOTIF2_ENABLE] = (notif >> 8)&0xFF;
+	os.iopts[IOPT_NOTIF3_ENABLE] = (notif >> 16)&0xFF;
 }
 
 void ip2string(char* str, size_t str_len, unsigned char ip[4]) {
 	snprintf_P(str+strlen(str), str_len, PSTR("%d.%d.%d.%d"), ip[0], ip[1], ip[2], ip[3]);
 }
 
-bool NotifQueue::add(uint16_t t, uint32_t l, float f, uint8_t b) {
+bool NotifQueue::add(uint32_t t, uint32_t l, float f, uint8_t b) {
 		if (!is_notif_enabled(t)) { // if not subscribed to this type, return
 		return false;
 	}
@@ -90,7 +91,7 @@ void NotifQueue::clear() {
 	}
 }
 
-void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval);
+void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval);
 
 bool NotifQueue::run(int n) {
 	if(nqueue == 0) return false; // queue is empty
@@ -113,7 +114,7 @@ bool NotifQueue::run(int n) {
 #define PUSH_TOPIC_LEN	120
 #define PUSH_PAYLOAD_LEN TMP_BUFFER_SIZE
 
-void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
+void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if (!is_notif_enabled(type)) {
 		return;
 	}
@@ -135,6 +136,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 	ArduinoJson::JsonDocument doc; // make sure this has the same scope of email_x variables to prevent use after free
 	const char *email_host = NULL;
 	const char *email_username = NULL;
+	const char *email_login = NULL;
 	const char *email_password = NULL;
 	const char *email_recipient = NULL;
 	int  email_port = DEFAULT_EMAIL_PORT;
@@ -159,8 +161,13 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 			email_host = doc["host"];
 			email_port = doc["port"];
 			email_username = doc["user"];
+			email_login = doc["login"];
 			email_password = doc["pass"];
 			email_recipient= doc["recipient"];
+			// If no SMTP host specified, use default
+			if(!email_host || strlen(email_host)==0) email_host = "smtp.gmail.com";
+			// If no separate SMTP login specified, use sender email
+			if(!email_login || strlen(email_login)==0) email_login = email_username;
 		}
 	}
 	#endif
@@ -175,6 +182,7 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 	#endif
 
 	bool email_enabled = false;
+	bool html_email_set = false;
 	bool influxdb_enabled = os.influxdb.isEnabled();
 	char *sval = NULL;
 #if defined(SUPPORT_EMAIL)
@@ -606,6 +614,147 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 				if(email_enabled) { email_message.subject += PSTR("reboot event"); }
 			}
 			break;
+
+		case NOTIFY_MONTHLY_REPORT:
+			{
+				// lval = flow pulse count, fval = volume in liters
+				uint16_t ym = 0;
+				if(os.mwdata.nrecords > 0) {
+					ym = os.mwdata.records[os.mwdata.nrecords - 1].ym;
+				}
+				uint16_t rpt_year = ym / 12;
+				uint8_t rpt_month = (ym % 12) + 1;
+
+				if (os.mqtt.enabled()) {
+					strcpy_P(topic, PSTR("monthly_water"));
+					#if defined(OS_AVR)
+					snprintf_P(payload, PUSH_PAYLOAD_LEN, PSTR("{\"year\":%d,\"month\":%d,\"count\":%lu,\"volume\":%d.%02d}"),
+						rpt_year, rpt_month, (ulong)lval, (int)fval, (int)(fval*100)%100);
+					#else
+					snprintf_P(payload, PUSH_PAYLOAD_LEN, PSTR("{\"year\":%d,\"month\":%d,\"count\":%lu,\"volume\":%.2f}"),
+						rpt_year, rpt_month, (ulong)lval, fval);
+					#endif
+				}
+				if (ifttt_enabled) {
+					#if defined(OS_AVR)
+					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE,
+						PSTR("Monthly water report %d/%02d: flow count %lu, volume %d.%02d L"),
+						rpt_year, rpt_month, (ulong)lval, (int)fval, (int)(fval*100)%100);
+					#else
+					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE,
+						PSTR("Monthly water report %d/%02d: flow count %lu, volume %.2f L"),
+						rpt_year, rpt_month, (ulong)lval, fval);
+					#endif
+				}
+				if(email_enabled) {
+					email_message.subject += PSTR("monthly water report");
+					#if !defined(OS_AVR)
+					// Generate HTML email report
+					{
+						static const char* const mon_names[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+						uint32_t flowrate100 = ((uint32_t)os.iopts[IOPT_PULSE_RATE_1] << 8) + os.iopts[IOPT_PULSE_RATE_0];
+						char dname[32];
+						os.sopt_load(SOPT_DEVICE_NAME, dname, 31);
+						dname[31] = 0;
+						char buf[320];
+
+						String html;
+						html.reserve(1024);
+						html += F("<!DOCTYPE html><html><body style=\"font-family:Arial,Helvetica,sans-serif;color:#333;margin:0;padding:20px;\">");
+						html += F("<div style=\"max-width:600px;margin:0 auto;\">");
+						html += F("<h2 style=\"color:#2c7be5;border-bottom:2px solid #2c7be5;padding-bottom:8px;\">");
+						html += F("Monthly Water Report</h2>");
+						snprintf(buf, sizeof(buf), "<p><b>Device:</b> %s</p>", dname);
+						html += buf;
+						if(rpt_month >= 1 && rpt_month <= 12) {
+							snprintf(buf, sizeof(buf), "<p><b>Report for:</b> %s %d</p>", mon_names[rpt_month-1], rpt_year);
+						} else {
+							snprintf(buf, sizeof(buf), "<p><b>Report for:</b> %d/%02d</p>", rpt_year, rpt_month);
+						}
+						html += buf;
+
+						// Summary of last month
+						snprintf(buf, sizeof(buf),
+							"<div style=\"background:#e8f4fd;padding:12px;border-radius:6px;margin:12px 0;\">"
+							"<b>Last month total:</b> Flow pulses: %lu &mdash; Volume: %.2f L</div>",
+							(unsigned long)lval, fval);
+						html += buf;
+
+						// Table of all recorded months
+						html += F("<table style=\"border-collapse:collapse;width:100%;margin-top:12px;\">");
+						html += F("<tr style=\"background:#2c7be5;color:#fff;\">"
+							"<th style=\"padding:8px 12px;text-align:left;border:1px solid #ddd;\">Month</th>"
+							"<th style=\"padding:8px 12px;text-align:right;border:1px solid #ddd;\">Flow Pulses</th>"
+							"<th style=\"padding:8px 12px;text-align:right;border:1px solid #ddd;\">Volume (L)</th></tr>");
+
+						for(uint8_t i = 0; i < os.mwdata.nrecords; i++) {
+							uint16_t m_ym = os.mwdata.records[i].ym;
+							uint16_t y = m_ym / 12;
+							uint8_t m = m_ym % 12; // 0-based month
+							float vol = os.mwdata.records[i].flow_count * flowrate100 / 100.f;
+							bool is_last = (i == os.mwdata.nrecords - 1);
+							const char *bg = is_last ? "#e8f4fd" : (i % 2 ? "#f9f9f9" : "#fff");
+							snprintf(buf, sizeof(buf),
+								"<tr style=\"background:%s;\">"
+								"<td style=\"padding:6px 12px;border:1px solid #ddd;\">%s %d</td>"
+								"<td style=\"padding:6px 12px;border:1px solid #ddd;text-align:right;\">%lu</td>"
+								"<td style=\"padding:6px 12px;border:1px solid #ddd;text-align:right;\">%.2f</td></tr>",
+								bg, (m < 12 ? mon_names[m] : "?"), y,
+								(unsigned long)os.mwdata.records[i].flow_count, vol);
+							html += buf;
+						}
+						html += F("</table>");
+
+						// Current month running total
+						float curr_vol = os.mwdata.curr_flow * flowrate100 / 100.f;
+						uint16_t cy = os.mwdata.curr_ym / 12;
+						uint8_t cm = os.mwdata.curr_ym % 12;
+						snprintf(buf, sizeof(buf),
+							"<p style=\"margin-top:16px;padding:10px;background:#f0f0f0;border-radius:4px;\">"
+							"<b>Current month (%s %d):</b> %lu pulses &mdash; %.2f L so far</p>",
+							(cm < 12 ? mon_names[cm] : "?"), cy,
+							(unsigned long)os.mwdata.curr_flow, curr_vol);
+						html += buf;
+
+						html += F("<p style=\"color:#999;font-size:0.85em;margin-top:20px;\">This report is generated automatically by OpenSprinkler on the 1st of each month.</p>");
+						html += F("</div></body></html>");
+						email_message.message = html;
+						html_email_set = true;
+					}
+					#endif
+				}
+			}
+			break;
+
+		case NOTIFY_NOFLOW:
+			{
+				char sname[STATION_NAME_SIZE];
+				os.get_station_name(lval, sname);
+				if (os.mqtt.enabled()) {
+					snprintf_P(topic, PUSH_TOPIC_LEN, PSTR("station/%d/alert/noflow"), lval);
+					snprintf_P(payload, PUSH_PAYLOAD_LEN, PSTR("{\"station\":%d,\"name\":\"%s\"}"), lval, sname);
+				}
+				if (ifttt_enabled || email_enabled) {
+					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE,
+						PSTR("No flow detected: station [%s] is open but flow sensor reports no water flow"), sname);
+					if(email_enabled) { email_message.subject += PSTR("- NO FLOW ALERT"); }
+				}
+			}
+			break;
+
+		case NOTIFY_PIPE_BURST:
+			{
+				if (os.mqtt.enabled()) {
+					strcpy_P(topic, PSTR("alert/pipe_burst"));
+					snprintf_P(payload, PUSH_PAYLOAD_LEN, PSTR("{\"flow_pulses\":%lu}"), (ulong)lval);
+				}
+				if (ifttt_enabled || email_enabled) {
+					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE,
+						PSTR("Pipe burst warning: %lu flow pulses detected while all stations are closed"), (ulong)lval);
+					if(email_enabled) { email_message.subject += PSTR("- PIPE BURST ALERT"); }
+				}
+			}
+			break;
 			
 		case NOTIFY_MONITOR_LOW: 
 		case NOTIFY_MONITOR_MID:
@@ -646,12 +795,14 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 	}
 
 	if(email_enabled){
-		email_message.message = strchr(postval, 'O'); // ad-hoc: remove the value1 part from the ifttt message
+		if(!html_email_set) {
+			email_message.message = strchr(postval, 'O'); // ad-hoc: remove the value1 part from the ifttt message
+		}
 		#if defined(ARDUINO)
 			#if defined(ESP8266) || defined(ESP32)
-				if(email_host && email_username && email_password && email_recipient) { // make sure all are valid
+				if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
 					free_tmp_memory();
-					EMailSender emailSend(email_username, email_password);
+					EMailSender emailSend(email_login, email_password, email_username, "OpenSprinkler");
 					emailSend.setSMTPServer(email_host);
 					emailSend.setSMTPPort(email_port);
 					EMailSender::Response resp = emailSend.send(email_recipient, email_message);
@@ -666,12 +817,15 @@ void push_message(uint16_t type, uint32_t lval, float fval, uint8_t bval) {
 			struct smtp *smtp = NULL;
 			String email_port_str = to_string(email_port);
 			smtp_status_code rc;
-			if(email_host && email_username && email_password && email_recipient) { // make sure all are valid
+			if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
 				rc = smtp_open(email_host, email_port_str.c_str(), SMTP_SECURITY_TLS, SMTP_NO_CERT_VERIFY, NULL, &smtp);
-				rc = smtp_auth(smtp, SMTP_AUTH_PLAIN, email_username, email_password);
+				rc = smtp_auth(smtp, SMTP_AUTH_PLAIN, email_login, email_password);
 				rc = smtp_address_add(smtp, SMTP_ADDRESS_FROM, email_username, "OpenSprinkler");
 				rc = smtp_address_add(smtp, SMTP_ADDRESS_TO, email_recipient, "User");
 				rc = smtp_header_add(smtp, "Subject", email_message.subject.c_str());
+				if(html_email_set) {
+					rc = smtp_header_add(smtp, "Content-Type", "text/html; charset=UTF-8");
+				}
 				rc = smtp_mail(smtp, email_message.message.c_str());
 				rc = smtp_close(smtp);
 				if (rc!=SMTP_STATUS_OK) {

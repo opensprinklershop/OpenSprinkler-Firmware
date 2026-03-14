@@ -46,25 +46,25 @@ typedef unsigned long ulong;
 
 #if defined(ESP32) && defined(BOARD_HAS_PSRAM)
   #include "esp_attr.h"
-  
+
   // All ESP32 variants with PSRAM: Use EXT_RAM_BSS_ATTR for static PSRAM placement
   // The framework-arduinoespressif32-libs must be built with:
   //   CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
   // This ensures esp_psram_bss_init() properly adjusts heap to skip ext_ram_bss section.
-  
+
   // Zero-initialized BSS in PSRAM (automatic zero-init at boot)
   #define PSRAM_ATTR        EXT_RAM_BSS_ATTR
   #define PSRAM_BSS_ATTR    EXT_RAM_BSS_ATTR
-  
+
   // Initialized data in PSRAM (copied from flash at boot)
   #define PSRAM_DATA_ATTR   __attribute__((section(".ext_ram.data")))
-  
+
   // Non-initialized PSRAM (survives soft reset, NOT zeroed)
   #define PSRAM_NOINIT_ATTR __attribute__((section(".ext_ram.noinit")))
-  
+
   // Read-only data in PSRAM (for huge const tables)
   #define PSRAM_RODATA_ATTR __attribute__((section(".ext_ram.rodata")))
-  
+
 #else
   // Non-PSRAM platforms: no special placement
   #define PSRAM_ATTR
@@ -92,7 +92,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      185  // Firmware minor version
+#define OS_FW_MINOR      186  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -115,6 +115,7 @@ typedef unsigned long ulong;
 #define NVCON_FILENAME        "nvcon.dat"   // non-volatile controller data file, see OpenSprinkler.h --> struct NVConData
 #define PROG_FILENAME         "prog.dat"    // program data file
 #define DONE_FILENAME         "done.dat"    // used to indicate the completion of all files
+#define MWATER_FILENAME       "mwater.dat"   // monthly water usage data file
 #else
 #define IOPTS_FILENAME        "/iopts.dat"   // integer options data file
 #define SOPTS_FILENAME        "/sopts.dat"   // string options data file
@@ -124,6 +125,7 @@ typedef unsigned long ulong;
 #define NVCON_FILENAME        "/nvcon.dat"   // non-volatile controller data file, see OpenSprinkler.h --> struct NVConData
 #define PROG_FILENAME         "/prog.dat"    // program data file
 #define DONE_FILENAME         "/done.dat"    // used to indicate the completion of all files
+#define MWATER_FILENAME       "/mwater.dat"   // monthly water usage data file
 #endif
 
 /** Station macro defines */
@@ -149,9 +151,12 @@ typedef unsigned long ulong;
 #define NOTIFY_STATION_ON      0x0100
 #define NOTIFY_FLOW_ALERT      0x0200
 #define NOTIFY_CURR_ALERT      0x0400
-#define NOTIFY_MONITOR_LOW     0x1000
-#define NOTIFY_MONITOR_MID     0x2000
-#define NOTIFY_MONITOR_HIGH    0x4000
+#define NOTIFY_MONTHLY_REPORT  0x0800
+#define NOTIFY_NOFLOW          0x1000
+#define NOTIFY_PIPE_BURST      0x2000
+#define NOTIFY_MONITOR_LOW     0x4000
+#define NOTIFY_MONITOR_MID     0x8000
+#define NOTIFY_MONITOR_HIGH   0x10000
 
 /** Queue Insertion Mode */
 enum {
@@ -380,6 +385,7 @@ enum {
 	IOPT_BELOW_HANDLING,
 	IOPT_BELOW1,
 	IOPT_BELOW2,
+	IOPT_NOTIF3_ENABLE,
 	NUM_IOPTS // total number of integer options
 };
 
@@ -497,7 +503,7 @@ enum {
 	/* Original OS30 pin defines */
 	//#define V0_MAIN_INPUTMASK 0b00001010 // main input pin mask
 	// pins on main PCF8574 IO expander have pin numbers IOEXP_PIN+i
-#if !defined(ESP32) 
+#if !defined(ESP32)
 	#define PIN_CURR_SENSE    A0    // current sensing pin
 	#define PIN_LATCH_VOLT_SENSE A0 // latch voltage sensing pin
 
@@ -596,8 +602,8 @@ enum {
 	#define MIO2              4   // 13  // QIO IO2 for external flash
 	#define MIO3              23  // 14  // QIO IO3 for external flash
 
-	#define PIN_FREE1         25  
-	#define PIN_FREE2         26 
+	#define PIN_FREE1         25
+	#define PIN_FREE2         26
 	#define PIN_FREE3         7
 
 	// W5500 Ethernet: SCK=6, MISO=14, MOSI=13, CS=3, RST=EN(hardwired HIGH)

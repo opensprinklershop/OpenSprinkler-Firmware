@@ -393,7 +393,7 @@ void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float v
 
 #endif
 
-void OSInfluxDB::push_message(uint16_t type, uint32_t lval, float fval, const char* sval) {
+void OSInfluxDB::push_message(uint32_t type, uint32_t lval, float fval, const char* sval) {
     if (!isEnabled())
         return;
 

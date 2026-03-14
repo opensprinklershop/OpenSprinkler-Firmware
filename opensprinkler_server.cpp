@@ -2546,6 +2546,20 @@ void server_json_matter(OTF_PARAMS_DEF) {
 		}
 	}
 
+	// SN1/SN2 binary sensor status (if rain or soil sensor)
+	if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
+		bfill.emit_p(PSTR(",\"sn1t\":$D,\"sn1\":$D"), os.iopts[IOPT_SENSOR1_TYPE], os.status.sensor1_active);
+	}
+	if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL) {
+		bfill.emit_p(PSTR(",\"sn2t\":$D,\"sn2\":$D"), os.iopts[IOPT_SENSOR2_TYPE], os.status.sensor2_active);
+	}
+	// Weather data
+	bfill.emit_p(PSTR(",\"rd\":$D,\"wl\":$D,\"wtdata\":$S,\"wterr\":$D"),
+	             os.status.rain_delayed,
+	             os.iopts[IOPT_WATER_PERCENTAGE],
+	             strlen(wt_rawData)==0 ? "{}" : wt_rawData,
+	             wt_errCode);
+
 	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);
 }
@@ -4341,6 +4355,36 @@ void server_sensor_types(OTF_PARAMS_DEF) {
 }
 
 /**
+ * jw
+ * Monthly water usage data
+ * Command: /jw
+ * Returns JSON: {"pr":pulse_rate, "curr":{"ym":X,"flow":X}, "records":[{"ym":X,"flow":X},...]}
+ */
+void server_json_water(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	print_header();
+#endif
+
+	uint16_t pulse_rate = (uint16_t)(os.iopts[IOPT_PULSE_RATE_1] << 8) + os.iopts[IOPT_PULSE_RATE_0];
+	bfill.emit_p(PSTR("{\"pr\":$D,\"curr\":{\"ym\":$D,\"flow\":$L},\"records\":["),
+		pulse_rate, os.mwdata.curr_ym, (unsigned long)os.mwdata.curr_flow);
+
+	for(uint8_t i = 0; i < os.mwdata.nrecords; i++) {
+		if(i) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("{\"ym\":$D,\"flow\":$L}"),
+			os.mwdata.records[i].ym, (unsigned long)os.mwdata.records[i].flow_count);
+	}
+	bfill.emit_p(PSTR("]}"));
+
+	handle_return(HTML_OK);
+}
+
+/**
  * du
  * system resources status
  **/
@@ -4370,7 +4414,7 @@ extern uint32_t ping_ok;
 
 	boolean ok = LittleFS.info(fsinfo);
 
-	bfill.emit_p(PSTR("{\"status\":$D,\"freeMemory\":$D,\"totalBytes\":$D,\"usedBytes\":$D,\"freeBytes\":$D,\"blockSize\":$D,\"pageSize\":$D,\"maxOpenFiles\":$D,\"maxPathLength\":$D,\"pingok\":$D,\"mqtt\":$D,\"ifttt\":$D"),
+	bfill.emit_p(PSTR("{\"status\":$D,\"freeMemory\":$D,\"totalBytes\":$D,\"usedBytes\":$D,\"freeBytes\":$D,\"blockSize\":$D,\"pageSize\":$D,\"maxOpenFiles\":$D,\"maxPathLength\":$D,\"pingok\":$D,\"mqtt\":$D,\"ifttt\":$L"),
 		ok,
 		freeMemory(),
 		fsinfo.totalBytes,
@@ -4382,9 +4426,9 @@ extern uint32_t ping_ok;
 		fsinfo.maxPathLength,
 		ping_ok,
 		os.mqtt.connected(),
-		get_notif_enabled());
+		(unsigned long)get_notif_enabled());
 #elif defined(ESP32)
-	bfill.emit_p(PSTR("{\"status\":$D,\"freeMemory\":$D,\"totalBytes\":$D,\"usedBytes\":$D,\"freeBytes\":$D,\"pingok\":$D,\"mqtt\":$D,\"ifttt\":$D"),
+	bfill.emit_p(PSTR("{\"status\":$D,\"freeMemory\":$D,\"totalBytes\":$D,\"usedBytes\":$D,\"freeBytes\":$D,\"pingok\":$D,\"mqtt\":$D,\"ifttt\":$L"),
 		1,
 		freeMemory(),
 		LittleFS.totalBytes(),
@@ -4392,9 +4436,9 @@ extern uint32_t ping_ok;
 		LittleFS.totalBytes()-LittleFS.usedBytes(),
 		ping_ok,
 		os.mqtt.connected(),
-		get_notif_enabled());
+		(unsigned long)get_notif_enabled());
 #else
-	bfill.emit_p(PSTR("{\"status\":$D,\"mqtt\":$D,\"ifttt\":$D"), 1, os.mqtt.connected(), get_notif_enabled());
+	bfill.emit_p(PSTR("{\"status\":$D,\"mqtt\":$D,\"ifttt\":$L"), 1, os.mqtt.connected(), (unsigned long)get_notif_enabled());
 
 #endif
 
@@ -4947,13 +4991,28 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 	}
 
 	bfill.emit_p(PSTR("{\"result\":1,\"active\":$D,\"connected\":$D,"
-	                   "\"mode\":\"$S\",\"coex\":\"$S\",\"join_window_remaining\":$D}"),
+	                   "\"mode\":\"$S\",\"coex\":\"$S\",\"join_window_remaining\":$D"),
 	             sensor_zigbee_is_active() ? 1 : 0,
 	             sensor_zigbee_is_connected() ? 1 : 0,
 	             ieee802154_is_zigbee_gw() ? "gateway" : "client",
 	             "disabled",
 	             sensor_zigbee_get_join_window_remaining());
 
+	// SN1/SN2 binary sensor status (if rain or soil sensor)
+	if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
+		bfill.emit_p(PSTR(",\"sn1t\":$D,\"sn1\":$D"), os.iopts[IOPT_SENSOR1_TYPE], os.status.sensor1_active);
+	}
+	if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL) {
+		bfill.emit_p(PSTR(",\"sn2t\":$D,\"sn2\":$D"), os.iopts[IOPT_SENSOR2_TYPE], os.status.sensor2_active);
+	}
+	// Weather data
+	bfill.emit_p(PSTR(",\"rd\":$D,\"wl\":$D,\"wtdata\":$S,\"wterr\":$D"),
+	             os.status.rain_delayed,
+	             os.iopts[IOPT_WATER_PERCENTAGE],
+	             strlen(wt_rawData)==0 ? "{}" : wt_rawData,
+	             wt_errCode);
+
+	bfill.emit_p(PSTR("}"));
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
@@ -5356,6 +5415,7 @@ const char _url_keys[] PROGMEM =
 	"su"
 	"cu"
 	"ja"
+	"jw"
 	"pq"
 	"sc"
 	"sl"
@@ -5443,6 +5503,7 @@ URLHandler urls[] = {
 	server_view_scripturl,  // su
 	server_change_scripturl,// cu
 	server_json_all,        // ja
+	server_json_water,      // jw
 	server_pause_queue,     // pq
 	server_sensor_config,//sc
 	server_sensor_list,//sl

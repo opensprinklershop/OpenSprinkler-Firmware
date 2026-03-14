@@ -79,6 +79,14 @@ static uint64_t gw_read_pending_ieee = 0;     // IEEE of the pending active read
 static uint16_t gw_read_pending_cluster = 0;  // cluster of the pending active read
 #define GW_READ_TIMEOUT_MS 5000
 
+// Static storage for Basic Cluster read requests.
+// attr_field is processed asynchronously by the Zigbee stack and must
+// outlive the caller stack frame.
+static uint16_t s_gw_basic_query_attrs[2] = {
+    ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID,
+    ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID
+};
+
 // Set when any sensor's comm_mode changes during report processing;
 // sensor_save() is then called from sensor_zigbee_gw_loop() (main loop thread).
 static bool gw_comm_mode_changed = false;
@@ -141,6 +149,13 @@ static unsigned long gw_last_config_report_ms = 0;
 #define TUYA_DP_TEMPERATURE        5   // VALUE ÷10 = °C
 #define TUYA_DP_TEMPERATURE_UNIT   9   // ENUM 0=Celsius 1=Fahrenheit
 #define TUYA_DP_BATTERY           15   // VALUE raw % (0-100)
+// Tuya irrigation timers (common TS0601 variants)
+#define TUYA_DP_VALVE_1            1
+#define TUYA_DP_VALVE_2            2
+#define TUYA_DP_COUNTDOWN_1       13
+#define TUYA_DP_COUNTDOWN_2       14
+#define TUYA_DP_VALVE_1_ALT      104
+#define TUYA_DP_VALVE_2_ALT      105
 
 // GX04 DP 14 soil moisture state enum values
 #define TUYA_SOIL_STATE_DRY    0  // → ~20 % representative
@@ -226,8 +241,8 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     info.model_id[0] = '\0';
     
     gw_discovered_devices.push_back(info);
-    // DEBUG_PRINTF(F("[ZIGBEE-GW] Added responsive device: short=0x%04X ieee=%08lX%08lX ep=%d\n"),
-                // short_addr, (unsigned long)(ieee_addr >> 32), (unsigned long)(ieee_addr & 0xFFFFFFFF), endpoint);
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Added responsive device: short=0x%04X ieee=0x%016llX ep=%d\n"),
+                 short_addr, (unsigned long long)ieee_addr, endpoint);
 
     // Query Basic Cluster immediately to get manufacturer/model from the device.
     // This ensures already-paired devices (that don't re-announce after a GW reboot)
@@ -402,6 +417,47 @@ static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
                     mapped_cluster, mapped_attr, value, lqi);
     } else {
         DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Report cache full — dropping Tuya DP"));
+    }
+}
+
+static void gw_apply_profile_hint(uint64_t ieee_addr,
+                                  const char* manufacturer,
+                                  const char* model,
+                                  const char* vendor,
+                                  const char* reason) {
+    if (ieee_addr == 0) return;
+
+    bool updated_device = false;
+    for (auto& dev : gw_discovered_devices) {
+        if (dev.ieee_addr != ieee_addr) continue;
+
+        if (manufacturer && manufacturer[0] && dev.manufacturer[0] == '\0') {
+            strncpy(dev.manufacturer, manufacturer, sizeof(dev.manufacturer) - 1);
+            dev.manufacturer[sizeof(dev.manufacturer) - 1] = '\0';
+            updated_device = true;
+        }
+        if (model && model[0] && dev.model_id[0] == '\0') {
+            strncpy(dev.model_id, model, sizeof(dev.model_id) - 1);
+            dev.model_id[sizeof(dev.model_id) - 1] = '\0';
+            updated_device = true;
+        }
+        if (vendor && vendor[0] && dev.vendor[0] == '\0') {
+            strncpy(dev.vendor, vendor, sizeof(dev.vendor) - 1);
+            dev.vendor[sizeof(dev.vendor) - 1] = '\0';
+            updated_device = true;
+        }
+        break;
+    }
+
+    ZigbeeSensor::updateProfileInfo(ieee_addr, manufacturer, model, vendor);
+
+    if (updated_device) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Applied profile hint (%s): ieee=0x%016llX mfr=\"%s\" model=\"%s\" vendor=\"%s\"\n"),
+                     reason ? reason : "unknown",
+                     (unsigned long long)ieee_addr,
+                     manufacturer ? manufacturer : "",
+                     model ? model : "",
+                     vendor ? vendor : "");
     }
 }
 
@@ -663,6 +719,11 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
     // Parse DP records starting after ZCL header (3 bytes) + Tuya seq (2 bytes) = offset 5
     uint32_t offset = 5;
     bool dp3_soil_received = false;  // DP 3/2/7 (exact %) takes priority over DP 14 (categorical ENUM)
+    bool saw_temp_dp = false;
+    bool saw_battery_dp = false;
+    bool saw_soil_signature_dp = false;
+    bool saw_irrigation_valve_dp = false;
+    bool saw_irrigation_countdown_dp = false;
     while (offset + 4 <= ind.asdu_length) {  // Minimum DP record: 4 bytes header
         uint8_t dp_number = ind.asdu[offset];
         uint8_t dp_type = ind.asdu[offset + 1];
@@ -694,6 +755,16 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP %u: type=%u len=%u value=%ld\n"),
                 dp_number, dp_type, dp_len, dp_value);
 
+        // Collect generic Tuya irrigation signature DPs even if we don't map all
+        // of them to sensor values in this switch.
+        if (dp_number == TUYA_DP_VALVE_1 || dp_number == TUYA_DP_VALVE_2 ||
+            dp_number == TUYA_DP_VALVE_1_ALT || dp_number == TUYA_DP_VALVE_2_ALT) {
+            saw_irrigation_valve_dp = true;
+        }
+        if (dp_number == TUYA_DP_COUNTDOWN_1 || dp_number == TUYA_DP_COUNTDOWN_2) {
+            saw_irrigation_countdown_dp = true;
+        }
+
         // Map Tuya DPs to standard ZCL cluster/attribute pairs
         switch (dp_number) {
             case TUYA_DP_SOIL_MOISTURE:
@@ -706,6 +777,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                                      ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000,
                                      dp_value, ind.lqi);
                 dp3_soil_received = true;  // mark: exact % available — DP 14 ENUM is lower priority
+                saw_soil_signature_dp = true;
                 break;
 
             case TUYA_DP_SOIL_MOISTURE_ALT3:  // DP 14
@@ -725,6 +797,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                     gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
                                          ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000,
                                          dp_value, ind.lqi);
+                    saw_soil_signature_dp = true;
                 } else if (dp_type == TUYA_DP_TYPE_ENUM) {
                     // 3-level soil moisture category → representative % midpoints
                     int32_t soil_pct = (dp_value == TUYA_SOIL_STATE_WET)    ? 80 :
@@ -737,6 +810,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                     gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
                                          ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000,
                                          soil_pct, ind.lqi);
+                    saw_soil_signature_dp = true;
                 } else {
                     DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP %u unknown type=%u value=%ld — skipped\n"),
                                  dp_number, dp_type, dp_value);
@@ -750,6 +824,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                 gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
                                      ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT, 0x0000,
                                      dp_value, ind.lqi);
+                saw_temp_dp = true;
                 break;
 
             case TUYA_DP_BATTERY:
@@ -759,6 +834,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                 gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
                                      ZB_ZCL_CLUSTER_ID_POWER_CONFIG, 0x0021,
                                      dp_value, ind.lqi);
+                saw_battery_dp = true;
                 break;
 
             case TUYA_DP_TEMPERATURE_UNIT:
@@ -774,6 +850,34 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         }
 
         offset += dp_len;
+    }
+
+    // Generic Tuya profile hinting for soil/irrigation classes.
+    // This provides workable lookup keys when Basic Cluster strings are absent,
+    // so the UI can still retrieve a useful template from devices_api.
+    if (ieee_addr != 0) {
+        if (saw_temp_dp && saw_battery_dp && saw_soil_signature_dp) {
+            // Soil probe class (e.g. GIEX GX04 / TS0601_soil variants)
+            gw_apply_profile_hint(ieee_addr,
+                                  "_TZE284_nhgdf6qr",
+                                  "TS0601",
+                                  "GIEX",
+                                  "tuya-soil-signature");
+        } else if (saw_irrigation_valve_dp && (saw_irrigation_countdown_dp || saw_battery_dp)) {
+            // Irrigation timer class (2-zone TS0601 variants, incl. GIEX GX03)
+            gw_apply_profile_hint(ieee_addr,
+                                  "_TZE284_8zizsafo",
+                                  "TS0601",
+                                  "GIEX",
+                                  "tuya-irrigation-signature");
+        } else if (saw_soil_signature_dp && saw_battery_dp) {
+            // Generic Tuya soil class fallback when no temperature DP is seen yet.
+            gw_apply_profile_hint(ieee_addr,
+                                  "_TZE284_nhgdf6qr",
+                                  "TS0601",
+                                  "Tuya",
+                                  "tuya-soil-generic");
+        }
     }
 
     return true;  // Consumed — do not let ZCL stack process cluster 0xEF00
@@ -1228,12 +1332,6 @@ static bool gw_query_basic_cluster_internal(uint16_t short_addr, uint8_t endpoin
     // DEBUG_PRINTF(F("[ZIGBEE-GW] Querying Basic Cluster: short=0x%04X ep=%d\n"),
                  // short_addr, endpoint);
     
-    // Create local attribute array for the query
-    uint16_t attr_ids[2] = {
-        ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID,
-        ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID
-    };
-    
     esp_zb_zcl_read_attr_cmd_t read_req;
     memset(&read_req, 0, sizeof(read_req));
     read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
@@ -1242,13 +1340,13 @@ static bool gw_query_basic_cluster_internal(uint16_t short_addr, uint8_t endpoin
     read_req.zcl_basic_cmd.src_endpoint = 10;  // our endpoint
     read_req.clusterID = ZB_ZCL_CLUSTER_ID_BASIC;
     read_req.attr_number = 2;
-    read_req.attr_field = attr_ids;
+    read_req.attr_field = s_gw_basic_query_attrs;
     
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_read_attr_cmd_req(&read_req);
     esp_zb_lock_release();
     
-    // DEBUG_PRINTLN(F("[ZIGBEE-GW] Basic Cluster read request sent (ManufacturerName + ModelIdentifier)"));
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Basic Cluster read request sent: short=0x%04X ep=%d\n"), short_addr, endpoint);
     return true;
 }
 
@@ -1635,6 +1733,37 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             DEBUG_PRINTLN(F("[ZIGBEE-GW] ✗ WARNING: No ZigBee sensors configured! (checked empty list)"));
         } else if (!found) {
             DEBUG_PRINTF(F("[ZIGBEE-GW] ✗ NO MATCH (checked %d ZigBee sensor%s)\n"), checked_count, checked_count == 1 ? "" : "s");
+            DEBUG_PRINTF(F("[ZIGBEE-GW]   Report detail: ieee=0x%016llX ep=%u cluster=0x%04X attr=0x%04X value=%ld%s solicited=%d\n"),
+                         (unsigned long long)report.ieee_addr,
+                         report.endpoint,
+                         report.cluster_id,
+                         report.attr_id & ~TUYA_REPORT_FLAG_PRESCALED,
+                         report.value,
+                         (report.attr_id & TUYA_REPORT_FLAG_PRESCALED) ? " (Tuya)" : "",
+                         report_solicited ? 1 : 0);
+
+            SensorIterator dbg_it = sensors_iterate_begin();
+            SensorBase* dbg_sensor;
+            bool same_ieee_found = false;
+            while ((dbg_sensor = sensors_iterate_next(dbg_it)) != NULL) {
+                if (!dbg_sensor || dbg_sensor->type != SENSOR_ZIGBEE) continue;
+                ZigbeeSensor* dbg_zb = static_cast<ZigbeeSensor*>(dbg_sensor);
+                if (report.ieee_addr == 0 || dbg_zb->device_ieee != report.ieee_addr) continue;
+                same_ieee_found = true;
+                DEBUG_PRINTF(F("[ZIGBEE-GW]   Candidate '%s': ep=%u cluster=0x%04X attr=0x%04X mfr=\"%s\" model=\"%s\" vendor=\"%s\" data_ok=%d\n"),
+                             dbg_sensor->name,
+                             dbg_zb->endpoint,
+                             dbg_zb->cluster_id,
+                             dbg_zb->attribute_id,
+                             dbg_zb->zb_manufacturer,
+                             dbg_zb->zb_model,
+                             dbg_zb->zb_vendor,
+                             dbg_zb->flags.data_ok ? 1 : 0);
+            }
+            if (!same_ieee_found && report.ieee_addr != 0) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW]   No configured ZigBee sensor bound to ieee=0x%016llX\n"),
+                             (unsigned long long)report.ieee_addr);
+            }
         }
         
         if (!found) {

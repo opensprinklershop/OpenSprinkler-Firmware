@@ -254,7 +254,13 @@ void sensor_ble_clear_new_device_flags();
  * @param mac_address MAC address string (e.g. "AA:BB:CC:DD:EE:FF")
  * @return Pointer to device info or nullptr if not found
  */
-const BLEDeviceInfo* sensor_ble_find_device(const char* mac_address);
+/**
+ * @brief Find a cached device by MAC address (thread-safe copy)
+ * @param mac_address MAC address string (e.g., "AA:BB:CC:DD:EE:FF")
+ * @param out_device Output: copy of the found device info
+ * @return true if device was found, false otherwise
+ */
+bool sensor_ble_find_device(const char* mac_address, BLEDeviceInfo* out_device);
 
 /**
  * @brief Check if a device has advertisement-based sensor data (Govee etc.)

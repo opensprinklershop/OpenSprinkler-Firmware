@@ -152,6 +152,21 @@ struct NVConData {
 	uint8_t  reboot_cause;  // reboot cause
 };
 
+/** Monthly water usage tracking */
+#define MONTHLY_WATER_NMONTHS 12
+
+struct MonthlyWaterEntry {
+	uint16_t ym;           // year*12 + (month-1), e.g. 2026*12+2 = 24314 for March 2026
+	uint32_t flow_count;   // total flow pulses for this month
+};
+
+struct MonthlyWaterData {
+	MonthlyWaterEntry records[MONTHLY_WATER_NMONTHS]; // rolling history of past months
+	uint32_t curr_flow;    // current month's running flow pulse count
+	uint16_t curr_ym;      // current year*12 + (month-1)
+	uint8_t  nrecords;     // number of valid records (0..12)
+};
+
 struct StationAttrib {  // station attributes
 	unsigned char mas:1;
 	unsigned char igs:1;  // ignore sensor 1
@@ -325,6 +340,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static ulong pause_timer; // count down timer in paused state
 	static ulong flowcount_rt;     // flow count (for computing real-time flow rate)
 	static ulong flowcount_log_start; // starting flow count (for logging)
+	static MonthlyWaterData mwdata; // monthly water usage tracking
 
 	static unsigned char  button_timeout;    // button timeout
 	static time_os_t checkwt_lasttime;  // time when weather was checked
@@ -378,6 +394,10 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	// -- options and data storeage
 	static void nvdata_load();
 	static void nvdata_save();
+	static void mwdata_load();
+	static void mwdata_save();
+	static void mwdata_add_flow(uint32_t pulses);
+	static void mwdata_check_month(time_os_t curr_time);
 
 	static void options_setup();
 	static void pre_factory_reset();

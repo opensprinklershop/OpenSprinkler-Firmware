@@ -32,12 +32,12 @@
 
 /** Notifier Node data structure */
 struct NotifNodeStruct {
-	uint16_t type;
+	uint32_t type;
 	uint32_t lval;
 	float fval;
 	uint8_t bval;
 	NotifNodeStruct *next;
-	NotifNodeStruct(uint16_t t, uint32_t l=0, float f=0.f, uint8_t b=0) : type(t), lval(l), fval(f), bval(b), next(NULL)
+	NotifNodeStruct(uint32_t t, uint32_t l=0, float f=0.f, uint8_t b=0) : type(t), lval(l), fval(f), bval(b), next(NULL)
 	{ }
 };
 
@@ -45,7 +45,7 @@ struct NotifNodeStruct {
 class NotifQueue {
 public:
 	// Insert a new notification element
-	static bool add(uint16_t t, uint32_t l=0, float f=0.f, uint8_t b=0);
+	static bool add(uint32_t t, uint32_t l=0, float f=0.f, uint8_t b=0);
 	// Clear all elements (i.e. empty the queue)
 	static void clear();
 	// Run/Process elements. By default process 1 at a time. If n<=0, process all.
@@ -56,5 +56,5 @@ protected:
 	static unsigned char nqueue;
 };
 
-uint16_t get_notif_enabled();
+uint32_t get_notif_enabled();
 #endif  // _NOTIFIER_H
