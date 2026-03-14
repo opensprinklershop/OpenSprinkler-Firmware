@@ -24,3 +24,4 @@ node_modules
 !package.json
 .DS_Store
 matter_mfg/
+docs

@@ -52,6 +52,7 @@ unsigned char parseMdScalesArray (const char* input);
 
 static void getweather_callback(char* buffer) {
 	char *p = buffer;
+	DEBUG_PRINT(F("[Weather callback] "));
 	DEBUG_PRINTLN(p);
 	/* scan the buffer until the first & symbol */
 	while(*p && *p!='&') {
@@ -63,6 +64,8 @@ static void getweather_callback(char* buffer) {
 	time_os_t tnow = os.now_tz();
 	// first check errCode, only update lswc timestamp if errCode is 0
 	if (findKeyVal(p, tmp_buffer, TMP_BUFFER_SIZE, PSTR("errCode"), true)) {
+		DEBUG_PRINT(F("errCode: "));
+		DEBUG_PRINTLN(tmp_buffer);
 		wt_errCode = atoi(tmp_buffer);
 		if(wt_errCode==0) os.checkwt_success_lasttime = tnow;
 	}

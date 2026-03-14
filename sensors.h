@@ -410,7 +410,7 @@ typedef Monitor Monitor_t;
 // Unitnames
 //  extern const char* sensor_unitNames[];
 
-#define ASB_BOARD_ADDR1a 0x50 //0x48 shifted for rs485
+#define ASB_BOARD_ADDR1a 0x48
 #define ASB_BOARD_ADDR1b 0x49
 #define ASB_BOARD_ADDR2a 0x4A
 #define ASB_BOARD_ADDR2b 0x4B

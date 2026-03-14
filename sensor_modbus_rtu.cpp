@@ -369,7 +369,7 @@ int ModbusRtuSensor::setAddressIp(SensorBase *sensor, uint8_t new_address) {
 }
 
 bool send_modbus_rtu_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit) {
-  if (!os.network_connected) return false;
+  if (!os.network_connected()) return false;
   return ModbusRtuSensor::sendCommand(ip, port, address, reg, data, isbit);
 }
 
@@ -387,23 +387,23 @@ void ModbusRtuSensor::toJson(ArduinoJson::JsonObject obj) const {
   rs |= (rs485_flags.speed & 0x7) << 3;
   rs |= (rs485_flags.swapped & 0x1) << 6;
   rs |= (rs485_flags.datatype & 0x7) << 7;
-  obj["rs485flags"] = rs;
-  obj["rs485code"] = rs485_code;
-  obj["rs485reg"] = rs485_reg;
+  obj[F("rs485flags")] = rs;
+  obj[F("rs485code")] = rs485_code;
+  obj[F("rs485reg")] = rs485_reg;
 }
 
 void ModbusRtuSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
   SensorBase::fromJson(obj);
   
   // RS485/Modbus-specific fields
-  if (obj.containsKey("rs485flags")) {
-    uint16_t rs = obj["rs485flags"];
+  if (obj.containsKey(F("rs485flags"))) {
+    uint16_t rs = obj[F("rs485flags")];
     rs485_flags.parity = (rs >> 0) & 0x3;
     rs485_flags.stopbits = (rs >> 2) & 0x1;
     rs485_flags.speed = (rs >> 3) & 0x7;
     rs485_flags.swapped = (rs >> 6) & 0x1;
     rs485_flags.datatype = (rs >> 7) & 0x7;
   }
-  if (obj.containsKey("rs485code")) rs485_code = obj["rs485code"];
-  if (obj.containsKey("rs485reg")) rs485_reg = obj["rs485reg"];
+  if (obj.containsKey(F("rs485code"))) rs485_code = obj[F("rs485code")];
+  if (obj.containsKey(F("rs485reg"))) rs485_reg = obj[F("rs485reg")];
 }

@@ -80,12 +80,19 @@ typedef unsigned long ulong;
 #define TMP_BUFFER_SIZE      320   // scratch buffer size
 #define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
+#if defined(ESP8266)
+// ESP8266 memory tuning: keep MQTT/TLS allocations conservative so MQTT + HTTPS can coexist.
+#define ESP8266_MQTT_BUFFER_SIZE      1024
+#define ESP8266_TLS_BUFFER_FALLBACK   1024
+#define ESP8266_MIN_HEAP_FOR_HTTPS   28000
+#endif
+
 /** Firmware version, hardware version, and maximal values */
-#define OS_FW_VERSION  233  // Firmware version: 233 means 2.3.3
+#define OS_FW_VERSION  240  // Firmware version: 240 means 2.4.0
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      187  // Firmware minor version
+#define OS_FW_MINOR      185  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler

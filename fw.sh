@@ -59,7 +59,7 @@ DEVICE_IP="${OS_IP:-192.168.0.151}"
 PIO_BIN="platformio"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFINES_H="${SCRIPT_DIR}/defines.h"
-UPGRADE_DIR="${SCRIPT_DIR}/docs/upgrade"
+UPGRADE_DIR="${SCRIPT_DIR}/srv/www/htdocs/upgrade"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
 VERSIONS_JSON="${UPGRADE_DIR}/versions.json"
 CHANGELOG="${SCRIPT_DIR}/CHANGELOG.md"
@@ -739,15 +739,24 @@ do_release() {
     # 3. Build C5 firmware variants — platformio.ini unchanged (debug still
     #    disabled only in the esp8266 section, no effect on C5 build flags).
     build_release_env "$ENV_C5_ZIGBEE" || { rm -f "$esp8266_stash"; exit 1; }
-    build_release_env "$ENV_C5_MATTER" || { rm -f "$esp8266_stash"; exit 1; }
+
+    # Stash ZigBee binary — C5 matter build will wipe .pio/build/ entirely.
+    local zigbee_stash
+    zigbee_stash=$(mktemp --suffix=_zigbee_firmware.bin)
+    cp "${SCRIPT_DIR}/.pio/build/${ENV_C5_ZIGBEE}/firmware.bin" "$zigbee_stash"
+
+    build_release_env "$ENV_C5_MATTER" || { rm -f "$esp8266_stash" "$zigbee_stash"; exit 1; }
     restore_esp8266_debug
     trap - EXIT
 
-    # Restore ESP8266 binary that was wiped by C5 per-env cleans.
+    # Restore ESP8266 and ZigBee binaries that were wiped by per-env cleans.
     mkdir -p "${SCRIPT_DIR}/.pio/build/${ENV_ESP8266}"
     cp "$esp8266_stash" "${SCRIPT_DIR}/.pio/build/${ENV_ESP8266}/firmware.bin"
     rm -f "$esp8266_stash"
-    ok "ESP8266 firmware restored from stash."
+    mkdir -p "${SCRIPT_DIR}/.pio/build/${ENV_C5_ZIGBEE}"
+    cp "$zigbee_stash" "${SCRIPT_DIR}/.pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
+    rm -f "$zigbee_stash"
+    ok "ESP8266 and ZigBee firmwares restored from stash."
 
     # 5. Archive previous version before overwriting
     archive_previous_version

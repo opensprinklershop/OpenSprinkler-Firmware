@@ -35,12 +35,12 @@ void sensor_mqtt_init() {
 void MqttSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
 	SensorBase::fromJson(obj);
 	    // MQTT-specific fields
-    if (obj.containsKey("url")) {
-      const char *u = obj["url"].as<const char*>();
+    if (obj.containsKey(F("url"))) {
+      const char *u = obj[F("url")].as<const char*>();
       if (u) strncpy(url, u, sizeof(url)-1);
     }
-    if (obj.containsKey("topic")) {
-      const char *t = obj["topic"].as<const char*>();
+    if (obj.containsKey(F("topic"))) {
+      const char *t = obj[F("topic")].as<const char*>();
       if (t) {
         strncpy(topic, t, sizeof(topic)-1);
         // Subscribe to MQTT topic when it's set
@@ -49,8 +49,8 @@ void MqttSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
         }
       }
     }
-    if (obj.containsKey("filter")) {
-      const char *f = obj["filter"].as<const char*>();
+    if (obj.containsKey(F("filter"))) {
+      const char *f = obj[F("filter")].as<const char*>();
       if (f) strncpy(filter, f, sizeof(filter)-1);
     }
 }
@@ -58,9 +58,9 @@ void MqttSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
 void MqttSensor::toJson(ArduinoJson::JsonObject obj) const {
 	SensorBase::toJson(obj);
 		// MQTT-specific fields
-	if (url[0]) obj["url"] = url;
-	if (topic[0]) obj["topic"] = topic;
-	if (filter[0]) obj["filter"] = filter;
+	if (url[0]) obj[F("url")] = url;
+	if (topic[0]) obj[F("topic")] = topic;
+	if (filter[0]) obj[F("filter")] = filter;
 }
 /**
  * @brief 

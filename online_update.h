@@ -1,7 +1,7 @@
 #ifndef ONLINE_UPDATE_H
 #define ONLINE_UPDATE_H
 
-#if defined(ESP32)
+#if defined(ESP32) || defined(ESP8266)
 
 #include <Arduino.h>
 
@@ -9,6 +9,11 @@
 #define OTA_UPDATE_HOST "opensprinklershop.de"
 #define OTA_UPDATE_BASE_URL "https://opensprinklershop.de/upgrade"
 #define OTA_MANIFEST_URL OTA_UPDATE_BASE_URL "/manifest.json"
+#if defined(ESP8266)
+#define OTA_ESP8266_FW_URL "http://opensprinklershop.de/upgrade/firmware_esp8266.bin"
+#else
+#define OTA_ESP8266_FW_URL OTA_UPDATE_BASE_URL "/firmware_esp8266.bin"
+#endif
 
 // Status codes for the online update process
 enum OnlineUpdateStatus {
@@ -66,8 +71,11 @@ void online_update_cache_manifest(const OnlineUpdateManifest &manifest);
 // Call during boot after network is established.
 void online_update_resume();
 
+// Service deferred online update work from the main loop.
+void online_update_loop();
+
 // Continuation file path on LittleFS
 #define OTA_CONTINUE_FILE "/ota_continue.json"
 
-#endif // ESP32
+#endif // ESP32 || ESP8266
 #endif // ONLINE_UPDATE_H

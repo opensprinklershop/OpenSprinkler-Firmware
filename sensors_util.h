@@ -198,32 +198,4 @@ public:
   }
 };
 
-// Forward declaration for sensor map type
-#include <map>
-class SensorBase;
-class ProgSensorAdjust;
-
-/**
- * @brief Import legacy binary sensor.dat format and convert to sensor map
- * @param sensorsMap Reference to sensor map to populate
- * @note Initializes sensors, saves to JSON, and deletes legacy file on success
- */
-bool sensor_load_legacy(std::map<uint, SensorBase*>& sensorsMap);
-
-/**
- * @brief Import legacy binary progsensor.dat format and convert to JSON
- * @param progSensorAdjustsMap Reference to map to populate
- * @return true if legacy file was found and imported, false otherwise
- * @note Saves to JSON and deletes legacy file on success
- */
-bool prog_adjust_load_legacy(std::map<uint, ProgSensorAdjust*>& progSensorAdjustsMap);
-
-/**
- * @brief Import legacy binary monitors.dat format and convert to JSON
- * @param monitorsMap Reference to map to populate
- * @return true if legacy file was found and imported, false otherwise
- * @note Saves to JSON and deletes legacy file on success
- */
-bool monitor_load_legacy(std::map<uint, Monitor*>& monitorsMap);
-
 #endif // _SENSORS_UTIL_H

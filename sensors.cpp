@@ -191,6 +191,54 @@ uint16_t CRC16(unsigned char buf[], int len) {
   return crc;
 }  // End: CRC16
 
+// ADS1115 Schreib/Rücklese-Test auf dem Lo_thresh-Register (0x02).
+// Lo_thresh ist ein reines 16-bit R/W-Register ohne Hardware-Seiteneffekte.
+// Gibt true zurück, wenn der Wert korrekt zurückgelesen wird.
+#if defined(ESP8266) || defined(ESP32)
+static bool ads1115_scratch_test(int addr) {
+  const uint16_t TEST_VAL = 0x5A5A;
+  Wire.beginTransmission(addr);
+  Wire.write(0x02);  // ADS1115 Lo_thresh-Register
+  Wire.write((uint8_t)(TEST_VAL >> 8));
+  Wire.write((uint8_t)(TEST_VAL & 0xFF));
+  if (Wire.endTransmission() != 0) return false;
+
+  Wire.beginTransmission(addr);
+  Wire.write(0x02);
+  Wire.endTransmission(false);
+  Wire.requestFrom(addr, 2);
+  if (Wire.available() < 2) return false;
+  uint16_t val = ((uint16_t)Wire.read() << 8) | Wire.read();
+  return (val == TEST_VAL);
+}
+
+// SC16IS752 Scratch-Test über das SPR-Register (0x07) mit dem SC16IS752-typischen
+// Befehlsbyte-Format (reg << 3). Wird als Negativ-Test genutzt: Schlägt er fehl,
+// ist kein SC16IS752 auf der Adresse – was für einen ADS1115 spricht.
+static bool sc16is752_scratch_test_at(int addr) {
+  const uint8_t TEST_VAL = 0xA5;
+  Wire.beginTransmission(addr);
+  Wire.write((0x07 << 3) | 0x00);  // SPR, Schreibzugriff
+  Wire.write(TEST_VAL);
+  if (Wire.endTransmission() != 0) return false;
+
+  Wire.beginTransmission(addr);
+  Wire.write((0x07 << 3) | 0x80);  // SPR, Lesezugriff
+  Wire.endTransmission(false);
+  Wire.requestFrom(addr, 1);
+  if (!Wire.available()) return false;
+  return (Wire.read() == TEST_VAL);
+}
+
+// Prüft, ob auf addr ein ADS1115 sitzt:
+// Primär: positiver ADS1115-Scratch-Test.
+// Fallback: negativer SC16IS752-Scratch-Test (kein SC16IS752 → kein Fehlalarm).
+static bool is_ads1115(int addr) {
+  if (ads1115_scratch_test(addr)) return true;
+  return !sc16is752_scratch_test_at(addr);
+}
+#endif  // defined(ESP8266) || defined(ESP32)
+
 /**
  * @brief detect connected boards
  *
@@ -198,9 +246,11 @@ uint16_t CRC16(unsigned char buf[], int len) {
 void detect_asb_board() {
   // detect analog sensor board, 0x48+0x49=Board1, 0x4A+0x4B=Board2
 #if defined(ESP8266) || defined(ESP32)
-  if (detect_i2c(ASB_BOARD_ADDR1a) && detect_i2c(ASB_BOARD_ADDR1b))
+  if (detect_i2c(ASB_BOARD_ADDR1a) && is_ads1115(ASB_BOARD_ADDR1a) &&
+      detect_i2c(ASB_BOARD_ADDR1b) && is_ads1115(ASB_BOARD_ADDR1b))
     asb_detected_boards |= ASB_BOARD1;
-  if (detect_i2c(ASB_BOARD_ADDR2a) && detect_i2c(ASB_BOARD_ADDR2b))
+  if (detect_i2c(ASB_BOARD_ADDR2a) && is_ads1115(ASB_BOARD_ADDR2a) &&
+      detect_i2c(ASB_BOARD_ADDR2b) && is_ads1115(ASB_BOARD_ADDR2b))
     asb_detected_boards |= ASB_BOARD2;
 
   sensor_truebner_rs485_init();
@@ -221,7 +271,7 @@ void detect_asb_board() {
 
   for (int log = 0; log <= 2; log++) {
     checkLogSwitch(log);
-#if defined(ENABLE_DEBUG)
+/*#if defined(ENABLE_DEBUG)
     // DEBUG_PRINT("log=");
     // DEBUG_PRINTLN(log);
     const char *f1 = getlogfile(log);
@@ -234,7 +284,7 @@ void detect_asb_board() {
     // DEBUG_PRINTLN(f2);
     // DEBUG_PRINT("size2=");
     // DEBUG_PRINTLN(file_size(f2));
-#endif
+#endif*/
   }
 }
 
@@ -715,6 +765,7 @@ int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
  */
 #include "ArduinoJson.hpp"
 
+#if !defined(ESP8266)
 static void sensor_trend_init_from_log(SensorBase *sensor) {
   if (!sensor) return;
 
@@ -746,27 +797,12 @@ static void sensor_trend_init_from_log(SensorBase *sensor) {
   }
   delete[] buffer;
 }
+#endif // !defined(ESP8266)
 
 void sensor_load() {
   // DEBUG_PRINTLN(F("sensor_load"));
   sensorsMap.clear();
   current_sensor = NULL;
-
-  // First try legacy binary format migration (sensor.dat)
-  // If successful, sensors are already initialized and saved
-  sensor_load_legacy(sensorsMap);
-  
-  if (!sensorsMap.empty()) {
-    for (auto &kv : sensorsMap) {
-      SensorBase *s = kv.second;
-      if (s) {
-        s->trend_reset();
-        sensor_trend_init_from_log(s);
-      }
-    }
-    last_save_time = os.now_tz();
-    return;
-  }
 
   // Try JSON format (current format)
   if (file_exists(SENSOR_FILENAME_JSON)) {
@@ -825,10 +861,13 @@ void sensor_load() {
     // Initialize sensor drivers
     for (auto &kv : sensorsMap) {
       SensorBase *s = kv.second;
+#if !defined(ESP8266)
       s->trend_reset();
+#endif
       s->init();
     }
 
+#if !defined(ESP8266)
     // Initialize trend history from logs (longer time window)
     for (auto &kv : sensorsMap) {
       SensorBase *s = kv.second;
@@ -836,6 +875,7 @@ void sensor_load() {
         sensor_trend_init_from_log(s);
       }
     }
+#endif
 
     last_save_time = os.now_tz();
     return;
@@ -1502,12 +1542,12 @@ void read_all_sensors(boolean online) {
   }
 
   while (current_sensor && current_sensor_it != sensorsMap.end()) {
-    ulong time_since_last = (current_sensor->last_read == 0) ? 99999 : (time - current_sensor->last_read);
+    //ulong time_since_last = (current_sensor->last_read == 0) ? 99999 : (time - current_sensor->last_read);
     boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval || current_sensor->repeat_read);
     
     if (should_read) {
       if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
-        boolean was_repeat = current_sensor->repeat_read;
+        //boolean was_repeat = current_sensor->repeat_read;
         // DEBUG_PRINTF(F("[SENSOR] Reading #%d (type=%d, ri=%u, last=%lu, now=%lu, since=%lu, repeat=%d)\n"),
                     // current_sensor->nr, current_sensor->type, current_sensor->read_interval, 
                     // current_sensor->last_read, time, time_since_last, was_repeat);
@@ -1520,7 +1560,9 @@ void read_all_sensors(boolean online) {
         }
         if (result == HTTP_RQT_SUCCESS) {
           current_sensor->last_read = time;
+#if !defined(ESP8266)
           current_sensor->trend_add_sample(current_sensor->last_data, time);
+#endif
           sensorlog_add(LOG_STD, current_sensor, time);
           push_message(current_sensor);
         } else if (result == HTTP_RQT_TIMEOUT) {
@@ -1754,6 +1796,7 @@ int read_sensor(SensorBase *sensor, ulong time) {
   }
 
   int result = sensor->read(time);
+  /*
   const char *result_str = "?";
   switch(result) {
     case HTTP_RQT_SUCCESS: result_str = "SUCCESS"; break;
@@ -1767,7 +1810,7 @@ int read_sensor(SensorBase *sensor, ulong time) {
   // which is entirely normal and not an error worth logging every interval.
   if (result != HTTP_RQT_NOT_RECEIVED || sensor->type != SENSOR_ZIGBEE) {
     DEBUG_PRINTF(F("[SENSOR] read #%d result=%s (=%d)\n"), sensor->nr, result_str, result);
-  }
+  }*/
   return result;
 }
 
@@ -1931,28 +1974,28 @@ double calc_sensor_watering_int(ProgSensorAdjust *p, double sensorData) {
 
 // ProgSensorAdjust JSON serialization methods
 void ProgSensorAdjust::toJson(ArduinoJson::JsonObject obj) const {
-  obj["nr"] = nr;
-  obj["type"] = type;
-  obj["sensor"] = sensor;
-  obj["prog"] = prog;
-  obj["factor1"] = factor1;
-  obj["factor2"] = factor2;
-  obj["min"] = min;
-  obj["max"] = max;
-  obj["name"] = name;
+  obj[F("nr")] = nr;
+  obj[F("type")] = type;
+  obj[F("sensor")] = sensor;
+  obj[F("prog")] = prog;
+  obj[F("factor1")] = factor1;
+  obj[F("factor2")] = factor2;
+  obj[F("min")] = min;
+  obj[F("max")] = max;
+  obj[F("name")] = name;
 }
 
 void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
-  nr = obj["nr"] | 0;
-  type = obj["type"] | 0;
-  sensor = obj["sensor"] | 0;
-  prog = obj["prog"] | 0;
-  factor1 = obj["factor1"] | 0.0;
-  factor2 = obj["factor2"] | 0.0;
-  min = obj["min"] | 0.0;
-  max = obj["max"] | 0.0;
+  nr = obj[F("nr")] | 0;
+  type = obj[F("type")] | 0;
+  sensor = obj[F("sensor")] | 0;
+  prog = obj[F("prog")] | 0;
+  factor1 = obj[F("factor1")] | 0.0;
+  factor2 = obj[F("factor2")] | 0.0;
+  min = obj[F("min")] | 0.0;
+  max = obj[F("max")] | 0.0;
   
-  const char* nameStr = obj["name"] | "";
+  const char* nameStr = obj[F("name")] | "";
   strncpy(name, nameStr, sizeof(name) - 1);
   name[sizeof(name) - 1] = '\0';
 }
@@ -2122,12 +2165,6 @@ void prog_adjust_load() {
   
   // Check if JSON file exists
   if (!file_exists(PROG_SENSOR_FILENAME)) {
-    DEBUG_PRINTLN(F("prog_adjust JSON file not found, checking for legacy"));
-    // Try to load legacy binary format
-    if (prog_adjust_load_legacy(progSensorAdjustsMap)) {
-      DEBUG_PRINTLN(F("prog_adjust loaded from legacy binary format"));
-      return;
-    }
     DEBUG_PRINTLN(F("No prog_adjust data found"));
     return;
   }
@@ -2453,58 +2490,58 @@ influxdb_cpp::builder()
  * @brief Serialize Monitor to JSON
  */
 void Monitor::toJson(ArduinoJson::JsonObject obj) const {
-  obj["nr"] = nr;
-  obj["type"] = type;
-  obj["sensor"] = sensor;
-  obj["prog"] = prog;
-  obj["zone"] = zone;
-  obj["active"] = active;
-  obj["time"] = time;
-  obj["name"] = name;
-  obj["maxRuntime"] = maxRuntime;
-  obj["prio"] = prio;
-  obj["reset_seconds"] = reset_seconds;
+  obj[F("nr")] = nr;
+  obj[F("type")] = type;
+  obj[F("sensor")] = sensor;
+  obj[F("prog")] = prog;
+  obj[F("zone")] = zone;
+  obj[F("active")] = active;
+  obj[F("time")] = time;
+  obj[F("name")] = name;
+  obj[F("maxRuntime")] = maxRuntime;
+  obj[F("prio")] = prio;
+  obj[F("reset_seconds")] = reset_seconds;
   
   // Serialize Monitor_Union based on type
-  ArduinoJson::JsonObject mObj = obj["m"].to<ArduinoJson::JsonObject>();
+  ArduinoJson::JsonObject mObj = obj[F("m")].to<ArduinoJson::JsonObject>();
   switch(type) {
     case MONITOR_MIN:
     case MONITOR_MAX:
-      mObj["value1"] = m.minmax.value1;
-      mObj["value2"] = m.minmax.value2;
+      mObj[F("value1")] = m.minmax.value1;
+      mObj[F("value2")] = m.minmax.value2;
       break;
     case MONITOR_SENSOR12:
-      mObj["sensor12"] = m.sensor12.sensor12;
-      mObj["invers"] = m.sensor12.invers;
+      mObj[F("sensor12")] = m.sensor12.sensor12;
+      mObj[F("invers")] = m.sensor12.invers;
       break;
     case MONITOR_SET_SENSOR12:
-      mObj["monitor"] = m.set_sensor12.monitor;
-      mObj["sensor12"] = m.set_sensor12.sensor12;
+      mObj[F("monitor")] = m.set_sensor12.monitor;
+      mObj[F("sensor12")] = m.set_sensor12.sensor12;
       break;
     case MONITOR_AND:
     case MONITOR_OR:
     case MONITOR_XOR:
-      mObj["monitor1"] = m.andorxor.monitor1;
-      mObj["monitor2"] = m.andorxor.monitor2;
-      mObj["monitor3"] = m.andorxor.monitor3;
-      mObj["monitor4"] = m.andorxor.monitor4;
-      mObj["invers1"] = m.andorxor.invers1;
-      mObj["invers2"] = m.andorxor.invers2;
-      mObj["invers3"] = m.andorxor.invers3;
-      mObj["invers4"] = m.andorxor.invers4;
+      mObj[F("monitor1")] = m.andorxor.monitor1;
+      mObj[F("monitor2")] = m.andorxor.monitor2;
+      mObj[F("monitor3")] = m.andorxor.monitor3;
+      mObj[F("monitor4")] = m.andorxor.monitor4;
+      mObj[F("invers1")] = m.andorxor.invers1;
+      mObj[F("invers2")] = m.andorxor.invers2;
+      mObj[F("invers3")] = m.andorxor.invers3;
+      mObj[F("invers4")] = m.andorxor.invers4;
       break;
     case MONITOR_NOT:
-      mObj["monitor"] = m.mnot.monitor;
+      mObj[F("monitor")] = m.mnot.monitor;
       break;
     case MONITOR_TIME:
-      mObj["time_from"] = m.mtime.time_from;
-      mObj["time_to"] = m.mtime.time_to;
-      mObj["weekdays"] = m.mtime.weekdays;
+      mObj[F("time_from")] = m.mtime.time_from;
+      mObj[F("time_to")] = m.mtime.time_to;
+      mObj[F("weekdays")] = m.mtime.weekdays;
       break;
     case MONITOR_REMOTE:
-      mObj["rmonitor"] = m.remote.rmonitor;
-      mObj["ip"] = m.remote.ip;
-      mObj["port"] = m.remote.port;
+      mObj[F("rmonitor")] = m.remote.rmonitor;
+      mObj[F("ip")] = m.remote.ip;
+      mObj[F("port")] = m.remote.port;
       break;
   }
 }
@@ -2513,62 +2550,62 @@ void Monitor::toJson(ArduinoJson::JsonObject obj) const {
  * @brief Deserialize Monitor from JSON
  */
 void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
-  nr = obj["nr"] | 0;
-  type = obj["type"] | 0;
-  sensor = obj["sensor"] | 0;
-  prog = obj["prog"] | 0;
-  zone = obj["zone"] | 0;
-  active = obj["active"] | false;
-  time = obj["time"] | 0;
-  strncpy(name, obj["name"] | "", sizeof(name) - 1);
+  nr = obj[F("nr")] | 0;
+  type = obj[F("type")] | 0;
+  sensor = obj[F("sensor")] | 0;
+  prog = obj[F("prog")] | 0;
+  zone = obj[F("zone")] | 0;
+  active = obj[F("active")] | false;
+  time = obj[F("time")] | 0;
+  strncpy(name, obj[F("name")] | "", sizeof(name) - 1);
   name[sizeof(name) - 1] = '\0';
-  maxRuntime = obj["maxRuntime"] | 0;
-  prio = obj["prio"] | 0;
-  reset_seconds = obj["reset_seconds"] | 0;
+  maxRuntime = obj[F("maxRuntime")] | 0;
+  prio = obj[F("prio")] | 0;
+  reset_seconds = obj[F("reset_seconds")] | 0;
   reset_time = 0;
   
   // Deserialize Monitor_Union based on type
   memset(&m, 0, sizeof(Monitor_Union_t));
-  ArduinoJson::JsonVariantConst mVar = obj["m"];
+  ArduinoJson::JsonVariantConst mVar = obj[F("m")];
   if (!mVar.isNull()) {
     switch(type) {
       case MONITOR_MIN:
       case MONITOR_MAX:
-        m.minmax.value1 = mVar["value1"] | 0.0;
-        m.minmax.value2 = mVar["value2"] | 0.0;
+        m.minmax.value1 = mVar[F("value1")] | 0.0;
+        m.minmax.value2 = mVar[F("value2")] | 0.0;
         break;
       case MONITOR_SENSOR12:
-        m.sensor12.sensor12 = mVar["sensor12"] | 0;
-        m.sensor12.invers = mVar["invers"] | false;
+        m.sensor12.sensor12 = mVar[F("sensor12")] | 0;
+        m.sensor12.invers = mVar[F("invers")] | false;
         break;
       case MONITOR_SET_SENSOR12:
-        m.set_sensor12.monitor = mVar["monitor"] | 0;
-        m.set_sensor12.sensor12 = mVar["sensor12"] | 0;
+        m.set_sensor12.monitor = mVar[F("monitor")] | 0;
+        m.set_sensor12.sensor12 = mVar[F("sensor12")] | 0;
         break;
       case MONITOR_AND:
       case MONITOR_OR:
       case MONITOR_XOR:
-        m.andorxor.monitor1 = mVar["monitor1"] | 0;
-        m.andorxor.monitor2 = mVar["monitor2"] | 0;
-        m.andorxor.monitor3 = mVar["monitor3"] | 0;
-        m.andorxor.monitor4 = mVar["monitor4"] | 0;
-        m.andorxor.invers1 = mVar["invers1"] | false;
-        m.andorxor.invers2 = mVar["invers2"] | false;
-        m.andorxor.invers3 = mVar["invers3"] | false;
-        m.andorxor.invers4 = mVar["invers4"] | false;
+        m.andorxor.monitor1 = mVar[F("monitor1")] | 0;
+        m.andorxor.monitor2 = mVar[F("monitor2")] | 0;
+        m.andorxor.monitor3 = mVar[F("monitor3")] | 0;
+        m.andorxor.monitor4 = mVar[F("monitor4")] | 0;
+        m.andorxor.invers1 = mVar[F("invers1")] | false;
+        m.andorxor.invers2 = mVar[F("invers2")] | false;
+        m.andorxor.invers3 = mVar[F("invers3")] | false;
+        m.andorxor.invers4 = mVar[F("invers4")] | false;
         break;
       case MONITOR_NOT:
-        m.mnot.monitor = mVar["monitor"] | 0;
+        m.mnot.monitor = mVar[F("monitor")] | 0;
         break;
       case MONITOR_TIME:
-        m.mtime.time_from = mVar["time_from"] | 0;
-        m.mtime.time_to = mVar["time_to"] | 0;
-        m.mtime.weekdays = mVar["weekdays"] | 0;
+        m.mtime.time_from = mVar[F("time_from")] | 0;
+        m.mtime.time_to = mVar[F("time_to")] | 0;
+        m.mtime.weekdays = mVar[F("weekdays")] | 0;
         break;
       case MONITOR_REMOTE:
-        m.remote.rmonitor = mVar["rmonitor"] | 0;
-        m.remote.ip = mVar["ip"] | 0;
-        m.remote.port = mVar["port"] | 0;
+        m.remote.rmonitor = mVar[F("rmonitor")] | 0;
+        m.remote.ip = mVar[F("ip")] | 0;
+        m.remote.port = mVar[F("port")] | 0;
         break;
     }
   }
@@ -2585,12 +2622,6 @@ void monitor_load() {
   
   // Check if JSON file exists
   if (!file_exists(MONITOR_FILENAME)) {
-    DEBUG_PRINTLN(F("monitor JSON file not found, checking for legacy"));
-    // Try to load legacy binary format
-    if (monitor_load_legacy(monitorsMap)) {
-      DEBUG_PRINTLN(F("monitor loaded from legacy binary format"));
-      return;
-    }
     DEBUG_PRINTLN(F("No monitor data found"));
     return;
   }

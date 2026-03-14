@@ -28,7 +28,8 @@
 
 #if defined(ESP8266) || defined(ESP32)
 
-#define ASB_I2C_RS485_ADDR 0x48 //0x90>>1 A0=VCC A1=VCC 
+#define ASB_I2C_RS485_ADDR 0x4C //0x98>>1 A0=VSS A1=VDD
+#define ASB_I2C_RS485_ADDR_ALT 0x48 //0x90>>1 A0=VDD A1=VDD ! wrong !
 
 /**
  * @brief Initialize I2C-RS485 bridge subsystem

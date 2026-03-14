@@ -1383,8 +1383,8 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     uint old_ri = read_interval;
     SensorBase::fromJson(obj);
     
-    if (obj.containsKey("device_ieee")) {
-        ArduinoJson::JsonVariantConst val = obj["device_ieee"];
+    if (obj.containsKey(F("device_ieee"))) {
+        ArduinoJson::JsonVariantConst val = obj[F("device_ieee")];
         if (val.is<const char*>()) {
             const char *ieee_str = val.as<const char*>();
             if (ieee_str && ieee_str[0]) {
@@ -1411,11 +1411,11 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             }
         }
     }
-    if (obj.containsKey("endpoint")) {
-        endpoint = obj["endpoint"].as<uint8_t>();
+    if (obj.containsKey(F("endpoint"))) {
+        endpoint = obj[F("endpoint")].as<uint8_t>();
     }
-    if (obj.containsKey("cluster_id")) {
-        ArduinoJson::JsonVariantConst val = obj["cluster_id"];
+    if (obj.containsKey(F("cluster_id"))) {
+        ArduinoJson::JsonVariantConst val = obj[F("cluster_id")];
         if (val.is<const char*>()) {
             const char *cluster_str = val.as<const char*>();
             if (cluster_str && (strncmp(cluster_str, "0x", 2) == 0 || strncmp(cluster_str, "0X", 2) == 0)) {
@@ -1427,8 +1427,8 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             cluster_id = val.as<uint16_t>();
         }
     }
-    if (obj.containsKey("attribute_id")) {
-        ArduinoJson::JsonVariantConst val = obj["attribute_id"];
+    if (obj.containsKey(F("attribute_id"))) {
+        ArduinoJson::JsonVariantConst val = obj[F("attribute_id")];
         if (val.is<const char*>()) {
             const char *attr_str = val.as<const char*>();
             if (attr_str && (strncmp(attr_str, "0x", 2) == 0 || strncmp(attr_str, "0X", 2) == 0)) {
@@ -1441,50 +1441,50 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
         }
     }
     // Basic Cluster info (persisted from device query)
-    if (obj.containsKey("zb_manufacturer")) {
-        const char *mfr = obj["zb_manufacturer"].as<const char*>();
+    if (obj.containsKey(F("zb_manufacturer"))) {
+        const char *mfr = obj[F("zb_manufacturer")].as<const char*>();
         if (mfr) {
             strncpy(zb_manufacturer, mfr, sizeof(zb_manufacturer) - 1);
             zb_manufacturer[sizeof(zb_manufacturer) - 1] = '\0';
         }
     }
-    if (obj.containsKey("zb_model")) {
-        const char *mdl = obj["zb_model"].as<const char*>();
+    if (obj.containsKey(F("zb_model"))) {
+        const char *mdl = obj[F("zb_model")].as<const char*>();
         if (mdl) {
             strncpy(zb_model, mdl, sizeof(zb_model) - 1);
             zb_model[sizeof(zb_model) - 1] = '\0';
         }
     }
-    if (obj.containsKey("zb_vendor")) {
-        const char *vnd = obj["zb_vendor"].as<const char*>();
+    if (obj.containsKey(F("zb_vendor"))) {
+        const char *vnd = obj[F("zb_vendor")].as<const char*>();
         if (vnd) {
             strncpy(zb_vendor, vnd, sizeof(zb_vendor) - 1);
             zb_vendor[sizeof(zb_vendor) - 1] = '\0';
         }
     }
     // Restore battery level (UINT32_MAX = not yet measured)
-    if (obj.containsKey("battery")) {
-        last_battery = obj["battery"].as<uint32_t>();
+    if (obj.containsKey(F("battery"))) {
+        last_battery = obj[F("battery")].as<uint32_t>();
     }
     // Restore communication mode (active read / spontaneous report / unknown)
-    if (obj.containsKey("comm_mode")) {
-        uint8_t cm = obj["comm_mode"].as<uint8_t>();
+    if (obj.containsKey(F("comm_mode"))) {
+        uint8_t cm = obj[F("comm_mode")].as<uint8_t>();
         if (cm <= (uint8_t)ZB_COMM_ACTIVE) {
             comm_mode = (ZbCommMode)cm;
         }
     }
     // Configured ZCL report interval (for predictive boost scheduling)
-    if (obj.containsKey("rpt_intv")) {
-        report_interval_s = obj["rpt_intv"].as<uint32_t>();
+    if (obj.containsKey(F("rpt_intv"))) {
+        report_interval_s = obj[F("rpt_intv")].as<uint32_t>();
     }
     // Phase anchor for UNIX-based predictive boost (survives reboots)
-    if (obj.containsKey("join_anchor")) {
-        join_anchor_ts = obj["join_anchor"].as<uint32_t>();
+    if (obj.containsKey(F("join_anchor"))) {
+        join_anchor_ts = obj[F("join_anchor")].as<uint32_t>();
     }
     // If the user changed read_interval, invalidate the prediction anchor and ZCL
     // report configuration — the new interval will be sent via ConfigureReporting
     // and the anchor will be re-established on the next successful report.
-    if (old_ri != 0 && obj.containsKey("ri") && read_interval != old_ri) {
+    if (old_ri != 0 && obj.containsKey(F("ri")) && read_interval != old_ri) {
         join_anchor_ts = 0;
         report_interval_s = 0;
         DEBUG_PRINTF(F("[ZIGBEE] read_interval changed %u\u2192%u \u2014 prediction anchor cleared\n"),
@@ -1506,37 +1506,37 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     if (device_ieee != 0) {
         char ieee_str[20];
         getIeeeString(ieee_str, sizeof(ieee_str));
-        obj["device_ieee"] = String(ieee_str);  // String() forces ArduinoJson to copy
+        obj[F("device_ieee")] = String(ieee_str);  // String() forces ArduinoJson to copy
     }
-    obj["endpoint"] = endpoint;
+    obj[F("endpoint")] = endpoint;
     
     // Store cluster_id and attribute_id as hex strings for readability
     char cluster_hex[10];
     snprintf(cluster_hex, sizeof(cluster_hex), "0x%04X", cluster_id);
-    obj["cluster_id"] = String(cluster_hex);
+    obj[F("cluster_id")] = String(cluster_hex);
     
     char attr_hex[10];
     snprintf(attr_hex, sizeof(attr_hex), "0x%04X", attribute_id);
-    obj["attribute_id"] = String(attr_hex);
+    obj[F("attribute_id")] = String(attr_hex);
     
     // Battery level — only persist when actually measured
-    if (last_battery != UINT32_MAX) obj["battery"] = last_battery;
-    obj["lqi"] = last_lqi;
+    if (last_battery != UINT32_MAX) obj[F("battery")] = last_battery;
+    obj[F("lqi")] = last_lqi;
     // Communication mode (0=unknown, 1=report, 2=active) — always persist
-    obj["comm_mode"] = (uint8_t)comm_mode;
+    obj[F("comm_mode")] = (uint8_t)comm_mode;
     // Configured ZCL report interval (for predictive boost)
-    if (report_interval_s > 0) obj["rpt_intv"] = report_interval_s;
+    if (report_interval_s > 0) obj[F("rpt_intv")] = report_interval_s;
     // Phase anchor for UNIX-based predictive boost
-    if (join_anchor_ts > 0) obj["join_anchor"] = join_anchor_ts;
+    if (join_anchor_ts > 0) obj[F("join_anchor")] = join_anchor_ts;
     // Basic Cluster info (persisted)
     if (zb_manufacturer[0] != '\0') {
-        obj["zb_manufacturer"] = zb_manufacturer;
+        obj[F("zb_manufacturer")] = zb_manufacturer;
     }
     if (zb_model[0] != '\0') {
-        obj["zb_model"] = zb_model;
+        obj[F("zb_model")] = zb_model;
     }
     if (zb_vendor[0] != '\0') {
-        obj["zb_vendor"] = zb_vendor;
+        obj[F("zb_vendor")] = zb_vendor;
     }
 }
 

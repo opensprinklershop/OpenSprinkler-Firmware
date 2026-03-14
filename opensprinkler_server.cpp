@@ -2578,7 +2578,7 @@ void server_matter_commission(OTF_PARAMS_DEF) {
 }
 #endif
 
-#if defined(ESP32)
+#if defined(ESP32) || defined(ESP8266)
 /** Emit a string into bfill with JSON escaping (newlines, quotes, backslashes, control chars). */
 static void bfill_emit_json_escaped(const char* s) {
 	if (!s) return;
@@ -2656,16 +2656,21 @@ void server_update_upgrade(OTF_PARAMS_DEF) {
 		return;
 	}
 
-	// Optional URL override: zu=zigbee_url, mu=matter_url
+	// Optional URL override: zu=zigbee_url, mu=matter_url (ESP32)
+	// or fu=firmware_url (ESP8266 direct update)
 	// When provided, build a synthetic manifest and cache it so the OTA task
 	// fetches the caller-specified binaries instead of the latest manifest.
 	char zu_buf[200] = {0};
 	char mu_buf[200] = {0};
+	char fu_buf[200] = {0};
 	bool has_zu = findKeyVal(FKV_SOURCE, zu_buf, sizeof(zu_buf), PSTR("zu"), true) && zu_buf[0];
 	bool has_mu = findKeyVal(FKV_SOURCE, mu_buf, sizeof(mu_buf), PSTR("mu"), true) && mu_buf[0];
-	if (has_zu || has_mu) {
+	bool has_fu = findKeyVal(FKV_SOURCE, fu_buf, sizeof(fu_buf), PSTR("fu"), true) && fu_buf[0];
+	if (has_zu || has_mu || has_fu) {
 		OnlineUpdateManifest override_manifest = {};
-		strncpy(override_manifest.zigbee_url, has_zu ? zu_buf : "", sizeof(override_manifest.zigbee_url) - 1);
+		strncpy(override_manifest.zigbee_url,
+			has_fu ? fu_buf : (has_zu ? zu_buf : ""),
+			sizeof(override_manifest.zigbee_url) - 1);
 		strncpy(override_manifest.matter_url,  has_mu ? mu_buf : "", sizeof(override_manifest.matter_url)  - 1);
 		override_manifest.fw_version = 0;  // not checked by the task
 		override_manifest.fw_minor   = 0;
@@ -2699,6 +2704,8 @@ void server_update_status(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
+#if defined(ESP32)
+
 /** Get HTTPS certificate info.
  * GET /tg?pw=xxx
  * Response: {"type":"internal"|"custom","subject":"...","issuer":"...","not_before":"...","not_after":"..."}
@@ -2726,8 +2733,51 @@ void server_cert_get(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
+/** Parse a URL-encoded parameter from a form body.
+ * Handles %XX percent-decoding and '+' to space conversion.
+ * Returns a newly allocated string that the caller must free(), or nullptr if not found.
+ */
+static char* get_form_body_param(const char* body, size_t body_len, const char* key) {
+	if (!body || body_len == 0 || !key) return nullptr;
+	size_t key_len = strlen(key);
+	const char* p = body;
+	const char* end = body + body_len;
+	while (p < end) {
+		// Check for "key=" match at start of a param
+		if ((size_t)(end - p) > key_len &&
+		    strncmp(p, key, key_len) == 0 && p[key_len] == '=') {
+			p += key_len + 1; // skip "key="
+			const char* val_end = p;
+			while (val_end < end && *val_end != '&') val_end++;
+			size_t val_len = val_end - p;
+			char* decoded = (char*)malloc(val_len + 1);
+			if (!decoded) return nullptr;
+			size_t di = 0;
+			for (size_t i = 0; i < val_len; ) {
+				if (p[i] == '%' && i + 2 < val_len) {
+					char hex[3] = { p[i+1], p[i+2], '\0' };
+					decoded[di++] = (char)strtol(hex, nullptr, 16);
+					i += 3;
+				} else if (p[i] == '+') {
+					decoded[di++] = ' ';
+					i++;
+				} else {
+					decoded[di++] = p[i++];
+				}
+			}
+			decoded[di] = '\0';
+			return decoded;
+		}
+		// Skip to next parameter
+		while (p < end && *p != '&') p++;
+		if (p < end) p++; // skip '&'
+	}
+	return nullptr;
+}
+
 /** Upload custom HTTPS certificate and key (PEM format).
- * GET /tl?pw=xxx&cert=<url-encoded-pem>&key=<url-encoded-pem>
+ * Accepts GET or POST. For POST, send ?pw=xxx in the URL and cert/key as
+ * application/x-www-form-urlencoded body to avoid 1536-byte URL length limit.
  * Response: {"result":1} on success, {"result":0,"error":"..."} on failure.
  * Requires device reboot to take effect.
  */
@@ -2743,7 +2793,18 @@ void server_cert_upload(OTF_PARAMS_DEF) {
 	char *cert_pem = req.getQueryParameter("cert");
 	char *key_pem = req.getQueryParameter("key");
 
+	// For POST requests the cert/key are in the body to avoid URL length limits
+	char *cert_body_alloc = nullptr, *key_body_alloc = nullptr;
+	if ((!cert_pem || !key_pem) && req.getBody() && req.getBodyLength() > 0) {
+		cert_body_alloc = get_form_body_param(req.getBody(), req.getBodyLength(), "cert");
+		key_body_alloc  = get_form_body_param(req.getBody(), req.getBodyLength(), "key");
+		if (cert_body_alloc) cert_pem = cert_body_alloc;
+		if (key_body_alloc)  key_pem  = key_body_alloc;
+	}
+
 	if (!cert_pem || !key_pem || strlen(cert_pem) < 50 || strlen(key_pem) < 50) {
+		if (cert_body_alloc) free(cert_body_alloc);
+		if (key_body_alloc)  free(key_body_alloc);
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"Missing or too short cert/key parameters\"}"));
 		handle_return(HTML_OK);
 		return;
@@ -2751,6 +2812,9 @@ void server_cert_upload(OTF_PARAMS_DEF) {
 
 	char error_buf[128] = {0};
 	bool ok = custom_cert_upload(cert_pem, key_pem, error_buf, sizeof(error_buf));
+
+	if (cert_body_alloc) free(cert_body_alloc);
+	if (key_body_alloc)  free(key_body_alloc);
 
 	if (ok) {
 		bfill.emit_p(PSTR("{\"result\":1}"));
@@ -2828,6 +2892,66 @@ void server_backup_get(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 #endif // ESP32
+
+#endif // ESP32 || ESP8266
+
+#if defined(ESP8266)
+/** Get OTA backup data as JSON (for app-side storage before firmware update).
+ * GET /ub?pw=xxx
+ * Response: JSON with config data that should be backed up before OTA.
+ */
+void server_backup_get(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	bfill.emit_p(PSTR("{\"backup\":1"));
+
+	// Include integer options (iopts)
+	bfill.emit_p(PSTR(",\"iopts\":["));
+	for (int i = 0; i < NUM_IOPTS; i++) {
+		if (i > 0) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("$D"), (int)os.iopts[i]);
+	}
+	bfill.emit_p(PSTR("]"));
+
+	// Include string options (sopts)
+	bfill.emit_p(PSTR(",\"sopts\":{"));
+	bool first = true;
+	for (int i = 0; i < NUM_SOPTS; i++) {
+		char buf[MAX_SOPTS_SIZE + 1];
+		file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
+		buf[MAX_SOPTS_SIZE] = 0;
+		if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {
+			if (!first) bfill.emit_p(PSTR(","));
+			bfill.emit_p(PSTR("\"$D\":\""), i);
+			for (char* p = buf; *p; ++p) {
+				char c = *p;
+				switch (c) {
+					case '"':  bfill.append("\\\"", 2); break;
+					case '\\': bfill.append("\\\\", 2); break;
+					case '\n': bfill.append("\\n", 2); break;
+					case '\r': bfill.append("\\r", 2); break;
+					case '\t': bfill.append("\\t", 2); break;
+					default:
+						if ((unsigned char)c >= 0x20) bfill.append(&c, 1);
+						break;
+				}
+			}
+			bfill.emit_p(PSTR("\""));
+			first = false;
+		}
+	}
+	bfill.emit_p(PSTR("}"));
+
+	bfill.emit_p(PSTR("}"));
+	handle_return(HTML_OK);
+}
+#endif
 
 /*
 void server_fill_files(OTF_PARAMS_DEF) {
@@ -5274,13 +5398,17 @@ const char _url_keys[] PROGMEM =
 	"jm"  // Matter: get pairing information
 	"mm"  // Matter: open commissioning window
 #endif
-#if defined(ESP32)
+#if defined(ESP32) || defined(ESP8266)
 	"uc"  // Online update: check for update
 	"uu"  // Online update: start update
 	"us"  // Online update: get status
+	#endif
+#if defined(ESP32)
 	"tg"  // TLS cert: get certificate info
 	"tl"  // TLS cert: upload custom cert+key (PEM)
 	"td"  // TLS cert: delete custom cert
+#endif
+#if defined(ESP32) || defined(ESP8266)
 	"ub"  // OTA backup: get config backup JSON
 #endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
@@ -5357,13 +5485,17 @@ URLHandler urls[] = {
 	server_json_matter, // jm
 	server_matter_commission, // mm
 #endif
-#if defined(ESP32)
+#if defined(ESP32) || defined(ESP8266)
 	server_update_check, // uc
 	server_update_upgrade, // uu
 	server_update_status, // us
+	#endif
+#if defined(ESP32)
 	server_cert_get, // tg
 	server_cert_upload, // tl
 	server_cert_delete, // td
+#endif
+#if defined(ESP32) || defined(ESP8266)
 	server_backup_get, // ub
 #endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
@@ -5688,6 +5820,43 @@ void handle_web_request(char *p) {
 #include "esp_netif_sntp.h"
 #endif
 
+static bool ntp_is_valid_ipv4(const unsigned char ip[4]) {
+	if ((ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0) ||
+		(ip[0] == 255 && ip[1] == 255 && ip[2] == 255 && ip[3] == 255)) {
+		return false;
+	}
+	if (ip[0] == 127) return false;
+	if (ip[0] == 169 && ip[1] == 254) return false;
+	return true;
+}
+
+static bool ntp_resolve_primary_server(char* out, size_t out_len, const unsigned char ntpip[4]) {
+	if (!out || out_len == 0) return false;
+	out[0] = 0;
+
+	if (ntp_is_valid_ipv4(ntpip)) {
+		String ntp = IPAddress(ntpip[0], ntpip[1], ntpip[2], ntpip[3]).toString();
+		strncpy(out, ntp.c_str(), out_len - 1);
+		out[out_len - 1] = 0;
+		return true;
+	}
+
+	unsigned char gwip[4] = {
+		os.iopts[IOPT_GATEWAY_IP1],
+		os.iopts[IOPT_GATEWAY_IP2],
+		os.iopts[IOPT_GATEWAY_IP3],
+		os.iopts[IOPT_GATEWAY_IP4]
+	};
+	if (ntp_is_valid_ipv4(gwip)) {
+		String gw = IPAddress(gwip[0], gwip[1], gwip[2], gwip[3]).toString();
+		strncpy(out, gw.c_str(), out_len - 1);
+		out[out_len - 1] = 0;
+		return true;
+	}
+
+	return false;
+}
+
 ulong getNtpTime() {
 	static bool configured = false;
 	static char customAddress[16];
@@ -5701,7 +5870,7 @@ ulong getNtpTime() {
 #if defined(ESP32) && !defined(ESP8266)
 		// Use thread-safe esp_netif_sntp API for ESP32
 		// This properly locks the TCPIP core before making UDP calls
-		if (!os.iopts[IOPT_NTP_IP1] || os.iopts[IOPT_NTP_IP1] == '0') {
+		if (!ntp_resolve_primary_server(customAddress, sizeof customAddress, ntpip)) {
 			DEBUG_PRINTLN(F("using default time servers (esp_netif_sntp)"));
 			esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
 				ESP_SNTP_SERVER_LIST("time.google.com", "time.nist.gov", "time.windows.com"));
@@ -5709,10 +5878,8 @@ ulong getNtpTime() {
 			config.smooth_sync = false;
 			esp_netif_sntp_init(&config);
 		} else {
-			DEBUG_PRINTLN(F("using custom time server (esp_netif_sntp)"));
-			String ntp = IPAddress(ntpip[0],ntpip[1],ntpip[2],ntpip[3]).toString();
-			strncpy(customAddress, ntp.c_str(), sizeof customAddress);
-			customAddress[sizeof customAddress - 1] = 0;
+			DEBUG_PRINT(F("using primary time server (esp_netif_sntp): "));
+			DEBUG_PRINTLN(customAddress);
 			esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
 				ESP_SNTP_SERVER_LIST(customAddress, "time.google.com", "time.nist.gov"));
 			config.start = true;
@@ -5721,14 +5888,12 @@ ulong getNtpTime() {
 		}
 #else
 		// ESP8266 uses configTime
-		if (!os.iopts[IOPT_NTP_IP1] || os.iopts[IOPT_NTP_IP1] == '0') {
+		if (!ntp_resolve_primary_server(customAddress, sizeof customAddress, ntpip)) {
 			DEBUG_PRINTLN(F("using default time servers"));
 			configTime(0, 0, "time.google.com", "time.nist.gov", "time.windows.com");
 		} else {
-			DEBUG_PRINTLN(F("using custom time server"));
-			String ntp = IPAddress(ntpip[0],ntpip[1],ntpip[2],ntpip[3]).toString();
-			strncpy(customAddress, ntp.c_str(), sizeof customAddress);
-			customAddress[sizeof customAddress - 1] = 0;
+			DEBUG_PRINT(F("using primary time server: "));
+			DEBUG_PRINTLN(customAddress);
 			configTime(0, 0, customAddress, "time.google.com", "time.nist.gov");
 		}
 #endif
@@ -5773,6 +5938,11 @@ ulong getNtpTime() {
 		os.iopts[IOPT_NTP_IP2],
 		os.iopts[IOPT_NTP_IP3],
 		os.iopts[IOPT_NTP_IP4]};
+	unsigned char gwip[4] = {
+		os.iopts[IOPT_GATEWAY_IP1],
+		os.iopts[IOPT_GATEWAY_IP2],
+		os.iopts[IOPT_GATEWAY_IP3],
+		os.iopts[IOPT_GATEWAY_IP4]};
 	unsigned char tries=0;
 	ulong gt = 0;
 	ulong startt = millis();
@@ -5795,12 +5965,16 @@ ulong getNtpTime() {
 
 		DEBUG_PRINT(F("ntp: "));
 		int ret;
-		if (!os.iopts[IOPT_NTP_IP1] || os.iopts[IOPT_NTP_IP1] == '0') {
-			DEBUG_PRINT(public_ntp_servers[sidx]);
-			ret = udp.beginPacket(public_ntp_servers[sidx], NTP_PORT);
-		} else {
+		if (ntp_is_valid_ipv4(ntpip)) {
 			DEBUG_PRINTLN(IPAddress(ntpip[0],ntpip[1],ntpip[2],ntpip[3]));
 			ret = udp.beginPacket(ntpip, NTP_PORT);
+		} else if (ntp_is_valid_ipv4(gwip)) {
+			DEBUG_PRINT(F("gateway "));
+			DEBUG_PRINTLN(IPAddress(gwip[0],gwip[1],gwip[2],gwip[3]));
+			ret = udp.beginPacket(gwip, NTP_PORT);
+		} else {
+			DEBUG_PRINT(public_ntp_servers[sidx]);
+			ret = udp.beginPacket(public_ntp_servers[sidx], NTP_PORT);
 		}
 		if(ret!=1) {
 			DEBUG_PRINT(F(" not available (ret: "));

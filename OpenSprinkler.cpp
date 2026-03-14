@@ -452,7 +452,10 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // reserved (was: temperature conversion, moved to client)
 	0,  // reserved (was: combine chart, moved to client)
 	WIFI_MODE_AP, // wifi mode
-	0   // reset
+	0,  // reset
+	0,  // below handling current alert enable
+	0,  // below handling current alert hi
+	0,  // below handling current alert lo
 };
 
 /** String option values (stored in RAM) */
@@ -2395,12 +2398,13 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 			free_tmp_memory();
 			// BearSSL/HTTPS can easily OOM on low-heap ESP8266 builds.
 			// Be defensive: if heap is too low, fail gracefully instead of rebooting.
-			const size_t min_heap_for_https = 24000;
+			const size_t min_heap_for_https = ESP8266_MIN_HEAP_FOR_HTTPS;
 			size_t heap_now = freeMemory();
 			if (heap_now < min_heap_for_https) {
 				DEBUG_PRINTF("HTTPS skipped (low heap=%u)\n", (unsigned)heap_now);
 				restore_tmp_memory();
 				usessl = false;
+				if (port == 443) port = 80; // plain HTTP to port 443 returns garbage
 			}
 		}
 		if (usessl) {
@@ -2411,13 +2415,8 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
   			if (mfln) {
 				_c->setBufferSizes(512, 512); 
 			} else {
-				// Use smaller buffers when heap is tight.
-				size_t heap_now = freeMemory();
-				if (heap_now < 32000) {
-					_c->setBufferSizes(1024, 1024);
-				} else {
-					_c->setBufferSizes(2048, 2048);
-				}
+				// Keep fallback TLS buffers conservative on ESP8266 to coexist with MQTT.
+				_c->setBufferSizes(ESP8266_TLS_BUFFER_FALLBACK, ESP8266_TLS_BUFFER_FALLBACK);
 			}
 			client = _c;
 		} else {

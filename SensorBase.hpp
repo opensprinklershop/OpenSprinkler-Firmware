@@ -21,10 +21,12 @@ public:
     TREND_STRONG_UP = 2
   };
 
+#if !defined(ESP8266)
   static const uint8_t TREND_HISTORY_SIZE = 24;
   static const uint32_t TREND_MIN_SPAN_SEC = 3600; // require at least 1h span
   static constexpr double TREND_NO_CHANGE_REL = 0.02; // 2% change over window
   static constexpr double TREND_STRONG_REL = 0.10;    // 10% change over window
+#endif
 
   // Persistent fields
   uint nr = 0;                    // 1..n sensor-nr, 0=deleted
@@ -55,12 +57,14 @@ public:
   ulong last_logged_time = 0;
   ulong last = 0;
 
+#if !defined(ESP8266)
   // runtime-only trend history (not persisted)
   double trend_history[TREND_HISTORY_SIZE] = {0};
   uint32_t trend_time[TREND_HISTORY_SIZE] = {0};
   uint8_t trend_count = 0;
   uint8_t trend_head = 0;  // next write index
   int8_t trend_state = TREND_UNAVAILABLE;
+#endif
 
   SensorBase() {}
   explicit SensorBase(uint type) {this->type = type; } // for derived classes compatibility
@@ -106,6 +110,7 @@ public:
    */
   virtual unsigned char getUnitId() const;
 
+#if !defined(ESP8266)
   void trend_reset() {
     trend_count = 0;
     trend_head = 0;
@@ -185,6 +190,7 @@ public:
   int8_t get_trend_state() const {
     return trend_state;
   }
+#endif // !defined(ESP8266)
 
   /**
    * @brief Serialize sensor configuration to JSON object
@@ -192,32 +198,34 @@ public:
    */
   virtual void toJson(ArduinoJson::JsonObject obj) const {
     if (!obj) return;
-    obj["nr"] = nr;
-    obj["type"] = type;
-    obj["group"] = group;
-    obj["name"] = name;
-    obj["ip"] = ip;
-    obj["port"] = port;
-    obj["id"] = id;
-    obj["ri"] = read_interval;
-    obj["factor"] = factor;
-    obj["divider"] = divider;
-    obj["fac"] = factor;
-    obj["div"] = divider;
-    obj["offset"] = offset_mv;
-    obj["offset2"] = offset2;
-    obj["unit"] = getUnit();  // Use virtual method to get correct unit label
-    obj["unitid"] = getUnitId();  // Use virtual method for consistency
-    obj["enable"] = (uint)flags.enable;
-    obj["log"] = (uint)flags.log;
-    obj["show"] = (uint)flags.show;
+    obj[F("nr")] = nr;
+    obj[F("type")] = type;
+    obj[F("group")] = group;
+    obj[F("name")] = name;
+    obj[F("ip")] = ip;
+    obj[F("port")] = port;
+    obj[F("id")] = id;
+    obj[F("ri")] = read_interval;
+    obj[F("factor")] = factor;
+    obj[F("divider")] = divider;
+    obj[F("fac")] = factor;
+    obj[F("div")] = divider;
+    obj[F("offset")] = offset_mv;
+    obj[F("offset2")] = offset2;
+    obj[F("unit")] = getUnit();  // Use virtual method to get correct unit label
+    obj[F("unitid")] = getUnitId();  // Use virtual method for consistency
+    obj[F("enable")] = (uint)flags.enable;
+    obj[F("log")] = (uint)flags.log;
+    obj[F("show")] = (uint)flags.show;
 
     // runtime fields
-    obj["data_ok"] = (uint)flags.data_ok;
-    obj["last"] = last;
-    obj["nativedata"] = last_native_data;
-    obj["data"] = last_data;
-    obj["trend"] = trend_state;
+    obj[F("data_ok")] = (uint)flags.data_ok;
+    obj[F("last")] = last;
+    obj[F("nativedata")] = last_native_data;
+    obj[F("data")] = last_data;
+#if !defined(ESP8266)
+    obj[F("trend")] = trend_state;
+#endif
   }
 
   /**
@@ -225,36 +233,36 @@ public:
    * @param obj JSON object with configuration data
    */
   virtual void fromJson(ArduinoJson::JsonVariantConst obj) {
-    if (obj.containsKey("nr")) nr = obj["nr"];
-    if (obj.containsKey("type")) type = obj["type"];
-    if (obj.containsKey("group")) group = obj["group"];
-    if (obj.containsKey("name")) {
-      const char *sname = obj["name"].as<const char*>();
+    if (obj.containsKey(F("nr"))) nr = obj[F("nr")];
+    if (obj.containsKey(F("type"))) type = obj[F("type")];
+    if (obj.containsKey(F("group"))) group = obj[F("group")];
+    if (obj.containsKey(F("name"))) {
+      const char *sname = obj[F("name")].as<const char*>();
       if (sname) strncpy(name, sname, sizeof(name)-1);
     }
-    if (obj.containsKey("ip")) ip = obj["ip"];
-    if (obj.containsKey("port")) port = obj["port"];
-    if (obj.containsKey("id")) id = obj["id"];
-    if (obj.containsKey("ri")) read_interval = obj["ri"];
-    if (obj.containsKey("fac")) factor = obj["fac"];
-    else if (obj.containsKey("factor")) factor = obj["factor"];
-    if (obj.containsKey("div")) divider = obj["div"];
-    else if (obj.containsKey("divider")) divider = obj["divider"];
-    if (obj.containsKey("offset")) offset_mv = obj["offset"];
-    if (obj.containsKey("offset2")) offset2 = obj["offset2"];
-    if (obj.containsKey("unit")) {
-      const char *unit = obj["unit"].as<const char*>();
+    if (obj.containsKey(F("ip"))) ip = obj[F("ip")];
+    if (obj.containsKey(F("port"))) port = obj[F("port")];
+    if (obj.containsKey(F("id"))) id = obj[F("id")];
+    if (obj.containsKey(F("ri"))) read_interval = obj[F("ri")];
+    if (obj.containsKey(F("fac"))) factor = obj[F("fac")];
+    else if (obj.containsKey(F("factor"))) factor = obj[F("factor")];
+    if (obj.containsKey(F("div"))) divider = obj[F("div")];
+    else if (obj.containsKey(F("divider"))) divider = obj[F("divider")];
+    if (obj.containsKey(F("offset"))) offset_mv = obj[F("offset")];
+    if (obj.containsKey(F("offset2"))) offset2 = obj[F("offset2")];
+    if (obj.containsKey(F("unit"))) {
+      const char *unit = obj[F("unit")].as<const char*>();
       if (unit) strncpy(userdef_unit, unit, sizeof(userdef_unit)-1);
     }
-    if (obj.containsKey("unitid")) assigned_unitid = obj["unitid"];
-    if (obj.containsKey("enable")) flags.enable = obj["enable"];
-    if (obj.containsKey("log")) flags.log = obj["log"];
-    if (obj.containsKey("show")) flags.show = obj["show"];
+    if (obj.containsKey(F("unitid"))) assigned_unitid = obj[F("unitid")];
+    if (obj.containsKey(F("enable"))) flags.enable = obj[F("enable")];
+    if (obj.containsKey(F("log"))) flags.log = obj[F("log")];
+    if (obj.containsKey(F("show"))) flags.show = obj[F("show")];
 
-    if (obj.containsKey("data_ok")) flags.data_ok = obj["data_ok"];
-    if (obj.containsKey("last")) last = obj["last"];
-    if (obj.containsKey("nativedata")) last_native_data = obj["nativedata"];
-    if (obj.containsKey("data")) last_data = obj["data"];
+    if (obj.containsKey(F("data_ok"))) flags.data_ok = obj[F("data_ok")];
+    if (obj.containsKey(F("last"))) last = obj[F("last")];
+    if (obj.containsKey(F("nativedata"))) last_native_data = obj[F("nativedata")];
+    if (obj.containsKey(F("data"))) last_data = obj[F("data")];
   }
 };
 

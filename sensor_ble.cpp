@@ -1061,8 +1061,8 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     SensorBase::fromJson(obj);
 
     // Parse MAC address (preferred: "mac" field)
-    if (obj.containsKey("mac")) {
-        const char* m = obj["mac"].as<const char*>();
+    if (obj.containsKey(F("mac"))) {
+        const char* m = obj[F("mac")].as<const char*>();
         if (m) {
             ble_copy_stripped(mac_address_cfg, sizeof(mac_address_cfg), m);
         }
@@ -1072,20 +1072,20 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     }
 
     // Optional explicit BLE config (preferred)
-    if (obj.containsKey("char_uuid")) {
-        const char* u = obj["char_uuid"].as<const char*>();
+    if (obj.containsKey(F("char_uuid"))) {
+        const char* u = obj[F("char_uuid")].as<const char*>();
         if (u) {
             ble_copy_stripped(characteristic_uuid_cfg, sizeof(characteristic_uuid_cfg), u);
         }
-    } else if (obj.containsKey("uuid")) {
-        const char* u = obj["uuid"].as<const char*>();
+    } else if (obj.containsKey(F("uuid"))) {
+        const char* u = obj[F("uuid")].as<const char*>();
         if (u) {
             ble_copy_stripped(characteristic_uuid_cfg, sizeof(characteristic_uuid_cfg), u);
         }
     }
 
-    if (obj.containsKey("format")) {
-        int fmt = obj["format"].as<int>();
+    if (obj.containsKey(F("format"))) {
+        int fmt = obj[F("format")].as<int>();
         if (fmt >= 0 && fmt <= 30) {
             payload_format_cfg = (uint8_t)fmt;
         }
@@ -1118,35 +1118,35 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     
     // Migration: if sensor was auto-disabled by stale adv_last_ok timestamp,
     // re-enable it so it gets a fresh chance at data collection.
-    if (obj.containsKey("adv_last_ok") && !flags.enable) {
+    if (obj.containsKey(F("adv_last_ok")) && !flags.enable) {
         DEBUG_PRINTF("[BLE] Re-enabling auto-disabled sensor: %s\n", name);
         flags.enable = true;
     }
     
     // Restore battery level (UINT32_MAX = not yet measured)
-    if (obj.containsKey("battery")) {
-        last_battery = obj["battery"].as<uint32_t>();
+    if (obj.containsKey(F("battery"))) {
+        last_battery = obj[F("battery")].as<uint32_t>();
     } else {
         last_battery = UINT32_MAX;
     }
     
     // Restore DIS (Device Information Service) data
     // Accept both "ble_manufacturer" (new) and "ble_mfr" (legacy) for backward compatibility
-    if (obj.containsKey("ble_manufacturer")) {
-        const char* m = obj["ble_manufacturer"].as<const char*>();
+    if (obj.containsKey(F("ble_manufacturer"))) {
+        const char* m = obj[F("ble_manufacturer")].as<const char*>();
         if (m) {
             strncpy(ble_manufacturer, m, sizeof(ble_manufacturer) - 1);
             ble_manufacturer[sizeof(ble_manufacturer) - 1] = 0;
         }
-    } else if (obj.containsKey("ble_mfr")) {
-        const char* m = obj["ble_mfr"].as<const char*>();
+    } else if (obj.containsKey(F("ble_mfr"))) {
+        const char* m = obj[F("ble_mfr")].as<const char*>();
         if (m) {
             strncpy(ble_manufacturer, m, sizeof(ble_manufacturer) - 1);
             ble_manufacturer[sizeof(ble_manufacturer) - 1] = 0;
         }
     }
-    if (obj.containsKey("ble_model")) {
-        const char* m = obj["ble_model"].as<const char*>();
+    if (obj.containsKey(F("ble_model"))) {
+        const char* m = obj[F("ble_model")].as<const char*>();
         if (m) {
             strncpy(ble_model, m, sizeof(ble_model) - 1);
             ble_model[sizeof(ble_model) - 1] = 0;
@@ -1163,20 +1163,20 @@ void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
     if (!obj) return;
 
     // BLE-specific fields
-    if (mac_address_cfg[0]) obj["mac"] = mac_address_cfg;
-    if (characteristic_uuid_cfg[0]) obj["char_uuid"] = characteristic_uuid_cfg;
-    if (payload_format_cfg != (uint8_t)FORMAT_TEMP_001) obj["format"] = payload_format_cfg;
+    if (mac_address_cfg[0]) obj[F("mac")] = mac_address_cfg;
+    if (characteristic_uuid_cfg[0]) obj[F("char_uuid")] = characteristic_uuid_cfg;
+    if (payload_format_cfg != (uint8_t)FORMAT_TEMP_001) obj[F("format")] = payload_format_cfg;
     // Note: assigned_unitid is handled by SensorBase::toJson
     
     // Persist last successful read time for auto-disable feature
-    if (adv_last_success_time > 0) obj["adv_last_ok"] = adv_last_success_time;
+    if (adv_last_success_time > 0) obj[F("adv_last_ok")] = adv_last_success_time;
     
     // Battery level — only persist when actually measured
-    if (last_battery != UINT32_MAX) obj["battery"] = last_battery;
+    if (last_battery != UINT32_MAX) obj[F("battery")] = last_battery;
     
     // Persist DIS (Device Information Service) data (consistent with ZigBee naming: zb_manufacturer/zb_model)
-    if (ble_manufacturer[0]) obj["ble_manufacturer"] = ble_manufacturer;
-    if (ble_model[0]) obj["ble_model"] = ble_model;
+    if (ble_manufacturer[0]) obj[F("ble_manufacturer")] = ble_manufacturer;
+    if (ble_model[0]) obj[F("ble_model")] = ble_model;
 }
 
 static bool ble_uuid_extract_16bit(const char* uuid_in, uint16_t* out_uuid16) {

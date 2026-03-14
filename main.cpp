@@ -592,6 +592,11 @@ void do_setup() {
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
 
+	#if defined(ESP8266)
+	// Restore password/WiFi settings after OTA reboot if a restore marker exists.
+	online_update_resume();
+	#endif
+
 #if defined(ESP32C5)
 	// Load IEEE 802.15.4 radio mode (disabled/matter/zigbee_gw/zigbee_client)
 	// Must be called before any Matter or Zigbee initialization
@@ -783,7 +788,7 @@ void overcurrent_monitor() {
 #if defined(ESP8266)
 void gratuitousARPTask() {
 		if (!useEth && os.get_wifi_mode()!=WIFI_MODE_STA) return;
-		DEBUG_PRINTLN(F("gratuiousARPTask"));
+		//DEBUG_PRINTLN(F("gratuiousARPTask"));
         netif *n = netif_list;
         while (n) {
                 etharp_gratuitous(n);
@@ -1105,6 +1110,13 @@ void do_loop()
 	wdt_timeout = 0;
 
 	#endif
+
+	online_update_loop();
+	if (online_update_in_progress()) {
+		// Keep the loop lightweight during OTA to avoid WDT under heavy network contention.
+		yield();
+		return;
+	}
 
 	ui_state_machine();
 

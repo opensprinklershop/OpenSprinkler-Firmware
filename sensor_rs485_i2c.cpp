@@ -48,10 +48,28 @@ static bool i2c_rs485_wire_started = false;
 #define REG_LCR     0x03
 #define REG_MCR     0x04
 #define REG_LSR     0x05
+#define REG_SPR     0x07  // Scratch Pad Register (kein HW-Effekt, für Chip-Erkennung)
 #define REG_IOD     0x0A
 #define REG_IOS     0x0B
 #define REG_IOC     0x0E
 #define REG_EFCR    0x0F
+
+// Schreib/Rücklese-Test auf dem SC16IS752 Scratch Pad Register (REG_SPR).
+// Stellt sicher, dass wirklich ein SC16IS752 antwortet und nicht ein anderer I2C-Teilnehmer.
+static bool sc16is752_scratch_test(int addr) {
+  const uint8_t TEST_VAL = 0xA5;
+  Wire.beginTransmission(addr);
+  Wire.write((REG_SPR << 3) | 0x00);  // Schreibzugriff auf SPR
+  Wire.write(TEST_VAL);
+  if (Wire.endTransmission() != 0) return false;
+
+  Wire.beginTransmission(addr);
+  Wire.write((REG_SPR << 3) | 0x80);  // Lesezugriff auf SPR
+  Wire.endTransmission(false);
+  Wire.requestFrom(addr, 1);
+  if (!Wire.available()) return false;
+  return (Wire.read() == TEST_VAL);
+}
 
 static bool ensure_i2c_rs485_bus() {
   if (!i2c_rs485_wire_started) {
@@ -77,10 +95,19 @@ void sensor_rs485_i2c_init() {
   if (!ensure_i2c_rs485_bus()) {
     return;
   }
-  if (detect_i2c(ASB_I2C_RS485_ADDR)) {    // 0x48
-    i2c_rs485_addr = ASB_I2C_RS485_ADDR;
-    // DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
-    add_asb_detected_boards(ASB_I2C_RS485);
+  if (detect_i2c(ASB_I2C_RS485_ADDR)) {    // 0x4C
+    if (sc16is752_scratch_test(ASB_I2C_RS485_ADDR)) {
+      i2c_rs485_addr = ASB_I2C_RS485_ADDR;
+      // DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
+      add_asb_detected_boards(ASB_I2C_RS485);
+    }
+  }
+  else if (detect_i2c(ASB_I2C_RS485_ADDR_ALT)) {    // 0x48 wrong address, but for backward compatibility we still support it
+    if (sc16is752_scratch_test(ASB_I2C_RS485_ADDR_ALT)) {
+      i2c_rs485_addr = ASB_I2C_RS485_ADDR_ALT;
+      // DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR_ALT);
+      add_asb_detected_boards(ASB_I2C_RS485);
+    }
   }
 }
 
@@ -556,25 +583,25 @@ void RS485I2CSensor::toJson(ArduinoJson::JsonObject obj) const {
   rs |= (rs485_flags.speed & 0x7) << 3;
   rs |= (rs485_flags.swapped & 0x1) << 6;
   rs |= (rs485_flags.datatype & 0x7) << 7;
-  obj["rs485flags"] = rs;
-  obj["rs485code"] = rs485_code;
-  obj["rs485reg"] = rs485_reg;
+  obj[F("rs485flags")] = rs;
+  obj[F("rs485code")] = rs485_code;
+  obj[F("rs485reg")] = rs485_reg;
 }
 
 void RS485I2CSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
   SensorBase::fromJson(obj);
   
   // RS485-specific fields
-  if (obj.containsKey("rs485flags")) {
-    uint16_t rs = obj["rs485flags"];
+  if (obj.containsKey(F("rs485flags"))) {
+    uint16_t rs = obj[F("rs485flags")];
     rs485_flags.parity = (rs >> 0) & 0x3;
     rs485_flags.stopbits = (rs >> 2) & 0x1;
     rs485_flags.speed = (rs >> 3) & 0x7;
     rs485_flags.swapped = (rs >> 6) & 0x1;
     rs485_flags.datatype = (rs >> 7) & 0x7;
   }
-  if (obj.containsKey("rs485code")) rs485_code = obj["rs485code"];
-  if (obj.containsKey("rs485reg")) rs485_reg = obj["rs485reg"];
+  if (obj.containsKey(F("rs485code"))) rs485_code = obj[F("rs485code")];
+  if (obj.containsKey(F("rs485reg"))) rs485_reg = obj[F("rs485reg")];
 }
 
 void RS485I2CSensor::emitJson(BufferFiller& bfill) const {

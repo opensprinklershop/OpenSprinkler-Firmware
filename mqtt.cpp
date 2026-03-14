@@ -614,6 +614,15 @@ int OSMqtt::_init(void) {
 		client = 0;
 	}
 
+	#if defined(ESP8266)
+		// Guard: MQTT client + PubSubClient buffer need ~2-3KB;
+		// refuse to init if heap is critically low to avoid OOM crash.
+		if (freeMemory() < 8000) {
+			DEBUG_PRINTLN(F("MQTT init skipped (low heap)"));
+			return MQTT_ERROR;
+		}
+	#endif
+
 	#if defined(ESP8266) || defined(ESP32)
 		client = new WiFiClient();
 		#if defined(ESP32)
@@ -630,7 +639,7 @@ int OSMqtt::_init(void) {
 	#if defined(ESP32)
 	mqtt_client->setBufferSize(8192);
 	#else
-	mqtt_client->setBufferSize(2048); //Most LORA Pakets are bigger!
+	mqtt_client->setBufferSize(ESP8266_MQTT_BUFFER_SIZE);
 	#endif
 
 	if (mqtt_client == NULL) {
@@ -756,7 +765,8 @@ void registerCallback(int key, MQTT_CALLBACK_SIGNATURE) {
 		key_callbacks[j].key = key;
 		return;
 	}
-	DEBUG_LOGF("MQTT setCallback: failed!");
+	if (callback)
+		DEBUG_LOGF("MQTT setCallback: failed!");
 }
 
 void OSMqtt::setCallback(int key, MQTT_CALLBACK_SIGNATURE) {
