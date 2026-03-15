@@ -55,10 +55,15 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	memset(&manifest, 0, sizeof(manifest));
 	manifest.valid = false;
 
+	DEBUG_PRINTF("[OTA] WiFi status: %d, IP: %s\n",
+		(int)WiFi.status(), WiFi.localIP().toString().c_str());
+	DEBUG_PRINTF("[OTA] Manifest URL: %s\n", OTA_MANIFEST_URL);
+
 	ota_set_state(OTA_STATUS_CHECKING, 0, "Checking for updates...");
 
 	WiFiClientSecure *client = new WiFiClientSecure();
 	if (!client) {
+		DEBUG_PRINTLN(F("[OTA] ERROR: WiFiClientSecure allocation failed"));
 		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Failed to create SSL client");
 		return false;
 	}
@@ -73,18 +78,23 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 		http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 		http.setTimeout(15000);
 
+		DEBUG_PRINTLN(F("[OTA] Connecting to update server..."));
 		if (http.begin(*client, OTA_MANIFEST_URL)) {
 			int httpCode = http.GET();
+			DEBUG_PRINTF("[OTA] HTTP response code: %d\n", httpCode);
 			if (httpCode == HTTP_CODE_OK) {
 				payload = http.getString();
+				DEBUG_PRINTF("[OTA] Manifest received (%u bytes)\n", (unsigned)payload.length());
 				httpOk = true;
 			} else {
 				char buf[64];
 				snprintf(buf, sizeof(buf), "HTTP error: %d", httpCode);
+				DEBUG_PRINTF("[OTA] ERROR: %s\n", buf);
 				ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, buf);
 			}
 			http.end();
 		} else {
+			DEBUG_PRINTLN(F("[OTA] ERROR: http.begin() failed — cannot connect to update server"));
 			ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
 		}
 	} // HTTPClient destroyed here while client is still valid
@@ -107,7 +117,11 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	strncpy(manifest.changelog, doc["changelog"] | "", sizeof(manifest.changelog) - 1);
 	manifest.valid = (manifest.fw_version > 0 && manifest.zigbee_url[0] && manifest.matter_url[0]);
 
+	DEBUG_PRINTF("[OTA] Manifest: fw=%u.%u valid=%d\n",
+		(unsigned)manifest.fw_version, (unsigned)manifest.fw_minor, (int)manifest.valid);
+
 	if (!manifest.valid) {
+		DEBUG_PRINTLN(F("[OTA] ERROR: Manifest missing fw_version, zigbee_url or matter_url"));
 		ota_set_state(OTA_STATUS_ERROR_PARSE, 0, "Invalid manifest data");
 		return false;
 	}
@@ -115,6 +129,10 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	// Compare versions — newer if major > current OR (same major AND minor > current)
 	bool newer = (manifest.fw_version > OS_FW_VERSION) ||
 	             (manifest.fw_version == OS_FW_VERSION && manifest.fw_minor > OS_FW_MINOR);
+
+	DEBUG_PRINTF("[OTA] Current: %u.%u  Server: %u.%u  Newer: %d\n",
+		(unsigned)OS_FW_VERSION, (unsigned)OS_FW_MINOR,
+		(unsigned)manifest.fw_version, (unsigned)manifest.fw_minor, (int)newer);
 
 	if (newer) {
 		ota_set_state(OTA_STATUS_AVAILABLE, 0, "Update available");
@@ -146,6 +164,8 @@ static bool ota_flash_partition(const char* url, const char* partLabel,
 	DEBUG_PRINTF("[OTA] Target partition: %s at 0x%06x (%u bytes)\n",
 		target->label, (unsigned)target->address, (unsigned)target->size);
 
+	DEBUG_PRINTF("[OTA] Downloading %s from: %s\n", partLabel, url);
+
 	WiFiClientSecure *client = new WiFiClientSecure();
 	if (!client) {
 		ota_set_state(err_status, 0, "Failed to create SSL client");
@@ -162,14 +182,17 @@ static bool ota_flash_partition(const char* url, const char* partLabel,
 		http.setTimeout(30000);
 
 		if (!http.begin(*client, url)) {
+			DEBUG_PRINTF("[OTA] ERROR: http.begin() failed for %s\n", partLabel);
 			ota_set_state(err_status, 0, "HTTP begin failed");
 			goto cleanup;
 		}
 
 		{
 			int httpCode = http.GET();
+			DEBUG_PRINTF("[OTA] HTTP response for %s: %d\n", partLabel, httpCode);
 			if (httpCode != HTTP_CODE_OK) {
 				snprintf(msg, sizeof(msg), "Download %s failed: HTTP %d", partLabel, httpCode);
+				DEBUG_PRINTF("[OTA] ERROR: %s\n", msg);
 				ota_set_state(err_status, 0, msg);
 				http.end();
 				goto cleanup;
@@ -441,7 +464,7 @@ static void ota_update_task(void* param) {
 	// Done — restore sensor files from backup if originals were lost, then reboot
 	ota_restore_sensor_files();
 	ota_set_state(OTA_STATUS_DONE, 100, "Update complete. Rebooting...");
-	delay(2000);
+	delay(5000);
 	os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 #endif
 
@@ -530,7 +553,7 @@ static void ota_phase2_task(void* param) {
 #endif
 
 	ota_set_state(OTA_STATUS_DONE, 100, "Update complete. Rebooting...");
-	delay(2000);
+	delay(5000);
 	os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 
 	s_ota_task = NULL;

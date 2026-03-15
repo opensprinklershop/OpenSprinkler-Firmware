@@ -45,6 +45,12 @@ This file helps AI coding agents get productive quickly in this repository. It f
 ## Commit messages ✅
 - Always write AI-generated commit messages in English.
 
+## Important Learnings 🧠
+- Dokumentiere wichtige Erkenntnisse.
+- When changing OTA UX in UI, keep completion semantics clear: progress can stay below 100% until real device completion, then jump to 100%.
+- For API-related docs, always state platform availability explicitly (ESP32, ESP8266, OSPi) for each endpoint group.
+- If MCP is documented, distinguish built-in firmware MCP (`/mcp`) from external Node.js MCP server (`tools/mcp-server`).
+
 ## documentation & comments 
 -  place for documentation is docs/as_api_docs and for reference docs/docs
 📝

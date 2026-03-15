@@ -43,6 +43,23 @@ void server_json_status_main();
 void server_json_stations_main(const OTF::Request& req, OTF::Response& res);
 void server_json_programs_main(const OTF::Request& req, OTF::Response& res);
 
+// Full-handler helpers – callable in capture mode (no-param read queries)
+void server_json_station_special(const OTF::Request& req, OTF::Response& res);
+void server_sensor_list(const OTF::Request& req, OTF::Response& res);
+void server_usage(const OTF::Request& req, OTF::Response& res);
+void server_sensorprog_list(const OTF::Request& req, OTF::Response& res);
+void server_monitor_list(const OTF::Request& req, OTF::Response& res);
+void server_sensorconfig_backup(const OTF::Request& req, OTF::Response& res);
+void server_ieee802154_get(const OTF::Request& req, OTF::Response& res);
+#if defined(OS_ENABLE_ZIGBEE)
+void server_zigbee_discovered_devices(const OTF::Request& req, OTF::Response& res);
+void server_zigbee_status(const OTF::Request& req, OTF::Response& res);
+#endif
+#if defined(OS_ENABLE_BLE)
+void server_ble_discovered_devices(const OTF::Request& req, OTF::Response& res);
+#endif
+void server_json_log(const OTF::Request& req, OTF::Response& res);
+
 // Action helpers from opensprinkler_server.cpp / main.cpp
 extern void schedule_all_stations(unsigned long curr_time, unsigned char req_option);
 extern void turn_off_station(unsigned char sid, unsigned long curr_time, unsigned char shift);
@@ -269,6 +286,212 @@ static String tool_get_debug(const OTF::Request& /*req*/, OTF::Response& /*res*/
   return out;
 }
 
+// ─── Capture-based read-only tool helper ─────────────────────────────────────
+// Calls a full server handler in MCP capture mode (process_password and
+// print_header are no-ops in capture mode; handle_return appends the final
+// buffer chunk to g_mcp_capture_buf rather than writing to the OTF response).
+
+static String tool_capture(void (*handler)(const OTF::Request&, OTF::Response&),
+                            const OTF::Request& req, OTF::Response& res) {
+  mcp_begin_capture();
+  handler(req, res);
+  return mcp_end_capture();
+}
+
+// ─── Tool: get_special_stations ──────────────────────────────────────────────
+
+static String tool_get_special_stations(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_json_station_special, req, res);
+}
+
+// ─── Tool: get_sensors ───────────────────────────────────────────────────────
+
+static String tool_get_sensors(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_sensor_list, req, res);
+}
+
+// ─── Tool: list_adjustments ──────────────────────────────────────────────────
+
+static String tool_list_adjustments(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_sensorprog_list, req, res);
+}
+
+// ─── Tool: list_monitors ─────────────────────────────────────────────────────
+
+static String tool_list_monitors(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_monitor_list, req, res);
+}
+
+// ─── Tool: backup_sensor_config ──────────────────────────────────────────────
+
+static String tool_backup_sensor_config(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_sensorconfig_backup, req, res);
+}
+
+// ─── Tool: get_system_resources ──────────────────────────────────────────────
+
+static String tool_get_system_resources(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_usage, req, res);
+}
+
+// ─── Tool: get_ieee802154_config ─────────────────────────────────────────────
+
+static String tool_get_ieee802154_config(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_ieee802154_get, req, res);
+}
+
+// ─── Tool: get_zigbee_devices ────────────────────────────────────────────────
+
+#if defined(OS_ENABLE_ZIGBEE)
+static String tool_get_zigbee_devices(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_zigbee_discovered_devices, req, res);
+}
+
+// ─── Tool: get_zigbee_status ─────────────────────────────────────────────────
+
+static String tool_get_zigbee_status(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_zigbee_status, req, res);
+}
+#endif // OS_ENABLE_ZIGBEE
+
+// ─── Tool: get_ble_devices ───────────────────────────────────────────────────
+
+#if defined(OS_ENABLE_BLE)
+static String tool_get_ble_devices(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_ble_discovered_devices, req, res);
+}
+#endif // OS_ENABLE_BLE
+
+// ─── Tool: get_log ───────────────────────────────────────────────────────────
+// server_json_log reads start/end/hist/type from the HTTP query string, but
+// in MCP context those params come from the JSON "arguments".  We therefore
+// forward them as a fake char-string that findKeyVal (non-OTF variant) can
+// parse, and call server_json_log in capture mode so it writes to the buffer.
+
+// Additional helpers from main.cpp / opensprinkler_server.cpp (not in headers):
+extern void make_logfile_name(char *name);
+extern int  available_ether_buffer();
+extern int  file_fgets(File file, char* buf, int maxsize);
+extern void send_packet(const OTF::Request& req, OTF::Response& res);
+extern unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen,
+                                const char *key, bool key_in_pgm = false,
+                                uint8_t *keyfound = NULL);
+
+static String tool_get_log(const OTF::Request& req, OTF::Response& res,
+                            const ArduinoJson::JsonObjectConst& args) {
+  // Build a synthetic query string from the MCP arguments so that
+  // server_json_log (capture mode) can find the parameters it expects.
+  // server_json_log reads: hist OR (start + end), and optionally type.
+  char qbuf[128];
+  qbuf[0] = '\0';
+
+  if (args.containsKey("hist")) {
+    int hist = args["hist"].as<int>();
+    snprintf(qbuf, sizeof(qbuf), "hist=%d", hist);
+  } else {
+    ulong start_ep = args["start"] | (ulong)0;
+    ulong end_ep   = args["end"]   | (ulong)0;
+    if (start_ep == 0 && end_ep == 0) {
+      // Default: last 7 days
+      ulong now = (ulong)os.now_tz();
+      end_ep   = now;
+      start_ep = now - 7UL * 86400UL;
+    }
+    snprintf(qbuf, sizeof(qbuf), "start=%lu&end=%lu", start_ep, end_ep);
+  }
+
+  if (args.containsKey("type")) {
+    const char* t = args["type"] | "";
+    if (t && t[0]) {
+      size_t used = strlen(qbuf);
+      snprintf(qbuf + used, sizeof(qbuf) - used, "&type=%s", t);
+    }
+  }
+
+  // Use the non-OTF findKeyVal overload by building a temporary fake
+  // OTF request wrapper is not available here, so we call server_json_log
+  // via capture mode and rely on the OTF request carrying no conflicting
+  // query params (pw= is already consumed by the MCP auth layer).
+  // Instead, we directly pass the qbuf string to the log-reader logic below.
+
+  // --- Log reading ---  (mirrors server_json_log body, reads start/end/hist
+  //                      from qbuf rather than from the OTF request)
+  unsigned int start_day, end_day;
+
+  {
+    char tbuf[16];
+    if (findKeyVal(qbuf, tbuf, sizeof(tbuf), PSTR("hist"), true)) {
+      int hist = atoi(tbuf);
+      if (hist < 0 || hist > 365) hist = 7;
+      end_day   = (unsigned int)((ulong)os.now_tz() / 86400UL);
+      start_day = end_day - (unsigned int)hist;
+    } else {
+      char tbuf2[16];
+      findKeyVal(qbuf, tbuf,  sizeof(tbuf),  PSTR("start"), true);
+      findKeyVal(qbuf, tbuf2, sizeof(tbuf2), PSTR("end"), true);
+      ulong s = (tbuf[0]  ? strtoul(tbuf,  nullptr, 10) : 0);
+      ulong e = (tbuf2[0] ? strtoul(tbuf2, nullptr, 10) : 0);
+      if (s == 0 && e == 0) {
+        end_day   = (unsigned int)((ulong)os.now_tz() / 86400UL);
+        start_day = end_day - 7;
+      } else {
+        start_day = (unsigned int)(s / 86400UL);
+        end_day   = (unsigned int)(e / 86400UL);
+        if (start_day > end_day || (end_day - start_day) > 365)
+          end_day = start_day + 7;
+      }
+    }
+  }
+
+  char type_filter[4] = {0};
+  bool type_specified = false;
+  {
+    char tbuf[8];
+    if (findKeyVal(qbuf, tbuf, sizeof(tbuf), PSTR("type"), true)) {
+      strncpy(type_filter, tbuf, 3);
+      type_filter[3] = '\0';
+      type_specified = true;
+    }
+  }
+
+  mcp_begin_capture();
+  bfill.emit_p(PSTR("["));
+  bool comma = false;
+
+  for (unsigned int i = start_day; i <= end_day; i++) {
+    char name_buf[16];
+    snprintf(name_buf, sizeof(name_buf), "%u", i);
+    make_logfile_name(name_buf);
+
+    File file = LittleFS.open(name_buf, "r");
+    if (!file) continue;
+
+    while (true) {
+      int result = file_fgets(file, tmp_buffer, TMP_BUFFER_SIZE);
+      if (result <= 0) { file.close(); break; }
+      tmp_buffer[result] = '\0';
+
+      // Find type field after first comma
+      char *ptype = tmp_buffer;
+      while (*ptype && *ptype != ',') ptype++;
+      if (*ptype != ',') continue;
+      ptype++;
+
+      if (type_specified && strncmp(type_filter, ptype + 1, 2)) continue;
+      if (!type_specified && (!strncmp("wl", ptype + 1, 2) || !strncmp("fl", ptype + 1, 2))) continue;
+
+      if (comma) bfill.emit_p(PSTR(","));
+      else comma = true;
+      bfill.emit_p(PSTR("$S"), tmp_buffer);
+      if (available_ether_buffer() <= 0) {
+        send_packet(req, res);
+      }
+    }
+  }
+  bfill.emit_p(PSTR("]"));
+  return mcp_end_capture();
+}
+
 // ─── Tool: manual_station_run ────────────────────────────────────────────────
 
 static int tool_manual_station_run(const ArduinoJson::JsonObjectConst& args) {
@@ -396,6 +619,48 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
     "Get all irrigation programs (schedules, durations, names). Equivalent to /jp.");
   add_ro("get_debug",
     "Get firmware build date/time, free heap, flash usage, WiFi RSSI. Equivalent to /db.");
+  add_ro("get_special_stations",
+    "Get special station data (RF, remote, GPIO, HTTP/HTTPS, OTC). Equivalent to /je.");
+  add_ro("get_sensors",
+    "List all configured sensors with their current values. Equivalent to /sl.");
+  add_ro("list_adjustments",
+    "List sensor-based program adjustments. Equivalent to /se.");
+  add_ro("list_monitors",
+    "List sensor monitors (threshold-based program triggers). Equivalent to /ml.");
+  add_ro("backup_sensor_config",
+    "Export full sensor/adjustment/monitor configuration backup. Equivalent to /sx.");
+  add_ro("get_system_resources",
+    "Get system resource usage: memory, storage, network, MQTT status. Equivalent to /du.");
+  add_ro("get_ieee802154_config",
+    "Read IEEE 802.15.4 radio configuration (ZigBee/Matter mode, boot variant). ESP32-C5 only. Equivalent to /ir.");
+#if defined(OS_ENABLE_ZIGBEE)
+  add_ro("get_zigbee_devices",
+    "Get ZigBee device list (gateway mode) or discovered devices. ESP32-C5 only. Equivalent to /zg.");
+  add_ro("get_zigbee_status",
+    "Get ZigBee radio status and network state. ESP32-C5 only. Equivalent to /zs.");
+#endif
+#if defined(OS_ENABLE_BLE)
+  add_ro("get_ble_devices",
+    "List discovered BLE devices from the last scan. ESP32 only. Equivalent to /bd.");
+#endif
+
+  // get_log (parameterized)
+  {
+    auto t = tools.add<ArduinoJson::JsonObject>();
+    t["name"]        = "get_log";
+    t["description"] = "Get watering log data for a time range. Equivalent to /jl.";
+    auto schema = t["inputSchema"].to<ArduinoJson::JsonObject>();
+    schema["type"] = "object";
+    auto props = schema["properties"].to<ArduinoJson::JsonObject>();
+    auto hist2 = props["hist"].to<ArduinoJson::JsonObject>();
+    hist2["type"] = "integer"; hist2["description"] = "History window in days back from today";
+    auto start2 = props["start"].to<ArduinoJson::JsonObject>();
+    start2["type"] = "integer"; start2["description"] = "Start time as Unix epoch seconds";
+    auto end2 = props["end"].to<ArduinoJson::JsonObject>();
+    end2["type"] = "integer"; end2["description"] = "End time as Unix epoch seconds";
+    auto type2 = props["type"].to<ArduinoJson::JsonObject>();
+    type2["type"] = "string"; type2["description"] = "Event type filter: s1, s2, rd, fl, wl";
+  }
 
   // manual_station_run
   {
@@ -616,6 +881,43 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
 
     } else if (strcmp(tool_name, "get_debug") == 0) {
       content_json = tool_get_debug(req, res);
+
+    } else if (strcmp(tool_name, "get_special_stations") == 0) {
+      content_json = tool_get_special_stations(req, res);
+
+    } else if (strcmp(tool_name, "get_sensors") == 0) {
+      content_json = tool_get_sensors(req, res);
+
+    } else if (strcmp(tool_name, "list_adjustments") == 0) {
+      content_json = tool_list_adjustments(req, res);
+
+    } else if (strcmp(tool_name, "list_monitors") == 0) {
+      content_json = tool_list_monitors(req, res);
+
+    } else if (strcmp(tool_name, "backup_sensor_config") == 0) {
+      content_json = tool_backup_sensor_config(req, res);
+
+    } else if (strcmp(tool_name, "get_system_resources") == 0) {
+      content_json = tool_get_system_resources(req, res);
+
+    } else if (strcmp(tool_name, "get_ieee802154_config") == 0) {
+      content_json = tool_get_ieee802154_config(req, res);
+
+#if defined(OS_ENABLE_ZIGBEE)
+    } else if (strcmp(tool_name, "get_zigbee_devices") == 0) {
+      content_json = tool_get_zigbee_devices(req, res);
+
+    } else if (strcmp(tool_name, "get_zigbee_status") == 0) {
+      content_json = tool_get_zigbee_status(req, res);
+#endif
+
+#if defined(OS_ENABLE_BLE)
+    } else if (strcmp(tool_name, "get_ble_devices") == 0) {
+      content_json = tool_get_ble_devices(req, res);
+#endif
+
+    } else if (strcmp(tool_name, "get_log") == 0) {
+      content_json = tool_get_log(req, res, args);
 
     // Action tools:
     } else if (strcmp(tool_name, "manual_station_run") == 0) {

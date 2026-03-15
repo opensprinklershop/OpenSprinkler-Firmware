@@ -72,7 +72,11 @@
 	#define OTF_PARAMS_DEF const OTF::Request &req,OTF::Response &res
 	#define OTF_PARAMS req,res
 	#define FKV_SOURCE req
+#if defined(ESP32)
+	#define handle_return(x) { if(g_mcp_capture_active){if((x)==HTML_OK){int _l=(int)bfill.position();if(_l>0)g_mcp_capture_buf.concat(ether_buffer,(unsigned int)_l);}return;} if((x)==HTML_OK)res.writeBodyData(ether_buffer,(int)bfill.position());else otf_send_result(req,res,(x));return;}
+#else
 	#define handle_return(x) {if(x==HTML_OK) res.writeBodyData(ether_buffer, (int)bfill.position()); else otf_send_result(req,res,x); return;}
+#endif
 #else
 	extern EthernetClient *m_client;
 	#define OTF_PARAMS_DEF
@@ -330,6 +334,9 @@ char dec2hexchar(unsigned char dec) {
 
 #if defined(USE_OTF)
 void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
+#if defined(ESP32)
+	if (g_mcp_capture_active) return;
+#endif
 	 // Signal radio coex: WiFi is serving a request
 	res.writeStatus(200, F("OK"));
 	res.writeHeader(F("Content-Type"), isJson?F("application/json"):F("text/html"));
@@ -567,6 +574,10 @@ boolean check_password(char *p)
 {
 #if defined(DEMO)
 	return true;
+#endif
+#if defined(ESP32) && defined(USE_OTF)
+	// MCP capture mode: auth already verified by the MCP handler
+	if (g_mcp_capture_active) return true;
 #endif
 	if (os.iopts[IOPT_IGNORE_PASSWORD])  return true;
 
@@ -5292,6 +5303,11 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 
 	BLEDeviceInfo devices[20];
 	int count = sensor_ble_get_discovered_devices(devices, 20);
+	DEBUG_PRINTF("[BLE][API] /bd count=%d scanning=%d onresult_total=%d discovered_total=%d\n",
+	             count,
+	             sensor_ble_is_scanning() ? 1 : 0,
+	             sensor_ble_onresult_total(),
+	             sensor_ble_discovered_count());
 	
 	bfill.emit_p(PSTR("{\"devices\":["));
 	

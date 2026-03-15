@@ -122,6 +122,16 @@ static const uint32_t BLE_CONNECT_TIMEOUT_MS = 400;
 static bool ble_init_failed = false;
 static uint32_t ble_init_retry_at = 0;
 
+// Discovery-scan debug counters (reset on each user-triggered scan)
+static volatile uint32_t ble_dbg_disc_onresult = 0;
+static volatile uint32_t ble_dbg_disc_ignored = 0;
+static volatile uint32_t ble_dbg_disc_lock_miss = 0;
+static volatile uint32_t ble_dbg_disc_unmanaged_skip = 0;
+static volatile uint32_t ble_dbg_disc_added = 0;
+static volatile uint32_t ble_dbg_disc_updated = 0;
+static volatile uint32_t ble_dbg_lock_null = 0;
+static volatile uint32_t ble_dbg_lock_timeout = 0;
+
 // Background scan completion callback
 static void ble_bg_scan_complete_cb(BLEScanResults results) {
     bg_scan_active = false;
@@ -134,7 +144,19 @@ static void ble_discovery_scan_complete_cb(BLEScanResults results) {
     discovery_scan_active = false;
     discovery_scan_end = 0;
     zigbee_coex_yield_for_ble(false);  // restore Zigbee priority
-    DEBUG_PRINTF("[BLE] Discovery scan complete: %d raw results\n", (int)results.getCount());
+    int discovered_count = sensor_ble_discovered_count();
+    DEBUG_PRINTF("[BLE] Discovery scan complete: raw=%d onResult=%lu added=%lu updated=%lu ignored=%lu unmanaged=%lu lock_miss=%lu discovered=%d\n",
+                 (int)results.getCount(),
+                 (unsigned long)ble_dbg_disc_onresult,
+                 (unsigned long)ble_dbg_disc_added,
+                 (unsigned long)ble_dbg_disc_updated,
+                 (unsigned long)ble_dbg_disc_ignored,
+                 (unsigned long)ble_dbg_disc_unmanaged_skip,
+                 (unsigned long)ble_dbg_disc_lock_miss,
+                 discovered_count);
+    DEBUG_PRINTF("[BLE][DBG] lock_stats: null=%lu timeout=%lu\n",
+                 (unsigned long)ble_dbg_lock_null,
+                 (unsigned long)ble_dbg_lock_timeout);
     // Background scan will auto-restart from sensor_ble_loop()
 }
 
@@ -177,8 +199,20 @@ static std::vector<BLEDeviceInfo> discovered_ble_devices;
 static SemaphoreHandle_t discovered_devices_mutex = nullptr;
 
 static inline bool discovered_devices_lock(uint32_t timeout_ms = 100) {
-    if (!discovered_devices_mutex) return false;
-    return xSemaphoreTake(discovered_devices_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    if (!discovered_devices_mutex) {
+        discovered_devices_mutex = xSemaphoreCreateMutex();
+        if (!discovered_devices_mutex) {
+            ble_dbg_lock_null++;
+            return false;
+        }
+        DEBUG_PRINTLN("[BLE][DBG] discovered_devices_mutex created lazily");
+    }
+
+    if (xSemaphoreTake(discovered_devices_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        ble_dbg_lock_timeout++;
+        return false;
+    }
+    return true;
 }
 
 static inline void discovered_devices_unlock() {
@@ -1301,6 +1335,9 @@ const char* ble_uuid_to_name(const char* uuid) {
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         ble_onresult_total = ble_onresult_total + 1;  // count every advertisement received
+        if (discovery_scan_active) {
+            ble_dbg_disc_onresult++;
+        }
         // Get device address (format: "aa:bb:cc:dd:ee:ff")
         String addr_str = advertisedDevice.getAddress().toString();
         uint8_t addr_bytes[6];
@@ -1312,8 +1349,10 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             return; // Invalid address format
         }
 
-        // Skip logging for devices we have already decided to ignore
-        if (ble_ignore_contains(addr_bytes)) {
+        // Skip devices we have already decided to ignore, but NOT during a
+        // discovery scan – the user explicitly wants to see all nearby devices.
+        if (!discovery_scan_active && ble_ignore_contains(addr_bytes)) {
+            ble_dbg_disc_ignored++;
             return;
         }
         
@@ -1481,7 +1520,10 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         }
         
         // Check if device already exists in list
-        if (!discovered_devices_lock(50)) return; // skip if vector is busy
+        if (!discovered_devices_lock(0)) {
+            ble_dbg_disc_lock_miss++;
+            return; // skip if vector is busy
+        }
         bool already_exists = false;
         BLEDeviceInfo* existing_device = nullptr;
         for (auto& dev : discovered_ble_devices) {
@@ -1497,11 +1539,13 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             if (!ble_is_managed_mac(addr_bytes)) {
                 discovered_devices_unlock();
                 ble_ignore_insert(addr_bytes); // suppress future log output
+                ble_dbg_disc_unmanaged_skip++;
                 return; // not a configured sensor – ignore during background scan
             }
         }
         
         if (already_exists) {
+            ble_dbg_disc_updated++;
             // Update existing device
             existing_device->rssi = advertisedDevice.getRSSI();
             existing_device->last_seen = millis();
@@ -1530,6 +1574,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                              device_name, adv_temp, adv_hum, adv_battery);
             }
         } else {
+            ble_dbg_disc_added++;
             // Add new device
             BLEDeviceInfo new_dev;
             memset(&new_dev, 0, sizeof(new_dev));
@@ -1760,23 +1805,42 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     pBLEScan->clearResults();
 
     // Clear ignore table so discovery scan can see all devices
+    uint16_t ignore_before = ble_ignore_count();
     memset(ble_ignore_table, 0, sizeof(ble_ignore_table));
+
+    // Reset discovery debug counters for this scan session
+    ble_dbg_disc_onresult = 0;
+    ble_dbg_disc_ignored = 0;
+    ble_dbg_disc_lock_miss = 0;
+    ble_dbg_disc_unmanaged_skip = 0;
+    ble_dbg_disc_added = 0;
+    ble_dbg_disc_updated = 0;
+    ble_dbg_lock_null = 0;
+    ble_dbg_lock_timeout = 0;
+
+    // Mark discovery active before start() so onResult filtering stays open
+    // even when NimBLE executes start() in blocking mode.
+    discovery_scan_active = true;
+    discovery_scan_end = millis() + (actual_duration * 1000);
 
     zigbee_coex_yield_for_ble(true);   // lower Zigbee PTI during BLE discovery scan
     bool scan_started = pBLEScan->start(actual_duration, ble_discovery_scan_complete_cb, false);
     if (!scan_started) {
         zigbee_coex_yield_for_ble(false);  // restore on failure
+        discovery_scan_active = false;
+        discovery_scan_end = 0;
         DEBUG_PRINTF("[BLE] pBLEScan->start() FAILED (duration=%ds, passive=%d)\n", actual_duration, (int)passive);
         ble_sensor_lock_release();
         return;
     }
-    discovery_scan_active = true;
-    discovery_scan_end = millis() + (actual_duration * 1000);
 
     ble_sensor_lock_release();
 
     DEBUG_PRINTF("[BLE] Discovery scan started (duration=%ds, passive=%d)\n",
                  actual_duration, (int)passive);
+    DEBUG_PRINTF("[BLE][DBG] Discovery init: ignore_before=%u ignore_after=0 known_discovered=%d\n",
+                 (unsigned)ignore_before,
+                 sensor_ble_discovered_count());
 }
 
 /**

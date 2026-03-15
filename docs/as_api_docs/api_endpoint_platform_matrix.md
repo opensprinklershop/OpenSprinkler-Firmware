@@ -190,3 +190,25 @@ AP-mode routes (`start_server_ap()`):
 - BLE handlers: [`opensprinkler_server.cpp` L4622–L4722](../opensprinkler_server.cpp#L4622-L4722) — guard: `#if defined(ESP32) && defined(OS_ENABLE_BLE)`
 - Matter handler: [`opensprinkler_server.cpp` L4452–L4494](../opensprinkler_server.cpp#L4452-L4494) — guard: `#if defined(ESP32) && defined(ENABLE_MATTER)`
 - FYTA handlers: [`opensprinkler_server.cpp` L3054–L3145](../opensprinkler_server.cpp#L3054-L3145) — guard: `#if defined(ESP8266) || defined(ESP32) || defined(OSPI)`
+
+---
+
+## MCP Server Coverage and Platform Notes
+
+### Built-in MCP endpoint (`POST /mcp`)
+
+- Platform: ESP32 firmware only (`#if defined(ESP32) && defined(USE_OTF)`).
+- Not available on ESP8266 firmware.
+- Not available on OSPi/Linux native builds.
+
+### External Node.js MCP server (`tools/mcp-server`)
+
+- Works with ESP8266, ESP32, and OSPi controllers.
+- Provides a broader tool set by proxying REST endpoints from this matrix.
+
+### Practical function availability by platform
+
+- ESP8266: core controller + sensors + logs + programs + options + FYTA; no IEEE 802.15.4, ZigBee, BLE, or Matter endpoints.
+- ESP32 (non-C5): core + sensors + optional BLE/Matter endpoints (build flags required); no IEEE 802.15.4 or C5 ZigBee stack.
+- ESP32-C5: full superset including IEEE 802.15.4 and ZigBee (feature-flag dependent).
+- OSPi: core + sensors + FYTA endpoints relevant to Linux build; no ESP32 radio stack endpoints.
