@@ -22,7 +22,7 @@ function enable_i2c {
 
 DEBUG=""
 
-while getopts ":s:d" opt; do
+while getopts ":sd" opt; do
   case $opt in
     s)
 	  SILENT=true
@@ -34,6 +34,7 @@ while getopts ":s:d" opt; do
       ;;
   esac
 done
+shift "$((OPTIND-1))"
 
 FILENAME="sopts.dat"
 if [[ ! "$SILENT" && -f "$FILENAME" ]];  then
@@ -74,13 +75,17 @@ if [ "$1" == "demo" ]; then
     	otf=$(ls external/OpenThings-Framework-Firmware-Library/*.cpp)
     	ifx=$(ls external/influxdb-cpp/*.cpp)
     	g++ -o OpenSprinkler -DDEMO -DSMTP_OPENSSL $DEBUG -std=c++14 -include string.h main.cpp \
+		OpenSprinkler.cpp program.cpp opensprinkler_server.cpp utils.cpp weather.cpp gpio.cpp mqtt.cpp sunrise.cpp \
+		smtp.c RCSwitch.cpp sensor*.cpp notifier.cpp naett.c psram_utils.cpp TimeLib.cpp osinfluxdb.cpp \
+		$ws_include $ws $otf_include $otf $ifx_include \
+		-lpthread -lmosquitto -lssl -lcrypto -lcurl -li2c -lmodbus -lbluetooth
 else
 	echo "Installing required libraries..."
 	apt-get update
 	apt-get install -y \
 		bluetooth bluez libbluetooth-dev \
     	libmosquitto-dev \
-    	bluez-tools
+    	bluez-tools \
 		libi2c-dev libssl-dev libgpiod-dev gpiod libmodbus-dev libcurlpp-dev
 	enable_i2c
 

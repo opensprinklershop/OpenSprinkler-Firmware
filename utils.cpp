@@ -143,6 +143,7 @@ void initialiseEpoch()
 }
 
 // millis: returns milliseconds since epoch init
+#ifndef HAVE_TINY_WEBSOCKETS
 ulong millis (void)
 {
 	struct timeval tv ;
@@ -153,6 +154,7 @@ ulong millis (void)
 
 	return (ulong)(now - epochMilli) ;
 }
+#endif // HAVE_TINY_WEBSOCKETS
 
 ulong micros (void)
 {

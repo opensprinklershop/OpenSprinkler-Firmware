@@ -112,7 +112,7 @@ void MqttSensor::callback(char* mtopic, byte* payload, unsigned int length) {
 void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
     // DEBUG_PRINTLN("sensor_mqtt_callback0");
 	char* mtopic = (char*)msg->topic;
-	byte* payload = (byte*)msg->payload;
+	uint8_t* payload = (uint8_t*)msg->payload;
 	unsigned int length = msg->payloadlen;
 #endif
 
