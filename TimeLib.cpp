@@ -244,7 +244,7 @@ time_os_t makeTime(tmElements_t &tm){
 /* Low level system time functions	*/
 
 static uint32_t sysTime = 0;
-static uint32_t prevMillis = 0;
+static unsigned long prevMillis = 0;
 static uint32_t nextSyncTime = 0;
 static timeStatus_t Status = timeNotSet;
 
@@ -258,6 +258,7 @@ time_os_t sysUnsyncedTime = 0; // the time sysTime unadjusted by sync
 
 time_os_t now() {
 	// calculate number of seconds passed since last call to now()
+	if (prevMillis == 0) prevMillis = millis(); // initialize on first call (millis() may return Unix epoch ms)
 	while (millis() - prevMillis >= 1000) {
 		// millis() and prevMillis are both unsigned ints thus the subtraction will always be the absolute value of the difference
 		sysTime++;

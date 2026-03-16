@@ -2728,7 +2728,7 @@ static void check_network() {
 				printf("Destination host data:\n");
 				printf("    IP address: %s\n",
 					response.DestIPAddress.toString().c_str());
-				if(response.DestHostname != nullptr && response.DestHostname != "") {
+				if(!response.DestHostname.empty()) {
 					printf("    DNS name: %s\n",
 						response.DestHostname.c_str());
 				}
