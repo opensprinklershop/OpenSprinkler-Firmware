@@ -692,7 +692,7 @@ bool init_ENC28J60() {
 		digitalWrite(PIN_ETHER_CS, LOW);
 		SPI.transfer(0x00 | (ECON1 & 0x1f));
 		r = SPI.transfer(0);
-	DEBUG_PRINT("ECON1=")
+	DEBUG_PRINT(F("ECON1="))
 	DEBUG_PRINTLN(r);
 	if (r == 2) {
 		return false;
@@ -725,27 +725,27 @@ void etherOnEvent(arduino_event_id_t event, arduino_event_info_t info)
 {
 	switch (event) {
 		case ARDUINO_EVENT_ETH_START:
-			DEBUG_PRINTLN("ETH Started");
+			DEBUG_PRINTLN(F("ETH Started"));
 			//set eth hostname here
 			ETH.setHostname("esp32-eth0");
 			break;
 		case ARDUINO_EVENT_ETH_CONNECTED:
-			DEBUG_PRINTLN("ETH Connected");
+			DEBUG_PRINTLN(F("ETH Connected"));
 			break;
 		case ARDUINO_EVENT_ETH_GOT_IP:
 			DEBUG_PRINTLN(ETH);
 			useEth = true;
 			break;
 		case ARDUINO_EVENT_ETH_LOST_IP:
-			DEBUG_PRINTLN("ETH Lost IP");
+			DEBUG_PRINTLN(F("ETH Lost IP"));
 			//eth_connected = false;
 			break;
 		case ARDUINO_EVENT_ETH_DISCONNECTED:
-			DEBUG_PRINTLN("ETH Disconnected");
+			DEBUG_PRINTLN(F("ETH Disconnected"));
 			//eth_connected = false;
 			break;
 		case ARDUINO_EVENT_ETH_STOP:
-			DEBUG_PRINTLN("ETH Stopped");
+			DEBUG_PRINTLN(F("ETH Stopped"));
 			//eth_connected = false;
 			break;
 		default:
@@ -822,7 +822,7 @@ byte OpenSprinkler::start_ether() {
 	while ((!eth.connected()
 	|| eth.localIP().toString().equals("255.255.255.255")
 	|| eth.localIP().toString().equals("0.0.0.0")) && millis()<timeout) {
-		DEBUG_PRINT(".");
+		DEBUG_PRINT(F("."));
 		lcd.setCursor(13, 2);
 		lcd.print(timecount);
 		delay(1000);
@@ -832,9 +832,9 @@ byte OpenSprinkler::start_ether() {
 	if (eth.connected()) {
 		// if wired connection is successful at this point, copy the network ips to config
 		DEBUG_PRINTLN();
-		DEBUG_PRINT("eth.ip:");
+		DEBUG_PRINT(F("eth.ip:"));
 		DEBUG_PRINTLN(eth.localIP());
-		DEBUG_PRINT("eth.dns:");
+		DEBUG_PRINT(F("eth.dns:"));
 		DEBUG_PRINTLN(WiFi.dnsIP());
 
 		if (iopts[IOPT_USE_DHCP]) {
@@ -2390,7 +2390,7 @@ void remote_http_callback(char* buffer) {
 int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
 
 	if(server == NULL || server[0]==0 || port==0 ) { // sanity checking
-		DEBUG_PRINTLN("server:port is invalid!");
+		DEBUG_PRINTLN(F("server:port is invalid!"));
 		return HTTP_RQT_CONNECT_ERR;
 	}
 #if defined(ARDUINO)
@@ -2400,34 +2400,15 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		if(usessl) {
 			free_tmp_memory();
 			// BearSSL/HTTPS can easily OOM on low-heap ESP8266 builds.
-			// Be defensive: if heap is too low, fail gracefully instead of rebooting.
-			const size_t min_heap_for_https = ESP8266_MIN_HEAP_FOR_HTTPS;
-			size_t heap_now = freeMemory();
-			if (heap_now < min_heap_for_https) {
-				DEBUG_PRINTF("HTTPS skipped (low heap=%u)\n", (unsigned)heap_now);
-				restore_tmp_memory();
-				usessl = false;
-				if (port == 443) port = 80; // plain HTTP to port 443 returns garbage
-			}
-		}
-		if (usessl) {
 			WiFiClientSecure *_c = new WiFiClientSecure();
 			_c->setInsecure();
-  			bool mfln = _c->probeMaxFragmentLength(server, port, 512);
-  			DEBUG_PRINTF("MFLN supported: %s\n", mfln ? "yes" : "no");
-  			if (mfln) {
-				_c->setBufferSizes(512, 512);
-			} else {
-				// Keep fallback TLS buffers conservative on ESP8266 to coexist with MQTT.
-				_c->setBufferSizes(ESP8266_TLS_BUFFER_FALLBACK, ESP8266_TLS_BUFFER_FALLBACK);
-			}
+			_c->setBufferSizes(512, 512);
 			client = _c;
 		} else {
 			client = new WiFiClient();
 		}
 	#elif defined(ESP32)
 		if(usessl) {
-			free_tmp_memory();
 			WiFiClientSecure *_c = new WiFiClientSecure();
 			_c->setInsecure();
 			client = _c;
@@ -2447,11 +2428,11 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	#endif
 	do {
 		DEBUG_PRINT(server);
-		DEBUG_PRINT(":");
+		DEBUG_PRINT(F(":"));
 		DEBUG_PRINT(port);
-		DEBUG_PRINT("(");
+		DEBUG_PRINT(F("("));
 		DEBUG_PRINT(tries);
-		DEBUG_PRINTLN(")");
+		DEBUG_PRINTLN(F(")"));
 		#if defined(ESP32)
 		// Connect using direct call - TCPIP locking is handled by Arduino WiFi layer
 		conn_result = client->connect(server, port);
@@ -2466,7 +2447,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINTLN(F("failed."));
 		client->stop();
 		delete client;
-		#if defined(ESP8266) || defined(ESP32)
+		#if defined(ESP8266) 
 		if (usessl) restore_tmp_memory();
 		#endif
 		return HTTP_RQT_CONNECT_ERR;
@@ -2481,7 +2462,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	}
 
 	DEBUG_PRINT(server);
-	DEBUG_PRINT(":");
+	DEBUG_PRINT(F(":"));
 	DEBUG_PRINTLN(port);
 	if(!client->connect(server, port)) {
 		DEBUG_PRINT(F("failed."));
@@ -2756,7 +2737,7 @@ void OpenSprinkler::factory_reset() {
 	lcd_print_line_clear_pgm(PSTR("Factory reset"), 0);
 	lcd_print_line_clear_pgm(PSTR("Please Wait..."), 1);
 #else
-	DEBUG_PRINT("factory reset...");
+	DEBUG_PRINT(F("factory reset..."));
 #endif
 
 	// 1. reset integer options (by saving default values)
@@ -3758,20 +3739,20 @@ void calc_sunrise_sunset() { // calculate sunrise and sunset time
 	if (sscanf(location_buffer, "%f,%f", &latitude, &longitude) != 2) return;
 	DEBUG_PRINT(F("lat/long: "));
 	DEBUG_PRINT(latitude);
-	DEBUG_PRINT(",");
+	DEBUG_PRINT(F(","));
 	DEBUG_PRINTLN(longitude);
 	Sunrise sunrise(latitude, longitude, (os.iopts[IOPT_TIMEZONE]-48)/4);
 
 	time_os_t curr_time = os.now_tz();
 	DEBUG_PRINT(F("month/day: "));
 	DEBUG_PRINT(month(curr_time));
-	DEBUG_PRINT(".");
+	DEBUG_PRINT(F("."));
 	DEBUG_PRINTLN(day(curr_time));
 	os.nvdata.sunrise_time = sunrise.Rise(month(curr_time), day(curr_time)); // calculate sunrise and sunset time for today
 	os.nvdata.sunset_time = sunrise.Set(month(curr_time), day(curr_time));
 	DEBUG_PRINT(F("sunrise/sunset: "));
 	DEBUG_PRINT(os.nvdata.sunrise_time);
-	DEBUG_PRINT(" - ");
+	DEBUG_PRINT(F(" - "));
 	DEBUG_PRINTLN(os.nvdata.sunset_time);
 }
 

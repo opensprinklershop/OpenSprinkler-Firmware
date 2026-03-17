@@ -202,14 +202,14 @@ static inline bool discovered_devices_lock(uint32_t timeout_ms = 100) {
     if (!discovered_devices_mutex) {
         discovered_devices_mutex = xSemaphoreCreateMutex();
         if (!discovered_devices_mutex) {
-            ble_dbg_lock_null++;
+            ble_dbg_lock_null = ble_dbg_lock_null + 1;
             return false;
         }
         DEBUG_PRINTLN("[BLE][DBG] discovered_devices_mutex created lazily");
     }
 
     if (xSemaphoreTake(discovered_devices_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-        ble_dbg_lock_timeout++;
+        ble_dbg_lock_timeout = ble_dbg_lock_timeout + 1;
         return false;
     }
     return true;
@@ -1336,7 +1336,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         ble_onresult_total = ble_onresult_total + 1;  // count every advertisement received
         if (discovery_scan_active) {
-            ble_dbg_disc_onresult++;
+            ble_dbg_disc_onresult = ble_dbg_disc_onresult + 1;
         }
         // Get device address (format: "aa:bb:cc:dd:ee:ff")
         String addr_str = advertisedDevice.getAddress().toString();
@@ -1352,7 +1352,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         // Skip devices we have already decided to ignore, but NOT during a
         // discovery scan – the user explicitly wants to see all nearby devices.
         if (!discovery_scan_active && ble_ignore_contains(addr_bytes)) {
-            ble_dbg_disc_ignored++;
+            ble_dbg_disc_ignored = ble_dbg_disc_ignored + 1;
             return;
         }
         
@@ -1521,7 +1521,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         
         // Check if device already exists in list
         if (!discovered_devices_lock(0)) {
-            ble_dbg_disc_lock_miss++;
+            ble_dbg_disc_lock_miss = ble_dbg_disc_lock_miss + 1;
             return; // skip if vector is busy
         }
         bool already_exists = false;
@@ -1539,13 +1539,13 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             if (!ble_is_managed_mac(addr_bytes)) {
                 discovered_devices_unlock();
                 ble_ignore_insert(addr_bytes); // suppress future log output
-                ble_dbg_disc_unmanaged_skip++;
+                ble_dbg_disc_unmanaged_skip = ble_dbg_disc_unmanaged_skip + 1;
                 return; // not a configured sensor – ignore during background scan
             }
         }
         
         if (already_exists) {
-            ble_dbg_disc_updated++;
+            ble_dbg_disc_updated = ble_dbg_disc_updated + 1;
             // Update existing device
             existing_device->rssi = advertisedDevice.getRSSI();
             existing_device->last_seen = millis();
@@ -1574,7 +1574,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                              device_name, adv_temp, adv_hum, adv_battery);
             }
         } else {
-            ble_dbg_disc_added++;
+            ble_dbg_disc_added = ble_dbg_disc_added + 1;
             // Add new device
             BLEDeviceInfo new_dev;
             memset(&new_dev, 0, sizeof(new_dev));
@@ -1615,9 +1615,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             // to avoid unnecessary connect/disconnect churn.
             if (new_dev.sensor_type != BLE_TYPE_UNKNOWN && !sensor_ble_is_adv_sensor(&new_dev)) {
                 char mac_str[18];
-                snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         addr_bytes[0], addr_bytes[1], addr_bytes[2],
-                         addr_bytes[3], addr_bytes[4], addr_bytes[5]);
+                MAC_TO_STRING(mac_str, addr_bytes);
                 ble_queue_dis_query(mac_str);
             }
 
@@ -1899,9 +1897,7 @@ void sensor_ble_loop() {
             if (discovered_devices_lock(200)) {
                 for (auto& dev : discovered_ble_devices) {
                     char mac_str[18];
-                    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                             dev.address[0], dev.address[1], dev.address[2],
-                             dev.address[3], dev.address[4], dev.address[5]);
+                    MAC_TO_STRING(mac_str, dev.address);
                     if (strcasecmp(mac_str, item.mac) == 0 && !dev.dis_queried) {
                         needs_query = true;
                         break;
@@ -1921,14 +1917,12 @@ void sensor_ble_loop() {
                 if (discovered_devices_lock(200)) {
                     for (auto& dev : discovered_ble_devices) {
                         char mac_str[18];
-                        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                                 dev.address[0], dev.address[1], dev.address[2],
-                                 dev.address[3], dev.address[4], dev.address[5]);
+                        MAC_TO_STRING(mac_str, dev.address);
                         if (strcasecmp(mac_str, item.mac) == 0) {
                             dev.dis_queried = true;
                             if (success) {
-                                strncpy(dev.manufacturer, manufacturer, sizeof(dev.manufacturer) - 1);
-                                strncpy(dev.model, model, sizeof(dev.model) - 1);
+                                SAFE_STRNCPY(dev.manufacturer, manufacturer, sizeof(dev.manufacturer));
+                                SAFE_STRNCPY(dev.model, model, sizeof(dev.model));
                             }
                             break;
                         }
@@ -1953,9 +1947,7 @@ void sensor_ble_loop() {
             if (dev.adv_data_pending_push && dev.has_adv_data) {
                 dev.adv_data_pending_push = false;
                 char mac_str[18];
-                snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         dev.address[0], dev.address[1], dev.address[2],
-                         dev.address[3], dev.address[4], dev.address[5]);
+                MAC_TO_STRING(mac_str, dev.address);
                 BLESensor::pushAdvData(mac_str, &dev);
             }
         }

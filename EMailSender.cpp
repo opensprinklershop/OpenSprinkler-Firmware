@@ -495,17 +495,11 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 			#ifndef ARDUINO_ESP8266_RELEASE_2_4_2
 			  if (this->isSecure == false){
 				  client.setInsecure();
-				  /*
-				  bool mfln = client.probeMaxFragmentLength(this->smtp_server, this->smtp_port, 512);
-
-				  EMAIL_DEBUG_PRINT("MFLN supported: ");
-				  EMAIL_DEBUG_PRINTLN(mfln?"yes":"no");
-
-				  if (mfln) {*/
-					  client.setBufferSizes(512, 512);
-				  /*} else {
-					  client.setBufferSizes(2048, 2048);
-				  }*/
+				  client.setBufferSizes(512, 512);
+			  } else {
+				  // Reduce BearSSL RX buffer from default 16384 to 4096 to save ~12KB heap.
+				  // 4096 is sufficient for SMTP TLS records (cert chain is typically <4KB).
+				  client.setBufferSizes(4096, 512);
 			  }
 			#endif
 		#elif (EMAIL_NETWORK_TYPE == NETWORK_ESP32)

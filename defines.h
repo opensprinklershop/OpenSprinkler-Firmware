@@ -24,7 +24,7 @@
 #ifndef _DEFINES_H
 #define _DEFINES_H
 
-#define ENABLE_DEBUG  // enable serial debug
+//#define ENABLE_DEBUG  // enable serial debug
 
 typedef unsigned long ulong;
 
@@ -84,7 +84,6 @@ typedef unsigned long ulong;
 // ESP8266 memory tuning: keep MQTT/TLS allocations conservative so MQTT + HTTPS can coexist.
 #define ESP8266_MQTT_BUFFER_SIZE      1024
 #define ESP8266_TLS_BUFFER_FALLBACK   1024
-#define ESP8266_MIN_HEAP_FOR_HTTPS   28000
 #endif
 
 /** Firmware version, hardware version, and maximal values */
@@ -92,7 +91,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      186  // Firmware minor version
+#define OS_FW_MINOR      187  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -761,5 +760,36 @@ inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s);}
   extern char ether_buffer[];
   extern char tmp_buffer[];
 #endif
+
+// ====== Utility macros ======
+
+/** Safe strncpy: copies src into dest and always null-terminates.
+ *  size must be the total size of dest (e.g. sizeof(dest)).
+ *  Usage: SAFE_STRNCPY(dest, src, sizeof(dest));
+ */
+#define SAFE_STRNCPY(dest, src, size) do { \
+  strncpy((dest), (src), (size) - 1); \
+  (dest)[(size) - 1] = '\0'; \
+} while(0)
+
+/** Extract IPv4 bytes from a uint32_t stored in little-endian (lwIP) format.
+ *  bytes[0] = first octet, bytes[3] = last octet.
+ *  Works identically on Arduino (ESP8266/ESP32) and Linux/OSPI.
+ *  Replaces the platform-specific #if ARDUINO / #else blocks.
+ *  Usage: uint8_t ip[4]; IP4_EXTRACT_BYTES(ip, ip32_value);
+ */
+#define IP4_EXTRACT_BYTES(bytes, ip32) do { \
+  (bytes)[0] = (uint8_t)((ip32) & 0xFF); \
+  (bytes)[1] = (uint8_t)(((ip32) >> 8) & 0xFF); \
+  (bytes)[2] = (uint8_t)(((ip32) >> 16) & 0xFF); \
+  (bytes)[3] = (uint8_t)(((ip32) >> 24) & 0xFF); \
+} while(0)
+
+/** Format a 6-byte MAC address array into "XX:XX:XX:XX:XX:XX\0".
+ *  buf must hold at least 18 bytes.
+ *  Usage: char buf[18]; MAC_TO_STRING(buf, mac_array); */
+#define MAC_TO_STRING(buf, a) snprintf((buf), 18, "%02X:%02X:%02X:%02X:%02X:%02X", \
+  (unsigned)(a)[0], (unsigned)(a)[1], (unsigned)(a)[2], \
+  (unsigned)(a)[3], (unsigned)(a)[4], (unsigned)(a)[5])
 
 #endif  // _DEFINES_H

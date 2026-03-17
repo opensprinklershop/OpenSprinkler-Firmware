@@ -2035,7 +2035,7 @@ void server_change_options(OTF_PARAMS_DEF)
 	}
 
 	if(weather_change) {
-		DEBUG_PRINTLN("weather change happened");
+		DEBUG_PRINTLN(F("weather change happened"));
 		//os.iopts[IOPT_WATER_PERCENTAGE] = 100;  // reset watering percentage to 100%
 		wt_restricted = 0; // reset wt_restrcited, wt_rawData and errCode
 		wt_rawData[0] = 0;
@@ -2501,13 +2501,13 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	Dir dir = LittleFS.openDir("/logs/");
 	while (dir.next()) {
 		DEBUG_PRINT(dir.fileName());
-		DEBUG_PRINT("/");
+		DEBUG_PRINT(F("/"));
 		DEBUG_PRINTLN(dir.fileSize());
 	}
 	dir = LittleFS.openDir("/");
 	while (dir.next()) {
 		DEBUG_PRINT(dir.fileName());
-		DEBUG_PRINT("/");
+		DEBUG_PRINT(F("/"));
 		DEBUG_PRINTLN(dir.fileSize());
 	}
 */
@@ -3636,7 +3636,7 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 	  return;
     }
 
-    DEBUG_PRINT("found plants: ");
+    DEBUG_PRINT(F("found plants: "));
     DEBUG_PRINTLN(doc["plants"].size());
 
 	bfill.emit_p(PSTR("{\"token\":\"$S\",\"plants\":["), fytaapi.authToken.c_str());
@@ -4299,6 +4299,12 @@ void free_tmp_memory() {
 	DEBUG_PRINT(F("freememory start: "));
 	DEBUG_PRINTLN(freeMemory());
 
+	// Disconnect MQTT and free InfluxDB client to reclaim RAM
+	if (OSMqtt::enabled()) {
+		OSMqtt::suspend();
+	}
+	os.influxdb.suspend();
+
 	sensor_save_all();
 	sensor_api_free();
 
@@ -4310,6 +4316,10 @@ void free_tmp_memory() {
 void restore_tmp_memory() {
 #if defined(ESP8266)
 	sensor_api_init(false);
+
+	// Re-enable MQTT and InfluxDB
+	OSMqtt::resume();
+	os.influxdb.resume();
 
 	DEBUG_PRINT(F("freememory restore: "));
 	DEBUG_PRINTLN(freeMemory());
@@ -5663,7 +5673,7 @@ void on_firmware_upload() {
 #endif
 
 	} else if(upload.status == UPLOAD_FILE_WRITE) {
-		DEBUG_PRINT(".");
+		DEBUG_PRINT(F("."));
 		if(Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
 			DEBUG_PRINTLN(F("size mismatch"));
 		}
@@ -6056,7 +6066,7 @@ ulong getNtpTime() {
 		if(ret!=1) {
 			DEBUG_PRINT(F(" not available (ret: "));
 			DEBUG_PRINT(ret);
-			DEBUG_PRINTLN(")");
+			DEBUG_PRINTLN(F(")"));
 			udp.stop();
 			tries++;
 			sidx=(sidx+1)%N_PUBLIC_SERVERS;

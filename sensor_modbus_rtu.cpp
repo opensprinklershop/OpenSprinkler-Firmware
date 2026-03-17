@@ -55,22 +55,12 @@ int ModbusRtuSensor::read(unsigned long time) {
     EthernetClient etherClient;
     client = &etherClient;
   #endif
-
 #else
     EthernetClient etherClient;
     EthernetClient *client = &etherClient;
 #endif
-
-#if defined(ARDUINO)
-    IPAddress _ip(ip);
-    unsigned char ipbytes[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
     unsigned char ipbytes[4];
-    ipbytes[3] = (unsigned char)((ip >> 24) & 0xFF);
-    ipbytes[2] = (unsigned char)((ip >> 16) & 0xFF);
-    ipbytes[1] = (unsigned char)((ip >> 8) & 0xFF);
-    ipbytes[0] = (unsigned char)((ip & 0xFF));
-#endif
+    IP4_EXTRACT_BYTES(ipbytes, ip);
     char server[20];
     sprintf(server, "%d.%d.%d.%d", ipbytes[0], ipbytes[1], ipbytes[2], ipbytes[3]);
     client->setTimeout(200);
@@ -224,17 +214,8 @@ bool ModbusRtuSensor::sendCommand(uint32_t ip, uint16_t port, uint8_t address, u
   EthernetClient etherClient;
   EthernetClient *client = &etherClient;
 #endif
-
-#if defined(ARDUINO)
-  IPAddress _ip(ip);
-  unsigned char ips[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
   unsigned char ips[4];
-  ips[3] = (unsigned char)((ip >> 24) & 0xFF);
-  ips[2] = (unsigned char)((ip >> 16) & 0xFF);
-  ips[1] = (unsigned char)((ip >> 8) & 0xFF);
-  ips[0] = (unsigned char)((ip & 0xFF));
-#endif
+  IP4_EXTRACT_BYTES(ips, ip);
   char server[20];
   sprintf(server, "%d.%d.%d.%d", ips[0], ips[1], ips[2], ips[3]);
   client->setTimeout(200);
@@ -295,16 +276,8 @@ int ModbusRtuSensor::setAddressIp(SensorBase *sensor, uint8_t new_address) {
   EthernetClient etherClient;
   EthernetClient *client = &etherClient;
 #endif
-#if defined(ESP8266) || defined(ESP32)
-  IPAddress _ip(sensor->ip);
-  unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
   unsigned char ip[4];
-  ip[3] = (unsigned char)((sensor->ip >> 24) & 0xFF);
-  ip[2] = (unsigned char)((sensor->ip >> 16) & 0xFF);
-  ip[1] = (unsigned char)((sensor->ip >> 8) & 0xFF);
-  ip[0] = (unsigned char)((sensor->ip & 0xFF));
-#endif
+  IP4_EXTRACT_BYTES(ip, sensor->ip);
   char server[20];
   sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
   client->setTimeout(200);

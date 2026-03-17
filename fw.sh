@@ -411,19 +411,31 @@ bump_minor_version() {
     ok "defines.h updated: OS_FW_VERSION=${OS_FW_VERSION}, OS_FW_MINOR=${OS_FW_MINOR}"
 }
 
-# Disable ENABLE_DEBUG in the ESP8266 section of platformio.ini
-disable_esp8266_debug() {
-    info "Disabling debug flags for ESP8266 release build …"
-    # Only modify lines within the [env:os3x_esp8266] section
-    sed -i '/^\[env:os3x_esp8266\]/,/^\[env:/{s/^\(\s*\)-DENABLE_DEBUG\s*$/\1;-DENABLE_DEBUG/}' "$PLATFORMIO_INI"
-    ok "ESP8266 debug flags disabled."
+# Disable ENABLE_DEBUG / ENABLE_MEMORY_DEBUG in all release environments.
+# Currently the C5 variants (zigbee + matter) carry these flags; the ESP8266
+# section does not, but the function is written to handle it as well should
+# debug flags be added there in the future.
+disable_release_debug() {
+    info "Disabling debug flags for release builds …"
+    for env_name in "esp32-c5-zigbee" "esp32-c5-matter" "os3x_esp8266"; do
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-D ENABLE_DEBUG\s*\$/\1;-D ENABLE_DEBUG/}" "$PLATFORMIO_INI"
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-D ENABLE_MEMORY_DEBUG\s*\$/\1;-D ENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-DENABLE_DEBUG\s*\$/\1;-DENABLE_DEBUG/}" "$PLATFORMIO_INI"
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-DENABLE_MEMORY_DEBUG\s*\$/\1;-DENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
+    done
+    ok "Debug flags disabled in all release environments."
 }
 
-# Restore ENABLE_DEBUG in the ESP8266 section of platformio.ini
-restore_esp8266_debug() {
-    info "Restoring debug flags for ESP8266 …"
-    sed -i '/^\[env:os3x_esp8266\]/,/^\[env:/{s/^\(\s*\);-DENABLE_DEBUG$/\1-DENABLE_DEBUG/}' "$PLATFORMIO_INI"
-    ok "ESP8266 debug flags restored."
+# Restore ENABLE_DEBUG / ENABLE_MEMORY_DEBUG in all release environments.
+restore_release_debug() {
+    info "Restoring debug flags …"
+    for env_name in "esp32-c5-zigbee" "esp32-c5-matter" "os3x_esp8266"; do
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-D ENABLE_DEBUG\s*\$/\1-D ENABLE_DEBUG/}" "$PLATFORMIO_INI"
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-D ENABLE_MEMORY_DEBUG\s*\$/\1-D ENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-DENABLE_DEBUG\s*\$/\1-DENABLE_DEBUG/}" "$PLATFORMIO_INI"
+        sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-DENABLE_MEMORY_DEBUG\s*\$/\1-DENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
+    done
+    ok "Debug flags restored in all environments."
 }
 
 # Build a clean release for a given env
@@ -717,7 +729,7 @@ do_release() {
         info "Releasing: ${version_str} build ${OS_FW_MINOR} (tag: ${tag})"
     fi
 
-    # 2. Build ESP8266 firmware (without debug), then C5 variants.
+    # 2. Build all firmware variants WITHOUT debug flags.
     #    Two PlatformIO quirks we work around here:
     #    a) `pio run -e ENV --target clean` wipes the *entire* .pio/build/
     #       directory, not just that environment's subdirectory.  We therefore
@@ -727,8 +739,8 @@ do_release() {
     #       causes PlatformIO to detect the checksum change and implicitly clean
     #       all build directories.  We therefore keep platformio.ini unchanged
     #       throughout all three builds and restore only afterwards.
-    disable_esp8266_debug
-    trap 'restore_esp8266_debug' EXIT
+    disable_release_debug
+    trap 'restore_release_debug' EXIT
     build_release_env "$ENV_ESP8266" || exit 1
 
     # Stash ESP8266 binary — C5 per-env cleans will wipe .pio/build/ entirely.
@@ -746,7 +758,7 @@ do_release() {
     cp "${SCRIPT_DIR}/.pio/build/${ENV_C5_ZIGBEE}/firmware.bin" "$zigbee_stash"
 
     build_release_env "$ENV_C5_MATTER" || { rm -f "$esp8266_stash" "$zigbee_stash"; exit 1; }
-    restore_esp8266_debug
+    restore_release_debug
     trap - EXIT
 
     # Restore ESP8266 and ZigBee binaries that were wiped by per-env cleans.

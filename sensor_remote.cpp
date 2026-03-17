@@ -47,16 +47,8 @@ bool RemoteSensor::extract(char *s, char *buf, int maxlen) {
 }
 
 int RemoteSensor::read(unsigned long time) {
-#if defined(ESP8266) || defined(ESP32)
-  IPAddress _ip(this->ip);
-  unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
   unsigned char ip[4];
-  ip[3] = (unsigned char)((this->ip >> 24) & 0xFF);
-  ip[2] = (unsigned char)((this->ip >> 16) & 0xFF);
-  ip[1] = (unsigned char)((this->ip >> 8) & 0xFF);
-  ip[0] = (unsigned char)((this->ip & 0xFF));
-#endif
+  IP4_EXTRACT_BYTES(ip, this->ip);
 
   // DEBUG_PRINTLN(F("RemoteSensor::read"));
 

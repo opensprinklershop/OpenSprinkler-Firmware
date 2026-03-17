@@ -84,6 +84,8 @@ private:
     static bool subscribe(const char *topic);
     static bool unsubscribe(const char *topic);
     static bool reconnect();
+    static void suspend(void); // disconnect and disable (e.g. to free RAM before sending e-mail)
+    static void resume(void);  // re-read config and reconnect if enabled
 #if defined(ARDUINO)
     static void setCallback(int key, MQTT_CALLBACK_SIGNATURE);
     static Client * client;

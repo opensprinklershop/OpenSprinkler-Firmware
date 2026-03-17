@@ -274,23 +274,23 @@ void detect_asb_board() {
 #if defined(ADS1115)
   asb_detected_boards |= OSPI_ADS1115;
 #endif
-  // DEBUG_PRINT("ASB DETECT=");
+  // DEBUG_PRINT(F("ASB DETECT="));
   // DEBUG_PRINTLN(asb_detected_boards);
 
   for (int log = 0; log <= 2; log++) {
     checkLogSwitch(log);
 /*#if defined(ENABLE_DEBUG)
-    // DEBUG_PRINT("log=");
+    // DEBUG_PRINT(F("log="));
     // DEBUG_PRINTLN(log);
     const char *f1 = getlogfile(log);
-    // DEBUG_PRINT("logfile1=");
+    // DEBUG_PRINT(F("logfile1="));
     // DEBUG_PRINTLN(f1);
-    // DEBUG_PRINT("size1=");
+    // DEBUG_PRINT(F("size1="));
     // DEBUG_PRINTLN(file_size(f1));
     const char *f2 = getlogfile2(log);
-    // DEBUG_PRINT("logfile2=");
+    // DEBUG_PRINT(F("logfile2="));
     // DEBUG_PRINTLN(f2);
-    // DEBUG_PRINT("size2=");
+    // DEBUG_PRINT(F("size2="));
     // DEBUG_PRINTLN(file_size(f2));
 #endif*/
   }
@@ -370,7 +370,7 @@ void sensor_api_init(boolean detect_boards) {
       else
         ctx = modbus_new_rtu(tty.c_str(), 9600, 'E', 8, 1);
       // DEBUG_PRINT(idx);
-      // DEBUG_PRINT(": ");
+      // DEBUG_PRINT(F(": "));
       // DEBUG_PRINTLN(tty.c_str());
 
       //unavailable on Raspi? modbus_enable_quirks(ctx, MODBUS_QUIRK_MAX_SLAVE);
@@ -553,7 +553,7 @@ void sensor_save_all() {
  * 
  */
 void sensor_api_free() {
-  // DEBUG_PRINTLN("sensor_api_free1");
+  // DEBUG_PRINTLN(F("sensor_api_free1"));
   apiInit = false;
   current_sensor = NULL;
   os.mqtt.setCallback(2, NULL);
@@ -563,16 +563,16 @@ void sensor_api_free() {
   }
   progSensorAdjustsMap.clear();
 
-  // DEBUG_PRINTLN("sensor_api_free2");
+  // DEBUG_PRINTLN(F("sensor_api_free2"));
 
-  // DEBUG_PRINTLN("sensor_api_free3");
+  // DEBUG_PRINTLN(F("sensor_api_free3"));
 
   for (auto &kv : monitorsMap) {
     delete kv.second;
   }
   monitorsMap.clear();
 
-  // DEBUG_PRINTLN("sensor_api_free4");
+  // DEBUG_PRINTLN(F("sensor_api_free4"));
 
   for (auto &kv : sensorsMap) {
     delete kv.second;
@@ -585,7 +585,7 @@ void sensor_api_free() {
   #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   sensor_modbus_rtu_free();
   #endif
-  // DEBUG_PRINTLN("sensor_api_free5");
+  // DEBUG_PRINTLN(F("sensor_api_free5"));
 }
 
 /*
@@ -654,6 +654,19 @@ int sensor_delete(uint nr) {
   return HTTP_RQT_SUCCESS;
 }
 
+/** Trigger Zigbee re-configuration after a sensor is created or updated. */
+static inline void sensor_notify_zigbee(SensorBase *s) {
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+  if (s && s->type == SENSOR_ZIGBEE) {
+    sensor_zigbee_request_configure_reporting(s->nr);
+    sensor_zigbee_request_dp_query(s->nr);
+    sensor_zigbee_request_active_read(s->nr);
+  }
+#else
+  (void)s;
+#endif
+}
+
 /**
  * @brief define or insert a sensor from JSON configuration
  *
@@ -685,14 +698,8 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     sensor->fromJson(json);
     
     if (save) sensor_save();
-    #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-      if (sensor->type == SENSOR_ZIGBEE) {
-        sensor_zigbee_request_configure_reporting(sensor->nr);
-        sensor_zigbee_request_dp_query(sensor->nr);
-        sensor_zigbee_request_active_read(sensor->nr);
-      }
-    #endif
-    else last_save_time = os.now_tz() - 3600 + 5; // force save next time
+    sensor_notify_zigbee(sensor);
+    if (sensor->type != SENSOR_ZIGBEE) last_save_time = os.now_tz() - 3600 + 5; // force save next time
     
     return HTTP_RQT_SUCCESS;
   }
@@ -714,13 +721,7 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
       old_sensor->fromJson(json);
       
       if (save) sensor_save();
-      #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-        if (old_sensor->type == SENSOR_ZIGBEE) {
-          sensor_zigbee_request_configure_reporting(old_sensor->nr);
-          sensor_zigbee_request_dp_query(old_sensor->nr);
-          sensor_zigbee_request_active_read(old_sensor->nr);
-        }
-      #endif
+      sensor_notify_zigbee(old_sensor);
       return HTTP_RQT_SUCCESS;
     }
   }
@@ -738,14 +739,7 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
   
   sensorsMap[nr] = new_sensor;
   if (save) sensor_save();
-  #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-    if (new_sensor->type == SENSOR_ZIGBEE) {
-      sensor_zigbee_request_configure_reporting(new_sensor->nr);
-      sensor_zigbee_request_dp_query(new_sensor->nr);
-      sensor_zigbee_request_active_read(new_sensor->nr);
-    }
-  #endif
-  
+  sensor_notify_zigbee(new_sensor);
   return HTTP_RQT_SUCCESS;
 }
 
@@ -1449,7 +1443,7 @@ void push_message(SensorBase *sensor) {
   char *postval = tmp_buffer;
 
   if (os.mqtt.enabled()) {
-    // DEBUG_PRINTLN("push mqtt1");
+    // DEBUG_PRINTLN(F("push mqtt1"));
     strncpy_P(topic, PSTR("analogsensor/"), sizeof(topic) - 1);
     strncat(topic, sensor->name, sizeof(topic) - 1);
     snprintf_P(payload, TMP_BUFFER_SIZE,
@@ -1465,14 +1459,14 @@ void push_message(SensorBase *sensor) {
     } else {
       mqtt_defer_push(sensor->nr);
     }
-    // DEBUG_PRINTLN("push mqtt2");
+    // DEBUG_PRINTLN(F("push mqtt2"));
   }
   
   //ifttt is enabled, when the ifttt key is present!
   os.sopt_load(SOPT_IFTTT_KEY, tmp_buffer);
 	bool ifttt_enabled = strlen(tmp_buffer)!=0;
   if (ifttt_enabled) {
-    DEBUG_PRINTLN("push ifttt");
+    DEBUG_PRINTLN(F("push ifttt"));
     strcpy_P(postval, PSTR("{\"value1\":\"On site ["));
     os.sopt_load(SOPT_DEVICE_NAME, postval + strlen(postval));
     strcat_P(postval, PSTR("], "));
@@ -1496,7 +1490,7 @@ void push_message(SensorBase *sensor) {
               SOPT_IFTTT_KEY, DEFAULT_IFTTT_URL, strlen(postval), postval);
 
     os.send_http_request(DEFAULT_IFTTT_URL, 80, ether_buffer, sensor_remote_http_callback);
-    // DEBUG_PRINTLN("push ifttt2");
+    // DEBUG_PRINTLN(F("push ifttt2"));
   }
 
   add_influx_data(sensor);
@@ -2004,8 +1998,7 @@ void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
   max = obj[F("max")] | 0.0;
   
   const char* nameStr = obj[F("name")] | "";
-  strncpy(name, nameStr, sizeof(name) - 1);
-  name[sizeof(name) - 1] = '\0';
+  SAFE_STRNCPY(name, nameStr, sizeof(name));
 }
 
 /**
@@ -2391,13 +2384,10 @@ void add_influx_data(SensorBase *sensor) {
   (void)sensor;
   return;
 #else
-  if (!os.influxdb.isEnabled())
+  if (!os.influxdb.isEnabled() || !sensor)
     return;
 
-  #if defined(ESP8266) || defined(ESP32)
-  if (!sensor)
-    return;
-
+  // Common setup (shared by all platforms)
   char devname_safe[64];
   char sensor_name_safe[sizeof(sensor->name) + 1];
   char unit_safe[16];
@@ -2406,73 +2396,29 @@ void add_influx_data(SensorBase *sensor) {
   sensor_name_safe[0] = '\0';
   unit_safe[0] = '\0';
 
-  Point sensor_data("analogsensor");
   os.sopt_load(SOPT_DEVICE_NAME, tmp_buffer);
-  strncpy(devname_safe, tmp_buffer, sizeof(devname_safe) - 1);
-  devname_safe[sizeof(devname_safe) - 1] = '\0';
-
-  strncpy(sensor_name_safe, sensor->name, sizeof(sensor_name_safe) - 1);
-  sensor_name_safe[sizeof(sensor_name_safe) - 1] = '\0';
-
+  SAFE_STRNCPY(devname_safe, tmp_buffer, sizeof(devname_safe));
+  SAFE_STRNCPY(sensor_name_safe, sensor->name, sizeof(sensor_name_safe));
   const char* unit = getSensorUnit(sensor);
   if (unit) {
-    strncpy(unit_safe, unit, sizeof(unit_safe) - 1);
-    unit_safe[sizeof(unit_safe) - 1] = '\0';
+    SAFE_STRNCPY(unit_safe, unit, sizeof(unit_safe));
   }
 
+  #if defined(ESP8266) || defined(ESP32)
+  Point sensor_data("analogsensor");
   sensor_data.addTag("devicename", devname_safe);
   snprintf(tmp_buffer, 10, "%d", sensor->nr);
   sensor_data.addTag("nr", tmp_buffer);
   sensor_data.addTag("name", sensor_name_safe);
   sensor_data.addTag("unit", unit_safe);
-
   sensor_data.addField("native_data", sensor->last_native_data);
   sensor_data.addField("data", sensor->last_data);
-
   os.influxdb.write_influx_data(sensor_data);
 
   #else
-
-/*
-influxdb_cpp::server_info si("127.0.0.1", 8086, "db", "usr", "pwd");
-influxdb_cpp::builder()
-    .meas("foo")
-    .tag("k", "v")
-    .tag("x", "y")
-    .field("x", 10)
-    .field("y", 10.3, 2)
-    .field("z", 10.3456)
-    .field("b", !!10)
-    .timestamp(1512722735522840439)
-    .post_http(si);
-*/
   influxdb_cpp::server_info * client = os.influxdb.get_client();
   if (!client)
     return;
-
-  if (!sensor)
-    return;
-
-  char devname_safe[64];
-  char sensor_name_safe[sizeof(sensor->name) + 1];
-  char unit_safe[16];
-
-  devname_safe[0] = '\0';
-  sensor_name_safe[0] = '\0';
-  unit_safe[0] = '\0';
-
-  os.sopt_load(SOPT_DEVICE_NAME, tmp_buffer);
-  strncpy(devname_safe, tmp_buffer, sizeof(devname_safe) - 1);
-  devname_safe[sizeof(devname_safe) - 1] = '\0';
-
-  strncpy(sensor_name_safe, sensor->name, sizeof(sensor_name_safe) - 1);
-  sensor_name_safe[sizeof(sensor_name_safe) - 1] = '\0';
-
-  const char* unit = getSensorUnit(sensor);
-  if (unit) {
-    strncpy(unit_safe, unit, sizeof(unit_safe) - 1);
-    unit_safe[sizeof(unit_safe) - 1] = '\0';
-  }
 
   char nr_buf[10];
   snprintf(nr_buf, 10, "%d", sensor->nr);
@@ -2565,8 +2511,7 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
   zone = obj[F("zone")] | 0;
   active = obj[F("active")] | false;
   time = obj[F("time")] | 0;
-  strncpy(name, obj[F("name")] | "", sizeof(name) - 1);
-  name[sizeof(name) - 1] = '\0';
+  SAFE_STRNCPY(name, obj[F("name")] | "", sizeof(name));
   maxRuntime = obj[F("maxRuntime")] | 0;
   prio = obj[F("prio")] | 0;
   reset_seconds = obj[F("reset_seconds")] | 0;
@@ -2733,7 +2678,7 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
     p->prio = prio;
     p->reset_time = 0;
     p->reset_seconds = reset_seconds;
-    strncpy(p->name, name, sizeof(p->name)-1);
+    SAFE_STRNCPY(p->name, name, sizeof(p->name));
   } else {
     // Create new monitor
     p = new Monitor_t;
@@ -2748,7 +2693,7 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
     p->prio = prio;
     p->reset_time = 0;
     p->reset_seconds = reset_seconds;
-    strncpy(p->name, name, sizeof(p->name)-1);
+    SAFE_STRNCPY(p->name, name, sizeof(p->name));
     
     monitorsMap[nr] = p;
   }
@@ -2838,10 +2783,10 @@ void push_message(Monitor_t * mon, float value, int monidx) {
     default: return;
   }
   char name[30];
-  strncpy(name, mon->name, sizeof(name)-1);
-  DEBUG_PRINT("monitoring: activated ");
+  SAFE_STRNCPY(name, mon->name, sizeof(name));
+  DEBUG_PRINT(F("monitoring: activated "));
   DEBUG_PRINT(name);
-  DEBUG_PRINT(" - ");
+  DEBUG_PRINT(F(" - "));
   DEBUG_PRINTLN(type);
   notif.add(type, (uint32_t)mon->prio, value, (uint8_t)monidx);
 }
@@ -2853,16 +2798,8 @@ bool get_monitor(uint nr, bool inv, bool defaultBool) {
 }
 
 bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
-#if defined(ESP8266) || defined(ESP32)
-  IPAddress _ip(mon->m.remote.ip);
-  unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
-#else
   unsigned char ip[4];
-  ip[3] = (unsigned char)((mon->m.remote.ip >> 24) & 0xFF);
-  ip[2] = (unsigned char)((mon->m.remote.ip >> 16) & 0xFF);
-  ip[1] = (unsigned char)((mon->m.remote.ip >> 8) & 0xFF);
-  ip[0] = (unsigned char)((mon->m.remote.ip & 0xFF));
-#endif
+  IP4_EXTRACT_BYTES(ip, mon->m.remote.ip);
 
   // DEBUG_PRINTLN(F("read_monitor_http"));
 
@@ -2879,7 +2816,7 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
 
   int res = os.send_http_request(server, mon->m.remote.port, p, NULL, false, 500);
   if (res == HTTP_RQT_SUCCESS) {
-    DEBUG_PRINTLN("Send Ok");
+    DEBUG_PRINTLN(F("Send Ok"));
     p = ether_buffer;
     DEBUG_PRINTLN(p);
 
@@ -3099,7 +3036,7 @@ int findValue(const char *payload, unsigned int length, const char *jsonFilter, 
 			} else break;
 		}
 		buf[i] = 0;
-		DEBUG_PRINT("result: ");
+		DEBUG_PRINT(F("result: "));
 		DEBUG_PRINTLN(buf);	
 
 		value = -9999;

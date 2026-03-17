@@ -221,6 +221,12 @@ void GetWeather() {
 		port = 443;
 		host_start = host + 8;
 	}
+	#if defined(ESP8266)	
+	if (use_ssl && freeMemory() < 8000) {
+		use_ssl = false;
+		port = 80;
+	}
+	#endif
 
 	// Check for explicit port number
 	char *colon = strchr(host_start, ':');
@@ -244,6 +250,8 @@ void GetWeather() {
 #else
 	int ret = os.send_http_request(host_start, port, ether_buffer, getweather_callback_with_peel_header, use_ssl);
 #endif
+	DEBUG_PRINT(F("HTTP request sent, return code: "));
+	DEBUG_PRINTLN(ret);
 	if(ret!=HTTP_RQT_SUCCESS) {
 		if(wt_errCode < 0) wt_errCode = ret;
 		// if wt_errCode > 0, the call is successful but weather script may return error

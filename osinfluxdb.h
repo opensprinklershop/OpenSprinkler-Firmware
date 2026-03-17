@@ -59,6 +59,8 @@ public:
         }
     }
     bool isEnabled() { return false; }
+    void suspend() {}
+    void resume() {}
     void push_message(uint32_t type, uint32_t lval, float fval, const char* sval) {
         (void)type; (void)lval; (void)fval; (void)sval;
     }
@@ -104,6 +106,8 @@ public:
     void get_influx_config(ArduinoJson::JsonDocument &doc);
     void get_influx_config(char *json);
     bool isEnabled();
+    void suspend(); // free client and disable (e.g. to free RAM before sending e-mail)
+    void resume();  // re-read config from storage and re-enable if configured
     #if defined(ESP8266) || defined(ESP32) 
     void write_influx_data(Point &sensor_data);
     #elif defined(OSPI)
