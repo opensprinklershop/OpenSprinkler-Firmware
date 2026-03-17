@@ -68,7 +68,7 @@
             ifx_include=""
         fi
         
-        g++ -o OpenSprinkler -DOSPI $USEGPIO $ADS1115 $PCF8591 -DSMTP_OPENSSL -DHAVE_TINY_WEBSOCKETS $DEBUG -std=c++17 -include string.h main.cpp \
+        g++ -o OpenSprinkler -DOSPI $USEGPIO $ADS1115 $PCF8591 -DSMTP_OPENSSL -DHAVE_TINY_WEBSOCKETS $DEBUG -std=c++17 -include string.h -include cstdint main.cpp \
                 OpenSprinkler.cpp program.cpp opensprinkler_server.cpp utils.cpp weather.cpp gpio.cpp mqtt.cpp sunrise.cpp \
                 smtp.c RCSwitch.cpp psram_utils.cpp TimeLib.cpp sensor*.cpp notifier.cpp naett.c \
                 $ADS1115FILES $PCF8591FILES \
