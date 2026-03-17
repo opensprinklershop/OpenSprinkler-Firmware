@@ -100,6 +100,8 @@
 	bool OSMqtt::subscribe(const char *topic) {(void)topic; return false;}
 	bool OSMqtt::unsubscribe(const char *topic) {(void)topic; return false;}
 	bool OSMqtt::reconnect() { return false; }
+	void OSMqtt::suspend(void) {}
+	void OSMqtt::resume(void) {}
 	void OSMqtt::setCallback(int key, void (*on_message)(struct mosquitto *, void *, const struct mosquitto_message *)) {(void)key; (void)on_message;}
 
 #else
@@ -794,6 +796,15 @@ bool OSMqtt::reconnect() {
 	return _connect();
 }
 
+void OSMqtt::suspend(void) {
+	if (_enabled && _connected()) { _disconnect(); }
+	_enabled = false;
+}
+
+void OSMqtt::resume(void) {
+	begin();
+}
+
 #else
 
 /************************** RASPBERRY PI / Linux ****************************************/
@@ -882,6 +893,15 @@ bool OSMqtt::reconnect() {
 	return mosquitto_reconnect(mqtt_client);
 }
 
+void OSMqtt::suspend(void) {
+	if (_enabled && _connected()) { _disconnect(); }
+	_enabled = false;
+}
+
+void OSMqtt::resume(void) {
+	begin();
+}
+
 int OSMqtt::_disconnect(void) {
 	int rc = mosquitto_disconnect(mqtt_client);
 	return rc == MOSQ_ERR_SUCCESS ? MQTT_SUCCESS : MQTT_ERROR;
@@ -963,7 +983,7 @@ static KEY_CALLBACK_t key_callbacks[MAX_CALLBACKS] = {0};
 static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
 	for (int i = 0; i < MAX_CALLBACKS; i++) {
 		if (key_callbacks[i].callback) {
-			DEBUG_PRINT("Callback exec: ");
+			DEBUG_PRINT(F("Callback exec: "));
 			DEBUG_PRINTLN(key_callbacks[i].key);
 			key_callbacks[i].callback(mosq, obj, msg);
 		}

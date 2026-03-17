@@ -51,8 +51,17 @@ int AsbSensor::read(unsigned long time) {
   // unsigned long startTime = millis();
   ADS1115 adc(port);
   if (!adc.begin()) {
-    DEBUG_PRINTLN(F("no asb board?!?"));
-    return HTTP_RQT_NOT_RECEIVED;
+#if defined(ESP8266)
+    // I2C bus lockup recovery: reinitialize the software I2C and retry once
+    Wire.begin();
+    Wire.setClock(100000);
+    if (!adc.begin()) {
+#endif
+      DEBUG_PRINTLN(F("no asb board?!?"));
+      return HTTP_RQT_NOT_RECEIVED;
+#if defined(ESP8266)
+    }
+#endif
   }
   // unsigned long endTime = millis();
   // DEBUG_PRINTF("t=%lu ms\n", endTime-startTime);

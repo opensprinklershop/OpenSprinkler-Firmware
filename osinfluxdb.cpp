@@ -143,6 +143,16 @@ boolean OSInfluxDB::isEnabled() {
     return enabled; 
 }
 
+void OSInfluxDB::suspend() {
+    if (client) { delete client; client = nullptr; }
+    enabled = false;
+    initialized = false;
+}
+
+void OSInfluxDB::resume() {
+    init(); // re-reads from stored config
+}
+
 #if defined(ESP8266) || defined(ESP32)
 OSInfluxDB::~OSInfluxDB() {
     if (client) delete client;

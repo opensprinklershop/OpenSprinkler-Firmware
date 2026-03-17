@@ -834,6 +834,15 @@ void do_loop()
 	}
 	#endif
 
+	#if defined(ENABLE_DEBUG) && defined(ESP8266)
+	static ulong last_mem_print_8266 = 0;
+	if (millis() - last_mem_print_8266 >= 15000) {
+		last_mem_print_8266 = millis();
+		DEBUG_PRINTF("[MEM] Heap: %d B free | MaxBlock: %d B | Frag: %d%%\n",
+			ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+	}
+	#endif
+
 	// Delayed initialization timers (prevent boot conflicts)
 	static ulong boot_time_ms = 0;
 	static bool sensor_api_connected = false;
