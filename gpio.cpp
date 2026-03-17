@@ -179,7 +179,7 @@ unsigned char digitalReadExt(unsigned char pin) {
 
 #elif defined(OSPI) && !(defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__))
 
-#if !defined(LIBGPIOD)	// use classic sysfs
+#if !defined(LIBGPIOD) && !defined(LIBLGPIO)	// use classic sysfs
 
 #include <sys/types.h>
 #if defined(__has_include)
@@ -475,10 +475,110 @@ void attachInterrupt(int pin, const char* mode, void (*isr)(void)) {
 			delay(1) ;
 	pthread_mutex_unlock (&pinMutex) ;
 }
-#else // use GPIOD
+#elif defined(LIBLGPIO) // use lgpio (Raspberry Pi OS Trixie / Debian 13+)
 
 /**
- * NEW GPIO Implementation for Raspberry Pi OS 12 (bookworm)
+ * GPIO Implementation for Raspberry Pi using lgpio library.
+ * This replaces libgpiod for Raspberry Pi OS Trixie (Debian 13+).
+ */
+
+#include <stdio.h>
+#include <lgpio.h>
+
+#include "utils.h"
+
+// GPIO handle for lgpio library
+static int lgpio_handle = -1;
+
+// Initialize lgpio connection
+static int init_lgpio() {
+	if (lgpio_handle >= 0) {
+		return 0; // Already initialized
+	}
+
+	int chip_id = 0; // Default to gpiochip0 for older Raspberry Pi models
+
+	// On Raspberry Pi 5 (bcm2712), the primary GPIOs are on gpiochip4
+	if (get_board_type() == BoardType::RaspberryPi_bcm2712) {
+		chip_id = 4;
+	}
+
+	lgpio_handle = lgGpiochipOpen(chip_id);
+	if (lgpio_handle < 0) {
+		// If we tried the non-default chip and failed, try the default one as a fallback.
+		if (chip_id != 0) {
+			DEBUG_PRINTLN("Could not open gpiochip4, falling back to gpiochip0...");
+			chip_id = 0;
+			lgpio_handle = lgGpiochipOpen(chip_id);
+		}
+	}
+
+	if (lgpio_handle < 0) {
+		DEBUG_PRINTLN("Could not open a valid GPIO chip.");
+		return -1;
+	}
+
+	DEBUG_PRINT("Successfully opened gpiochip");
+	DEBUG_PRINTLN(chip_id);
+	return 0;
+}
+
+/** Set pin mode, in or out */
+void pinMode(int pin, unsigned char mode) {
+	if (init_lgpio() != 0) return;
+
+	switch(mode) {
+		case INPUT:
+			lgGpioClaimInput(lgpio_handle, 0, pin);
+			break;
+		case INPUT_PULLUP:
+			lgGpioClaimInput(lgpio_handle, LG_SET_PULL_UP, pin);
+			break;
+		case OUTPUT:
+			lgGpioClaimOutput(lgpio_handle, 0, pin, LOW);
+			break;
+		default:
+			DEBUG_PRINTLN("invalid pin direction");
+			break;
+	}
+	return;
+}
+
+/** Read digital value */
+unsigned char digitalRead(int pin) {
+	if (lgpio_handle < 0) {
+		DEBUG_PRINT("tried to read from uninitialized lgpio handle for pin ");
+		DEBUG_PRINTLN(pin);
+		return 0;
+	}
+	int val = lgGpioRead(lgpio_handle, pin);
+	if (val < 0) {
+		DEBUG_PRINT("failed to read value on pin ");
+		DEBUG_PRINTLN(pin);
+		return 0;
+	}
+	return (unsigned char)val;
+}
+
+/** Write digital value */
+void digitalWrite(int pin, unsigned char value) {
+	if (lgpio_handle < 0) {
+		DEBUG_PRINT("tried to write to uninitialized lgpio handle for pin ");
+		DEBUG_PRINTLN(pin);
+		return;
+	}
+
+	int res = lgGpioWrite(lgpio_handle, pin, value);
+	if (res < 0) {
+		DEBUG_PRINT("failed to write value on pin ");
+		DEBUG_PRINTLN(pin);
+	}
+}
+
+#else // use GPIOD (Raspberry Pi OS Bookworm / Debian 12)
+
+/**
+ * GPIO Implementation for Raspberry Pi OS 12 (bookworm) using libgpiod v1.
  *
  * Thanks to Jason Balonso
  *  https://github.com/jbalonso/

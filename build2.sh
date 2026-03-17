@@ -6,9 +6,14 @@
         GPIOLIB=""
 
 	source /etc/os-release
-        # Compare version as string, handling decimal versions like 20.04
-        if [[ $(echo "$VERSION_ID >= 10" | bc -l 2>/dev/null || echo "1") -eq 1 ]] || [[ ${VERSION_ID%%.*} -ge 10 ]]; then
-                echo "using libgpiod"
+        VERSION_MAJOR=${VERSION_ID%%.*}
+        # Trixie (Debian 13+) uses lgpio, Bookworm (Debian 12) uses libgpiod, older uses sysfs
+        if [[ ${VERSION_MAJOR} -ge 13 ]]; then
+                echo "Detected Debian ${VERSION_ID} (Trixie or newer) - using lgpio"
+                USEGPIO="-DLIBLGPIO"
+                GPIOLIB="-llgpio"
+        elif [[ ${VERSION_MAJOR} -ge 10 ]]; then
+                echo "Detected Debian ${VERSION_ID} (Bookworm or similar) - using libgpiod"
                 USEGPIO="-DLIBGPIOD"
                 GPIOLIB="-lgpiod"
         fi

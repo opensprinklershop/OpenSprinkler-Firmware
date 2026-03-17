@@ -82,11 +82,23 @@ if [ "$1" == "demo" ]; then
 else
 	echo "Installing required libraries..."
 	apt-get update
+
+	# Detect OS version to install correct GPIO library
+	source /etc/os-release
+	VERSION_MAJOR=${VERSION_ID%%.*}
+	if [[ ${VERSION_MAJOR} -ge 13 ]]; then
+		echo "Detected Debian ${VERSION_ID} (Trixie or newer) - installing lgpio"
+		GPIO_PKG="liblgpio-dev"
+	else
+		echo "Detected Debian ${VERSION_ID} (Bookworm or older) - installing libgpiod"
+		GPIO_PKG="libgpiod-dev gpiod"
+	fi
+
 	apt-get install -y \
 		bluetooth bluez libbluetooth-dev \
     	libmosquitto-dev \
     	bluez-tools \
-		libi2c-dev libssl-dev libgpiod-dev gpiod libmodbus-dev libcurlpp-dev
+		libi2c-dev libssl-dev $GPIO_PKG libmodbus-dev libcurlpp-dev
 	enable_i2c
 
 	./build2.sh
