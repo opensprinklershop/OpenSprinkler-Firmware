@@ -35,8 +35,7 @@
 * Read the OSPi onboard PCF8591 A2D
 **/
 int OspiPcf8591Sensor::read(unsigned long time) {
-        SensorBase *sensor = data_;
-        if (!sensor || !sensor->flags.enable) return HTTP_RQT_NOT_RECEIVED;
+        if (!flags.enable) return HTTP_RQT_NOT_RECEIVED;
 
         static pcf8591_handle_t gs_handle;        /**< pcf8591 handle */
         uint8_t res;
@@ -80,7 +79,7 @@ int OspiPcf8591Sensor::read(unsigned long time) {
                 return HTTP_RQT_NOT_RECEIVED;
         }
                 
-        pcf8591_channel_t channel = (pcf8591_channel_t)sensor->id;
+        pcf8591_channel_t channel = (pcf8591_channel_t)id;
         res = pcf8591_set_channel(&gs_handle, channel);
         if (res != 0) {
                 pcf8591_deinit(&gs_handle);
@@ -97,35 +96,35 @@ int OspiPcf8591Sensor::read(unsigned long time) {
 
         pcf8591_deinit(&gs_handle);
 
-        sensor->repeat_native += raw;
-        sensor->repeat_data += v;
-        if (++sensor->repeat_read < MAX_SENSOR_REPEAT_READ && time < sensor->last_read + sensor->read_interval)
+        repeat_native += raw;
+        repeat_data += v;
+        if (++repeat_read < MAX_SENSOR_REPEAT_READ && time < last_read + read_interval)
                 return HTTP_RQT_NOT_RECEIVED;
 
-        raw = sensor->repeat_native/sensor->repeat_read;
-        v = sensor->repeat_data/sensor->repeat_read;
+        raw = repeat_native/repeat_read;
+        v = repeat_data/repeat_read;
 
-        sensor->repeat_native = raw;
-        sensor->repeat_data = v;
-        sensor->repeat_read = 1;
+        repeat_native = raw;
+        repeat_data = v;
+        repeat_read = 1;
         
-        sensor->last_native_data = raw;
-        sensor->flags.data_ok = true;
-        sensor->last_read = time;
+        last_native_data = raw;
+        flags.data_ok = true;
+        last_read = time;
 
         //convert values:
-        switch(sensor->type) {
+        switch(type) {
                 case SENSOR_OSPI_ANALOG:
-                        sensor->last_data = (double)v;
+                        last_data = (double)v;
                         return HTTP_RQT_SUCCESS;
                 case SENSOR_OSPI_ANALOG_P:
-                        sensor->last_data = (double)v / DEFAULT_REF_VOLTAGE * 100;
+                        last_data = (double)v / DEFAULT_REF_VOLTAGE * 100;
                         return HTTP_RQT_SUCCESS;
                 case SENSOR_OSPI_ANALOG_SMT50_MOIS:
-                        sensor->last_data = (double)v * 50 / 3;
+                        last_data = (double)v * 50 / 3;
                         return HTTP_RQT_SUCCESS;
                 case SENSOR_OSPI_ANALOG_SMT50_TEMP:
-                        sensor->last_data = ((double)v - 0.5) * 100;
+                        last_data = ((double)v - 0.5) * 100;
                         return HTTP_RQT_SUCCESS;
         }
         return HTTP_RQT_NOT_RECEIVED;
