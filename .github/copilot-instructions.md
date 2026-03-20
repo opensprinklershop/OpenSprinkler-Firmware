@@ -45,6 +45,17 @@ This file helps AI coding agents get productive quickly in this repository. It f
 ## Commit messages ✅
 - Always write AI-generated commit messages in English.
 
+## Release / Version bump workflow 🚀
+Whenever `OS_FW_MINOR` (or `OS_FW_VERSION`) is incremented in `defines.h`, **always** also update the following files:
+
+1. **`CHANGELOG.md`** (repo root) — add a new `## [x.y.z (minor)]` section with date and categorised changes (Added / Changed / Fixed / Removed).
+2. **`/srv/www/htdocs/upgrade/manifest.json`** — update `fw_version`, `fw_minor`, `prev_release_url`, and `changelog` string to reflect the new release.
+3. **`/srv/www/htdocs/upgrade/versions.json`** — prepend a new entry (newest first) with `fw_version`, `fw_minor`, `date`, archive URLs (`https://opensprinklershop.de/upgrade/archive/v{FW_VERSION}_{FW_MINOR}/firmware_*.bin`), and `changelog`.
+
+Version key: `fw_version=240` → firmware `2.4.0`; `fw_minor` is the build/patch number (e.g. 187).  
+Archive URL pattern: `https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_{variant}.bin`  
+Variants: `zigbee`, `matter`, `esp8266`.
+
 ## Important Learnings 🧠
 - Dokumentiere wichtige Erkenntnisse.
 - When changing OTA UX in UI, keep completion semantics clear: progress can stay below 100% until real device completion, then jump to 100%.

@@ -42,10 +42,26 @@ namespace OTF {
 }
 
 /**
- * Handle an HTTP POST /mcp request.
+ * Handle an HTTP POST /mcp request (JSON-RPC 2.0).
  * Registered in start_server_client() via:
  *   otf->on("/mcp", server_mcp_handler, OTF::OTF_HTTP_POST);
  */
 void server_mcp_handler(const OTF::Request& req, OTF::Response& res);
+
+/**
+ * Handle an HTTP GET /mcp request.
+ * Returns SSE stream (if Accept: text/event-stream) or 405.
+ */
+void server_mcp_get_handler(const OTF::Request& req, OTF::Response& res);
+
+/**
+ * Handle an HTTP OPTIONS /mcp request (CORS pre-flight).
+ */
+void server_mcp_options_handler(const OTF::Request& req, OTF::Response& res);
+
+/**
+ * Handle an HTTP DELETE /mcp request (session termination).
+ */
+void server_mcp_delete_handler(const OTF::Request& req, OTF::Response& res);
 
 #endif // ESP32 && USE_OTF

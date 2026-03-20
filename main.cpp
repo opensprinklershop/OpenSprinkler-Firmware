@@ -38,6 +38,7 @@
 #include "notifier.h"
 #include "osinfluxdb.h"
 #include "opensprinkler_matter.h"
+#include "opensprinkler_rainmaker.h"
 #include "ieee802154_config.h"
 #if defined(OS_ENABLE_ZIGBEE)
 #include "sensor_zigbee.h"
@@ -951,6 +952,9 @@ void do_loop()
 				OSMatter::instance().init();
 			}
 			#endif
+			#ifdef ENABLE_RAINMAKER
+			OSRainMaker::instance().init();
+			#endif
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
@@ -968,6 +972,9 @@ void do_loop()
 				DEBUG_PRINTLN("[Matter] AP mode - initializing Matter for BLE commissioning");
 				OSMatter::instance().init();
 			}
+			#endif
+			#ifdef ENABLE_RAINMAKER
+			OSRainMaker::instance().init();
 			#endif
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
@@ -1004,6 +1011,9 @@ void do_loop()
 			OSMatter::instance().init();
 		}
 		#endif
+		#ifdef ENABLE_RAINMAKER
+		OSRainMaker::instance().init();
+		#endif
 		os.state = OS_STATE_CONNECTED;
 		break;
 
@@ -1028,6 +1038,9 @@ void do_loop()
 				DEBUG_PRINTLN("[Matter] WiFi connected - initializing Matter");
 				OSMatter::instance().init();
 			}
+			#endif
+			#ifdef ENABLE_RAINMAKER
+			OSRainMaker::instance().init();
 			#endif
 			
 			os.state = OS_STATE_CONNECTED;
@@ -1163,6 +1176,10 @@ void do_loop()
 	OSMatter::instance().loop();
 #endif
 
+#ifdef ENABLE_RAINMAKER
+	OSRainMaker::instance().loop();
+#endif
+
 	// The main control loop runs once every second
 	if (curr_time != last_time) {
 
@@ -1204,6 +1221,9 @@ void do_loop()
 				write_log(LOGDATA_RAINDELAY, curr_time);
 				notif.add(NOTIFY_RAINDELAY, LOGDATA_RAINDELAY, 0);
 			}
+#ifdef ENABLE_RAINMAKER
+			OSRainMaker::instance().update_rain_delay(os.status.rain_delayed);
+#endif
 			os.old_status.rain_delayed = os.status.rain_delayed;
 		}
 
@@ -1219,6 +1239,9 @@ void do_loop()
 				write_log(LOGDATA_SENSOR1, curr_time);
 				notif.add(NOTIFY_SENSOR1, LOGDATA_SENSOR1, 0);
 			}
+#ifdef ENABLE_RAINMAKER
+			OSRainMaker::instance().update_rain_sensor(os.status.sensor1_active);
+#endif
 		}
 		os.old_status.sensor1_active = os.status.sensor1_active;
 
@@ -1752,6 +1775,9 @@ void turn_on_station(unsigned char sid, ulong duration) {
 #ifdef ENABLE_MATTER
 		OSMatter::instance().update_station(sid, true);
 #endif
+#ifdef ENABLE_RAINMAKER
+		OSRainMaker::instance().update_station(sid, true);
+#endif
 	}
 
 	// No-flow detection: start monitoring if this is a standard station and flow sensor is enabled
@@ -1862,6 +1888,9 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 
 #ifdef ENABLE_MATTER
 	OSMatter::instance().update_station(sid, false);
+#endif
+#ifdef ENABLE_RAINMAKER
+	OSRainMaker::instance().update_station(sid, false);
 #endif
 
 	// RAH implementation of flow sensor

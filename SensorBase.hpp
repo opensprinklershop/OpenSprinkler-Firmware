@@ -125,6 +125,17 @@ public:
       return;
     }
 
+    // Rate-limit: ensure samples are spaced far enough apart so the
+    // ring buffer can span at least TREND_MIN_SPAN_SEC when full.
+    // Min interval = 3600 / 24 = 150 seconds.
+    if (trend_count > 0) {
+      uint8_t last_idx = (uint8_t)((trend_head + TREND_HISTORY_SIZE - 1) % TREND_HISTORY_SIZE);
+      uint32_t min_interval = TREND_MIN_SPAN_SEC / TREND_HISTORY_SIZE;
+      if (sample_time < trend_time[last_idx] + min_interval) {
+        return;  // Too soon — skip to protect the time window
+      }
+    }
+
     trend_history[trend_head] = value;
     trend_time[trend_head] = sample_time;
     trend_head = (uint8_t)((trend_head + 1) % TREND_HISTORY_SIZE);
@@ -206,8 +217,6 @@ public:
     obj[F("port")] = port;
     obj[F("id")] = id;
     obj[F("ri")] = read_interval;
-    obj[F("factor")] = factor;
-    obj[F("divider")] = divider;
     obj[F("fac")] = factor;
     obj[F("div")] = divider;
     obj[F("offset")] = offset_mv;

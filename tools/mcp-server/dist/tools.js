@@ -314,6 +314,11 @@ export function registerTools(server, getClient) {
         const data = await getClient().get("/bd");
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     });
+    // ─── RainMaker (ESP32 only) ─────────────────────────────────────────
+    server.tool("get_rainmaker_status", "Get ESP RainMaker status: node ID, cloud MQTT connection, user mapping state. ESP32 only. Equivalent to /rk.", {}, async () => {
+        const data = await getClient().get("/rk");
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
     // ─── Backup & diagnostics ──────────────────────────────────────────
     server.tool("backup_sensor_config", "Export full sensor/adjustment/monitor configuration backup. Equivalent to /sx.", {}, async () => {
         const data = await getClient().get("/sx");

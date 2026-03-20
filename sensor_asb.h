@@ -56,6 +56,13 @@ public:
    * @return Unit ID based on sensor type (VOLT, PERCENT, DEGREE, etc.)
    */
   virtual unsigned char getUnitId() const override;
+
+private:
+  // Independent start time for the current averaging period.
+  // Must NOT use last_read because the scheduler overwrites last_read on
+  // every HTTP_RQT_NOT_RECEIVED cycle (to prevent tight spin-loops for
+  // other sensor types), which would prevent the period from ever ending.
+  ulong period_start = 0;
 };
 
 #endif // defined(ESP8266) || defined(ESP32)

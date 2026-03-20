@@ -1100,6 +1100,7 @@ void BLESensor::pushAdvData(const char* mac_address, const BLEDeviceInfo* cached
 
         double parsed_value = ble_select_adv_value(cached_dev, ble->assigned_unitid);
         ble->store_result(parsed_value, time);
+        ble->trend_add_sample(parsed_value, time);
         ble->last_battery = cached_dev->adv_battery;
         ble->adv_last_success_time = time;
     }

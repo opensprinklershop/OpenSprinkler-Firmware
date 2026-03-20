@@ -71,15 +71,38 @@ int AsbSensor::read(unsigned long time) {
   // endTime = millis();
   // DEBUG_PRINTF("t=%lu ms\n", endTime-startTime);
 
-  if (++this->repeat_read < MAX_SENSOR_REPEAT_READ &&
-      time < this->last_read + this->read_interval)
-    return HTTP_RQT_NOT_RECEIVED;
+  // Track the start of the current averaging period independently of
+  // last_read.  The scheduler overwrites last_read each second for non-
+  // ZigBee sensors when HTTP_RQT_NOT_RECEIVED is returned (to prevent
+  // tight spin-loops).  Using last_read here caused the time condition to
+  // be permanently true, so the averaging period never ended after the
+  // initial boot-time read.
+  if (this->period_start == 0) {
+    // First call after boot or after a completed period.
+    // If we have never produced a result yet (data_ok==false), skip the
+    // averaging delay and return the very first sample immediately so the
+    // sensor shows a value right after startup.
+    if (!this->flags.data_ok) {
+      // repeat_native already has the sample from above; use it directly.
+      this->repeat_read = 1;
+      // fall through to the processing code below
+    } else {
+      this->period_start = time;
+    }
+  }
+
+  if (this->period_start != 0) {
+    if (++this->repeat_read < MAX_SENSOR_REPEAT_READ &&
+        time < this->period_start + this->read_interval)
+      return HTTP_RQT_NOT_RECEIVED;
+  }
 
   uint64_t avgValue = this->repeat_native / this->repeat_read;
 
   this->repeat_native = avgValue;
   this->repeat_data = 0;
   this->repeat_read = 1;  // read continously
+  this->period_start = 0;  // reset so the next period starts fresh
 
   this->last_native_data = avgValue;
   this->last_data = adc.toVoltage(this->last_native_data);

@@ -110,11 +110,23 @@ check_device() {
     ok "Device reachable."
 }
 
+copy_to_dist() {
+    local env="$1"
+    local src="${SCRIPT_DIR}/.pio/build/${env}/firmware.bin"
+    local dist="${SCRIPT_DIR}/.pio/dist"
+    if [[ -f "$src" ]]; then
+        mkdir -p "$dist"
+        cp "$src" "${dist}/firmware_${env}.bin"
+        ok "Dist copy → .pio/dist/firmware_${env}.bin"
+    fi
+}
+
 build_env() {
     local env="$1"
     header "Building firmware: ${env}"
     if "$PIO_BIN" run --environment "$env"; then
         ok "Build successful → .pio/build/${env}/firmware.bin"
+        copy_to_dist "$env"
     else
         error "Build failed: ${env}"
         exit 1
@@ -458,6 +470,7 @@ build_release_env() {
         return 1
     fi
     ok "Release build successful → .pio/build/${env}/firmware.bin"
+    copy_to_dist "$env"
 }
 
 # Copy firmware binaries to upgrade directory
@@ -851,7 +864,7 @@ ${BOLD}Variants (build/upload/deploy):${NC}
   matter        ESP32-C5 Matter firmware  (OTA slot 1 @ 0x3A0000)
   zigbee        ESP32-C5 ZigBee firmware  (OTA slot 0 @ 0x10000)
   esp8266       OS 3.x ESP8266 firmware   (env: os3x_esp8266)
-  all           All C5 firmwares (matter + zigbee)
+  all           All firmwares (matter + zigbee + esp8266)
 
 ${BOLD}Variants (switch – ESP32-C5 only):${NC}
   matter         → Matter mode
@@ -898,9 +911,11 @@ case "$ACTION" in
             all|"")
                 build_env "$ENV_C5_MATTER"
                 build_env "$ENV_C5_ZIGBEE"
+                build_env "$ENV_ESP8266"
                 header "All builds successful"
-                ok "Matter:  .pio/build/${ENV_C5_MATTER}/firmware.bin"
-                ok "ZigBee:  .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
+                ok "Matter:   .pio/build/${ENV_C5_MATTER}/firmware.bin"
+                ok "ZigBee:   .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
+                ok "ESP8266:  .pio/build/${ENV_ESP8266}/firmware.bin"
                 ;;
             *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
         esac
@@ -913,10 +928,10 @@ case "$ACTION" in
             zigbee)   upload_env "$ENV_C5_ZIGBEE" ;;
             esp8266)  upload_env "$ENV_ESP8266" ;;
             all|"")
-                warn "Uploading both C5 firmwares requires the device to be reconnected/flashed TWICE."
-                warn "For sequential upload, please run 'upload matter' then 'upload zigbee' separately."
+                warn "Uploading all firmwares requires switching between devices."
                 upload_env "$ENV_C5_MATTER"
                 upload_env "$ENV_C5_ZIGBEE"
+                upload_env "$ENV_ESP8266"
                 ;;
             *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
         esac
@@ -940,11 +955,14 @@ case "$ACTION" in
             all|"")
                 build_env "$ENV_C5_MATTER"
                 build_env "$ENV_C5_ZIGBEE"
+                build_env "$ENV_ESP8266"
                 upload_env "$ENV_C5_MATTER"
                 upload_env "$ENV_C5_ZIGBEE"
+                upload_env "$ENV_ESP8266"
                 header "Deploy complete"
-                ok "ZigBee:  flashed to ota_0 (0x10000)"
-                ok "Matter:  flashed to ota_1 (0x3A0000)"
+                ok "Matter:   flashed to ota_1 (0x3A0000)"
+                ok "ZigBee:   flashed to ota_0 (0x10000)"
+                ok "ESP8266:  flashed"
                 ;;
             *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
         esac

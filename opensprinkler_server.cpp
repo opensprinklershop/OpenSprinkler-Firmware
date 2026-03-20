@@ -65,6 +65,13 @@
 #include "opensprinkler_matter.h"
 #endif
 
+#if defined(ESP32)
+extern "C" {
+#include <esp_rmaker_core.h>
+#include <esp_rmaker_mqtt.h>
+#include <esp_rmaker_user_mapping.h>
+}
+#endif
 
 // External variables defined in main ion file
 #if defined(USE_OTF)
@@ -2599,6 +2606,52 @@ void server_matter_commission(OTF_PARAMS_DEF) {
 
 	bool ok = OSMatter::instance().open_commissioning_window(timeout);
 	bfill.emit_p(PSTR("{\"result\":$D}"), ok ? 1 : 0);
+	handle_return(HTML_OK);
+}
+#endif
+
+#if defined(ESP32)
+/** Output ESP RainMaker status in JSON.
+ * GET /rk?pw=xxx
+ * Response: {"enabled":0|1, "node_id":"...", "name":"...", "type":"...",
+ *            "fw_version":"...", "model":"...", "mqtt_connected":0|1,
+ *            "user_mapping":N}
+ */
+void server_json_rainmaker(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	const esp_rmaker_node_t *node = esp_rmaker_get_node();
+	if (!node) {
+		bfill.emit_p(PSTR("{\"enabled\":0}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	bfill.emit_p(PSTR("{\"enabled\":1"));
+
+	char *node_id = esp_rmaker_get_node_id();
+	if (node_id) {
+		bfill.emit_p(PSTR(",\"node_id\":\"$S\""), node_id);
+	}
+
+	esp_rmaker_node_info_t *info = esp_rmaker_node_get_info(node);
+	if (info) {
+		if (info->name)       bfill.emit_p(PSTR(",\"name\":\"$S\""), info->name);
+		if (info->type)       bfill.emit_p(PSTR(",\"type\":\"$S\""), info->type);
+		if (info->fw_version) bfill.emit_p(PSTR(",\"fw_version\":\"$S\""), info->fw_version);
+		if (info->model)      bfill.emit_p(PSTR(",\"model\":\"$S\""), info->model);
+		if (info->subtype)    bfill.emit_p(PSTR(",\"subtype\":\"$S\""), info->subtype);
+	}
+
+	bfill.emit_p(PSTR(",\"mqtt_connected\":$D"), esp_rmaker_is_mqtt_connected() ? 1 : 0);
+	bfill.emit_p(PSTR(",\"user_mapping\":$D"), (int)esp_rmaker_user_node_mapping_get_state());
+	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);
 }
 #endif
@@ -5484,6 +5537,9 @@ const char _url_keys[] PROGMEM =
 	"jm"  // Matter: get pairing information
 	"mm"  // Matter: open commissioning window
 #endif
+#if defined(ESP32)
+	"rk"  // RainMaker: get status
+#endif
 #if defined(ESP32) || defined(ESP8266)
 	"uc"  // Online update: check for update
 	"uu"  // Online update: start update
@@ -5571,6 +5627,9 @@ URLHandler urls[] = {
 #if defined(ESP32) && defined(ENABLE_MATTER)
 	server_json_matter, // jm
 	server_matter_commission, // mm
+#endif
+#if defined(ESP32)
+	server_json_rainmaker, // rk
 #endif
 #if defined(ESP32) || defined(ESP8266)
 	server_update_check, // uc
@@ -5711,6 +5770,9 @@ void start_server_client() {
 #if defined(ESP32) && defined(USE_OTF)
 		// MCP (Model Context Protocol) JSON-RPC endpoint
 		otf->on("/mcp", server_mcp_handler, OTF::OTF_HTTP_POST);
+		otf->on("/mcp", server_mcp_get_handler, OTF::OTF_HTTP_GET);
+		otf->on("/mcp", server_mcp_options_handler, OTF::OTF_HTTP_OPTIONS);
+		otf->on("/mcp", server_mcp_delete_handler, OTF::OTF_HTTP_DELETE);
 #endif
 
 		// set up all other handlers

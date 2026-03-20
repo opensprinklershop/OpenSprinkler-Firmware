@@ -58,6 +58,7 @@ void server_zigbee_status(const OTF::Request& req, OTF::Response& res);
 #if defined(OS_ENABLE_BLE)
 void server_ble_discovered_devices(const OTF::Request& req, OTF::Response& res);
 #endif
+void server_json_rainmaker(const OTF::Request& req, OTF::Response& res);
 void server_json_log(const OTF::Request& req, OTF::Response& res);
 
 // Action helpers from opensprinkler_server.cpp / main.cpp
@@ -79,6 +80,25 @@ extern uint32_t reboot_timer;
 #define RPC_ERR_INVALID_PARAMS  -32602
 #define RPC_ERR_INTERNAL        -32603
 
+// ─── Session management (MCP Streamable HTTP transport) ──────────────────────
+// Session ID is generated once at boot and returned in every MCP response
+// via the Mcp-Session-Id header. Clients include it in subsequent requests.
+static char g_mcp_session_id[24] = {0};
+
+static const char* mcp_get_session_id() {
+  if (g_mcp_session_id[0] == '\0') {
+    // Generate session ID from chip ID + uptime for uniqueness
+    uint32_t chip = 0;
+#if defined(ESP32)
+    uint64_t mac = ESP.getEfuseMac();
+    chip = (uint32_t)(mac ^ (mac >> 32));
+#endif
+    snprintf(g_mcp_session_id, sizeof(g_mcp_session_id), "os-%08lx-%08lx",
+             (unsigned long)chip, (unsigned long)millis());
+  }
+  return g_mcp_session_id;
+}
+
 // ─── Authentication ──────────────────────────────────────────────────────────
 
 static bool mcp_check_auth(const OTF::Request& req) {
@@ -89,11 +109,12 @@ static bool mcp_check_auth(const OTF::Request& req) {
   if (pw && os.password_verify(pw)) return true;
 
   // 2. Custom header  X-OS-Password: <md5>
-  const char* h_pw = req.getHeader("X-OS-Password");
+  // NOTE: OTF lowercases header names during parsing, so we must use lowercase here.
+  const char* h_pw = req.getHeader("x-os-password");
   if (h_pw && os.password_verify(h_pw)) return true;
 
   // 3. Bearer token  Authorization: Bearer <md5>
-  const char* auth = req.getHeader("Authorization");
+  const char* auth = req.getHeader("authorization");
   if (auth && strncmp(auth, "Bearer ", 7) == 0 && os.password_verify(auth + 7)) return true;
 
   return false;
@@ -140,10 +161,12 @@ static void mcp_send_response(OTF::Response& res,
   String body;
   ArduinoJson::serializeJson(doc, body);
 
-  res.writeStatus(200);
+  res.writeStatus(200, F("OK"));
   res.writeHeader(F("Content-Type"), F("application/json"));
   res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
   res.writeHeader(F("Cache-Control"), F("no-store"));
+  res.writeHeader(F("Mcp-Session-Id"), mcp_get_session_id());
+  res.writeHeader(F("Connection"), F("close"));
   res.writeHeader(F("Content-Length"), (int)body.length());
   res.writeBodyData(body.c_str(), body.length());
 }
@@ -361,6 +384,12 @@ static String tool_get_ble_devices(const OTF::Request& req, OTF::Response& res) 
   return tool_capture(server_ble_discovered_devices, req, res);
 }
 #endif // OS_ENABLE_BLE
+
+// ─── Tool: get_rainmaker_status ──────────────────────────────────────────────
+
+static String tool_get_rainmaker_status(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_json_rainmaker, req, res);
+}
 
 // ─── Tool: get_log ───────────────────────────────────────────────────────────
 // server_json_log reads start/end/hist/type from the HTTP query string, but
@@ -643,6 +672,8 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
   add_ro("get_ble_devices",
     "List discovered BLE devices from the last scan. ESP32 only. Equivalent to /bd.");
 #endif
+  add_ro("get_rainmaker_status",
+    "Get ESP RainMaker status: node ID, cloud MQTT connection, user mapping state. ESP32 only. Equivalent to /rk.");
 
   // get_log (parameterized)
   {
@@ -729,32 +760,29 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
   // OTF registers this handler for POST only, but browsers send OPTIONS first.
   // If OTF ever calls us for OPTIONS (via OTF_HTTP_ANY registration), handle it.
   {
-    const char* method_hdr = req.getHeader("Access-Control-Request-Method");
+    const char* method_hdr = req.getHeader("access-control-request-method");
     if (method_hdr) {
-      res.writeStatus(204);
+      res.writeStatus(204, F("No Content"));
       res.writeHeader(F("Access-Control-Allow-Origin"),  F("*"));
-      res.writeHeader(F("Access-Control-Allow-Methods"), F("POST, OPTIONS"));
+      res.writeHeader(F("Access-Control-Allow-Methods"), F("POST, GET, DELETE, OPTIONS"));
       res.writeHeader(F("Access-Control-Allow-Headers"),
-                      F("Content-Type, X-OS-Password, Authorization"));
+                      F("Content-Type, Accept, X-OS-Password, Authorization, Mcp-Session-Id"));
+      res.writeHeader(F("Access-Control-Expose-Headers"), F("Mcp-Session-Id"));
       res.writeHeader(F("Access-Control-Max-Age"), F("86400"));
+      res.writeHeader(F("Connection"), F("close"));
+      res.writeHeader(F("Content-Length"), 0);
       res.writeBodyData("", 0);
       return;
     }
   }
 
   // ── Authentication ───────────────────────────────────────────────────────
-  if (!mcp_check_auth(req)) {
-    mcp_build_error(resp_doc, ArduinoJson::JsonVariantConst{}, -32600,
-                    "Unauthorized – supply ?pw=<md5> or X-OS-Password / Authorization: Bearer header");
-    res.writeStatus(401);
-    res.writeHeader(F("Content-Type"), F("application/json"));
-    res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
-    String body;
-    ArduinoJson::serializeJson(resp_doc, body);
-    res.writeHeader(F("Content-Length"), (int)body.length());
-    res.writeBodyData(body.c_str(), body.length());
-    return;
-  }
+  // NOTE: Auth is checked LAZILY (only for tools/call) to avoid triggering
+  // OAuth 2.0 flows in MCP clients like GitHub Copilot CLI.  Returning
+  // HTTP 401 causes the SDK to demand a clientId for OAuth; instead we
+  // allow the handshake (initialize, ping, tools/list) without auth and
+  // gate actual data access (tools/call) behind a JSON-RPC error.
+  bool mcp_authenticated = mcp_check_auth(req);
 
   // ── Parse JSON-RPC body ──────────────────────────────────────────────────
   const char* body_raw   = req.getBody();
@@ -802,6 +830,18 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
     return;
   }
 
+  // ── JSON-RPC notifications (no id) → 202 Accepted ───────────────────────
+  // MCP spec: notifications have no "id" field; server MUST return 202 with no body.
+  if (!rpc_req.containsKey("id")) {
+    res.writeStatus(202, F("Accepted"));
+    res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+    res.writeHeader(F("Mcp-Session-Id"), mcp_get_session_id());
+    res.writeHeader(F("Connection"), F("close"));
+    res.writeHeader(F("Content-Length"), 0);
+    res.writeBodyData("", 0);
+    return;
+  }
+
   // ── Dispatch ─────────────────────────────────────────────────────────────
 
   // ── initialize ───────────────────────────────────────────────────────────
@@ -840,6 +880,13 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
 
   // ── tools/call ───────────────────────────────────────────────────────────
   if (strcmp(method, "tools/call") == 0) {
+    // tools/call requires authentication (accesses real device data)
+    if (!mcp_authenticated) {
+      mcp_build_error(resp_doc, rpc_id, -32600,
+                      "Unauthorized – supply ?pw=<md5> or X-OS-Password / Authorization: Bearer header");
+      mcp_send_response(res, resp_doc);
+      return;
+    }
     ArduinoJson::JsonObjectConst params = rpc_req["params"].as<ArduinoJson::JsonObjectConst>();
     if (params.isNull()) {
       mcp_build_error(resp_doc, rpc_id, RPC_ERR_INVALID_PARAMS, "params required");
@@ -916,6 +963,9 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
       content_json = tool_get_ble_devices(req, res);
 #endif
 
+    } else if (strcmp(tool_name, "get_rainmaker_status") == 0) {
+      content_json = tool_get_rainmaker_status(req, res);
+
     } else if (strcmp(tool_name, "get_log") == 0) {
       content_json = tool_get_log(req, res, args);
 
@@ -964,6 +1014,74 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
   // ── Unknown method ───────────────────────────────────────────────────────
   mcp_build_error(resp_doc, rpc_id, RPC_ERR_METHOD_NOT_FOUND, "Method not found");
   mcp_send_response(res, resp_doc);
+}
+
+// ─── OPTIONS handler → CORS pre-flight (MCP spec: Streamable HTTP) ───────────
+
+void server_mcp_options_handler(const OTF::Request& /*req*/, OTF::Response& res) {
+  res.writeStatus(204, F("No Content"));
+  res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+  res.writeHeader(F("Access-Control-Allow-Methods"), F("POST, GET, DELETE, OPTIONS"));
+  res.writeHeader(F("Access-Control-Allow-Headers"), F("Content-Type, Accept, Authorization, X-OS-Password, Mcp-Session-Id"));
+  res.writeHeader(F("Access-Control-Expose-Headers"), F("Mcp-Session-Id"));
+  res.writeHeader(F("Access-Control-Max-Age"), F("86400"));
+  res.writeHeader(F("Connection"), F("close"));
+  res.writeHeader(F("Content-Length"), 0);
+  res.writeBodyData("", 0);
+}
+
+// ─── GET handler → 405 Method Not Allowed (MCP spec: Streamable HTTP) ────────
+
+void server_mcp_get_handler(const OTF::Request& req, OTF::Response& res) {
+  // MCP Streamable HTTP: server MAY support GET for SSE notifications.
+  // Since OTF is single-threaded and can't keep SSE connections open, we
+  // check the Accept header and respond accordingly.
+
+  // If the client accepts text/event-stream (SSE), return a minimal empty
+  // event stream with the session ID so the client knows we're alive.
+  // The connection will close immediately (OTF limitation), but this
+  // allows clients that probe GET before POST to succeed.
+  const char* accept = req.getHeader("accept");
+  if (accept && strstr(accept, "text/event-stream")) {
+    // Return a minimal SSE response with the session ID, then close.
+    // No auth check here – SSE probe must not trigger OAuth flow (HTTP 401).
+    res.writeStatus(200, F("OK"));
+    res.writeHeader(F("Content-Type"), F("text/event-stream"));
+    res.writeHeader(F("Cache-Control"), F("no-cache"));
+    res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+    res.writeHeader(F("Access-Control-Expose-Headers"), F("Mcp-Session-Id"));
+    res.writeHeader(F("Mcp-Session-Id"), mcp_get_session_id());
+    res.writeHeader(F("Connection"), F("close"));
+    // Send an empty event: comment + newline (keeps SSE parsers happy)
+    const char* sse_body = ": ok\n\n";
+    res.writeHeader(F("Content-Length"), (int)strlen(sse_body));
+    res.writeBodyData(sse_body, strlen(sse_body));
+    return;
+  }
+
+  // Otherwise return 405 per MCP spec.
+  res.writeStatus(405, F("Method Not Allowed"));
+  res.writeHeader(F("Allow"), F("POST, OPTIONS"));
+  res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+  res.writeHeader(F("Content-Type"), F("text/plain"));
+  res.writeHeader(F("Connection"), F("close"));
+  const char* msg = "Method Not Allowed. Use POST for JSON-RPC.";
+  res.writeHeader(F("Content-Length"), (int)strlen(msg));
+  res.writeBodyData(msg, strlen(msg));
+}
+
+// ─── DELETE handler → session termination (MCP Streamable HTTP) ──────────────
+
+void server_mcp_delete_handler(const OTF::Request& req, OTF::Response& res) {
+  // MCP spec: client sends DELETE to terminate session.
+  // Regenerate session ID so next client gets a fresh session.
+  g_mcp_session_id[0] = '\0';
+
+  res.writeStatus(200, F("OK"));
+  res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+  res.writeHeader(F("Connection"), F("close"));
+  res.writeHeader(F("Content-Length"), 0);
+  res.writeBodyData("", 0);
 }
 
 #endif // ESP32 && USE_OTF

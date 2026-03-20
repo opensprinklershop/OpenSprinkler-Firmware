@@ -536,6 +536,18 @@ export function registerTools(
     },
   );
 
+  // ─── RainMaker (ESP32 only) ─────────────────────────────────────────
+
+  server.tool(
+    "get_rainmaker_status",
+    "Get ESP RainMaker status: node ID, cloud MQTT connection, user mapping state. ESP32 only. Equivalent to /rk.",
+    {},
+    async () => {
+      const data = await getClient().get("/rk");
+      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
   // ─── Backup & diagnostics ──────────────────────────────────────────
 
   server.tool(
