@@ -36,11 +36,13 @@
 #include <esp_netif.h>
 #include <esp_partition.h>
 #include <esp_log.h>
+#include <driver/gpio.h>
 #if defined(ESP32C5)
 #include "soc/lp_aon_reg.h"
 #endif
 #include "esp_wifi.h"
 #include "custom_cert.h"
+#include "acme_client.h"
 #endif
 #include "sensor_ble.h"
 
@@ -214,6 +216,7 @@ const char iopt_json_names[] PROGMEM =
 	"belw1"
 	"belw2"
 	"ife3\0"
+	"ife4\0"
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -313,6 +316,7 @@ const unsigned char iopt_max[] PROGMEM = {
 	255,
 	255,
 	0,
+	255,
 	MAX_EXT_BOARDS,
 	1,
 	255,
@@ -458,6 +462,8 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // below handling current alert enable
 	0,  // below handling current alert hi
 	0,  // below handling current alert lo
+	0,  // Notif3 enable bit
+	0,  // Notif4 enable bit
 };
 
 /** String option values (stored in RAM) */
@@ -576,7 +582,14 @@ unsigned char OpenSprinkler::start_network() {
 
 	if (start_ether()) {
 		useEth = true;
-		WiFi.mode(WIFI_OFF); // turn off WiFi to release the WiFi MAC for Ethernet use
+#ifdef ENABLE_RAINMAKER
+		// RainMaker needs WiFi for SoftAP provisioning / assisted claiming,
+		// even when Ethernet is the primary data path.  Leave WiFi active;
+		// RMaker.initNode() → wifiLowLevelInit() will configure it later.
+		ESP_LOGI("OS", "Ethernet up — WiFi kept active for RainMaker provisioning");
+#else
+		WiFi.mode(WIFI_OFF); // turn off WiFi to save resources
+#endif
 	} else {
 		useEth = false;
 	}
@@ -596,6 +609,10 @@ unsigned char OpenSprinkler::start_network() {
 		otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
 		DEBUG_PRINTLN(F("Started OTF with just local connection"));
 	}
+
+	#if defined(ESP32)
+	acme_init();
+	#endif
 	extern DNSServer *dns;
 	if(get_wifi_mode() == WIFI_MODE_AP) dns = new DNSServer();
 	if(update_server) { delete update_server; update_server = NULL; }
@@ -776,13 +793,17 @@ byte OpenSprinkler::start_ether() {
 	// W5500 shares SPI2_HOST bus with external flash (already initialized by init_external_flash()).
 	// Do NOT call SPI.begin() - it uses Arduino HAL register access which conflicts
 	// with the ESP-IDF spi_bus driver used by both external flash and W5500 MAC.
-	// Use eth.begin() variant with explicit SPI host, pin numbers, and frequency.
+	// Use eth.begin() with SPI host and pin numbers.
+	
+	// Install GPIO ISR service before initializing W5500 (which uses GPIO interrupts)
+	gpio_install_isr_service(0);
+	
 	delay(100);
 	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI, 20)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
 	}
-	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus, 20 MHz)"));
+	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus)"));
 	#endif
 
 
@@ -1414,7 +1435,13 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6c"));
 			// format external littlefs if not existing
 			lcd_print_pgm(PSTR("Formating ext FS"));
 			DEBUG_PRINTF(F("Formatting external LittleFS...\n"));
+			LittleFS.end();
 			LittleFS.format();
+			if(!LittleFS.begin(true, "/littlefs", 10, "littlefs_ext") && !LittleFS.begin(true)) {
+				lcd.setCursor(0, 0);
+				lcd_print_pgm(PSTR("Error Code: 0x2D"));
+				delay(5000);
+			}
 			DEBUG_PRINTF(F("completed.\n"));
 		}
 		#endif
@@ -2736,9 +2763,8 @@ void OpenSprinkler::factory_reset() {
 #if defined(ARDUINO)
 	lcd_print_line_clear_pgm(PSTR("Factory reset"), 0);
 	lcd_print_line_clear_pgm(PSTR("Please Wait..."), 1);
-#else
-	DEBUG_PRINT(F("factory reset..."));
 #endif
+	DEBUG_PRINTLN(F("factory reset..."));
 
 	// 1. reset integer options (by saving default values)
 	iopts_save();
@@ -2838,12 +2864,13 @@ void OpenSprinkler::options_setup() {
 	if (file_read_byte(IOPTS_FILENAME, IOPT_FW_VERSION)!=OS_FW_VERSION ||  // fw major version has changed
 			!file_exists(DONE_FILENAME)) {  // done file doesn't exist
 
+		
 		factory_reset();
 
 	} else	{
-
 		iopts_load();
 		nvdata_load();
+
 		last_reboot_cause = nvdata.reboot_cause;
 		nvdata.reboot_cause = REBOOT_CAUSE_POWERON;
 		nvdata_save();
@@ -2970,7 +2997,6 @@ void OpenSprinkler::options_setup() {
 		#endif
 	}
 #endif
-	DEBUG_PRINTLN(F("OpenSprinkler options setup-exit"));
 }
 
 /** Load non-volatile controller status data from file */
