@@ -6,9 +6,12 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [Unreleased] — 2.4.0 (187)
+## [2.4.0 (187)] — 2026-03-20
 
 ### Added
+- **ESP RainMaker integration**: new `opensprinkler_rainmaker.cpp/h` exposes irrigation zones as RainMaker Switch devices and sensor data (rain, flow, temperature, soil moisture) as RainMaker devices for Alexa & Google Home (ESP32 only, `ENABLE_RAINMAKER`) (e8a5397)
+- **MCP Server — session management**: MCP Streamable HTTP transport now generates a persistent `Mcp-Session-Id` header (chip-ID + uptime) returned on every MCP response (e8a5397)
+- **MCP Server — RainMaker tool**: added `get_rainmaker_status` tool exposing ESP RainMaker node/cloud state via MCP (e8a5397)
 - **InfluxDB suspend/resume**: added `suspend()` / `resume()` methods to InfluxDB class for controlled pausing during resource-intensive operations (36d9504)
 - **lgpio support (OSPi)**: added support for `lgpio` library on Debian 13+ (Trixie) with automatic fallback from `libgpiod` → `lgpio` → `sysfs` (52cd0a6)
 - **Zigbee notifications**: trigger Zigbee notification after sensor updates (36d9504)
@@ -16,6 +19,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **fw.sh all-platform builds**: `build`, `deploy`, and `upload` without variant parameter now include ESP8266 alongside Matter and ZigBee
 
 ### Changed
+- **MCP Server — auth headers**: fixed header name lookup to use lowercase (OTF lowercases header names during parsing); affects `x-os-password` and `authorization` headers (e8a5397)
 - **BLE sensor debug counters**: refactored to use cleaner structure (36d9504)
 - **Modbus RTU**: streamlined IP handling for Modbus RTU sensors (36d9504)
 - **Remote sensor**: improved IP extraction logic (36d9504)
@@ -23,10 +27,11 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **Sensor JSON output**: removed duplicate `factor`/`divider` fields from JSON serialization; only `fac`/`div` are emitted (backward-compatible on read)
 
 ### Fixed
-- **ASB sensor scheduling**: fixed critical bug where SENSOR_USERDEF (type 49) sensors stopped being read after the first averaging period — scheduler's `last_read` overwrite conflicted with the averaging period check; introduced independent `period_start` field
-- **ASB sensor first read**: fixed regression where sensors produced no data until the first full `read_interval` elapsed after boot; now returns first sample immediately when no prior data exists
+- **ASB sensor scheduling**: fixed critical bug where SENSOR_USERDEF (type 49) sensors stopped being read after the first averaging period — scheduler's `last_read` overwrite conflicted with the averaging period check; introduced independent `period_start` field (e8a5397)
+- **ASB sensor first read**: fixed regression where sensors produced no data until the first full `read_interval` elapsed after boot; now returns first sample immediately when no prior data exists (e8a5397)
 - **ASB sensor error handling**: improved error handling in ASB sensor read path (36d9504)
 - **InfluxDB data handling**: optimized InfluxDB data submission flow (36d9504)
+- OSPi: fixed PCF8591 sensor compile error (3cfa17a, 2026-03-19)
 - OSPi: fixed startup failure introduced in prior refactoring (b53ae07, 2026-03-16)
 - OSPi: fixed compile error after sensor refactoring (e3a98cf, 2026-03-16)
 

@@ -20,6 +20,13 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 
+#if defined(ENABLE_RAINMAKER)
+extern "C" {
+#include <esp_rmaker_core.h>
+#include <esp_rmaker_user_mapping.h>
+}
+#endif
+
 // ─── External state ─────────────────────────────────────────────────────────
 
 extern OpenSprinkler os;
@@ -58,7 +65,10 @@ void server_zigbee_status(const OTF::Request& req, OTF::Response& res);
 #if defined(OS_ENABLE_BLE)
 void server_ble_discovered_devices(const OTF::Request& req, OTF::Response& res);
 #endif
+#if defined(ENABLE_RAINMAKER)
 void server_json_rainmaker(const OTF::Request& req, OTF::Response& res);
+void server_rainmaker_provision(const OTF::Request& req, OTF::Response& res);
+#endif
 void server_json_log(const OTF::Request& req, OTF::Response& res);
 
 // Action helpers from opensprinkler_server.cpp / main.cpp
@@ -386,10 +396,32 @@ static String tool_get_ble_devices(const OTF::Request& req, OTF::Response& res) 
 #endif // OS_ENABLE_BLE
 
 // ─── Tool: get_rainmaker_status ──────────────────────────────────────────────
-
+#if defined(ENABLE_RAINMAKER)
 static String tool_get_rainmaker_status(const OTF::Request& req, OTF::Response& res) {
   return tool_capture(server_json_rainmaker, req, res);
 }
+#endif
+
+// ─── Tool: start_rainmaker_provisioning ─────────────────────────────────────
+#if defined(ENABLE_RAINMAKER)
+static int tool_start_rainmaker_provisioning(const ArduinoJson::JsonObjectConst& args) {
+  if (!args.containsKey("uid") || !args.containsKey("key")) return 16; // HTML_DATA_MISSING
+  const char* uid = args["uid"].as<const char*>();
+  const char* key = args["key"].as<const char*>();
+  if (!uid || !uid[0] || !key || !key[0]) return 16;
+
+  const esp_rmaker_node_t *node = esp_rmaker_get_node();
+  if (!node) return 48; // HTML_NOT_PERMITTED — RainMaker not initialized
+
+  // esp_rmaker_start_user_node_mapping takes non-const char* args
+  char uid_buf[128], key_buf[128];
+  strncpy(uid_buf, uid, sizeof(uid_buf) - 1); uid_buf[sizeof(uid_buf) - 1] = 0;
+  strncpy(key_buf, key, sizeof(key_buf) - 1); key_buf[sizeof(key_buf) - 1] = 0;
+
+  esp_err_t err = esp_rmaker_start_user_node_mapping(uid_buf, key_buf);
+  return (err == ESP_OK) ? 1 : 48; // HTML_SUCCESS or HTML_NOT_PERMITTED
+}
+#endif // ENABLE_RAINMAKER
 
 // ─── Tool: get_log ───────────────────────────────────────────────────────────
 // server_json_log reads start/end/hist/type from the HTTP query string, but
@@ -672,8 +704,26 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
   add_ro("get_ble_devices",
     "List discovered BLE devices from the last scan. ESP32 only. Equivalent to /bd.");
 #endif
+#if defined(ENABLE_RAINMAKER)
   add_ro("get_rainmaker_status",
     "Get ESP RainMaker status: node ID, cloud MQTT connection, user mapping state. ESP32 only. Equivalent to /rk.");
+  // start_rainmaker_provisioning (parameterized)
+  {
+    auto t = tools.add<ArduinoJson::JsonObject>();
+    t["name"]        = "start_rainmaker_provisioning";
+    t["description"] = "Start ESP RainMaker user-node provisioning. Requires user_id and secret_key from the RainMaker phone app or CLI. Check mapping state with get_rainmaker_status. ESP32 only. Equivalent to /rp.";
+    auto schema = t["inputSchema"].to<ArduinoJson::JsonObject>();
+    schema["type"] = "object";
+    auto props = schema["properties"].to<ArduinoJson::JsonObject>();
+    auto uid_p = props["uid"].to<ArduinoJson::JsonObject>();
+    uid_p["type"] = "string"; uid_p["description"] = "User ID from the ESP RainMaker app";
+    auto key_p = props["key"].to<ArduinoJson::JsonObject>();
+    key_p["type"] = "string"; key_p["description"] = "Secret key from the ESP RainMaker app";
+    auto req_arr = schema["required"].to<ArduinoJson::JsonArray>();
+    req_arr.add("uid");
+    req_arr.add("key");
+  }
+#endif
 
   // get_log (parameterized)
   {
@@ -963,8 +1013,21 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
       content_json = tool_get_ble_devices(req, res);
 #endif
 
+#if defined(ENABLE_RAINMAKER)
     } else if (strcmp(tool_name, "get_rainmaker_status") == 0) {
       content_json = tool_get_rainmaker_status(req, res);
+
+    } else if (strcmp(tool_name, "start_rainmaker_provisioning") == 0) {
+      if (args.isNull()) {
+        mcp_build_error(resp_doc, rpc_id, RPC_ERR_INVALID_PARAMS, "arguments required");
+        mcp_send_response(res, resp_doc);
+        return;
+      }
+      int code = tool_start_rainmaker_provisioning(args);
+      mcp_build_code_result(resp_doc, rpc_id, code);
+      mcp_send_response(res, resp_doc);
+      return;
+#endif
 
     } else if (strcmp(tool_name, "get_log") == 0) {
       content_json = tool_get_log(req, res, args);

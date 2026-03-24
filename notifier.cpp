@@ -41,18 +41,25 @@ extern float flow_last_gpm;
 extern const char *user_agent_string;
 
 bool is_notif_enabled(uint32_t type) {
-	uint32_t notif = (uint32_t)os.iopts[IOPT_NOTIF_ENABLE] | ((uint32_t)os.iopts[IOPT_NOTIF2_ENABLE] << 8) | ((uint32_t)os.iopts[IOPT_NOTIF3_ENABLE] << 16);
+	uint32_t notif = (uint32_t)os.iopts[IOPT_NOTIF_ENABLE] |
+		((uint32_t)os.iopts[IOPT_NOTIF2_ENABLE] << 8) |
+		((uint32_t)os.iopts[IOPT_NOTIF3_ENABLE] << 16) |
+		((uint32_t)os.iopts[IOPT_NOTIF4_ENABLE] << 24);
 	return  (notif&type) != 0;
 }
 
 uint32_t get_notif_enabled() {
-	return (uint32_t)os.iopts[IOPT_NOTIF_ENABLE]|((uint32_t)os.iopts[IOPT_NOTIF2_ENABLE]<<8)|((uint32_t)os.iopts[IOPT_NOTIF3_ENABLE]<<16);
+	return (uint32_t)os.iopts[IOPT_NOTIF_ENABLE] |
+		((uint32_t)os.iopts[IOPT_NOTIF2_ENABLE] << 8) |
+		((uint32_t)os.iopts[IOPT_NOTIF3_ENABLE] << 16) |
+		((uint32_t)os.iopts[IOPT_NOTIF4_ENABLE] << 24);
 }
 
 void set_notif_enabled(uint32_t notif) {
 	os.iopts[IOPT_NOTIF_ENABLE] = notif&0xFF;
 	os.iopts[IOPT_NOTIF2_ENABLE] = (notif >> 8)&0xFF;
 	os.iopts[IOPT_NOTIF3_ENABLE] = (notif >> 16)&0xFF;
+	os.iopts[IOPT_NOTIF4_ENABLE] = (notif >> 24)&0xFF;
 }
 
 void ip2string(char* str, size_t str_len, unsigned char ip[4]) {

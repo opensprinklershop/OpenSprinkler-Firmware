@@ -60,17 +60,20 @@
 #if defined(ESP32) && defined(USE_OTF)
 #include "cert.h"  // for /ca.der cert download endpoint
 #include "custom_cert.h"  // for custom certificate management endpoints
+#include "acme_client.h"  // for Let's Encrypt ACME certificate management
 #endif
 #if defined(ESP32) && defined(ENABLE_MATTER)
 #include "opensprinkler_matter.h"
 #endif
 
-#if defined(ESP32)
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
 extern "C" {
 #include <esp_rmaker_core.h>
 #include <esp_rmaker_mqtt.h>
 #include <esp_rmaker_user_mapping.h>
+#include <esp_rmaker_utils.h>
 }
+#include "opensprinkler_rainmaker.h"
 #endif
 
 // External variables defined in main ion file
@@ -1382,6 +1385,9 @@ void server_json_options_main() {
 	#if defined(ENABLE_MATTER)
 	bfill.emit_p(PSTR(",MATTER"));
 	#endif
+	#if defined(ENABLE_RAINMAKER)
+	bfill.emit_p(PSTR(",RAINMAKER"));
+	#endif
 	bfill.emit_p(PSTR("\""));
 
 	bfill.emit_p(PSTR(",\"dexp\":$D,\"mexp\":$D,\"hwt\":$D,"), os.detect_exp(), MAX_EXT_BOARDS, os.hw_type);
@@ -2610,12 +2616,13 @@ void server_matter_commission(OTF_PARAMS_DEF) {
 }
 #endif
 
-#if defined(ESP32)
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
 /** Output ESP RainMaker status in JSON.
  * GET /rk?pw=xxx
  * Response: {"enabled":0|1, "node_id":"...", "name":"...", "type":"...",
  *            "fw_version":"...", "model":"...", "mqtt_connected":0|1,
- *            "user_mapping":N}
+ *            "user_mapping":N, "use_eth":0|1, "pop":"...",
+ *            "local_ctrl_active":0|1, "prov_service":"..."}
  */
 void server_json_rainmaker(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -2626,14 +2633,22 @@ void server_json_rainmaker(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	const esp_rmaker_node_t *node = esp_rmaker_get_node();
-	if (!node) {
-		bfill.emit_p(PSTR("{\"enabled\":0}"));
+	auto *rm = OSRainMaker::get();
+	if (!rm || !rm->is_initialized()) {
+		bfill.emit_p(PSTR("{\"enabled\":0,\"feature_enabled\":$D}"), os.iopts[IOPT_RAINMAKER_ENABLE]);
 		handle_return(HTML_OK);
 		return;
 	}
 
-	bfill.emit_p(PSTR("{\"enabled\":1"));
+	// If unlink was triggered, report transitional state (device will reboot)
+	if (rm->is_unlinking()) {
+		bfill.emit_p(PSTR("{\"enabled\":1,\"feature_enabled\":1,\"unlinking\":1,\"mqtt_connected\":0,\"user_mapping\":0}"));
+		handle_return(HTML_OK);
+		return;
+	}
+	const esp_rmaker_node_t *node = esp_rmaker_get_node();
+
+	bfill.emit_p(PSTR("{\"enabled\":1,\"feature_enabled\":1"));
 
 	char *node_id = esp_rmaker_get_node_id();
 	if (node_id) {
@@ -2651,7 +2666,101 @@ void server_json_rainmaker(OTF_PARAMS_DEF) {
 
 	bfill.emit_p(PSTR(",\"mqtt_connected\":$D"), esp_rmaker_is_mqtt_connected() ? 1 : 0);
 	bfill.emit_p(PSTR(",\"user_mapping\":$D"), (int)esp_rmaker_user_node_mapping_get_state());
+	bfill.emit_p(PSTR(",\"local_ctrl_active\":$D"), rm->is_local_ctrl_started() ? 1 : 0);
+
+	// Ethernet / WiFi mode
+	bfill.emit_p(PSTR(",\"use_eth\":$D"), rm->is_ethernet() ? 1 : 0);
+
+	// PoP — always available (derived from eFuse)
+	const char *pop = rm->get_pop();
+	if (pop && pop[0]) {
+		bfill.emit_p(PSTR(",\"pop\":\"$S\""), pop);
+	}
+
+	// Service name (for On Network discovery)
+	const char *svc = rm->get_prov_service_name();
+	if (svc && svc[0]) {
+		bfill.emit_p(PSTR(",\"prov_service\":\"$S\""), svc);
+	}
+
 	bfill.emit_p(PSTR("}"));
+	handle_return(HTML_OK);
+}
+
+/** Start ESP RainMaker user-node mapping (provisioning).
+ * GET /rp?pw=xxx&uid=USER_ID&key=SECRET_KEY
+ * Response: {"result":1} on success, {"result":0,"error":"..."} on failure.
+ *
+ * The user_id and secret_key must be obtained from the ESP RainMaker
+ * phone app or CLI. This triggers the async user-node mapping workflow;
+ * check mapping state via /rk (user_mapping field).
+ */
+void server_rainmaker_provision(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	if (!OSRainMaker::get() || !OSRainMaker::get()->is_initialized()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"RainMaker not initialized\"}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	char uid_buf[128] = {};
+	char key_buf[128] = {};
+
+	if (!findKeyVal(FKV_SOURCE, uid_buf, sizeof(uid_buf), PSTR("uid"), true) ||
+	    !findKeyVal(FKV_SOURCE, key_buf, sizeof(key_buf), PSTR("key"), true) ||
+	    uid_buf[0] == 0 || key_buf[0] == 0) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"uid and key required\"}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	esp_err_t err = esp_rmaker_start_user_node_mapping(uid_buf, key_buf);
+	if (err == ESP_OK) {
+		bfill.emit_p(PSTR("{\"result\":1}"));
+	} else {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"mapping failed: $S\"}"), esp_err_to_name(err));
+	}
+	handle_return(HTML_OK);
+}
+
+/** Remove ESP RainMaker cloud linkage (unlink account mapping).
+ * GET /ru?pw=xxx
+ *
+ * This schedules a RainMaker factory reset which clears the cloud mapping
+ * and reboots the device. Wi-Fi credentials and other RainMaker credentials
+ * are reset by the RainMaker stack.
+ *
+ * Response: {"result":1,"rebooting":1} on success.
+ */
+void server_rainmaker_unlink(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	auto *rm_ul = OSRainMaker::get();
+	if (!rm_ul || !rm_ul->is_initialized()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"RainMaker not initialized\"}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	bool ok = rm_ul->unlink();
+	if (ok) {
+		bfill.emit_p(PSTR("{\"result\":1,\"rebooting\":1,\"delay\":7}"));
+	} else {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"unlink failed\"}"));
+	}
 	handle_return(HTML_OK);
 }
 #endif
@@ -2798,8 +2907,12 @@ void server_cert_get(OTF_PARAMS_DEF) {
 #endif
 
 	CertInfo info = custom_cert_get_info();
-	bfill.emit_p(PSTR("{\"type\":\"$S\",\"subject\":\""),
-		info.is_custom ? "custom" : "internal");
+	const char* ctype = "internal";
+	if (info.is_custom) {
+		AcmeConfig acfg = acme_get_config();
+		ctype = (acfg.enabled && acme_get_status() >= ACME_STATUS_ACTIVE) ? "acme" : "custom";
+	}
+	bfill.emit_p(PSTR("{\"type\":\"$S\",\"subject\":\""), ctype);
 	if (info.valid) bfill.emit_p(info.subject);
 	bfill.emit_p(PSTR("\",\"issuer\":\""));
 	if (info.valid) bfill.emit_p(info.issuer);
@@ -2919,6 +3032,108 @@ void server_cert_delete(OTF_PARAMS_DEF) {
 #endif
 
 	custom_cert_delete();
+	bfill.emit_p(PSTR("{\"result\":1}"));
+	handle_return(HTML_OK);
+}
+
+/** Get ACME / Let's Encrypt config and status.
+ * GET /ta?pw=xxx
+ * Response: {"enabled":bool,"domain":"...","email":"...","server":"...",
+ *            "status":0-5,"error":"...","days_left":-1..N}
+ */
+void server_acme_get(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	AcmeConfig cfg = acme_get_config();
+	AcmeStatus st = acme_get_status();
+	int days = acme_days_until_expiry();
+	const char* err = acme_get_last_error();
+
+	bfill.emit_p(PSTR("{\"enabled\":$D,\"domain\":\""), cfg.enabled ? 1 : 0);
+	bfill.emit_p(cfg.domain);
+	bfill.emit_p(PSTR("\",\"email\":\""));
+	bfill.emit_p(cfg.email);
+	bfill.emit_p(PSTR("\",\"server\":\""));
+	bfill.emit_p(cfg.acme_server);
+	bfill.emit_p(PSTR("\",\"status\":$D,\"days_left\":$D,\"error\":\""), (int)st, days);
+	if (err && err[0]) bfill.emit_p(err);
+	bfill.emit_p(PSTR("\"}"));
+	handle_return(HTML_OK);
+}
+
+/** Set ACME config and optionally request a certificate.
+ * POST /tc?pw=xxx  body: domain=xxx&email=xxx&server=xxx&enabled=1&request=1
+ * Response: {"result":1} on success, {"result":0,"error":"..."} on failure.
+ */
+void server_acme_set(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	// Read params from query string or body
+	char *domain = req.getQueryParameter("domain");
+	char *email = req.getQueryParameter("email");
+	char *server = req.getQueryParameter("server");
+	char *enabled_s = req.getQueryParameter("enabled");
+	char *request_s = req.getQueryParameter("request");
+
+	// Also check body for POST
+	char *domain_alloc = nullptr, *email_alloc = nullptr, *server_alloc = nullptr;
+	char *enabled_alloc = nullptr, *request_alloc = nullptr;
+	if (req.getBody() && req.getBodyLength() > 0) {
+		if (!domain) { domain_alloc = get_form_body_param(req.getBody(), req.getBodyLength(), "domain"); domain = domain_alloc; }
+		if (!email) { email_alloc = get_form_body_param(req.getBody(), req.getBodyLength(), "email"); email = email_alloc; }
+		if (!server) { server_alloc = get_form_body_param(req.getBody(), req.getBodyLength(), "server"); server = server_alloc; }
+		if (!enabled_s) { enabled_alloc = get_form_body_param(req.getBody(), req.getBodyLength(), "enabled"); enabled_s = enabled_alloc; }
+		if (!request_s) { request_alloc = get_form_body_param(req.getBody(), req.getBodyLength(), "request"); request_s = request_alloc; }
+	}
+
+	bool enabled = enabled_s && atoi(enabled_s) != 0;
+	bool do_request = request_s && atoi(request_s) != 0;
+
+	if (!domain || strlen(domain) < 3) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"Domain required\"}"));
+	} else {
+		bool ok = acme_set_config(domain, email ? email : "", server, enabled);
+		if (ok && do_request) {
+			acme_request_certificate();
+		}
+		if (ok) {
+			bfill.emit_p(PSTR("{\"result\":1}"));
+		} else {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"Failed to save config\"}"));
+		}
+	}
+
+	free(domain_alloc); free(email_alloc); free(server_alloc);
+	free(enabled_alloc); free(request_alloc);
+	handle_return(HTML_OK);
+}
+
+/** Delete all ACME data and revert to internal certificate.
+ * GET /tx?pw=xxx
+ * Response: {"result":1}
+ */
+void server_acme_delete(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	acme_delete();
 	bfill.emit_p(PSTR("{\"result\":1}"));
 	handle_return(HTML_OK);
 }
@@ -5537,8 +5752,10 @@ const char _url_keys[] PROGMEM =
 	"jm"  // Matter: get pairing information
 	"mm"  // Matter: open commissioning window
 #endif
-#if defined(ESP32)
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
 	"rk"  // RainMaker: get status
+	"rp"  // RainMaker: start user-node provisioning
+	"ru"  // RainMaker: unlink account mapping
 #endif
 #if defined(ESP32) || defined(ESP8266)
 	"uc"  // Online update: check for update
@@ -5549,6 +5766,9 @@ const char _url_keys[] PROGMEM =
 	"tg"  // TLS cert: get certificate info
 	"tl"  // TLS cert: upload custom cert+key (PEM)
 	"td"  // TLS cert: delete custom cert
+	"ta"  // ACME/Let's Encrypt: get config+status
+	"tc"  // ACME/Let's Encrypt: set config
+	"tx"  // ACME/Let's Encrypt: delete all ACME data
 #endif
 #if defined(ESP32) || defined(ESP8266)
 	"ub"  // OTA backup: get config backup JSON
@@ -5628,8 +5848,10 @@ URLHandler urls[] = {
 	server_json_matter, // jm
 	server_matter_commission, // mm
 #endif
-#if defined(ESP32)
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
 	server_json_rainmaker, // rk
+	server_rainmaker_provision, // rp
+	server_rainmaker_unlink, // ru
 #endif
 #if defined(ESP32) || defined(ESP8266)
 	server_update_check, // uc
@@ -5640,6 +5862,9 @@ URLHandler urls[] = {
 	server_cert_get, // tg
 	server_cert_upload, // tl
 	server_cert_delete, // td
+	server_acme_get, // ta
+	server_acme_set, // tc
+	server_acme_delete, // tx
 #endif
 #if defined(ESP32) || defined(ESP8266)
 	server_backup_get, // ub
@@ -5963,10 +6188,9 @@ void handle_web_request(char *p) {
 #define NTP_NTRIES 3
 /** NTP sync request */
 #if defined(ESP8266) || defined(ESP32)
-// Use esp_netif_sntp API for thread-safe SNTP synchronization
-// This is required for ESP32-C5 with Zigbee where TCPIP core locking is needed
+// Use esp_sntp API for SNTP synchronization
 #if defined(ESP32)
-#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 #endif
 
 static bool ntp_is_valid_ipv4(const unsigned char ip[4]) {
@@ -6017,23 +6241,26 @@ ulong getNtpTime() {
 		os.iopts[IOPT_NTP_IP4]};	// todo: handle changes to ntpip dynamically
 		
 #if defined(ESP32) && !defined(ESP8266)
-		// Use thread-safe esp_netif_sntp API for ESP32
-		// This properly locks the TCPIP core before making UDP calls
+		// Stop any existing SNTP client (e.g. started by RainMaker via legacy esp_sntp_init)
+		// before reconfiguring with our preferred servers
+		if (esp_sntp_enabled()) {
+			esp_sntp_stop();
+		}
 		if (!ntp_resolve_primary_server(customAddress, sizeof customAddress, ntpip)) {
-			DEBUG_PRINTLN(F("using default time servers (esp_netif_sntp)"));
-			esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
-				ESP_SNTP_SERVER_LIST("time.google.com", "time.nist.gov", "time.windows.com"));
-			config.start = true;
-			config.smooth_sync = false;
-			esp_netif_sntp_init(&config);
+			DEBUG_PRINTLN(F("using default time servers (esp_sntp)"));
+			esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+			esp_sntp_setservername(0, "time.google.com");
+			esp_sntp_setservername(1, "time.nist.gov");
+			esp_sntp_setservername(2, "time.windows.com");
+			esp_sntp_init();
 		} else {
-			DEBUG_PRINT(F("using primary time server (esp_netif_sntp): "));
+			DEBUG_PRINT(F("using primary time server (esp_sntp): "));
 			DEBUG_PRINTLN(customAddress);
-			esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
-				ESP_SNTP_SERVER_LIST(customAddress, "time.google.com", "time.nist.gov"));
-			config.start = true;
-			config.smooth_sync = false;
-			esp_netif_sntp_init(&config);
+			esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+			esp_sntp_setservername(0, customAddress);
+			esp_sntp_setservername(1, "time.google.com");
+			esp_sntp_setservername(2, "time.nist.gov");
+			esp_sntp_init();
 		}
 #else
 		// ESP8266 uses configTime

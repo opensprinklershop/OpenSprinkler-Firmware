@@ -937,7 +937,6 @@ void do_loop()
 			os.set_screen_led(LOW);
 			os.lcd.clear();
 			os.save_wifi_ip();
-			start_server_client();
 			// Ethernet is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
 			// Ethernet: init BLE + Zigbee immediately (non-Matter)
@@ -953,17 +952,12 @@ void do_loop()
 			}
 			#endif
 			#ifdef ENABLE_RAINMAKER
-			OSRainMaker::instance().init();
+			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif
+			start_server_client();
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
-			start_server_ap();
-			dns->setErrorReplyCode(DNSReplyCode::NoError);
-			dns->setTTL(300);
-			// Captive Portal: Redirect ALL DNS requests to AP IP (192.168.4.1)
-			// This handles msftconnecttest.com, connectivitycheck.gstatic.com, etc.
-			dns->start(53, "*", WiFi.softAPIP());
 			// WiFi AP is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
 			#ifdef ENABLE_MATTER
@@ -974,8 +968,14 @@ void do_loop()
 			}
 			#endif
 			#ifdef ENABLE_RAINMAKER
-			OSRainMaker::instance().init();
+			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif
+			start_server_ap();
+			dns->setErrorReplyCode(DNSReplyCode::NoError);
+			dns->setTTL(300);
+			// Captive Portal: Redirect ALL DNS requests to AP IP (192.168.4.1)
+			// This handles msftconnecttest.com, connectivitycheck.gstatic.com, etc.
+			dns->start(53, "*", WiFi.softAPIP());
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else {
@@ -1012,7 +1012,7 @@ void do_loop()
 		}
 		#endif
 		#ifdef ENABLE_RAINMAKER
-		OSRainMaker::instance().init();
+		if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 		#endif
 		os.state = OS_STATE_CONNECTED;
 		break;
@@ -1025,7 +1025,6 @@ void do_loop()
 			os.set_screen_led(LOW);
 			os.lcd.clear();
 			os.save_wifi_ip();
-			start_server_client();
 			
 			#if defined(ESP32C5)
 			if (!ieee802154_is_matter()) {
@@ -1040,8 +1039,9 @@ void do_loop()
 			}
 			#endif
 			#ifdef ENABLE_RAINMAKER
-			OSRainMaker::instance().init();
+			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif
+			start_server_client();
 			
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
@@ -1177,7 +1177,7 @@ void do_loop()
 #endif
 
 #ifdef ENABLE_RAINMAKER
-	OSRainMaker::instance().loop();
+	if (auto *rm = OSRainMaker::get()) rm->loop();
 #endif
 
 	// The main control loop runs once every second
@@ -1222,7 +1222,7 @@ void do_loop()
 				notif.add(NOTIFY_RAINDELAY, LOGDATA_RAINDELAY, 0);
 			}
 #ifdef ENABLE_RAINMAKER
-			OSRainMaker::instance().update_rain_delay(os.status.rain_delayed);
+			if (auto *rm = OSRainMaker::get()) rm->update_rain_delay(os.status.rain_delayed);
 #endif
 			os.old_status.rain_delayed = os.status.rain_delayed;
 		}
@@ -1240,7 +1240,7 @@ void do_loop()
 				notif.add(NOTIFY_SENSOR1, LOGDATA_SENSOR1, 0);
 			}
 #ifdef ENABLE_RAINMAKER
-			OSRainMaker::instance().update_rain_sensor(os.status.sensor1_active);
+			if (auto *rm = OSRainMaker::get()) rm->update_rain_sensor(os.status.sensor1_active);
 #endif
 		}
 		os.old_status.sensor1_active = os.status.sensor1_active;
@@ -1776,7 +1776,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 		OSMatter::instance().update_station(sid, true);
 #endif
 #ifdef ENABLE_RAINMAKER
-		OSRainMaker::instance().update_station(sid, true);
+		if (auto *rm = OSRainMaker::get()) rm->update_station(sid, true);
 #endif
 	}
 
@@ -1890,7 +1890,7 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	OSMatter::instance().update_station(sid, false);
 #endif
 #ifdef ENABLE_RAINMAKER
-	OSRainMaker::instance().update_station(sid, false);
+	if (auto *rm = OSRainMaker::get()) rm->update_station(sid, false);
 #endif
 
 	// RAH implementation of flow sensor

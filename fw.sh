@@ -10,6 +10,7 @@
 #                                          rebuild: build only, no version bump/git
 #   generate-mfg                         – Generate Matter manufacturing data (DAC, NVS)
 #   flash-mfg                            – Flash matter_kvs partition only
+#   full-flash [matter|zigbee|all]       – Full flash (bootloader + partitions + firmware)
 #   switch  [matter|zigbee|mode]         – Switch firmware variant via REST API
 #                                          (automatically reboots the device)
 #
@@ -29,6 +30,9 @@
 #   ./fw.sh release rebuild
 #   ./fw.sh generate-mfg
 #   ./fw.sh flash-mfg
+#   ./fw.sh full-flash zigbee     -> flash bootloader + partitions + firmware
+#   ./fw.sh full-flash matter     -> flash bootloader + partitions + firmware + matter_kvs
+#   ERASE_FLASH=1 ./fw.sh full-flash zigbee  -> erase flash first, then full flash
 #   ./fw.sh switch matter        -> switch to Matter firmware
 #   ./fw.sh switch zigbee        -> switch to ZigBee Gateway firmware
 #   ./fw.sh switch zigbee-client -> switch to ZigBee Client firmware
@@ -379,17 +383,111 @@ flash_matter_kvs() {
         error "esptool.py not found. Run a PlatformIO build first."
         exit 1
     fi
+    local python="${HOME}/.platformio/penv/bin/python3"
+    [[ ! -x "$python" ]] && python="python3"
 
     local port="${UPLOAD_PORT:-/dev/ttyACM0}"
     local baud="${UPLOAD_SPEED:-460800}"
 
     info "Flashing ${MATTER_KVS_BIN} → ${MATTER_KVS_ADDR}"
-    "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
         --before default_reset --after hard_reset \
         write_flash "$MATTER_KVS_ADDR" "$MATTER_KVS_BIN" \
     || { error "Flash failed"; exit 1; }
 
     ok "Matter KVS partition flashed at ${MATTER_KVS_ADDR}"
+}
+
+# ── Full flash (bootloader + partition table + firmware) ─────────────────────
+# ESP32-C5 flash layout addresses
+BOOTLOADER_ADDR="0x2000"
+PARTITION_TABLE_ADDR="0x8000"
+FW_ADDR_ZIGBEE="0x10000"
+FW_ADDR_MATTER="0x3A0000"
+
+full_flash_env() {
+    local env="$1"
+    local fw_addr="$2"
+    header "Full Flash: ${env}"
+
+    local build_dir="${SCRIPT_DIR}/.pio/build/${env}"
+    local bootloader="${build_dir}/bootloader.bin"
+    local partitions="${build_dir}/partitions.bin"
+    local firmware="${build_dir}/firmware.bin"
+
+    # Build if artifacts are missing
+    if [[ ! -f "$bootloader" ]] || [[ ! -f "$partitions" ]] || [[ ! -f "$firmware" ]]; then
+        warn "Build artifacts missing — building first …"
+        build_env "$env"
+    fi
+
+    # Validate all artifacts exist
+    for f in "$bootloader" "$partitions" "$firmware"; do
+        if [[ ! -f "$f" ]]; then
+            error "Missing: $f"
+            exit 1
+        fi
+    done
+
+    local esptool="${SCRIPT_DIR}/.pio/packages/tool-esptoolpy/esptool.py"
+    if [[ ! -f "$esptool" ]]; then
+        error "esptool.py not found. Run a PlatformIO build first."
+        exit 1
+    fi
+    local python="${HOME}/.platformio/penv/bin/python3"
+    [[ ! -x "$python" ]] && python="python3"
+
+    local port="${UPLOAD_PORT:-/dev/ttyUSB2}"
+    local baud="${UPLOAD_SPEED:-460800}"
+
+    # Build flash arguments: bootloader + partitions + firmware
+    local flash_args=(
+        "$BOOTLOADER_ADDR"      "$bootloader"
+        "$PARTITION_TABLE_ADDR"  "$partitions"
+        "$fw_addr"               "$firmware"
+    )
+
+    # For matter, also flash matter_kvs if available
+    if [[ "$env" == "$ENV_C5_MATTER" ]] && [[ -f "$MATTER_KVS_BIN" ]]; then
+        flash_args+=("$MATTER_KVS_ADDR" "$MATTER_KVS_BIN")
+        info "Including Matter KVS partition"
+    fi
+
+    info "Port: ${port}  Baud: ${baud}"
+    info "Bootloader  → ${BOOTLOADER_ADDR}"
+    info "Partitions  → ${PARTITION_TABLE_ADDR}"
+    info "Firmware    → ${fw_addr}"
+
+    # Optional: erase entire flash first (ERASE_FLASH=1 ./fw.sh full-flash zigbee)
+    if [[ "${ERASE_FLASH:-0}" == "1" ]]; then
+        warn "Erasing entire flash first …"
+        "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+            erase_flash \
+        || { error "Erase failed"; exit 1; }
+        ok "Flash erased"
+    fi
+
+    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+        --before default_reset --after hard_reset \
+        write_flash "${flash_args[@]}" \
+    || { error "Full flash failed"; exit 1; }
+
+    # Erase RainMaker factory credentials and NVS to ensure clean state.
+    # fctry partition (0x7EA000, 0x6000): RainMaker node_id, certs, claiming data
+    # nvs   partition (0x9000,   0x5000): user mapping, WiFi creds, runtime state
+    info "Erasing RainMaker fctry partition (0x7EA000, 24K) …"
+    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+        --before default_reset --after no_reset \
+        erase_region 0x7EA000 0x6000 \
+    || warn "fctry erase failed (non-fatal)"
+
+    info "Erasing NVS partition (0x9000, 20K) …"
+    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+        --before default_reset --after hard_reset \
+        erase_region 0x9000 0x5000 \
+    || warn "NVS erase failed (non-fatal)"
+
+    ok "Full flash successful: ${env}"
 }
 
 # ── Release helpers ──────────────────────────────────────────────────────────
@@ -501,8 +599,20 @@ archive_previous_version() {
     fi
 
     local prev_version prev_minor
-    prev_version=$(python3 -c "import json; d=json.load(open('$MANIFEST')); print(d.get('fw_version',0))")
-    prev_minor=$(python3 -c "import json; d=json.load(open('$MANIFEST')); print(d.get('fw_minor',0))")
+    prev_version=$(python3 -c "
+import json
+try:
+    d=json.load(open('$MANIFEST')); print(d.get('fw_version',0))
+except Exception:
+    print(0)
+")
+    prev_minor=$(python3 -c "
+import json
+try:
+    d=json.load(open('$MANIFEST')); print(d.get('fw_minor',0))
+except Exception:
+    print(0)
+")
 
     if [[ "$prev_version" == "0" || -z "$prev_version" ]]; then
         info "Previous manifest has no fw_version — skipping archive."
@@ -856,6 +966,8 @@ ${BOLD}Actions:${NC}
                                        (test PAA → PAI → DAC chain + NVS binary)
   flash-mfg                            Flash matter_kvs partition to device
                                        (standalone, without firmware)
+  full-flash [matter|zigbee|all]        Full flash: bootloader + partition table
+                                       + firmware via esptool (ESP32-C5 only)
   switch <matter|zigbee|zigbee-client|disabled>
                                        Switch firmware via REST API + reboot
   status                               Show device status
@@ -876,6 +988,9 @@ ${BOLD}Environment variables:${NC}
   OS_IP=<IP>              Device IP        (default: 192.168.0.151)
   OS_PASSWORD=<password>  Admin password   (will be MD5 hashed)
   OS_HASH=<md5>           MD5 hash direct  (overrides OS_PASSWORD)
+  UPLOAD_PORT=<port>      Serial port      (default: /dev/ttyUSB2)
+  UPLOAD_SPEED=<baud>     Upload baud rate  (default: 460800)
+  ERASE_FLASH=1           Erase entire flash before full-flash
 
 ${BOLD}Examples:${NC}
   ./fw.sh build
@@ -889,6 +1004,9 @@ ${BOLD}Examples:${NC}
   ./fw.sh release rebuild
   ./fw.sh generate-mfg
   ./fw.sh flash-mfg
+  ./fw.sh full-flash zigbee
+  ./fw.sh full-flash matter
+  ERASE_FLASH=1 ./fw.sh full-flash zigbee
   OS_IP=192.168.0.151 OS_PASSWORD=opendoor ./fw.sh switch zigbee
   OS_IP=192.168.0.86  OS_HASH=a6d82bced638de3def1e9bbb4983225c ./fw.sh status
 
@@ -982,6 +1100,24 @@ case "$ACTION" in
 
     flash-mfg)
         flash_matter_kvs
+        ;;
+
+    full-flash)
+        check_pio
+        case "$VARIANT" in
+            matter)
+                full_flash_env "$ENV_C5_MATTER" "$FW_ADDR_MATTER"
+                ;;
+            zigbee)
+                full_flash_env "$ENV_C5_ZIGBEE" "$FW_ADDR_ZIGBEE"
+                ;;
+            all|"")
+                full_flash_env "$ENV_C5_ZIGBEE" "$FW_ADDR_ZIGBEE"
+                full_flash_env "$ENV_C5_MATTER" "$FW_ADDR_MATTER"
+                header "Full flash complete (both variants)"
+                ;;
+            *) error "Unknown variant: $VARIANT (matter|zigbee|all)"; exit 1 ;;
+        esac
         ;;
 
     switch)

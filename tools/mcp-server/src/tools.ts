@@ -548,6 +548,19 @@ export function registerTools(
     },
   );
 
+  server.tool(
+    "start_rainmaker_provisioning",
+    "Start ESP RainMaker user-node provisioning. Requires user_id and secret_key from the RainMaker phone app or CLI. Check mapping state with get_rainmaker_status. ESP32 only. Equivalent to /rp.",
+    {
+      uid: z.string().describe("User ID from the ESP RainMaker app"),
+      key: z.string().describe("Secret key from the ESP RainMaker app"),
+    },
+    async ({ uid, key }) => {
+      const data = await getClient().command("/rp", { uid, key });
+      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
   // ─── Backup & diagnostics ──────────────────────────────────────────
 
   server.tool(

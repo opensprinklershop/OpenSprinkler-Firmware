@@ -28,6 +28,7 @@
 #include "sensor_payload_decoder.h"
 #include <vector>
 #include <ctype.h>
+#include <esp_memory_utils.h>
 #include "ieee802154_config.h"
 #ifdef ENABLE_MATTER
 #include "opensprinkler_matter.h"
@@ -60,6 +61,7 @@ static inline void zigbee_coex_yield_for_ble(bool) {}
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <freertos/semphr.h>
+#include <esp_heap_caps.h>
 
 // Forward declarations
 void ble_semaphore_init();
@@ -115,7 +117,9 @@ static void ble_sensor_lock_release() {
 }
 
 // Reuse a single client instance
-static BLEClient* EXT_RAM_BSS_ATTR ble_client = nullptr;
+// NOTE: Do NOT use EXT_RAM_BSS_ATTR for pointers — PSRAM BSS may not
+// be reliably zeroed on all boot paths, leading to dangling-pointer crashes.
+static BLEClient* ble_client = nullptr;
 static const uint32_t BLE_CONNECT_TIMEOUT_MS = 400;
 
 // BLE init retry control
@@ -170,7 +174,7 @@ static void ble_bg_scan_start() {
     pBLEScan->setInterval(320);       // 200ms interval
     pBLEScan->setWindow(160);         // 100ms window → 50% duty cycle
     pBLEScan->clearResults();
-    
+
     uint32_t scan_duration = BG_SCAN_DURATION_NORMAL;
     if (scan_duration == 0) return;  // Background scanning disabled (BG_SCAN_DURATION_NORMAL=0)
     // NOTE: duration=0 in NimBLE means INFINITE scan, NOT "no scan".
@@ -322,10 +326,10 @@ static bool ble_is_managed_mac(const uint8_t* addr) {
  */
 static BLESensorType govee_detect_type_from_name(const char* name) {
     if (!name || !name[0]) return BLE_TYPE_UNKNOWN;
-    
+
     if (strstr(name, "GVH5074") || strstr(name, "Govee_H5074"))
         return BLE_TYPE_GOVEE_H5074;
-    if (strstr(name, "GVH5075") || strstr(name, "GVH5072") || 
+    if (strstr(name, "GVH5075") || strstr(name, "GVH5072") ||
         strstr(name, "GVH5100") || strstr(name, "GVH5101") ||
         strstr(name, "GVH5102") || strstr(name, "GVH5104") ||
         strstr(name, "GVH5105") || strstr(name, "GVH5110"))
@@ -334,13 +338,13 @@ static BLESensorType govee_detect_type_from_name(const char* name) {
         return BLE_TYPE_GOVEE_H5179;
     if (strstr(name, "GVH5177") || strstr(name, "GVH5174"))
         return BLE_TYPE_GOVEE_H5177;
-    if (strstr(name, "GVH5181") || strstr(name, "GVH5182") || 
+    if (strstr(name, "GVH5181") || strstr(name, "GVH5182") ||
         strstr(name, "GVH5183") || strstr(name, "GVH5184") ||
         strstr(name, "GVH5055") || strstr(name, "GVH5054"))
         return BLE_TYPE_GOVEE_MEAT;
     if (strstr(name, "LYWSD") || strstr(name, "MJ_HT"))
         return BLE_TYPE_XIAOMI;
-        
+
     return BLE_TYPE_UNKNOWN;
 }
 
@@ -366,22 +370,22 @@ static bool govee_decode_h5074(const uint8_t* data, size_t len, float* temp, flo
  */
 static bool govee_decode_h5075(const uint8_t* data, size_t len, float* temp, float* hum, uint8_t* battery) {
     if (len < 6) return false;
-    
+
     // H5075/H510x format per GoveeBTTempLogger:
     // int(Data[1]) << 16 | int(Data[2]) << 8 | int(Data[3])
     int32_t iTemp = ((int32_t)data[1] << 16) | ((int32_t)data[2] << 8) | (int32_t)data[3];
     *battery = data[4];
-    
+
     bool bNegative = (iTemp & 0x800000) != 0;  // Check sign bit
     iTemp = iTemp & 0x7FFFF;  // Mask off sign bit (19 bits)
-    
+
     // Temperature: divide by 10000, then by 10 => first 3 digits / 10
     // Humidity: modulo 1000, then divide by 10 => last 3 digits / 10
     *temp = (float)(iTemp / 1000) / 10.0f;
     if (bNegative) *temp = -*temp;
-    
+
     *hum = (float)(iTemp % 1000) / 10.0f;
-    
+
     return true;
 }
 
@@ -429,7 +433,7 @@ static bool govee_decode_meat(const uint8_t* data, size_t len, float* temp, floa
  */
 static bool govee_decode_h5179(const uint8_t* data, size_t len, float* temp, float* hum, uint8_t* battery) {
     if (len < 9) return false;
-    
+
     // From GoveeBTTempLogger: temp/hum at bytes 4-7 as 16-bit LE
     int16_t iTemp = (int16_t)(data[5] << 8 | data[4]);
     int iHum = (int)(data[7] << 8 | data[6]);
@@ -445,19 +449,19 @@ static bool govee_decode_h5179(const uint8_t* data, size_t len, float* temp, flo
  */
 static bool govee_decode_h5177(const uint8_t* data, size_t len, float* temp, float* hum, uint8_t* battery) {
     if (len < 6) return false;
-    
+
     // Same encoding as H5075 but with different offsets
     int32_t iTemp = ((int32_t)data[2] << 16) | ((int32_t)data[3] << 8) | (int32_t)data[4];
-    
+
     bool bNegative = (iTemp & 0x800000) != 0;
     iTemp = iTemp & 0x7FFFF;
-    
+
     *temp = (float)(iTemp / 1000) / 10.0f;
     if (bNegative) *temp = -*temp;
-    
+
     *hum = (float)(iTemp % 1000) / 10.0f;
     *battery = data[5];
-    
+
     return true;
 }
 
@@ -485,10 +489,10 @@ static bool govee_decode_adv_data(uint16_t manufacturer_id, const uint8_t* data,
     if (manufacturer_id == 0x004c) {
         return false;
     }
-    
+
     // First try to detect type from name
     BLESensorType type = govee_detect_type_from_name(device_name);
-    
+
     // If type unknown, try to detect from manufacturer ID and data length
     if (type == BLE_TYPE_UNKNOWN) {
         if (manufacturer_id == 0xec88) {
@@ -523,7 +527,7 @@ static bool govee_decode_adv_data(uint16_t manufacturer_id, const uint8_t* data,
         default:
             return false;
     }
-    
+
     bool success = false;
     switch (type) {
         case BLE_TYPE_GOVEE_H5074:
@@ -544,11 +548,11 @@ static bool govee_decode_adv_data(uint16_t manufacturer_id, const uint8_t* data,
         default:
             return false;
     }
-    
+
     if (success && out_type) {
         *out_type = type;
     }
-    
+
     return success;
 }
 
@@ -584,13 +588,13 @@ static uint8_t jbd_build_command(uint8_t cmd, uint8_t* out_buf) {
     out_buf[1] = JBD_READ_FLAG;
     out_buf[2] = cmd;
     out_buf[3] = 0x00;  // Length = 0 for read commands
-    
+
     // Checksum: 0x10000 - (A5 + cmd + len)
     uint16_t checksum = 0x10000 - (JBD_READ_FLAG + cmd + 0x00);
     out_buf[4] = (checksum >> 8) & 0xFF;
     out_buf[5] = checksum & 0xFF;
     out_buf[6] = JBD_TAIL;
-    
+
     return 7;
 }
 
@@ -604,7 +608,7 @@ static uint8_t jbd_build_command(uint8_t cmd, uint8_t* out_buf) {
  * @param out_temp Average temperature (°C)
  * @param out_cycles Charge cycles
  * @return true if successfully parsed
- * 
+ *
  * Response format (34 bytes typical):
  * [0-1] Total voltage (mV, big-endian)
  * [2-3] Current (10mA, big-endian, signed)
@@ -621,26 +625,26 @@ static uint8_t jbd_build_command(uint8_t cmd, uint8_t* out_buf) {
  * [22] NTC count
  * [23+] NTC temperatures (2 bytes each, 0.1K, offset 2731)
  */
-static bool jbd_parse_basic_info(const uint8_t* data, size_t len, 
-                                  float* out_voltage, float* out_current, 
-                                  uint8_t* out_soc, float* out_temp, 
+static bool jbd_parse_basic_info(const uint8_t* data, size_t len,
+                                  float* out_voltage, float* out_current,
+                                  uint8_t* out_soc, float* out_temp,
                                   uint16_t* out_cycles) {
     if (len < 23) return false;
-    
+
     // Total voltage: bytes 0-1, big-endian, in 10mV units
     uint16_t voltage_raw = ((uint16_t)data[0] << 8) | data[1];
     *out_voltage = (float)voltage_raw / 100.0f;  // Convert to V
-    
+
     // Current: bytes 2-3, big-endian, signed, in 10mA units
     int16_t current_raw = ((int16_t)data[2] << 8) | data[3];
     *out_current = (float)current_raw / 100.0f;  // Convert to A
-    
+
     // Cycles: bytes 8-9
     *out_cycles = ((uint16_t)data[8] << 8) | data[9];
-    
+
     // SOC: byte 19
     *out_soc = data[19];
-    
+
     // Temperature: byte 22 = NTC count, then 2 bytes per NTC
     uint8_t ntc_count = data[22];
     if (ntc_count > 0 && len >= 23 + ntc_count * 2) {
@@ -651,7 +655,7 @@ static bool jbd_parse_basic_info(const uint8_t* data, size_t len,
     } else {
         *out_temp = 0.0f;
     }
-    
+
     return true;
 }
 
@@ -662,34 +666,34 @@ static bool jbd_parse_basic_info(const uint8_t* data, size_t len,
  * @param out_payload Pointer to payload start
  * @param out_payload_len Payload length
  * @return true if frame is valid
- * 
+ *
  * Frame format: DD cmd status len [payload...] checksum_hi checksum_lo 77
  */
 static bool jbd_validate_response(const uint8_t* data, size_t len,
                                    const uint8_t** out_payload, size_t* out_payload_len) {
     if (len < 7) return false;  // Minimum frame size
-    
+
     // Check header and tail
     if (data[0] != JBD_HEAD_RSP) return false;
     if (data[len-1] != JBD_TAIL) return false;
-    
+
     // Check status (byte 2): 0x00 = OK
     if (data[2] != 0x00) return false;
-    
+
     // Get payload length (byte 3)
     uint8_t payload_len = data[3];
     if (len < (size_t)(payload_len + 7)) return false;
-    
+
     // Verify checksum
     uint16_t checksum_calc = 0;
     for (size_t i = 2; i < 4 + payload_len; i++) {
         checksum_calc += data[i];
     }
     checksum_calc = 0x10000 - checksum_calc;
-    
+
     uint16_t checksum_recv = ((uint16_t)data[4 + payload_len] << 8) | data[5 + payload_len];
     if (checksum_calc != checksum_recv) return false;
-    
+
     *out_payload = &data[4];
     *out_payload_len = payload_len;
     return true;
@@ -702,26 +706,26 @@ static bool jbd_validate_response(const uint8_t* data, size_t len,
  */
 static BLESensorType bms_detect_type_from_name(const char* name) {
     if (!name || !name[0]) return BLE_TYPE_UNKNOWN;
-    
+
     // JBD/Xiaoxiang BMS variants
     if (strstr(name, "xiaoxiang") || strstr(name, "Xiaoxiang") ||
         strstr(name, "JBD") || strstr(name, "jbd") ||
         strstr(name, "SP0") || strstr(name, "SP1") ||  // Overkill Solar
         strstr(name, "GJ-") || strstr(name, "SL-"))    // Various rebrands
         return BLE_TYPE_BMS_JBD;
-    
+
     // Daly BMS
     if (strstr(name, "DL-") || strstr(name, "Daly"))
         return BLE_TYPE_BMS_DALY;
-    
+
     // ANT BMS
     if (strstr(name, "ANT-") || strstr(name, "Ant BMS"))
         return BLE_TYPE_BMS_ANT;
-    
+
     // JK/Jikong BMS
     if (strstr(name, "JK-") || strstr(name, "JK_") || strstr(name, "Jikong"))
         return BLE_TYPE_BMS_JIKONG;
-    
+
     return BLE_TYPE_UNKNOWN;
 }
 
@@ -1151,34 +1155,34 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
         strncpy(characteristic_uuid_cfg, cleaned, sizeof(characteristic_uuid_cfg) - 1);
         characteristic_uuid_cfg[sizeof(characteristic_uuid_cfg) - 1] = 0;
     }
-    
+
     // Note: For advertisement-based sensors (Govee etc.), the value selection
     // is now based on assigned_unitid from the base class:
     // - Unit 2 (°C) or 3 (°F) → temperature
-    // - Unit 5 (%) → humidity  
+    // - Unit 5 (%) → humidity
     // - Other units → battery
-    
+
     // Don't restore adv_last_success_time from persisted state.
     // Each boot gets a fresh start — the 24h auto-disable countdown
     // begins only after the first successful read IN THIS SESSION.
     // This prevents stale timestamps from immediately disabling sensors
     // that have radio coexistence issues on reboot.
     // adv_last_success_time stays 0 until first success.
-    
+
     // Migration: if sensor was auto-disabled by stale adv_last_ok timestamp,
     // re-enable it so it gets a fresh chance at data collection.
     if (obj.containsKey(F("adv_last_ok")) && !flags.enable) {
         DEBUG_PRINTF("[BLE] Re-enabling auto-disabled sensor: %s\n", name);
         flags.enable = true;
     }
-    
+
     // Restore battery level (UINT32_MAX = not yet measured)
     if (obj.containsKey(F("battery"))) {
         last_battery = obj[F("battery")].as<uint32_t>();
     } else {
         last_battery = UINT32_MAX;
     }
-    
+
     // Restore DIS (Device Information Service) data
     // Accept both "ble_manufacturer" (new) and "ble_mfr" (legacy) for backward compatibility
     if (obj.containsKey(F("ble_manufacturer"))) {
@@ -1216,13 +1220,13 @@ void BLESensor::toJson(ArduinoJson::JsonObject obj) const {
     if (characteristic_uuid_cfg[0]) obj[F("char_uuid")] = characteristic_uuid_cfg;
     if (payload_format_cfg != (uint8_t)FORMAT_TEMP_001) obj[F("format")] = payload_format_cfg;
     // Note: assigned_unitid is handled by SensorBase::toJson
-    
+
     // Persist last successful read time for auto-disable feature
     if (adv_last_success_time > 0) obj[F("adv_last_ok")] = adv_last_success_time;
-    
+
     // Battery level — only persist when actually measured
     if (last_battery != UINT32_MAX) obj[F("battery")] = last_battery;
-    
+
     // Persist DIS (Device Information Service) data (consistent with ZigBee naming: zb_manufacturer/zb_model)
     if (ble_manufacturer[0]) obj[F("ble_manufacturer")] = ble_manufacturer;
     if (ble_model[0]) obj[F("ble_model")] = ble_model;
@@ -1342,7 +1346,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         // Get device address (format: "aa:bb:cc:dd:ee:ff")
         String addr_str = advertisedDevice.getAddress().toString();
         uint8_t addr_bytes[6];
-        
+
         // Parse address string to bytes
         if (sscanf(addr_str.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                    &addr_bytes[0], &addr_bytes[1], &addr_bytes[2],
@@ -1356,13 +1360,13 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             ble_dbg_disc_ignored = ble_dbg_disc_ignored + 1;
             return;
         }
-        
+
         // Get device name
         char device_name[32] = "Unknown";
         if (advertisedDevice.haveName()) {
             ble_sanitize_json_string(device_name, sizeof(device_name), advertisedDevice.getName().c_str());
         }
-        
+
         // Try to decode Govee advertisement data
         float adv_temp = 0, adv_hum = 0;
         uint8_t adv_battery = 0;
@@ -1370,7 +1374,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         bool has_adv_data = false;
         bool saw_govee_mfg = false;
         bool saw_ec88_service = false;
-        
+
         // Check for manufacturer data (where Govee sends sensor readings)
         if (advertisedDevice.haveManufacturerData()) {
             String mfg_data = advertisedDevice.getManufacturerData();
@@ -1382,12 +1386,12 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 }
                 const uint8_t* payload = (const uint8_t*)mfg_data.c_str() + 2;
                 size_t payload_len = mfg_data.length() - 2;
-                
 
-                
+
+
                 has_adv_data = govee_decode_adv_data(mfg_id, payload, payload_len, device_name,
                                                      &adv_temp, &adv_hum, &adv_battery, &sensor_type);
-                
+
 
             }
         }
@@ -1443,7 +1447,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 }
             }
         }
-        
+
         // Raw AD payload fallback: some stack versions don't always populate
         // service-data vectors for 0x16, but ec88 bytes are still present in payload.
         if (!has_adv_data) {
@@ -1456,18 +1460,18 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         if (sensor_type == BLE_TYPE_UNKNOWN) {
             sensor_type = govee_detect_type_from_name(device_name);
         }
-        
+
         // Try to detect BMS from name if not yet detected
         if (sensor_type == BLE_TYPE_UNKNOWN) {
             sensor_type = bms_detect_type_from_name(device_name);
         }
-        
+
         // Check service UUID for ec88 (Govee indicator) or ff00 (JBD BMS indicator)
         char service_uuid_str[40] = {0};
         if (advertisedDevice.haveServiceUUID()) {
             String svc = advertisedDevice.getServiceUUID().toString();
             strncpy(service_uuid_str, svc.c_str(), sizeof(service_uuid_str) - 1);
-            
+
             // ec88 is the Govee service UUID
             if (svc.indexOf("ec88") >= 0 || svc.indexOf("EC88") >= 0) {
                 saw_ec88_service = true;
@@ -1475,14 +1479,14 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                     sensor_type = BLE_TYPE_GOVEE_H5075; // Default Govee type
                 }
             }
-            
+
             // ff00 is the JBD BMS service UUID
             if (svc.indexOf("ff00") >= 0 || svc.indexOf("FF00") >= 0) {
                 if (sensor_type == BLE_TYPE_UNKNOWN) {
                     sensor_type = BLE_TYPE_BMS_JBD;
                 }
             }
-            
+
 
         }
 
@@ -1495,7 +1499,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 sensor_type = BLE_TYPE_UNKNOWN;
             }
         }
-        
+
         // Classify devices with known sensor patterns for auto-detection,
         // but keep ALL devices in the discovery list so the user can see them.
         if (sensor_type == BLE_TYPE_UNKNOWN && !has_adv_data) {
@@ -1519,7 +1523,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 sensor_type = BLE_TYPE_GENERIC_GATT; // Mark as generic for later GATT read
             }
         }
-        
+
         // Check if device already exists in list
         if (!discovered_devices_lock(0)) {
             ble_dbg_disc_lock_miss = ble_dbg_disc_lock_miss + 1;
@@ -1544,20 +1548,20 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 return; // not a configured sensor – ignore during background scan
             }
         }
-        
+
         if (already_exists) {
             ble_dbg_disc_updated = ble_dbg_disc_updated + 1;
             // Update existing device
             existing_device->rssi = advertisedDevice.getRSSI();
             existing_device->last_seen = millis();
             existing_device->is_new = true;
-            
+
             strncpy(existing_device->name, device_name, sizeof(existing_device->name) - 1);
-            
+
             if (service_uuid_str[0]) {
                 strncpy(existing_device->service_uuid, service_uuid_str, sizeof(existing_device->service_uuid) - 1);
             }
-            
+
             // Update sensor data if available
             if (has_adv_data) {
                 existing_device->adv_temperature = adv_temp;
@@ -1581,15 +1585,15 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             memset(&new_dev, 0, sizeof(new_dev));
             memcpy(new_dev.address, addr_bytes, 6);
             strncpy(new_dev.name, device_name, sizeof(new_dev.name) - 1);
-            
+
             new_dev.rssi = advertisedDevice.getRSSI();
             new_dev.is_new = true;
             new_dev.last_seen = millis();
-            
+
             if (service_uuid_str[0]) {
                 strncpy(new_dev.service_uuid, service_uuid_str, sizeof(new_dev.service_uuid) - 1);
             }
-            
+
             new_dev.sensor_type = sensor_type;
             new_dev.adv_temperature = adv_temp;
             new_dev.adv_humidity = adv_hum;
@@ -1608,7 +1612,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 }
                 discovered_ble_devices.erase(discovered_ble_devices.begin() + oldest_idx);
             }
-            
+
             discovered_ble_devices.push_back(new_dev);
 
             // Queue DIS query only for likely GATT devices; skip for advertisement-only
@@ -1742,7 +1746,13 @@ static void sensor_ble_stop_now() {
     }
 
     if (ble_client) {
-        ble_client->disconnect();
+        // Validate the pointer is in a plausible heap range before dereferencing.
+        // Freed pointers may contain poison patterns (0xAAAA...) that pass
+        // a simple nullptr check but crash on access.
+        if ((esp_ptr_internal(ble_client) || esp_ptr_external_ram(ble_client)) &&
+            ble_client->isConnected()) {
+            ble_client->disconnect();
+        }
         ble_client = nullptr;
     }
 
@@ -2023,14 +2033,14 @@ void sensor_ble_clear_new_device_flags() {
  */
 bool sensor_ble_find_device(const char* mac_address, BLEDeviceInfo* out_device) {
     if (!mac_address || !mac_address[0] || !out_device) return false;
-    
+
     uint8_t addr_bytes[6];
     if (sscanf(mac_address, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                &addr_bytes[0], &addr_bytes[1], &addr_bytes[2],
                &addr_bytes[3], &addr_bytes[4], &addr_bytes[5]) != 6) {
         return false;
     }
-    
+
     if (!discovered_devices_lock(200)) return false;
     for (const auto& dev : discovered_ble_devices) {
         if (memcmp(dev.address, addr_bytes, 6) == 0) {
@@ -2048,7 +2058,7 @@ bool sensor_ble_find_device(const char* mac_address, BLEDeviceInfo* out_device) 
  */
 bool sensor_ble_is_adv_sensor(const BLEDeviceInfo* device) {
     if (!device) return false;
-    return device->has_adv_data || 
+    return device->has_adv_data ||
            device->sensor_type == BLE_TYPE_GOVEE_H5074 ||
            device->sensor_type == BLE_TYPE_GOVEE_H5075 ||
            device->sensor_type == BLE_TYPE_GOVEE_H5177 ||
@@ -2081,7 +2091,7 @@ void BLESensor::store_result(double value, unsigned long time) {
     repeat_data = last_data;
     repeat_native = last_native_data;
     repeat_read = 1;  // Signal that data is available
-    
+
 }
 
 /**
@@ -2093,7 +2103,7 @@ static double ble_select_adv_value(const BLEDeviceInfo* cached_dev, unsigned cha
     // assigned_unitid determines which value to return:
     // Unit 2 (°C) → temperature (also default for Govee)
     // Unit 3 (°F) → temperature (convert from °C)
-    // Unit 5 (%) → humidity  
+    // Unit 5 (%) → humidity
     // Unit 10 (%) or higher → battery
     double result = 0.0;
     switch (unitid) {
@@ -2123,7 +2133,7 @@ static double ble_select_adv_value(const BLEDeviceInfo* cached_dev, unsigned cha
  * @param unitid Unit ID from sensor config
  * @return The selected value
  */
-static double ble_select_bms_value(float voltage, float current, uint8_t soc, 
+static double ble_select_bms_value(float voltage, float current, uint8_t soc,
                                     float temperature, unsigned char unitid) {
     // Unit 4 (V) → voltage
     // Unit 2/3 (°C/°F) → temperature
@@ -2145,13 +2155,13 @@ static double ble_select_bms_value(float voltage, float current, uint8_t soc,
 
 /**
  * @brief Read value from BLE sensor
- * 
+ *
  * Broadcast sensors (Govee, Xiaomi): Data arrives continuously via background
  * passive scan. read() simply checks the cache - no scan triggering, no
  * Broadcast sensors (Govee, Xiaomi): Read from cache, return SUCCESS directly.
  * No scan triggering, no retry/backoff. Unsolicited data is always accepted
  * via pushAdvData() from sensor_ble_loop().
- * 
+ *
  * Poll sensors (BMS, GATT): Pauses background scan, connects via GATT,
  * reads data, disconnects, resumes background scan.
  * Uses two-phase pattern: First call stores data (repeat_read=1),

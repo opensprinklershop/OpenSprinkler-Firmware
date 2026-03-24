@@ -45,7 +45,7 @@ void OSInfluxDB::set_influx_config(int enabled, char *url, uint16_t port, char *
     ArduinoJson::JsonDocument doc;
     doc["en"] = enabled;
     doc["url"] = url;
-    doc["port]"] = port;
+    doc["port"] = port;
     doc["org"] = org;
     doc["bucket"] = bucket;
     doc["token"] = token;
@@ -69,11 +69,21 @@ void OSInfluxDB::set_influx_config(ArduinoJson::JsonDocument &doc) {
 }
 
 void OSInfluxDB::set_influx_config(const char *data) {
-    size_t size = strlen(data);
+    while (*data == ' ' || *data == '\t' || *data == '\r' || *data == '\n') {
+        data++;
+    }
+
     remove_file(INFLUX_CONFIG_FILE);
-    file_write_block(INFLUX_CONFIG_FILE, "{", 0, 1);
-    file_write_block(INFLUX_CONFIG_FILE, data, 1, size);
-    file_write_block(INFLUX_CONFIG_FILE, "}", size+1, 1);
+
+    size_t size = strlen(data);
+    if (size > 0 && data[0] == '{') {
+        file_write_block(INFLUX_CONFIG_FILE, data, 0, size);
+    } else {
+        file_write_block(INFLUX_CONFIG_FILE, "{", 0, 1);
+        file_write_block(INFLUX_CONFIG_FILE, data, 1, size);
+        file_write_block(INFLUX_CONFIG_FILE, "}", size + 1, 1);
+    }
+
     #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
     if (client) {
         delete client;
@@ -91,18 +101,24 @@ void OSInfluxDB::get_influx_config(char *json) {
     if (file_exists(INFLUX_CONFIG_FILE))
     {
         ulong size = file_read_block(INFLUX_CONFIG_FILE, json, 0, TMP_BUFFER_SIZE_L);
-        //DEBUG_PRINT(F("influx config size="));
-        //DEBUG_PRINTLN(size);
-        json[size] = 0;
-        //DEBUG_PRINT(F("influx config="));
-        //DEBUG_PRINTLN(tmp_buffer);
-        if (size > 10 && (json[size-2] != '"' || json[size-1] != '}')) {
-            strcpy(json, "{\"en\":0}");
-            set_influx_config(json);
+        if (size >= TMP_BUFFER_SIZE_L) {
+            size = TMP_BUFFER_SIZE_L - 1;
         }
+        json[size] = 0;
     }
-    // Ensure valid JSON if file doesn't exist or is empty
-    if (json[0] == 0 || json[0] != '{' || strchr(json, '}') != strrchr(json, '}') || strrchr(json, '}') < strchr(json, '{')) {
+
+    // Ensure stored config is a single valid JSON object. Older malformed values
+    // can end up as nested braces or truncated payloads, which breaks /jc output.
+    ArduinoJson::JsonDocument doc;
+    ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, json);
+    if (json[0] == 0 || json[0] != '{' || error || doc.isNull() || !doc.as<ArduinoJson::JsonVariantConst>().is<ArduinoJson::JsonObjectConst>()) {
+        strcpy(json, "{\"en\":0}");
+        set_influx_config(json);
+        return;
+    }
+
+    size_t normalized = ArduinoJson::serializeJson(doc, json, TMP_BUFFER_SIZE_L);
+    if (normalized == 0 || normalized >= TMP_BUFFER_SIZE_L) {
         strcpy(json, "{\"en\":0}");
         set_influx_config(json);
     }

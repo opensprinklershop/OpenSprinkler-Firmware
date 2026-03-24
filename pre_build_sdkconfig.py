@@ -123,13 +123,171 @@ SDKCONFIG_OVERRIDES = {
     "CONFIG_BT_NIMBLE_SPS_SERVICE": None,   # Scan Parameters
     "CONFIG_BT_NIMBLE_HR_SERVICE": None,    # Heart Rate
     "CONFIG_BT_NIMBLE_BAS_SERVICE": None,   # Battery Service
+
+    # =====================================================================
+    # RainMaker Claiming: Assisted Claiming (production workflow)
+    # =====================================================================
+    # ESP32-C5 does NOT support Self-Claiming (no eFuse HMAC key).
+    # Assisted Claiming: phone app handles claiming during provisioning.
+    # Device ships with empty fctry partition; credentials are obtained
+    # automatically when the customer provisions via the ESP RainMaker app.
+    # For development/testing, use Host Driven Claiming:
+    #   esp-rainmaker-cli claim /dev/ttyUSB2 --addr 0x7EA000
+    "CONFIG_ESP_RMAKER_SELF_CLAIM": None,      # Disable self-claiming (not supported on C5)
+    "CONFIG_ESP_RMAKER_NO_CLAIM": None,        # Disable no-claim mode
+    "CONFIG_ESP_RMAKER_ASSISTED_CLAIM": "y",   # Enable assisted claiming via phone app
+    "CONFIG_ESP_RMAKER_CLAIM_TYPE": "2",       # 2 = assisted claim
+
+    # =====================================================================
+    # RainMaker Local Control / On-Network Discovery
+    # =====================================================================
+    # The RainMaker app's "On Network" discovery relies on the local control
+    # service advertising _esp_rmaker_chal_resp._tcp via mDNS. The Arduino
+    # framework defaults leave this disabled, so the device remains invisible
+    # for challenge-response discovery even though RainMaker itself is active.
+    "CONFIG_ESP_RMAKER_LOCAL_CTRL_FEATURE_ENABLE": "y",
+    "CONFIG_ESP_RMAKER_LOCAL_CTRL_AUTO_ENABLE": "y",
 }
+
+# Path to the workspace-local custom-compiled framework.
+# This version has CONFIG_ESP_RMAKER_ASSISTED_CLAIM enabled (no auto self-claim at boot).
+# The installed .pio/packages/ version may ship with CONFIG_ESP_RMAKER_SELF_CLAIM which
+# causes the device to auto-link to an account on every boot—exactly the bug this fixes.
+_WORKSPACE_RMAKER_FRAMEWORK = "/data/Workspace/framework-arduinoespressif32-libs"
+
+# RainMaker prebuilt libraries whose claim-mode is baked in at compile time.
+_RMAKER_LIBS_TO_SYNC = [
+    "libespressif__esp_rainmaker.a",
+    "libespressif__rmaker_common.a",
+]
+
+
+def sync_rmaker_framework(env):
+    """
+    Detect and fix a SELF_CLAIM / ASSISTED_CLAIM mismatch between the installed
+    .pio/packages/ framework and the workspace-compiled framework.
+
+    Problem: PlatformIO uses package-version caching. When both frameworks carry
+    the same version string (5.5.0+sha.dac6094f34), PlatformIO never reinstalls
+    from the workspace `file://` source even though the workspace was rebuilt with
+    CONFIG_ESP_RMAKER_ASSISTED_CLAIM=1. The stale installed copy keeps
+    CONFIG_ESP_RMAKER_SELF_CLAIM=1, which makes the device auto-claim and
+    auto-link to an account on every boot — preventing proper "On Network"-only
+    provisioning.
+
+    Fix: copy the relevant sdkconfig.h headers and prebuilt RMAKER .a libs from
+    the workspace build into .pio/packages/ so the next compilations picks up the
+    correct claim-mode code.
+    """
+    if not os.path.isdir(_WORKSPACE_RMAKER_FRAMEWORK):
+        print(f"[RMAKER SYNC] Workspace framework not found at {_WORKSPACE_RMAKER_FRAMEWORK}, skipping sync.")
+        return
+
+    installed_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    if not installed_dir or not os.path.isdir(installed_dir):
+        print("[RMAKER SYNC] Installed framework-arduinoespressif32-libs not found, skipping sync.")
+        return
+
+    board_mcu = env.BoardConfig().get("build.mcu", "esp32")  # e.g. "esp32c5"
+
+    # Determine the active sdkconfig.h variant from platformio flash/psram settings.
+    # IMPORTANT: board_build.psram_type in platformio.ini (e.g. "qio") does NOT always
+    # match the framework directory naming convention (e.g. "qspi" in "qio_qspi").
+    # Strategy: build a candidate from board config, verify it exists, then fall back
+    # to directory probe so we always land on a real variant directory.
+    flash_mode = env.BoardConfig().get("build.flash_mode", "qio")
+    psram_type  = env.BoardConfig().get("build.psram_type",  "")
+    mcu_dir     = os.path.join(installed_dir, board_mcu)
+
+    primary_variant = None
+    # 1. Try board config value first (if it resolves to an existing directory)
+    if psram_type:
+        candidate = f"{flash_mode}_{psram_type}"
+        if os.path.isdir(os.path.join(mcu_dir, candidate)):
+            primary_variant = candidate
+    # 2. Fall back to probing: qspi is the typical PSRAM interface on ESP32-C5
+    if primary_variant is None:
+        for candidate_psram in ("qspi", "opi", "qio", "dio"):
+            candidate = f"{flash_mode}_{candidate_psram}"
+            if os.path.isdir(os.path.join(mcu_dir, candidate)):
+                primary_variant = candidate
+                break
+    # 3. Final fallback
+    if primary_variant is None:
+        primary_variant = f"{flash_mode}_qspi"
+
+    primary_inst_cfg = os.path.join(installed_dir,           board_mcu, primary_variant, "include", "sdkconfig.h")
+    primary_ws_cfg   = os.path.join(_WORKSPACE_RMAKER_FRAMEWORK, board_mcu, primary_variant, "include", "sdkconfig.h")
+
+    if not os.path.exists(primary_inst_cfg):
+        print(f"[RMAKER SYNC] {primary_inst_cfg} not found — skipping sync.")
+        return
+    if not os.path.exists(primary_ws_cfg):
+        print(f"[RMAKER SYNC] {primary_ws_cfg} not found — skipping sync.")
+        return
+
+    def _has_flag(path, flag):
+        try:
+            with open(path, "r") as fh:
+                return flag in fh.read()
+        except OSError:
+            return False
+
+    installed_has_self_claim      = _has_flag(primary_inst_cfg, "#define CONFIG_ESP_RMAKER_SELF_CLAIM 1")
+    workspace_has_assisted_claim  = _has_flag(primary_ws_cfg,   "#define CONFIG_ESP_RMAKER_ASSISTED_CLAIM 1")
+
+    if not (installed_has_self_claim and workspace_has_assisted_claim):
+        # Nothing to do — installed framework already has ASSISTED_CLAIM or
+        # workspace hasn't been built with it yet.
+        return
+
+    print("[RMAKER SYNC] *** CLAIM-MODE MISMATCH DETECTED ***")
+    print(f"[RMAKER SYNC]   Installed ({installed_dir}) → CONFIG_ESP_RMAKER_SELF_CLAIM=1  (WRONG)")
+    print(f"[RMAKER SYNC]   Workspace ({_WORKSPACE_RMAKER_FRAMEWORK}) → CONFIG_ESP_RMAKER_ASSISTED_CLAIM=1  (CORRECT)")
+    print("[RMAKER SYNC] Syncing sdkconfig.h headers and prebuilt RMAKER libraries …")
+
+    # ── 1. Copy sdkconfig.h for every available variant ────────────────────
+    known_variants = ["qio_qspi", "dio_qspi", "qio_opi", "dio_opi"]
+    for v in known_variants:
+        ws_cfg   = os.path.join(_WORKSPACE_RMAKER_FRAMEWORK, board_mcu, v, "include", "sdkconfig.h")
+        inst_cfg = os.path.join(installed_dir,               board_mcu, v, "include", "sdkconfig.h")
+        if os.path.exists(ws_cfg) and os.path.exists(inst_cfg):
+            try:
+                shutil.copy2(ws_cfg, inst_cfg)
+                print(f"[RMAKER SYNC]   sdkconfig.h ({v}) ✓")
+            except OSError as e:
+                print(f"[RMAKER SYNC]   sdkconfig.h ({v}) FAILED: {e}")
+
+    # ── 2. Copy prebuilt RMAKER .a libraries ────────────────────────────────
+    lib_dir_ws   = os.path.join(_WORKSPACE_RMAKER_FRAMEWORK, board_mcu, "lib")
+    lib_dir_inst = os.path.join(installed_dir,               board_mcu, "lib")
+
+    for lib in _RMAKER_LIBS_TO_SYNC:
+        ws_lib   = os.path.join(lib_dir_ws,   lib)
+        inst_lib = os.path.join(lib_dir_inst, lib)
+        if os.path.exists(ws_lib) and os.path.exists(inst_lib):
+            try:
+                shutil.copy2(ws_lib, inst_lib)
+                print(f"[RMAKER SYNC]   {lib} ✓")
+            except OSError as e:
+                print(f"[RMAKER SYNC]   {lib} FAILED: {e}")
+        elif os.path.exists(ws_lib):
+            print(f"[RMAKER SYNC]   {lib}: exists in workspace but NOT in installed dir — skipped")
+        else:
+            print(f"[RMAKER SYNC]   {lib}: not found in workspace")
+
+    print("[RMAKER SYNC] Sync complete. Full rebuild required if libraries were updated.")
+
 
 def update_sdkconfig(source, target, env):
     """
     Updates the sdkconfig file with the defined overrides.
     This function is registered as a pre-build action.
     """
+    # Sync prebuilt RainMaker libs from workspace if the installed framework
+    # has the wrong SELF_CLAIM mode (prevents auto account-creation at boot).
+    sync_rmaker_framework(env)
+
     # The built sdkconfig lives inside the Arduino ESP32 framework-libs package,
     # under a chip-specific subdirectory (e.g. esp32c5/sdkconfig).
     framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
@@ -187,7 +345,11 @@ def update_sdkconfig(source, target, env):
     except Exception as e:
         print(f"[SDKCONFIG] Error updating sdkconfig: {e}")
 
-# Register the callback - triggers before build
+# Apply once during script import so the active framework sdkconfig is updated
+# even when PlatformIO skips the expected pre-action target hook.
+update_sdkconfig(None, None, env)
+
+# Register the callback as well for subsequent rebuilds within the same setup.
 env.AddPreAction("buildprog", update_sdkconfig)
 
 # =============================================================================

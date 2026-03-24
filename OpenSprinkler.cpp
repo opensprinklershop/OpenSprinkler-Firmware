@@ -217,6 +217,7 @@ const char iopt_json_names[] PROGMEM =
 	"belw2"
 	"ife3\0"
 	"ife4\0"
+	"rken\0" // IOPT_RAINMAKER_ENABLE: 0=off, 1=on
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -374,7 +375,8 @@ const unsigned char iopt_max[] PROGMEM = {
 	2,
 	1,
 	255,
-	1
+		1,  // IOPT_NOTIF4_ENABLE max
+		1   // IOPT_RAINMAKER_ENABLE max
 };
 
 // string options do not have maximum values
@@ -464,6 +466,7 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // below handling current alert lo
 	0,  // Notif3 enable bit
 	0,  // Notif4 enable bit
+	0,  // RainMaker enable: 0=disabled (default), 1=enabled
 };
 
 /** String option values (stored in RAM) */

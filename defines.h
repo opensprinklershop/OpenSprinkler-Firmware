@@ -91,7 +91,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      187  // Firmware minor version
+#define OS_FW_MINOR      188  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -385,6 +385,8 @@ enum {
 	IOPT_BELOW1,
 	IOPT_BELOW2,
 	IOPT_NOTIF3_ENABLE,
+	IOPT_NOTIF4_ENABLE,
+	IOPT_RAINMAKER_ENABLE, ///< 0 = off (default); 1 = init RainMaker on connect
 	NUM_IOPTS // total number of integer options
 };
 
