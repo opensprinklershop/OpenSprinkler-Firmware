@@ -6,6 +6,29 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (190)] — unveröffentlicht
+
+### Added
+- **Program PID encoding in queue**: manually started programs now encode the real 1-based program number in `q->pid` (bit 7 flag + pid) via `qpid_decode()` in `program.h`; `/js` status API, logs, and UI now display the correct program name
+- **RainMaker: program start/stop via `manual_start_program()` / `stop_program()`**: `RM_CMD_PROG_START` delegates to `manual_start_program()` with `uwt=255`; `RM_CMD_PROG_STOP` delegates to `stop_program()` for consistent behaviour with the web API
+- **API `/mp`: default `uwt=255`**: without an explicit `uwt` parameter, programs started via the API now use their own weather adjustment setting
+- **MCP Server**: OpenSprinkler MCP server implementation in `tools/mcp-server/` (4013b9c)
+- **Online OTA update**: firmware can now be updated directly through the web interface with enhanced logging and progress reporting (1470e9e, 5a7f9e2)
+- **ZigBee: vendor API lookups**: lookups for ZigBee device vendor information (26bab15)
+- **ZigBee client mode**: local data exposure and ZigBee notifications after sensor updates in client mode (5822c4b, 36d9504)
+- **ACME client**: header file for certificate management (7b90ee6)
+
+### Fixed
+- **Stop program via API no longer causes lockup**: `reset_all_stations_immediate()` is no longer called before the stop command is processed in `server_manual_program()`
+- **`stop_program()` PID matching**: corrected comparison from `q->pid==pid-1` to `qpid_decode(q->pid)==pid` for correct detection of manually started programs
+- **RainMaker `is_program_running()`**: now uses `qpid_decode()` for correct PID comparison
+- **Matter `MATTER_CMD_PROG_STOP`**: PID comparison corrected to use `qpid_decode()` and 1-based encoding
+- **ESP8266 boot crash**: removed `PROGMEM` from mutable `iopts[]` array (f3e3857)
+- **OSPi PCF8591 compile error** (3cfa17a)
+- **OSPi Trixie build** (cc4a067)
+
+---
+
 ## [2.4.0 (187)] — 2026-03-20
 
 ### Added

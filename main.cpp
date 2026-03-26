@@ -2393,12 +2393,14 @@ void stop_program(unsigned char pid) {
 			s=sid&0x07;
 			if (prog.durations[sid] && !(os.attrib_dis[bid]&(1<<s))) {
 				DEBUG_PRINT("Stopping station ");DEBUG_PRINTLN(sid);
-				// mark all stations of this program to have 0 duration
+				// mark stations of this program to have 0 duration
+				// match by decoded pid (handles both normal and manually-started programs)
+				// or by station id as fallback
 				int qi;
 				RuntimeQueueStruct *q;
 				for(qi=pd.nqueue-1;qi>=0;qi--) {
 					q=pd.queue+qi;
-					if (q->pid==pid-1 || q->sid==sid) {
+					if (qpid_decode(q->pid)==pid || q->sid==sid) {
 						q->dur=0;
 					}
 				}

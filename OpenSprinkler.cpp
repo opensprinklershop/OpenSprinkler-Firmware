@@ -470,7 +470,7 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // below handling current alert lo
 	0,  // Notif3 enable bit
 	0,  // Notif4 enable bit
-	1,  // RainMaker enable: 1=enabled (default)
+	0,  // RainMaker enable: 1=enabled 0=disabled (default)
 };
 
 /** String option values (stored in RAM) */

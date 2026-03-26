@@ -929,7 +929,7 @@ void server_manual_program(OTF_PARAMS_DEF) {
 		handle_return(HTML_DATA_OUTOFBOUND);
 	}
 
-	unsigned char uwt = 0;
+	unsigned char uwt = 255;  // default: use the program's own weather setting
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uwt"), true)) {
 		uwt = atoi(tmp_buffer);
 	}
@@ -938,17 +938,17 @@ void server_manual_program(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("qo"), true)) {
 		qo=(unsigned char)atoi(tmp_buffer);
 	}
-	if (qo == QUEUE_OPTION_REPLACE) {
-		// reset all stations and clear queue
-		reset_all_stations_immediate();
-	}
-	
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("stop"), true)) {
 		int16_t stop = atoi(tmp_buffer);
 		if (stop) {
 			stop_program(pid+1);
 			handle_return(HTML_SUCCESS);
 		}
+	}
+
+	if (qo == QUEUE_OPTION_REPLACE) {
+		// reset all stations and clear queue
+		reset_all_stations_immediate();
 	}
 
 	// reset all stations and prepare to run one-time program

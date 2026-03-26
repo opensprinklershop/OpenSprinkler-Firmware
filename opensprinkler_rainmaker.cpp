@@ -98,6 +98,8 @@ extern ulong flow_count;
 
 // Forward declarations from main.cpp (use correct types)
 extern void schedule_all_stations(time_os_t curr_time, unsigned char req_option);
+extern void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo);
+extern void stop_program(unsigned char pid);
 extern void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shift);
 extern bool useEth;  // true when connected via Ethernet
 
@@ -2253,42 +2255,26 @@ void OSRainMaker::process_pending_cmds() {
       case RM_CMD_PROG_START: {
         uint8_t pid = cmd.prog.pid;
         if (pid >= pd.nprograms) break;
-        ProgramStruct prog;
-        pd.read(pid, &prog);
-        if (!prog.enabled) {
-          ESP_LOGW(TAG, "[PROG] pid=%d disabled — bouncing back false", pid);
-          if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
-          break;
+        {
+          ProgramStruct prog;
+          pd.read(pid, &prog);
+          if (!prog.enabled) {
+            ESP_LOGW(TAG, "[PROG] pid=%d disabled — bouncing back false", pid);
+            if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
+            break;
+          }
         }
-        bool any = false;
-        for (uint8_t sid = 0; sid < os.nstations; sid++) {
-          if (os.is_master_station(sid)) continue;
-          uint16_t dur = prog.durations[sid];
-          if (dur == 0) continue;
-          dur = (uint16_t)((uint32_t)dur * os.iopts[IOPT_WATER_PERCENTAGE] / 100);
-          if (dur == 0) dur = 1;
-          RuntimeQueueStruct *q = pd.enqueue();
-          if (!q) break;
-          q->st  = 0;
-          q->dur = dur;
-          q->sid = sid;
-          q->pid = (uint8_t)(pid + 1) | 0x80;  // 1-based + manual flag (bypasses rain/sensor; decoded by qpid_decode)
-          any = true;
-        }
-        if (any) schedule_all_stations(curr_time, 0);
-        ESP_LOGI(TAG, "[PROG] pid=%d %s via RainMaker",
-                 pid, any ? "started" : "skipped (no stations)");
-        if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(any));
+        // Delegate to manual_start_program with uwt=255 so the program's own
+        // use_weather flag is respected, matching the /mp API behaviour.
+        manual_start_program(pid + 1, 255, QUEUE_OPTION_INSERT_FRONT);
+        ESP_LOGI(TAG, "[PROG] pid=%d started via RainMaker", pid);
+        if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(true));
         break;
       }
 
       case RM_CMD_PROG_STOP: {
         uint8_t pid = cmd.prog.pid;
-        for (uint8_t sid = 0; sid < os.nstations; sid++) {
-          uint8_t qid = pd.station_qid[sid];
-          if (qid == 0xFF) continue;
-          if (qpid_decode(pd.queue[qid].pid) == (uint8_t)(pid + 1)) turn_off_station(sid, curr_time, 0);
-        }
+        stop_program(pid + 1);  // stop_program expects 1-based pid
         ESP_LOGI(TAG, "[PROG] pid=%d stopped via RainMaker", pid);
         if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
         break;
