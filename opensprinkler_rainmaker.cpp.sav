@@ -8,17 +8,12 @@
  * data (rain sensor, flow sensor, temperature, soil moisture) as
  * RainMaker "Temperature-Sensor" / custom devices.
  *
- * Uses ONLY native ESP-IDF RainMaker APIs (esp_rmaker_*) for lifecycle
- * management and device/param creation. No Arduino wrappers.
- *
- * Provisioning: "On Network" ONLY via esp_local_ctrl + mDNS.
- * No BLE, no SoftAP provisioning. The device must already be on WiFi
- * (managed by OpenSprinkler's own WiFi stack). The ESP RainMaker
- * phone app discovers the device on the local network.
+ * Uses the Arduino RainMaker wrapper (RMaker, WiFiProv) for lifecycle
+ * management and raw ESP-IDF APIs for device/param creation.
  *
  * CRITICAL: The prebuilt RainMaker library does NOT auto-start
  * esp_local_ctrl (CONFIG_ESP_RMAKER_LOCAL_CTRL_ENABLE is not set).
- * We start it manually after esp_rmaker_start() to enable "On Network"
+ * We start it manually after RMaker.start() to enable "On Network"
  * provisioning in the ESP RainMaker phone app.
  */
 
@@ -35,6 +30,9 @@
 #include "sensor_ble.h"
 #endif
 
+// Arduino RainMaker wrapper (lifecycle + events)
+#include "RMaker.h"
+
 extern "C" {
 #include <esp_rmaker_core.h>
 #include <esp_rmaker_standard_types.h>
@@ -43,7 +41,6 @@ extern "C" {
 #include <esp_rmaker_standard_services.h>
 #include <esp_rmaker_mqtt.h>
 #include <esp_rmaker_user_mapping.h>
-#include <esp_rmaker_utils.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
 #include <esp_mac.h>
@@ -65,30 +62,21 @@ esp_err_t esp_rmaker_reset_user_node_mapping(void);
 
 // Internal RainMaker library accessors — not in public headers, but exported
 // from libespressif__esp_rainmaker.a and needed by the sign wrapper below.
-char   *esp_rmaker_get_client_cert(void);
-size_t  esp_rmaker_get_client_cert_len(void);
 char   *esp_rmaker_get_client_key(void);
 size_t  esp_rmaker_get_client_key_len(void);
-char   *esp_rmaker_get_mqtt_host(void);
 }
 
 #include <esp_log.h>
 #include <esp_event.h>
 #include <esp_netif.h>
-#include <esp_timer.h>
 #include <mdns.h>
 #include <esp_heap_caps.h>
-#include <esp_rmaker_ota.h>
-#include <esp_rmaker_schedule.h>
 
 #include "mbedtls/pk.h"
 #include "mbedtls/sha256.h"
-#include "mbedtls/ecdsa.h"
-#include "mbedtls/rsa.h"
 
 #include <new>       // placement new for PSRAM-allocated struct
 #include <ctype.h>
-#include <freertos/queue.h>
 
 static const char *TAG = "OSRainMaker";
 
@@ -96,15 +84,16 @@ extern OpenSprinkler os;
 extern ProgramData pd;
 extern ulong flow_count;
 
+// OTF web server — must be stopped before SoftAP provisioning (port 80 conflict)
+#if defined(USE_OTF)
+#include "OpenThingsFramework.h"
+extern OTF::OpenThingsFramework *otf;
+#endif
+
 // Forward declarations from main.cpp (use correct types)
 extern void schedule_all_stations(time_os_t curr_time, unsigned char req_option);
 extern void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shift);
 extern bool useEth;  // true when connected via Ethernet
-
-// Native millis() replacement
-static inline unsigned long rmaker_millis() {
-  return (unsigned long)(esp_timer_get_time() / 1000ULL);
-}
 
 // ─── PSRAM-allocated state ───────────────────────────────────────────────────
 //
@@ -116,6 +105,7 @@ struct OSRainMakerData {
   // ── State flags ──
   bool initialized = false;
   bool unlinking = false;
+  bool use_ethernet = false;
   bool local_ctrl_active = false;
   bool mqtt_connected = false;
   int  user_mapping_state = 0;
@@ -129,11 +119,9 @@ struct OSRainMakerData {
   char prov_service_name[32] = {};
 
   // ── Zones (dynamically allocated in PSRAM) ──
-  esp_rmaker_device_t **zone_devices   = nullptr;
-  uint8_t             *zone_sid_map    = nullptr;
-  uint16_t            *zone_durations  = nullptr;  // per-zone run duration in seconds (persisted)
-  uint16_t            *zone_sched_dur  = nullptr;  // one-shot duration override from schedule writes
-  uint8_t              zone_count      = 0;
+  esp_rmaker_device_t **zone_devices = nullptr;
+  uint8_t             *zone_sid_map  = nullptr;
+  uint8_t              zone_count    = 0;
 
   // ── Controller ──
   esp_rmaker_device_t *controller_device = nullptr;
@@ -150,14 +138,6 @@ struct OSRainMakerData {
   esp_rmaker_device_t **prog_devices   = nullptr;
   uint8_t              prog_count      = 0;   // == pd.nprograms at init time
 
-  // ── Status LED devices (read-only monitoring indicators) ──
-  esp_rmaker_device_t *led_rain_sensor = nullptr;
-  esp_rmaker_device_t *led_rain_delay  = nullptr;
-  esp_rmaker_device_t *led_controller  = nullptr;
-
-  // ── Weather / watering adjustment device ──
-  esp_rmaker_device_t *weather_device  = nullptr;
-
   // ── Timing ──
   unsigned long last_sensor_update_ms = 0;
 
@@ -165,45 +145,13 @@ struct OSRainMakerData {
   bool rmaker_handler_registered  = false;
   bool local_ctrl_started         = false;   // set when esp_local_ctrl is running
   bool local_chal_resp_enabled    = false;
-  bool mdns_services_registered   = false;   // true after we have successfully registered _esp_local_ctrl + chal_resp mDNS services
   bool chal_resp_disabled         = false;
-  bool node_created               = false;   // esp_rmaker_node_init() done, devices added
-  bool pending_start              = false;   // waiting for NTP time sync to call esp_rmaker_start()
 
   // ── Local-ctrl config (must persist while service runs) ──
   esp_local_ctrl_handlers_t         lc_handlers  = {};
   httpd_ssl_config_t                lc_httpd_cfg = {};
   protocomm_security1_params_t      lc_sec1      = {};
-
-  // ── Deferred command queue (callbacks → main loop) ──
-  QueueHandle_t cmd_queue = nullptr;
 };
-
-// ─── Command types for main-loop deferred execution ──────────────────────────
-// RainMaker write callbacks run in esp_rmaker_task (ESP-IDF MQTT task context),
-// but pd/os state must only be mutated from the Arduino main loop task.
-// Commands are enqueued in the callback and drained in OSRainMaker::loop().
-enum RmCmdType : uint8_t {
-  RM_CMD_ZONE_START,    // start a zone: sid, dur_sec
-  RM_CMD_ZONE_STOP,     // stop a zone:  sid
-  RM_CMD_PROG_START,    // start program: pid
-  RM_CMD_PROG_STOP,     // stop program:  pid
-  RM_CMD_CTRL_ENABLE,   // enable/disable controller: enabled
-  RM_CMD_RAIN_DELAY,    // set rain delay: hours
-};
-
-struct RmCmd {
-  RmCmdType            type;
-  esp_rmaker_param_t  *prm;    // param to reflect result back to RainMaker cloud
-  union {
-    struct { uint8_t sid; uint16_t dur_sec; } zone;
-    struct { uint8_t pid; }                  prog;
-    struct { bool enabled; }                 ctrl;
-    struct { int32_t hours; }                delay;
-  };
-};
-
-#define RM_CMD_QUEUE_LEN 16
 
 // File-scope pointer — set once by OSRainMaker::ensure_data(), used by
 // free-standing callbacks and helpers that cannot take a this pointer.
@@ -218,15 +166,13 @@ static inline void *rmaker_calloc_psram(size_t nmemb, size_t size) {
   return calloc(nmemb, size);
 }
 
-static const unsigned long SENSOR_UPDATE_INTERVAL_MS    = 30000;                  // 30 s
-static const unsigned long REPORT_FORCE_REFRESH_MS      = 12UL * 3600UL * 1000UL; // 12 h
-static unsigned long s_last_full_report_ms = 0;
+static const unsigned long SENSOR_UPDATE_INTERVAL_MS = 30000; // 30 seconds
 
 static const char *CHAL_RESP_ENDPOINT = "ch_resp";
 static const char *CHAL_RESP_MDNS_TYPE = "_esp_rmaker_chal_resp";
 static const char *CHAL_RESP_MDNS_PROTO = "_tcp";
 static const uint16_t CHAL_RESP_LOCAL_CTRL_PORT = 12312;
-static const uint32_t CHAL_RESP_SEC_VERSION = 1;  // SEC1: PoP required — app shows PIN dialog, device uses PoP for session encryption
+static const uint32_t CHAL_RESP_SEC_VERSION = 0;  // SEC0: no PoP required for On-Network provisioning
 
 enum ChalRespMsgType {
   CHAL_RESP_MSG_CMD_CHALLENGE = 0,
@@ -264,16 +210,6 @@ static int rmaker_sign_rng(void *, unsigned char *out, size_t len) {
   return 0;
 }
 
-// ─── MQTT Budget bypass ──────────────────────────────────────────────────────
-// The prebuilt libespressif__esp_rainmaker.a is compiled with
-// CONFIG_ESP_RMAKER_MQTT_ENABLE_BUDGETING=y (default=100 msgs, +1/5s revive).
-// OpenSprinkler publishes ~7+ params every 30s which exhausts the budget in
-// ~1-2 hours.  For a single irrigation controller there is no cloud cost
-// concern — wrap the budget check to always return true (budget available).
-extern "C" bool __wrap_esp_rmaker_mqtt_is_budget_available(void) {
-  return true;
-}
-
 extern "C" esp_err_t __wrap_esp_rmaker_node_auth_sign_msg(
     const void *challenge, size_t inlen, void **response, size_t *outlen) {
 
@@ -289,9 +225,7 @@ extern "C" esp_err_t __wrap_esp_rmaker_node_auth_sign_msg(
     return ESP_FAIL;
   }
 
-  printf("[sign_wrap] inlen=%u\n", (unsigned)inlen);
-
-  // SHA-256 hash the challenge — Espressif's cloud verifies against SHA256(challenge)
+  // SHA-256 hash the raw binary challenge
   uint8_t hash[32];
   mbedtls_sha256((const unsigned char *)challenge, inlen, hash, 0);
 
@@ -310,33 +244,14 @@ extern "C" esp_err_t __wrap_esp_rmaker_node_auth_sign_msg(
   int      key_type = (int)mbedtls_pk_get_type(&pk);
   printf("[sign_wrap] key_type=%d key_bits=%u\n", key_type, (unsigned)key_bits);
 
-  // Sign the 32-byte SHA-256 hash.
-  // IMPORTANT: match the official esp_rmaker_node_auth.c behaviour exactly:
-  //   RSA  → RSA-PSS (PKCS_V21, SHA-256)  via mbedtls_rsa_rsassa_pss_sign
-  //   ECDSA → mbedtls_ecdsa_write_signature with MD_SHA256
-  // The Espressif cloud verifies with the matching algorithm; using PKCS1v15
-  // instead of PSS causes a verification mismatch.
+  // mbedtls_pk_sign dispatches correctly for RSA-PKCS1v15 and ECDSA
   const size_t sig_buf_size = 512;  // RSA-4096=512 B, ECDSA<=72 B
   uint8_t *sig = (uint8_t *)calloc(1, sig_buf_size);
   if (!sig) { mbedtls_pk_free(&pk); return ESP_ERR_NO_MEM; }
 
   size_t slen = 0;
-  if (key_type == (int)MBEDTLS_PK_RSA) {
-    mbedtls_rsa_context *rsa_ctx = mbedtls_pk_rsa(pk);
-    mbedtls_rsa_set_padding(rsa_ctx, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
-    ret = mbedtls_rsa_rsassa_pss_sign(rsa_ctx, rmaker_sign_rng, NULL,
-                                      MBEDTLS_MD_SHA256,
-                                      (unsigned int)sizeof(hash), hash,
-                                      sig);
-    if (ret == 0) slen = mbedtls_rsa_get_len(rsa_ctx);
-  } else {
-    // ECDSA
-    ret = mbedtls_ecdsa_write_signature(
-        mbedtls_pk_ec(pk), MBEDTLS_MD_SHA256,
-        hash, sizeof(hash),
-        sig, sig_buf_size, &slen,
-        rmaker_sign_rng, NULL);
-  }
+  ret = mbedtls_pk_sign(&pk, MBEDTLS_MD_SHA256, hash, sizeof(hash),
+                        sig, sig_buf_size, &slen, rmaker_sign_rng, NULL);
   mbedtls_pk_free(&pk);
 
   if (ret != 0 || slen == 0) {
@@ -858,43 +773,32 @@ static esp_err_t enable_local_ctrl_chal_resp() {
            instance_name ? instance_name : "(null)", CHAL_RESP_LOCAL_CTRL_PORT);
 
   // ── 1. Register _esp_local_ctrl._tcp (what the RainMaker app discovers) ──
-  // On first registration, esp_local_ctrl_start() internally registered this service.
-  // Calling mdns_service_remove() on it returns E "Invalid state" because it was added
-  // via an internal (non-public) path.  Skip the remove on first call; on subsequent
-  // calls (re-registration) we own the entry and can safely remove it.
-  if (D->mdns_services_registered) {
-    mdns_service_remove("_esp_local_ctrl", "_tcp");
-  }
+  mdns_service_remove("_esp_local_ctrl", "_tcp");
   err = mdns_service_add(instance_name, "_esp_local_ctrl", "_tcp",
                          CHAL_RESP_LOCAL_CTRL_PORT, nullptr, 0);
   if (err != ESP_OK) {
-    // Service may already exist (registered internally by esp_local_ctrl_start).
-    // Fall through and update TXT records on the existing entry.
-    ESP_LOGW(TAG, "[mDNS] _esp_local_ctrl._tcp add: %s — updating TXT records on existing entry",
-             esp_err_to_name(err));
+    ESP_LOGE(TAG, "[mDNS] Failed to add _esp_local_ctrl._tcp: %s", esp_err_to_name(err));
   } else {
     ESP_LOGI(TAG, "[mDNS] _esp_local_ctrl._tcp registered on port %u", CHAL_RESP_LOCAL_CTRL_PORT);
+    if (node_id && node_id[0]) {
+      mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "node_id", node_id);
+      ESP_LOGI(TAG, "[mDNS]   TXT node_id=%s", node_id);
+    }
+    // Re-add the standard esp_local_ctrl endpoint TXT records that the HTTPD
+    // transport would have set, but were lost when we removed and re-added the service.
+    mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "version_endpoint", "/esp_local_ctrl/version");
+    mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "session_endpoint", "/esp_local_ctrl/session");
+    mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "control_endpoint", "/esp_local_ctrl/control");
+    ESP_LOGI(TAG, "[mDNS]   TXT version_endpoint=/esp_local_ctrl/version");
+    ESP_LOGI(TAG, "[mDNS]   TXT session_endpoint=/esp_local_ctrl/session");
+    ESP_LOGI(TAG, "[mDNS]   TXT control_endpoint=/esp_local_ctrl/control");
   }
-  // Always (re-)stamp TXT records regardless of whether add or update path was taken.
-  if (node_id && node_id[0]) {
-    mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "node_id", node_id);
-    ESP_LOGI(TAG, "[mDNS]   TXT node_id=%s", node_id);
-  }
-  mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "version_endpoint", "/esp_local_ctrl/version");
-  mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "session_endpoint", "/esp_local_ctrl/session");
-  mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "control_endpoint", "/esp_local_ctrl/control");
-  ESP_LOGI(TAG, "[mDNS]   TXT version_endpoint=/esp_local_ctrl/version");
-  ESP_LOGI(TAG, "[mDNS]   TXT session_endpoint=/esp_local_ctrl/session");
-  ESP_LOGI(TAG, "[mDNS]   TXT control_endpoint=/esp_local_ctrl/control");
 
   ESP_LOGI(TAG, "[mDNS] Registering %s.%s port=%u",
            CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO, CHAL_RESP_LOCAL_CTRL_PORT);
 
   // ── 2. Register _esp_rmaker_chal_resp._tcp (challenge-response endpoint) ──
-  // Only remove the service if we previously registered it (avoids E "Service doesn't exist").
-  if (D->mdns_services_registered) {
-    mdns_service_remove(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO);
-  }
+  mdns_service_remove(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO);
   err = mdns_service_add(instance_name, CHAL_RESP_MDNS_TYPE,
                          CHAL_RESP_MDNS_PROTO, CHAL_RESP_LOCAL_CTRL_PORT,
                          nullptr, 0);
@@ -923,7 +827,6 @@ static esp_err_t enable_local_ctrl_chal_resp() {
   ESP_LOGI(TAG, "[mDNS]   TXT port=%s sec_version=%s pop_required=%s",
            port_str, sec_ver_str, pop_required);
 
-  D->mdns_services_registered = true;
   D->local_chal_resp_enabled = true;
   ESP_LOGI(TAG, "[mDNS] On-network chal_resp fully advertised:");
   ESP_LOGI(TAG, "[mDNS]   _esp_local_ctrl._tcp  port=%u (session+control endpoints)", CHAL_RESP_LOCAL_CTRL_PORT);
@@ -969,16 +872,17 @@ static void log_runtime_snapshot(const char *reason, bool prov_active) {
   const char *svc = OSRainMaker::instance().get_prov_service_name();
   const char *pop = OSRainMaker::instance().get_pop();
 
-  DEBUG_PRINTF("[STATE] %s | eth=%d wifi=%s prov=%d local_ctrl=%d mqtt=%d map=%d svc=%s pop=%s\n",
-               reason ? reason : "(none)",
-               useEth ? 1 : 0,
-               wifi_mode_to_str(wifi_mode),
-               prov_active ? 1 : 0,
-               local_ctrl_started_runtime() ? 1 : 0,
-               esp_rmaker_is_mqtt_connected() ? 1 : 0,
-               (int)esp_rmaker_user_node_mapping_get_state(),
-               (svc && svc[0]) ? svc : "-",
-               (pop && pop[0]) ? pop : "-");
+  ESP_LOGI(TAG,
+           "[STATE] %s | eth=%d wifi=%s prov=%d local_ctrl=%d mqtt=%d map=%d svc=%s pop=%s",
+           reason ? reason : "(none)",
+           useEth ? 1 : 0,
+           wifi_mode_to_str(wifi_mode),
+           prov_active ? 1 : 0,
+           local_ctrl_started_runtime() ? 1 : 0,
+           esp_rmaker_is_mqtt_connected() ? 1 : 0,
+           (int)esp_rmaker_user_node_mapping_get_state(),
+           (svc && svc[0]) ? svc : "-",
+           (pop && pop[0]) ? pop : "-");
 }
 
 static void rmaker_event_handler(void *arg, esp_event_base_t base,
@@ -986,13 +890,12 @@ static void rmaker_event_handler(void *arg, esp_event_base_t base,
   if (base != RMAKER_EVENT) return;
 
   const char *event_name = rmaker_event_to_str(id);
-  // Key lifecycle events via DEBUG_PRINTF so they are always visible in serial log
   if (id == RMAKER_EVENT_LOCAL_CTRL_STARTED && data) {
-    DEBUG_PRINTF("[RMAKER] Event %s service=%s\n", event_name, (const char *)data);
+    ESP_LOGI(TAG, "[RMAKER] Event %s service=%s", event_name, (const char *)data);
   } else if (id == RMAKER_EVENT_USER_NODE_MAPPING_DONE && data) {
-    DEBUG_PRINTF("[RMAKER] Event %s user=%s\n", event_name, (const char *)data);
+    ESP_LOGI(TAG, "[RMAKER] Event %s user=%s", event_name, (const char *)data);
   } else {
-    DEBUG_PRINTF("[RMAKER] Event %s (%ld)\n", event_name, (long)id);
+    ESP_LOGI(TAG, "[RMAKER] Event %s (%ld)", event_name, (long)id);
   }
 
   if (id == RMAKER_EVENT_LOCAL_CTRL_STARTED) {
@@ -1005,20 +908,6 @@ static void rmaker_event_handler(void *arg, esp_event_base_t base,
   } else if (id == RMAKER_EVENT_LOCAL_CTRL_STOPPED) {
     D->local_ctrl_started = false;
     D->local_chal_resp_enabled = false;
-  } else if (id == RMAKER_EVENT_CLAIM_STARTED) {
-    char *key = esp_rmaker_get_client_key();
-    DEBUG_PRINTF("[CLAIM] Self-claiming started (key_in_nvs=%d)\n", key ? 1 : 0);
-    if (key) free(key);
-  } else if (id == RMAKER_EVENT_CLAIM_SUCCESSFUL) {
-    char *cert = esp_rmaker_get_client_cert();
-    char *mqtt_host = esp_rmaker_get_mqtt_host();
-    DEBUG_PRINTF("[CLAIM] Self-claiming SUCCESSFUL (cert_in_nvs=%d mqtt_host=%s)\n",
-                 cert ? 1 : 0, mqtt_host ? mqtt_host : "none");
-    if (cert) free(cert);
-    if (mqtt_host) free(mqtt_host);
-  } else if (id == RMAKER_EVENT_CLAIM_FAILED) {
-    DEBUG_PRINTF("[CLAIM] Self-claiming FAILED -- MQTT will not connect\n");
-    ESP_LOGE(TAG, "[CLAIM] Self-claiming FAILED — MQTT will not connect until claiming succeeds");
   } else if (id == RMAKER_EVENT_USER_NODE_MAPPING_RESET) {
     // The cloud PUBACK for the user-mapping reset MQTT message has been received.
     // If we are in the middle of an unlink() flow, trigger the factory reset NOW
@@ -1044,7 +933,7 @@ static bool is_program_running(uint8_t pid) {
   for (uint8_t sid = 0; sid < os.nstations; sid++) {
     uint8_t qid = pd.station_qid[sid];
     if (qid == 0xFF) continue;
-    if (qpid_decode(pd.queue[qid].pid) == (uint8_t)(pid + 1)) return true;
+    if (pd.queue[qid].pid == pid) return true;
   }
   return false;
 }
@@ -1064,23 +953,48 @@ static esp_err_t program_write_cb(const esp_rmaker_device_t *device,
 
   uint8_t pid = (uint8_t)(uintptr_t)priv_data;
   if (pid >= pd.nprograms) return ESP_ERR_INVALID_ARG;
-  if (!D || !D->cmd_queue) return ESP_FAIL;
 
-  // SAFETY: do NOT call pd.enqueue(), schedule_all_stations(), or turn_off_station()
-  // here — this callback runs in esp_rmaker_task, not the Arduino main loop task.
-  // Those functions are not thread-safe across FreeRTOS tasks.  Enqueue a command
-  // that OSRainMaker::loop() (called from the main loop) will execute instead.
-  RmCmd cmd = {};
-  cmd.type     = val.val.b ? RM_CMD_PROG_START : RM_CMD_PROG_STOP;
-  cmd.prm      = const_cast<esp_rmaker_param_t*>(param);
-  cmd.prog.pid = pid;
+  bool power_on = val.val.b;
+  time_os_t curr_time = os.now_tz();
 
-  if (xQueueSend(D->cmd_queue, &cmd, 0) != pdTRUE) {
-    ESP_LOGW(TAG, "[PROG] cmd queue full — rejecting pid=%d", pid);
-    // Bounce back the opposite value so the app shows the correct state
-    esp_rmaker_param_update_and_report(
-        const_cast<esp_rmaker_param_t*>(param), esp_rmaker_bool(!val.val.b));
+  if (power_on) {
+    ProgramStruct prog;
+    pd.read(pid, &prog);
+    if (!prog.enabled) {
+      // Program disabled — bounce back false
+      esp_rmaker_param_update_and_report(const_cast<esp_rmaker_param_t*>(param),
+                                         esp_rmaker_bool(false));
+      return ESP_OK;
+    }
+    // Queue every station that has a non-zero duration in this program
+    for (uint8_t sid = 0; sid < os.nstations; sid++) {
+      if (os.is_master_station(sid)) continue;
+      uint16_t dur = prog.durations[sid];
+      if (dur == 0) continue;
+      dur = (uint16_t)((uint32_t)dur * os.iopts[IOPT_WATER_PERCENTAGE] / 100);
+      if (dur == 0) dur = 1;
+      RuntimeQueueStruct *q = pd.enqueue();
+      if (!q) break;
+      q->st  = 0;
+      q->dur = dur;
+      q->sid = sid;
+      q->pid = pid;
+    }
+    schedule_all_stations(curr_time, 0);
+    ESP_LOGI(TAG, "Program %d started via RainMaker", pid);
+  } else {
+    // Stop only the stations that belong to this program
+    for (uint8_t sid = 0; sid < os.nstations; sid++) {
+      uint8_t qid = pd.station_qid[sid];
+      if (qid == 0xFF) continue;
+      if (pd.queue[qid].pid == pid) {
+        turn_off_station(sid, curr_time, 0);
+      }
+    }
+    ESP_LOGI(TAG, "Program %d stopped via RainMaker", pid);
   }
+
+  esp_rmaker_param_update_and_report(const_cast<esp_rmaker_param_t*>(param), val);
   return ESP_OK;
 }
 
@@ -1094,120 +1008,29 @@ static esp_err_t controller_write_cb(const esp_rmaker_device_t *device,
 {
   const char *param_name = esp_rmaker_param_get_name(const_cast<esp_rmaker_param_t*>(param));
   if (!param_name) return ESP_FAIL;
-  if (!D || !D->cmd_queue) return ESP_FAIL;
-
-  // Defer all os/pd state mutations to the main loop (see program_write_cb comment).
-  RmCmd cmd = {};
-  cmd.prm = const_cast<esp_rmaker_param_t*>(param);
 
   if (strcmp(param_name, "Enabled") == 0) {
-    cmd.type         = RM_CMD_CTRL_ENABLE;
-    cmd.ctrl.enabled = val.val.b;
-    if (xQueueSend(D->cmd_queue, &cmd, 0) != pdTRUE) {
-      ESP_LOGW(TAG, "[CTRL] cmd queue full — dropping enable cmd");
-    }
-  }
+    // Controller enabled/disabled toggle
+    os.status.enabled = val.val.b ? 1 : 0;
+    os.iopts[IOPT_DEVICE_ENABLE] = os.status.enabled;
+    os.iopts_save();
+    ESP_LOGI(TAG, "Controller %s", val.val.b ? "enabled" : "disabled");
+  } 
   else if (strcmp(param_name, "Rain Delay") == 0) {
-    cmd.type        = RM_CMD_RAIN_DELAY;
-    cmd.delay.hours = (int32_t)val.val.i;
-    if (xQueueSend(D->cmd_queue, &cmd, 0) != pdTRUE) {
-      ESP_LOGW(TAG, "[CTRL] cmd queue full — dropping rain-delay cmd");
-    }
-  }
-  return ESP_OK;
-}
-
-// ─── Zone constants and write callback ───────────────────────────────────────
-
-// Default zone run time when the user just flips the switch (10 min = 600 s)
-static const uint16_t ZONE_DEFAULT_DURATION_SEC = 600;
-// RainMaker param name for the per-zone configurable run time
-static const char    *ZONE_PARAM_DURATION        = "Duration";
-
-/**
- * Write callback for zone (station) devices.
- * priv_data = zone index (into D->zone_devices / D->zone_sid_map).
- *
- * Supported params:
- *   Power  (bool) — ON: start station for the stored duration; OFF: stop it.
- *   Duration (int) — update the stored run time in seconds (persisted via cloud).
- */
-static esp_err_t zone_write_cb(const esp_rmaker_device_t *device,
-                                const esp_rmaker_param_t  *param,
-                                const esp_rmaker_param_val_t val,
-                                void                      *priv_data,
-                                esp_rmaker_write_ctx_t    *ctx)
-{
-  if (!D) return ESP_FAIL;
-  uint8_t zi = (uint8_t)(uintptr_t)priv_data;   // zone index
-  if (zi >= D->zone_count) return ESP_ERR_INVALID_ARG;
-
-  const char *param_name = esp_rmaker_param_get_name(
-      const_cast<esp_rmaker_param_t*>(param));
-  if (!param_name) return ESP_FAIL;
-
-  uint8_t sid = D->zone_sid_map[zi];
-
-  if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
-    bool power_on = val.val.b;
-
-    if (power_on) {
-      // Resolve duration now: zone_sched_dur and zone_durations are only written from
-      // RainMaker callbacks (same task), so this read is safe before queueing.
-      uint16_t dur_sec;
-      if (D->zone_sched_dur && D->zone_sched_dur[zi] > 0) {
-        dur_sec = D->zone_sched_dur[zi];
-        D->zone_sched_dur[zi] = 0;  // consume the one-shot value
-      } else {
-        dur_sec = (D->zone_durations && D->zone_durations[zi] > 0)
-                      ? D->zone_durations[zi]
-                      : ZONE_DEFAULT_DURATION_SEC;
-      }
-
-      // SAFETY: do NOT call pd.enqueue() / schedule_all_stations() here —
-      // this callback runs in esp_rmaker_task. Defer to OSRainMaker::loop().
-      if (!D->cmd_queue) return ESP_FAIL;
-      RmCmd cmd = {};
-      cmd.type         = RM_CMD_ZONE_START;
-      cmd.prm          = const_cast<esp_rmaker_param_t*>(param);
-      cmd.zone.sid     = sid;
-      cmd.zone.dur_sec = dur_sec;
-      if (xQueueSend(D->cmd_queue, &cmd, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "[ZONE] cmd queue full — rejecting start sid=%d", sid);
-        esp_rmaker_param_update_and_report(
-            const_cast<esp_rmaker_param_t*>(param), esp_rmaker_bool(false));
-      }
-
+    // Rain delay in hours (0 = clear)
+    int hours = val.val.i;
+    if (hours > 0) {
+      os.nvdata.rd_stop_time = os.now_tz() + (unsigned long)hours * 3600UL;
+      os.raindelay_start();
     } else {
-      // SAFETY: defer turn_off_station() to main loop
-      if (!D->cmd_queue) return ESP_FAIL;
-      RmCmd cmd = {};
-      cmd.type     = RM_CMD_ZONE_STOP;
-      cmd.prm      = const_cast<esp_rmaker_param_t*>(param);
-      cmd.zone.sid = sid;
-      if (xQueueSend(D->cmd_queue, &cmd, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "[ZONE] cmd queue full — dropping stop sid=%d", sid);
-      }
+      os.nvdata.rd_stop_time = 0;
+      os.raindelay_stop();
     }
-
-  } else if (strcmp(param_name, ZONE_PARAM_DURATION) == 0) {
-    // Duration only updates RainMaker's own D->zone_durations — no os/pd access, safe here.
-    uint16_t new_dur = (val.val.i >= 1) ? (uint16_t)val.val.i
-                                        : ZONE_DEFAULT_DURATION_SEC;
-    if (ctx && ctx->src == ESP_RMAKER_REQ_SRC_SCHEDULE) {
-      // Schedule-triggered Duration write: store as one-shot override for the companion
-      // Power=true write. Do NOT permanently overwrite the user's stored default.
-      if (D->zone_sched_dur) D->zone_sched_dur[zi] = new_dur;
-      ESP_LOGI(TAG, "[ZONE] sid=%d duration sched-override set to %u s", sid, (unsigned)new_dur);
-    } else {
-      if (D->zone_durations) D->zone_durations[zi] = new_dur;
-      esp_rmaker_param_update_and_report(
-          const_cast<esp_rmaker_param_t*>(param),
-          esp_rmaker_int((int)new_dur));
-      ESP_LOGI(TAG, "[ZONE] sid=%d duration set to %u s", sid, (unsigned)new_dur);
-    }
+    ESP_LOGI(TAG, "Rain delay: %d hours", hours);
   }
 
+  // Report updated value to cloud
+  esp_rmaker_param_update_and_report(const_cast<esp_rmaker_param_t*>(param), val);
   return ESP_OK;
 }
 
@@ -1226,19 +1049,12 @@ static void create_zone_devices(esp_rmaker_node_t *node) {
   if (eligible == 0) { D->zone_count = 0; return; }
 
   // Allocate exact-size arrays in PSRAM
-  D->zone_devices  = (esp_rmaker_device_t **)rmaker_calloc_psram(eligible, sizeof(esp_rmaker_device_t *));
-  D->zone_sid_map  = (uint8_t  *)rmaker_calloc_psram(eligible, sizeof(uint8_t));
-  D->zone_durations = (uint16_t *)rmaker_calloc_psram(eligible, sizeof(uint16_t));
-  D->zone_sched_dur = (uint16_t *)rmaker_calloc_psram(eligible, sizeof(uint16_t));
+  D->zone_devices = (esp_rmaker_device_t **)rmaker_calloc_psram(eligible, sizeof(esp_rmaker_device_t *));
+  D->zone_sid_map = (uint8_t *)rmaker_calloc_psram(eligible, sizeof(uint8_t));
   if (!D->zone_devices || !D->zone_sid_map) {
     ESP_LOGE(TAG, "Failed to allocate zone arrays (%d entries)", eligible);
     D->zone_count = 0;
     return;
-  }
-  // Pre-fill default duration for every zone
-  if (D->zone_durations) {
-    for (uint8_t i = 0; i < eligible; i++)
-      D->zone_durations[i] = ZONE_DEFAULT_DURATION_SEC;
   }
 
   // Pass 2: create devices
@@ -1258,37 +1074,24 @@ static void create_zone_devices(esp_rmaker_node_t *node) {
       snprintf(name_buf, sizeof(name_buf), "%.31s", stn_name);
     }
 
-    // Zones are writable switches: Alexa/Google Home turn them on/off.
-    // A companion Duration slider lets users configure how long the zone runs.
-    // priv_data = zone index — passed to zone_write_cb via device creation.
+    // Zones are read-only status indicators — not directly controllable.
+    // Use a custom device with a read-only Power param (status LED).
     esp_rmaker_device_t *dev = esp_rmaker_device_create(
-        name_buf, ESP_RMAKER_DEVICE_SWITCH, (void *)(uintptr_t)count);
+        name_buf, ESP_RMAKER_DEVICE_SWITCH, nullptr);
     if (!dev) {
       ESP_LOGE(TAG, "Failed to create zone device for sid=%d", sid);
       continue;
     }
-    // Name param
     esp_rmaker_param_t *pname = esp_rmaker_name_param_create(ESP_RMAKER_DEF_NAME_PARAM, name_buf);
     esp_rmaker_device_add_param(dev, pname);
-    // Power param — writable so Alexa/Google Home can control it
+    // PROP_FLAG_READ only — no PROP_FLAG_WRITE
     esp_rmaker_param_t *ppower = esp_rmaker_param_create(
         ESP_RMAKER_DEF_POWER_NAME, ESP_RMAKER_PARAM_POWER,
         esp_rmaker_bool(os.is_running(sid) ? true : false),
-        PROP_FLAG_READ | PROP_FLAG_WRITE | PROP_FLAG_TIME_SERIES);
+        PROP_FLAG_READ | PROP_FLAG_TIME_SERIES);
     esp_rmaker_param_add_ui_type(ppower, ESP_RMAKER_UI_TOGGLE);
     esp_rmaker_device_add_param(dev, ppower);
     esp_rmaker_device_assign_primary_param(dev, ppower);
-    // Duration param — configures how long the zone runs when switched on
-    esp_rmaker_param_t *pdur = esp_rmaker_param_create(
-        ZONE_PARAM_DURATION, ESP_RMAKER_PARAM_RANGE,
-        esp_rmaker_int(ZONE_DEFAULT_DURATION_SEC),
-        PROP_FLAG_READ | PROP_FLAG_WRITE | PROP_FLAG_PERSIST);
-    esp_rmaker_param_add_ui_type(pdur, ESP_RMAKER_UI_SLIDER);
-    esp_rmaker_param_add_bounds(pdur,
-        esp_rmaker_int(1), esp_rmaker_int(7200), esp_rmaker_int(1));
-    esp_rmaker_device_add_param(dev, pdur);
-    // Write callback — priv_data (zone index) is set via device creation above
-    esp_rmaker_device_add_cb(dev, zone_write_cb, nullptr);
     esp_rmaker_device_add_subtype(dev, "esp.subtype.irrigation-valve");
 
     char sid_str[8];
@@ -1556,107 +1359,21 @@ static void create_program_devices(esp_rmaker_node_t *node) {
   ESP_LOGI(TAG, "Created %d program devices (dynamic, PSRAM)", created);
 }
 
-// ─── Status LED devices (read-only monitoring indicators) ───────────────────
-
-static esp_rmaker_device_t *make_status_led(esp_rmaker_node_t *node,
-                                            const char *name, bool initial) {
-  esp_rmaker_device_t *dev = esp_rmaker_device_create(name, ESP_RMAKER_DEVICE_LIGHTBULB, nullptr);
-  if (!dev) return nullptr;
-  esp_rmaker_param_t *pn = esp_rmaker_name_param_create(ESP_RMAKER_DEF_NAME_PARAM, name);
-  esp_rmaker_device_add_param(dev, pn);
-  esp_rmaker_param_t *pp = esp_rmaker_param_create(
-      ESP_RMAKER_DEF_POWER_NAME, ESP_RMAKER_PARAM_POWER,
-      esp_rmaker_bool(initial), PROP_FLAG_READ | PROP_FLAG_TIME_SERIES);
-  esp_rmaker_param_add_ui_type(pp, ESP_RMAKER_UI_TOGGLE);
-  esp_rmaker_device_add_param(dev, pp);
-  esp_rmaker_device_assign_primary_param(dev, pp);
-  esp_rmaker_device_add_subtype(dev, "esp.subtype.status-led");
-  esp_rmaker_node_add_device(node, dev);
-  return dev;
-}
-
-static void create_status_led_devices(esp_rmaker_node_t *node) {
-  bool rain_active = (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN)
-                     ? (os.status.sensor1_active ? true : false) : false;
-  bool rd_active = (os.nvdata.rd_stop_time > os.now_tz());
-  bool ctrl_on = (os.status.enabled ? true : false);
-
-  D->led_rain_sensor = make_status_led(node, "Status Rain", rain_active);
-  D->led_rain_delay  = make_status_led(node, "Status Delay", rd_active);
-  D->led_controller  = make_status_led(node, "Status Enabled", ctrl_on);
-  ESP_LOGI(TAG, "Created 3 status LED devices (rain=%d, delay=%d, ctrl=%d)",
-           rain_active, rd_active, ctrl_on);
-}
-
-// ─── Weather / watering adjustment device (read-only) ───────────────────────
-
-static void create_weather_device(esp_rmaker_node_t *node) {
-  D->weather_device = esp_rmaker_device_create(
-      "Watering Adjustment", ESP_RMAKER_DEVICE_OTHER, nullptr);
-  if (!D->weather_device) return;
-  esp_rmaker_param_t *pn = esp_rmaker_name_param_create(
-      ESP_RMAKER_DEF_NAME_PARAM, "Watering Adjustment");
-  esp_rmaker_device_add_param(D->weather_device, pn);
-  esp_rmaker_device_add_subtype(D->weather_device, "esp.subtype.weather-adjustment");
-  esp_rmaker_param_t *wl = esp_rmaker_param_create(
-      "Water Level", ESP_RMAKER_PARAM_RANGE,
-      esp_rmaker_int(os.iopts[IOPT_WATER_PERCENTAGE]),
-      PROP_FLAG_READ | PROP_FLAG_TIME_SERIES);
-  esp_rmaker_param_add_ui_type(wl, ESP_RMAKER_UI_SLIDER);
-  esp_rmaker_param_add_bounds(wl, esp_rmaker_int(0), esp_rmaker_int(250), esp_rmaker_int(1));
-  esp_rmaker_device_add_param(D->weather_device, wl);
-  esp_rmaker_device_assign_primary_param(D->weather_device, wl);
-  esp_rmaker_node_add_device(node, D->weather_device);
-  ESP_LOGI(TAG, "Created watering adjustment device (%d%%)",
-           os.iopts[IOPT_WATER_PERCENTAGE]);
-}
-
 // ─── Periodic sensor value updates ──────────────────────────────────────────
-
-// Publish a parameter only if its value has changed, or if force_refresh is
-// true (triggered every REPORT_FORCE_REFRESH_MS to ensure the cloud always
-// has a recent value even when nothing changes for a long time).
-static esp_err_t rmaker_report_if_changed(esp_rmaker_param_t *param,
-                                           esp_rmaker_param_val_t val,
-                                           bool force_refresh) {
-  if (!param) return ESP_FAIL;
-  if (!force_refresh) {
-    esp_rmaker_param_val_t *cur = esp_rmaker_param_get_val(param);
-    if (cur && cur->type == val.type) {
-      bool same = false;
-      switch (val.type) {
-        case RMAKER_VAL_TYPE_BOOLEAN: same = (cur->val.b == val.val.b);              break;
-        case RMAKER_VAL_TYPE_INTEGER: same = (cur->val.i == val.val.i);              break;
-        case RMAKER_VAL_TYPE_FLOAT:   same = (cur->val.f == val.val.f);              break;
-        case RMAKER_VAL_TYPE_STRING:
-          same = (cur->val.s && val.val.s && strcmp(cur->val.s, val.val.s) == 0) ||
-                 (!cur->val.s && !val.val.s);
-          break;
-        default: break;
-      }
-      if (same) return ESP_OK; // value unchanged — skip publish
-    }
-  }
-  return esp_rmaker_param_update_and_report(param, val);
-}
 
 static void report_sensor_values() {
   if (!D) return;
-
-  // Force a full re-publish every 12 h so the cloud never has stale data.
-  bool force = (s_last_full_report_ms == 0 ||
-                (long)(rmaker_millis() - s_last_full_report_ms) >= (long)REPORT_FORCE_REFRESH_MS);
 
   // Update controller params
   if (D->controller_device) {
     if (D->param_rain_sensor) {
       bool rain_active = (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN)
                          ? (os.status.sensor1_active ? true : false) : false;
-      rmaker_report_if_changed(D->param_rain_sensor, esp_rmaker_bool(rain_active), force);
+      esp_rmaker_param_update_and_report(D->param_rain_sensor, esp_rmaker_bool(rain_active));
     }
     if (D->param_water_level) {
-      rmaker_report_if_changed(D->param_water_level,
-          esp_rmaker_int(os.iopts[IOPT_WATER_PERCENTAGE]), force);
+      esp_rmaker_param_update_and_report(D->param_water_level,
+          esp_rmaker_int(os.iopts[IOPT_WATER_PERCENTAGE]));
     }
     if (D->param_rain_delay) {
       int rd_hours = 0;
@@ -1664,7 +1381,7 @@ static void report_sensor_values() {
         rd_hours = (int)((os.nvdata.rd_stop_time - os.now_tz()) / 3600UL);
         if (rd_hours < 1) rd_hours = 1; // still active
       }
-      rmaker_report_if_changed(D->param_rain_delay, esp_rmaker_int(rd_hours), force);
+      esp_rmaker_param_update_and_report(D->param_rain_delay, esp_rmaker_int(rd_hours));
     }
   }
 
@@ -1680,6 +1397,9 @@ static void report_sensor_values() {
     esp_rmaker_device_t *dev = D->sensor_devices[idx];
     if (!dev) { idx++; continue; }
 
+    // Get the primary parameter and update it
+    // For temp sensors, the primary param is "Temperature"
+    // For others, it's the first custom param added
     uint8_t uid = getSensorUnitId(s);
     const char *param_name;
     switch (uid) {
@@ -1704,41 +1424,10 @@ static void report_sensor_values() {
 
     esp_rmaker_param_t *p = esp_rmaker_device_get_param_by_name(dev, param_name);
     if (p && s->flags.data_ok) {
-      rmaker_report_if_changed(p, esp_rmaker_float((float)s->last_data), force);
+      esp_rmaker_param_update_and_report(p, esp_rmaker_float((float)s->last_data));
     }
     idx++;
   }
-
-  // ── Update status LED devices ──
-  if (D->led_rain_sensor) {
-    bool rain_active = (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN)
-                       ? (os.status.sensor1_active ? true : false) : false;
-    esp_rmaker_param_t *pw = esp_rmaker_device_get_param_by_type(
-        D->led_rain_sensor, ESP_RMAKER_PARAM_POWER);
-    if (pw) rmaker_report_if_changed(pw, esp_rmaker_bool(rain_active), force);
-  }
-  if (D->led_rain_delay) {
-    bool rd_active = (os.nvdata.rd_stop_time > os.now_tz());
-    esp_rmaker_param_t *pw = esp_rmaker_device_get_param_by_type(
-        D->led_rain_delay, ESP_RMAKER_PARAM_POWER);
-    if (pw) rmaker_report_if_changed(pw, esp_rmaker_bool(rd_active), force);
-  }
-  if (D->led_controller) {
-    bool ctrl_on = (os.status.enabled ? true : false);
-    esp_rmaker_param_t *pw = esp_rmaker_device_get_param_by_type(
-        D->led_controller, ESP_RMAKER_PARAM_POWER);
-    if (pw) rmaker_report_if_changed(pw, esp_rmaker_bool(ctrl_on), force);
-  }
-
-  // ── Update weather / watering adjustment device ──
-  if (D->weather_device) {
-    esp_rmaker_param_t *wl = esp_rmaker_device_get_param_by_name(
-        D->weather_device, "Water Level");
-    if (wl) rmaker_report_if_changed(wl,
-        esp_rmaker_int(os.iopts[IOPT_WATER_PERCENTAGE]), force);
-  }
-
-  if (force) s_last_full_report_ms = rmaker_millis();
 }
 
 // ─── On Network provisioning helpers ─────────────────────────────────────────
@@ -1883,10 +1572,6 @@ bool OSRainMaker::ensure_data() {
   }
   d_ = new (mem) OSRainMakerData();
   D = d_;  // file-scope pointer for callbacks
-  d_->cmd_queue = xQueueCreate(RM_CMD_QUEUE_LEN, sizeof(RmCmd));
-  if (!d_->cmd_queue) {
-    ESP_LOGE(TAG, "Failed to create RainMaker command queue — commands will be dropped");
-  }
   ESP_LOGI(TAG, "RainMaker data allocated in %s (%u bytes)",
 #if defined(BOARD_HAS_PSRAM)
            "PSRAM",
@@ -1901,7 +1586,7 @@ bool OSRainMaker::ensure_data() {
 
 bool OSRainMaker::is_initialized() const { return d_ && d_->initialized; }
 bool OSRainMaker::is_unlinking() const { return d_ && d_->unlinking; }
-bool OSRainMaker::is_ethernet() const { return useEth; }
+bool OSRainMaker::is_ethernet() const { return d_ && d_->use_ethernet; }
 bool OSRainMaker::is_local_ctrl_started() const { return d_ && d_->local_ctrl_active; }
 bool OSRainMaker::is_mqtt_connected() const { return d_ && d_->mqtt_connected; }
 int  OSRainMaker::get_user_mapping_state() const { return d_ ? d_->user_mapping_state : 0; }
@@ -1925,217 +1610,93 @@ void OSRainMaker::refresh_runtime_state() {
   d_->user_mapping_state = (int)esp_rmaker_user_node_mapping_get_state();
 }
 
-// Helper: minimum valid Unix timestamp (2020-01-01 00:00:00 UTC).
-// Used to detect whether NTP has synced a plausible wall-clock time.
-static constexpr time_t RMAKER_MIN_VALID_TIME = 1577836800L;
-
-// ── One-shot timer: post synthetic IP_EVENT_ETH_GOT_IP ──────────────────────
-// esp_rmaker_task registers its IP_EVENT_ETH_GOT_IP handler on the work queue
-// AFTER esp_rmaker_start() returns.  The real IP event fired at boot (before
-// esp_rmaker_start() was called), so the handler never sees it and the task
-// blocks forever on xEventGroupWaitBits(ETHERNET_CONNECTED_EVENT).
-// Posting a synthetic copy 300 ms later gives the task time to register
-// its handler first.  This is required for all claim modes on Ethernet.
-static void rm_eth_kick_cb(void *arg) {
-  esp_netif_t *n = static_cast<esp_netif_t *>(arg);
-  ip_event_got_ip_t evt = {};
-  evt.esp_netif  = n;
-  evt.ip_changed = false;
-  esp_netif_get_ip_info(n, &evt.ip_info);
-  ESP_LOGI(TAG, "[RMAKER] Synthetic IP_EVENT_ETH_GOT_IP → " IPSTR " (unblocking esp_rmaker_task)",
-           IP2STR(&evt.ip_info.ip));
-  esp_event_post(IP_EVENT, IP_EVENT_ETH_GOT_IP, &evt, sizeof(evt), 0);
-}
-
-// ── Internal helper: call esp_rmaker_start() + start_local_ctrl_manually() ──
-// Extracted so it can be called from init() on normal boot or deferred from
-// loop() when the system clock was still at epoch 0 on the first call.
-static esp_err_t rmaker_do_start(OSRainMakerData *d) {
-  // Log NVS claiming state before starting the RainMaker agent
-  {
-    char *cert = esp_rmaker_get_client_cert();
-    char *key  = esp_rmaker_get_client_key();
-    char *mqtt_host = esp_rmaker_get_mqtt_host();
-    DEBUG_PRINTF("[CLAIM] NVS state at start: cert=%s key=%s mqtt_host=%s\n",
-               cert ? "EXISTS" : "MISSING",
-               key  ? "EXISTS" : "MISSING",
-               mqtt_host ? mqtt_host : "(none)");
-    if (cert)      free(cert);
-    if (key)       free(key);
-    if (mqtt_host) free(mqtt_host);
-  }
-
-  esp_err_t err = esp_rmaker_start();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "esp_rmaker_start() FAILED: %s", esp_err_to_name(err));
-    return err;
-  }
-  ESP_LOGI(TAG, "RainMaker agent started");
-  DEBUG_PRINTF("[RMAKER] esp_rmaker_start() OK\n");
-
-  // ── Kick esp_rmaker_task if Ethernet is already up ───────────────────────
-  // esp_rmaker_task registers its IP_EVENT_ETH_GOT_IP handler on the work
-  // queue after esp_rmaker_start() returns. If Ethernet already had an IP
-  // before that, the event was missed and the task blocks forever on
-  // xEventGroupWaitBits(ETHERNET_CONNECTED_EVENT). Post a synthetic event
-  // 300 ms later so the handler is guaranteed to be registered by then.
-  if (useEth) {
-    esp_netif_t *eth_n = esp_netif_get_handle_from_ifkey("ETH_DEF");
-    esp_netif_ip_info_t eth_ip = {};
-    if (eth_n && esp_netif_get_ip_info(eth_n, &eth_ip) == ESP_OK && eth_ip.ip.addr != 0) {
-      ESP_LOGI(TAG, "[RMAKER] Ethernet already at " IPSTR " — synthetic IP_EVENT_ETH_GOT_IP in 300 ms",
-               IP2STR(&eth_ip.ip));
-      esp_timer_handle_t kick_timer = nullptr;
-      esp_timer_create_args_t ta = {};
-      ta.callback        = rm_eth_kick_cb;
-      ta.arg             = eth_n;
-      ta.dispatch_method = ESP_TIMER_TASK;
-      ta.name            = "rm_eth_kick";
-      if (esp_timer_create(&ta, &kick_timer) == ESP_OK) {
-        esp_timer_start_once(kick_timer, 300 * 1000ULL); // 300 ms in µs
-      } else {
-        ESP_LOGW(TAG, "[RMAKER] esp_timer_create for eth kick failed");
-      }
-    }
-  }
-
-  char *node_id = esp_rmaker_get_node_id();
-  DEBUG_PRINTF("[RMAKER] Node ID: %s | Service: %s | PoP: %s\n",
-               node_id ? node_id : "?", d->prov_service_name, d->prov_pop);
-  ESP_LOGI(TAG, "Node ID: %s | Service: %s | PoP: %s",
-           node_id ? node_id : "?", d->prov_service_name, d->prov_pop);
-
-  // ── Start esp_local_ctrl manually for "On Network" provisioning ───────────
-  // The prebuilt RainMaker library has CONFIG_ESP_RMAKER_LOCAL_CTRL_ENABLE
-  // NOT set, so we start it ourselves.  This enables the ESP RainMaker phone
-  // app to discover the device on the local network and perform
-  // claiming + user-node mapping.  NO BLE or SoftAP provisioning.
-  err = start_local_ctrl_manually();
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Local control start failed — On Network provisioning will not work");
-  }
-
-  d->pending_start = false;
-  return ESP_OK;
-}
-
 void OSRainMaker::init() {
   DEBUG_PRINTF("[RMAKER] OSRainMaker::init() called, d_=%p\n", (void*)d_);
   if (!ensure_data()) { DEBUG_PRINTF("[RMAKER] ensure_data() FAILED\n"); return; }
   if (d_->initialized) { DEBUG_PRINTF("[RMAKER] already initialized, skipping\n"); return; }
 
-  // Guard: only proceed if we have a routable IP from WiFi STA or Ethernet.
-  // esp_rmaker_node_init() calls esp_wifi_get_mac() which requires WiFi to be
-  // fully initialized — and on ESP32-C5, sensor_radio_early_init() (Zigbee/BLE)
-  // may deinit WiFi before we reach this point. If there is no IP yet, defer.
-  {
-    auto get_netif_ip = [](const char *ifkey) -> uint32_t {
-      esp_netif_t *n = esp_netif_get_handle_from_ifkey(ifkey);
-      if (!n) return 0;
-      esp_netif_ip_info_t info = {};
-      return (esp_netif_get_ip_info(n, &info) == ESP_OK) ? info.ip.addr : 0;
-    };
-    uint32_t eth_ip = get_netif_ip("ETH_DEF");
-    uint32_t sta_ip = get_netif_ip("WIFI_STA_DEF");
-    DEBUG_PRINTF("[RMAKER] IP guard: eth=0x%08x sta=0x%08x\n", eth_ip, sta_ip);
-    if (!eth_ip && !sta_ip) {
-      DEBUG_PRINTF("[RMAKER] No IP on ETH or STA — deferring init\n");
-      return;
-    }
+  DEBUG_PRINTF("[RMAKER] === init starting ===\n");
+  ESP_LOGI(TAG, "=== RainMaker init starting (Arduino RainMaker API) ===");
+
+  // Check Ethernet status
+  d_->use_ethernet = useEth;
+  ESP_LOGI(TAG, "Connection mode: %s", d_->use_ethernet ? "ETHERNET" : "WiFi");
+
+  // Always generate PoP and service name (needed for display in UI)
+  generate_pop_from_efuse(d_->prov_pop, sizeof(d_->prov_pop));
+  generate_service_name(d_->prov_service_name, sizeof(d_->prov_service_name));
+  log_runtime_snapshot("init-begin", false);
+
+  if (!D->rmaker_handler_registered) {
+    esp_event_handler_register(RMAKER_EVENT, ESP_EVENT_ANY_ID,
+                               rmaker_event_handler, nullptr);
+    D->rmaker_handler_registered = true;
   }
 
-  // If esp_rmaker_start() was deferred (pending_start), retry it here.
-  // This path is also taken by loop() via the pending_start check.
-  if (d_->node_created) {
-    time_t now = time(nullptr);
-    if (now < RMAKER_MIN_VALID_TIME) {
-      ESP_LOGW(TAG, "[RMAKER] Node ready but NTP not yet synced (now=%ld) — retrying later", (long)now);
-      return;
+  // ── 1. Initialize RainMaker node using Arduino API ────────────────────────
+  // For Ethernet devices: WiFi must be in STA mode for local control service
+  if (d_->use_ethernet) {
+    wifi_mode_t current_mode = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&current_mode);
+    if (current_mode == WIFI_MODE_NULL) {
+      ESP_LOGI(TAG, "Ethernet mode: enabling WiFi STA for local control");
+      WiFi.mode(WIFI_MODE_STA);
+      vTaskDelay(pdMS_TO_TICKS(100));
     }
-    ESP_LOGI(TAG, "[RMAKER] Time now valid (now=%ld) — calling esp_rmaker_start()", (long)now);
-    if (rmaker_do_start(d_) != ESP_OK) return;
-    goto init_complete;
+  }
+  
+  // Initialize RainMaker node
+  RMaker.setTimeSync(true);
+  Node node = RMaker.initNode("OpenSprinkler", "Irrigation Controller");
+  esp_rmaker_node_t *raw_node = node.getNodeHandle();
+  if (!raw_node) {
+    ESP_LOGE(TAG, "RMaker.initNode() FAILED — aborting");
+    return;
+  }
+  ESP_LOGI(TAG, "RainMaker node created successfully (Arduino wrapper)");
+
+  // ── 2. Create devices (raw ESP-IDF APIs for fine-grained control) ────────
+  create_zone_devices(raw_node);
+  create_controller_device(raw_node);
+  create_sensor_devices(raw_node);
+  create_program_devices(raw_node);
+
+  // ── 3. Enable RainMaker services ──────────────────────────────────────────
+  RMaker.enableOTA(OTA_USING_TOPICS);
+  RMaker.enableTZService();
+  RMaker.enableSchedule();
+  RMaker.enableSystemService(SYSTEM_SERV_FLAGS_ALL, 2, 2, 2);
+  ESP_LOGI(TAG, "RainMaker services enabled (OTA, TZ, Schedule, System)");
+
+  // ── 4. Start RainMaker agent ──────────────────────────────────────────────
+  esp_err_t err = RMaker.start();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "RMaker.start() FAILED: %s", esp_err_to_name(err));
+    return;
+  }
+  ESP_LOGI(TAG, "RainMaker agent started");
+  
+  char *node_id = esp_rmaker_get_node_id();
+  ESP_LOGI(TAG, "Node ID: %s | Service: %s | PoP: %s",
+           node_id ? node_id : "?", d_->prov_service_name, d_->prov_pop);
+
+  // ── 5. Start esp_local_ctrl manually for "On Network" provisioning ────────
+  // The prebuilt RainMaker library has CONFIG_ESP_RMAKER_LOCAL_CTRL_ENABLE
+  // NOT set, so we start it ourselves. This enables the ESP RainMaker phone
+  // app to discover the device on the local network and perform assisted
+  // claiming + user-node mapping.
+  err = start_local_ctrl_manually();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Local control start failed — On Network provisioning will not work");
   }
 
-  {
-    DEBUG_PRINTF("[RMAKER] === init starting ===\n");
-    ESP_LOGI(TAG, "=== RainMaker init starting (native ESP-IDF API) ===");
-
-    ESP_LOGI(TAG, "Connection mode: %s", useEth ? "ETHERNET" : "WiFi");
-
-    // Always generate PoP and service name (needed for display in UI)
-    generate_pop_from_efuse(d_->prov_pop, sizeof(d_->prov_pop));
-    generate_service_name(d_->prov_service_name, sizeof(d_->prov_service_name));
-    DEBUG_PRINTF("[RMAKER] generated pop+svc, now log_runtime_snapshot\n");
-    log_runtime_snapshot("init-begin", false);
-    DEBUG_PRINTF("[RMAKER] log_runtime_snapshot done\n");
-
-    if (!D->rmaker_handler_registered) {
-      esp_event_handler_register(RMAKER_EVENT, ESP_EVENT_ANY_ID,
-                                 rmaker_event_handler, nullptr);
-      D->rmaker_handler_registered = true;
-    }
-
-    // ── 1. Initialize RainMaker node ────────────────────────────────────────
-    // esp_rainmaker 1.12.1 with CONFIG_ESP_RMAKER_NETWORK_OVER_ETHERNET=y
-    // handles Ethernet natively — no manual WiFi setup needed.
-
-    // Initialize RainMaker node (native API)
-    DEBUG_PRINTF("[RMAKER] calling esp_rmaker_node_init\n");
-    esp_rmaker_config_t rm_config = {};
-    rm_config.enable_time_sync = true;
-    esp_rmaker_node_t *raw_node = esp_rmaker_node_init(&rm_config, "OpenSprinkler", "Irrigation Controller");
-    if (!raw_node) {
-      ESP_LOGE(TAG, "esp_rmaker_node_init() FAILED — aborting");
-      return;
-    }
-    DEBUG_PRINTF("[RMAKER] esp_rmaker_node_init SUCCESS\n");
-    ESP_LOGI(TAG, "RainMaker node created successfully (native API)");
-
-    // ── 2. Create devices (raw ESP-IDF APIs for fine-grained control) ───────
-    create_zone_devices(raw_node);
-    create_controller_device(raw_node);
-    create_sensor_devices(raw_node);
-    create_program_devices(raw_node);
-    create_status_led_devices(raw_node);
-    create_weather_device(raw_node);
-
-    // ── 3. Enable RainMaker services (native API) ─────────────────────────
-    esp_rmaker_ota_enable_default();
-    esp_rmaker_timezone_service_enable();
-    esp_rmaker_schedule_enable();
-    {
-      esp_rmaker_system_serv_config_t sys_cfg = {};
-      sys_cfg.flags = SYSTEM_SERV_FLAGS_ALL;
-      sys_cfg.reboot_seconds = 2;
-      sys_cfg.reset_seconds = 2;
-      sys_cfg.reset_reboot_seconds = 2;
-      esp_rmaker_system_service_enable(&sys_cfg);
-    }
-    ESP_LOGI(TAG, "RainMaker services enabled (OTA, TZ, Schedule, System)");
-
-    // Node and devices are set up — mark so we don't repeat this if deferred.
-    d_->node_created = true;
-
-    // ── 4. Start RainMaker agent — requires valid NTP time for TLS/self-claim
-    time_t now = time(nullptr);
-    if (now < RMAKER_MIN_VALID_TIME) {
-      ESP_LOGW(TAG, "[RMAKER] NTP not yet synced (now=%ld) — deferring esp_rmaker_start() until time is valid", (long)now);
-      d_->pending_start = true;
-      return;   // loop() will call init() again once time is valid
-    }
-
-    if (rmaker_do_start(d_) != ESP_OK) return;
-  }
-
-  init_complete:
   refresh_runtime_state();
   ESP_LOGI(TAG, "User mapping state: %d | Local control: %s | MQTT: %s",
            d_->user_mapping_state,
            d_->local_ctrl_active ? "active" : "pending",
            d_->mqtt_connected ? "connected" : "connecting");
 
-  d_->last_sensor_update_ms = rmaker_millis();
+  d_->last_sensor_update_ms = millis();
   refresh_runtime_state();
   d_->initialized = true;
   log_runtime_snapshot("init-complete", false);
@@ -2145,22 +1706,7 @@ void OSRainMaker::init() {
 }
 
 void OSRainMaker::loop() {
-  // Deferred start: if init() was called before NTP synced, retry now that
-  // time may be valid.  Throttle to once every 5 s to avoid log spam.
-  if (d_ && d_->pending_start && !d_->initialized) {
-    static unsigned long s_last_retry_ms = 0;
-    unsigned long now_ms = rmaker_millis();
-    if ((long)(now_ms - s_last_retry_ms) >= 5000L) {
-      s_last_retry_ms = now_ms;
-      init();   // will check time again and either proceed or return early
-    }
-  }
-
   if (!d_ || !d_->initialized || d_->unlinking) return;
-
-  // Process commands queued by RainMaker callbacks (which run in esp_rmaker_task).
-  // This is the only place where pd/os state is safely mutated from these commands.
-  process_pending_cmds();
 
   bool prev_local_ctrl = d_->local_ctrl_active;
   bool prev_mqtt = d_->mqtt_connected;
@@ -2176,7 +1722,7 @@ void OSRainMaker::loop() {
   // Periodic diagnostic: every 60 s log full network/provisioning state so
   // we can see whether mDNS is still alive without needing an app connection.
   static unsigned long s_last_diag_ms = 0;
-  unsigned long now_ms = rmaker_millis();
+  unsigned long now_ms = millis();
   if ((long)(now_ms - s_last_diag_ms) >= 60000L) {
     s_last_diag_ms = now_ms;
     log_runtime_snapshot("periodic-60s", false);
@@ -2189,136 +1735,10 @@ void OSRainMaker::loop() {
 
   if (!d_->mqtt_connected) return;
 
-  unsigned long now = rmaker_millis();
+  unsigned long now = millis();
   if ((long)(now - d_->last_sensor_update_ms) >= (long)SENSOR_UPDATE_INTERVAL_MS) {
     d_->last_sensor_update_ms = now;
     report_sensor_values();
-  }
-}
-
-// ─── Deferred command processing (runs in Arduino main loop context) ──────────
-
-void OSRainMaker::process_pending_cmds() {
-  if (!d_ || !d_->cmd_queue) return;
-
-  RmCmd cmd;
-  while (xQueueReceive(d_->cmd_queue, &cmd, 0) == pdTRUE) {
-    time_os_t curr_time = os.now_tz();
-
-    switch (cmd.type) {
-
-      case RM_CMD_ZONE_START: {
-        uint8_t sid     = cmd.zone.sid;
-        uint16_t dur_sec = cmd.zone.dur_sec;
-
-        // Reject if station is administratively disabled
-        uint8_t bid = sid >> 3, s = sid & 0x07;
-        if (os.attrib_dis[bid] & (1 << s)) {
-          ESP_LOGW(TAG, "[ZONE] sid=%d disabled — rejecting start", sid);
-          if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
-          break;
-        }
-        // Apply water percentage
-        uint16_t dur = (uint16_t)((uint32_t)dur_sec * os.iopts[IOPT_WATER_PERCENTAGE] / 100);
-        if (dur == 0) {
-          ESP_LOGW(TAG, "[ZONE] sid=%d: WP=%d%% scaled duration to 0 — skipping",
-                   sid, os.iopts[IOPT_WATER_PERCENTAGE]);
-          if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
-          break;
-        }
-        RuntimeQueueStruct *q = pd.enqueue();
-        if (!q) {
-          ESP_LOGW(TAG, "[ZONE] sid=%d: queue full — start rejected", sid);
-          if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
-          break;
-        }
-        q->st  = 0;
-        q->dur = dur;
-        q->sid = sid;
-        q->pid = 254;   // ad-hoc / manual run (same as run-once)
-        schedule_all_stations(curr_time, 0);
-        ESP_LOGI(TAG, "[ZONE] sid=%d started (%u s adj from %u s)", sid,
-                 (unsigned)dur, (unsigned)dur_sec);
-        if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(true));
-        break;
-      }
-
-      case RM_CMD_ZONE_STOP: {
-        turn_off_station(cmd.zone.sid, curr_time, 0);
-        ESP_LOGI(TAG, "[ZONE] sid=%d stopped via RainMaker", cmd.zone.sid);
-        if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
-        break;
-      }
-
-      case RM_CMD_PROG_START: {
-        uint8_t pid = cmd.prog.pid;
-        if (pid >= pd.nprograms) break;
-        ProgramStruct prog;
-        pd.read(pid, &prog);
-        if (!prog.enabled) {
-          ESP_LOGW(TAG, "[PROG] pid=%d disabled — bouncing back false", pid);
-          if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
-          break;
-        }
-        bool any = false;
-        for (uint8_t sid = 0; sid < os.nstations; sid++) {
-          if (os.is_master_station(sid)) continue;
-          uint16_t dur = prog.durations[sid];
-          if (dur == 0) continue;
-          dur = (uint16_t)((uint32_t)dur * os.iopts[IOPT_WATER_PERCENTAGE] / 100);
-          if (dur == 0) dur = 1;
-          RuntimeQueueStruct *q = pd.enqueue();
-          if (!q) break;
-          q->st  = 0;
-          q->dur = dur;
-          q->sid = sid;
-          q->pid = (uint8_t)(pid + 1) | 0x80;  // 1-based + manual flag (bypasses rain/sensor; decoded by qpid_decode)
-          any = true;
-        }
-        if (any) schedule_all_stations(curr_time, 0);
-        ESP_LOGI(TAG, "[PROG] pid=%d %s via RainMaker",
-                 pid, any ? "started" : "skipped (no stations)");
-        if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(any));
-        break;
-      }
-
-      case RM_CMD_PROG_STOP: {
-        uint8_t pid = cmd.prog.pid;
-        for (uint8_t sid = 0; sid < os.nstations; sid++) {
-          uint8_t qid = pd.station_qid[sid];
-          if (qid == 0xFF) continue;
-          if (qpid_decode(pd.queue[qid].pid) == (uint8_t)(pid + 1)) turn_off_station(sid, curr_time, 0);
-        }
-        ESP_LOGI(TAG, "[PROG] pid=%d stopped via RainMaker", pid);
-        if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(false));
-        break;
-      }
-
-      case RM_CMD_CTRL_ENABLE: {
-        os.status.enabled = cmd.ctrl.enabled ? 1 : 0;
-        os.iopts[IOPT_DEVICE_ENABLE] = os.status.enabled;
-        os.iopts_save();
-        ESP_LOGI(TAG, "[CTRL] Controller %s via RainMaker",
-                 cmd.ctrl.enabled ? "enabled" : "disabled");
-        if (cmd.prm)
-          esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_bool(cmd.ctrl.enabled));
-        break;
-      }
-
-      case RM_CMD_RAIN_DELAY: {
-        int32_t hours = cmd.delay.hours;
-        if (hours > 0) {
-          os.nvdata.rd_stop_time = curr_time + (unsigned long)hours * 3600UL;
-          os.raindelay_start();
-        } else {
-          os.nvdata.rd_stop_time = 0;
-          os.raindelay_stop();
-        }
-        ESP_LOGI(TAG, "[CTRL] Rain delay: %d hours via RainMaker", (int)hours);
-        if (cmd.prm) esp_rmaker_param_update_and_report(cmd.prm, esp_rmaker_int((int)hours));
-        break;
-      }
-    }
   }
 }
 
@@ -2374,145 +1794,8 @@ void OSRainMaker::update_program(uint8_t pid, bool running) {
   }
 }
 
-// ─── Helper: get the current (already-started) RainMaker node ─────────────
-static esp_rmaker_node_t *get_started_node() {
-  return const_cast<esp_rmaker_node_t *>(esp_rmaker_get_node());
-}
-
-// ─── Sync all program devices after structural changes ─────────────────────
-
-void OSRainMaker::sync_programs() {
-  if (!d_ || !d_->initialized) return;
-
-  esp_rmaker_node_t *node = get_started_node();
-  if (!node) {
-    ESP_LOGW(TAG, "[SYNC] sync_programs: node not available");
-    return;
-  }
-
-  // Remove and delete all existing program devices
-  if (d_->prog_devices) {
-    for (uint8_t i = 0; i < d_->prog_count; i++) {
-      if (d_->prog_devices[i]) {
-        esp_rmaker_node_remove_device(node, d_->prog_devices[i]);
-        esp_rmaker_device_delete(d_->prog_devices[i]);
-        d_->prog_devices[i] = nullptr;
-      }
-    }
-    free(d_->prog_devices);
-    d_->prog_devices = nullptr;
-    d_->prog_count = 0;
-  }
-
-  // Re-create devices for the current program list
-  create_program_devices(node);
-  ESP_LOGI(TAG, "[SYNC] sync_programs: %d program devices re-registered", d_->prog_count);
-}
-
-// ─── Sync all zone devices after station config changes ────────────────────
-
-void OSRainMaker::sync_zones() {
-  if (!d_ || !d_->initialized) return;
-
-  esp_rmaker_node_t *node = get_started_node();
-  if (!node) {
-    ESP_LOGW(TAG, "[SYNC] sync_zones: node not available");
-    return;
-  }
-
-  // Remove and delete all existing zone devices
-  if (d_->zone_devices) {
-    for (uint8_t i = 0; i < d_->zone_count; i++) {
-      if (d_->zone_devices[i]) {
-        esp_rmaker_node_remove_device(node, d_->zone_devices[i]);
-        esp_rmaker_device_delete(d_->zone_devices[i]);
-        d_->zone_devices[i] = nullptr;
-      }
-    }
-    free(d_->zone_devices);
-    d_->zone_devices = nullptr;
-  }
-  if (d_->zone_sid_map) {
-    free(d_->zone_sid_map);
-    d_->zone_sid_map = nullptr;
-  }
-  if (d_->zone_durations) {
-    free(d_->zone_durations);
-    d_->zone_durations = nullptr;
-  }
-  if (d_->zone_sched_dur) {
-    free(d_->zone_sched_dur);
-    d_->zone_sched_dur = nullptr;
-  }
-  d_->zone_count = 0;
-
-  // Re-create devices for the current station configuration
-  create_zone_devices(node);
-  ESP_LOGI(TAG, "[SYNC] sync_zones: %d zone devices re-registered", d_->zone_count);
-}
-
-// ─── Lightweight name-only updates ─────────────────────────────────────────
-
-void OSRainMaker::update_program_name(uint8_t pid) {
-  if (!d_ || !d_->initialized) return;
-  if (pid >= d_->prog_count || !d_->prog_devices[pid]) return;
-
-  ProgramStruct prog;
-  pd.read(pid, &prog);
-  char name_buf[40];
-  if (prog.name[0]) {
-    snprintf(name_buf, sizeof(name_buf), "%.31s", prog.name);
-  } else {
-    snprintf(name_buf, sizeof(name_buf), "Program %d", pid + 1);
-  }
-
-  esp_rmaker_param_t *p = esp_rmaker_device_get_param_by_name(
-      d_->prog_devices[pid], ESP_RMAKER_DEF_NAME_PARAM);
-  if (p) {
-    esp_rmaker_param_update_and_report(p, esp_rmaker_str(name_buf));
-    ESP_LOGI(TAG, "[SYNC] update_program_name: pid=%d name='%s'", pid, name_buf);
-  }
-}
-
-void OSRainMaker::update_zone_name(uint8_t sid) {
-  if (!d_ || !d_->initialized) return;
-
-  for (uint8_t i = 0; i < d_->zone_count; i++) {
-    if (d_->zone_sid_map[i] != sid || !d_->zone_devices[i]) continue;
-
-    char stn_name[32];
-    char name_buf[40];
-    os.get_station_name(sid, stn_name);
-    if (stn_name[0]) {
-      snprintf(name_buf, sizeof(name_buf), "%.31s", stn_name);
-    } else {
-      snprintf(name_buf, sizeof(name_buf), "Zone %d", sid + 1);
-    }
-
-    esp_rmaker_param_t *p = esp_rmaker_device_get_param_by_name(
-        d_->zone_devices[i], ESP_RMAKER_DEF_NAME_PARAM);
-    if (p) {
-      esp_rmaker_param_update_and_report(p, esp_rmaker_str(name_buf));
-      ESP_LOGI(TAG, "[SYNC] update_zone_name: sid=%d name='%s'", sid, name_buf);
-    }
-    return;
-  }
-}
-
 bool OSRainMaker::unlink() {
-  if (!d_ || !d_->initialized) {
-    // Device not yet initialized (NTP pending / self-claim not started).
-    // MQTT is offline so we cannot reset the cloud mapping, but we can still
-    // erase the local NVS fctry partition and reboot to restore factory state.
-    ESP_LOGW(TAG, "[UNLINK] Not initialized — performing direct factory reset (no cloud mapping reset)");
-    if (d_) d_->unlinking = true;
-    esp_err_t err = esp_rmaker_factory_reset(0, 2);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "[UNLINK] esp_rmaker_factory_reset failed: %s", esp_err_to_name(err));
-      if (d_) d_->unlinking = false;
-    }
-    return (err == ESP_OK);
-  }
+  if (!d_ || !d_->initialized) return false;
 
   ESP_LOGI(TAG, "[UNLINK] Initiating RainMaker unlink");
 
@@ -2555,34 +1838,6 @@ bool OSRainMaker::unlink() {
   ESP_LOGI(TAG, "[UNLINK] Waiting for cloud PUBACK (event-driven); fallback NVS erase in ~20 s, reboot ~22 s.");
   log_runtime_snapshot("unlink", false);
   return true;
-}
-
-int OSRainMaker::reset_mapping() {
-  ESP_LOGI(TAG, "Resetting user-node mapping (preserving TLS certs)...");
-  esp_err_t err = esp_rmaker_reset_user_node_mapping();
-  if (err == ESP_OK) {
-    if (d_) d_->user_mapping_state = 0;
-    ESP_LOGI(TAG, "User-node mapping reset OK — state now: %d",
-             (int)esp_rmaker_user_node_mapping_get_state());
-  } else {
-    ESP_LOGE(TAG, "reset_user_node_mapping failed: %s", esp_err_to_name(err));
-  }
-  return (int)err;
-}
-
-int OSRainMaker::factory_reset(int delay_sec) {
-  ESP_LOGI(TAG, "RainMaker factory reset (delay=%ds) — erasing certs + mapping...", delay_sec);
-  esp_err_t err = esp_rmaker_factory_reset(delay_sec, 2);
-  if (err == ESP_OK) {
-    if (d_) {
-      d_->mqtt_connected = false;
-      d_->user_mapping_state = 0;
-    }
-    ESP_LOGI(TAG, "Factory reset scheduled: reboot in ~%ds", delay_sec + 2);
-  } else {
-    ESP_LOGE(TAG, "factory_reset failed: %s", esp_err_to_name(err));
-  }
-  return (int)err;
 }
 
 #endif // ESP32 && ENABLE_RAINMAKER

@@ -44,6 +44,10 @@
 #include "custom_cert.h"
 #include "acme_client.h"
 #endif
+
+#if defined(ESP8266)
+#include <lwip/dns.h>
+#endif
 #include "sensor_ble.h"
 
 /** Declare static data members */
@@ -466,7 +470,7 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // below handling current alert lo
 	0,  // Notif3 enable bit
 	0,  // Notif4 enable bit
-	0,  // RainMaker enable: 0=disabled (default), 1=enabled
+	1,  // RainMaker enable: 1=enabled (default)
 };
 
 /** String option values (stored in RAM) */
@@ -586,10 +590,40 @@ unsigned char OpenSprinkler::start_network() {
 	if (start_ether()) {
 		useEth = true;
 #ifdef ENABLE_RAINMAKER
-		// RainMaker needs WiFi for SoftAP provisioning / assisted claiming,
-		// even when Ethernet is the primary data path.  Leave WiFi active;
-		// RMaker.initNode() → wifiLowLevelInit() will configure it later.
-		ESP_LOGI("OS", "Ethernet up — WiFi kept active for RainMaker provisioning");
+		// RainMaker's esp_rmaker_node_init() calls esp_wifi_get_mac() to build
+		// the node ID.  On Ethernet devices the WiFi driver is never started,
+		// so that call would fail ("Please initialise Wi-Fi first" / crash).
+		// We must initialize WiFi in STA mode HERE — before sensor_radio_early_init()
+		// hands the 2.4 GHz radio to Zigbee/BLE, after which WiFi.mode(STA) fails.
+		// WIFI_STA is started but never connected to any AP; all data uses ETH.
+		if (WiFi.mode(WIFI_STA)) {
+			WiFi.disconnect(false, false); // don't auto-connect to stored APs
+			ESP_LOGI("OS", "Ethernet+RainMaker: WiFi in STA mode (no AP connect)");
+		} else {
+			// WiFi.mode() failed — try direct esp_wifi_init as fallback.
+			// This can happen if Arduino's WiFi layer is in a conflict state.
+			ESP_LOGW("OS", "Ethernet+RainMaker: WiFi.mode(STA) failed — trying esp_wifi_init directly");
+			wifi_mode_t wm = WIFI_MODE_NULL;
+			if (esp_wifi_get_mode(&wm) == ESP_ERR_WIFI_NOT_INIT) {
+				wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
+				if (esp_wifi_init(&wcfg) == ESP_OK) {
+					if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) {
+						esp_netif_create_default_wifi_sta();
+					}
+					esp_wifi_set_mode(WIFI_MODE_STA);
+					esp_wifi_start();
+					esp_wifi_disconnect();
+					ESP_LOGI("OS", "Ethernet+RainMaker: WiFi init via esp_wifi_init OK");
+				} else {
+					ESP_LOGE("OS", "Ethernet+RainMaker: esp_wifi_init also FAILED — RainMaker will crash");
+				}
+			} else {
+				// Driver is initialized but in NULL mode; set mode directly
+				esp_wifi_set_mode(WIFI_MODE_STA);
+				esp_wifi_start();
+				esp_wifi_disconnect();
+			}
+		}
 #else
 		WiFi.mode(WIFI_OFF); // turn off WiFi to save resources
 #endif
@@ -858,13 +892,43 @@ byte OpenSprinkler::start_ether() {
 		DEBUG_PRINTLN();
 		DEBUG_PRINT(F("eth.ip:"));
 		DEBUG_PRINTLN(eth.localIP());
+		// Retrieve the DNS that DHCP assigned to the Ethernet netif directly
+		// from lwIP. WiFi.dnsIP() only returns the WiFi-STA DNS and is always
+		// 0.0.0.0 when WiFi is not connected, which would corrupt the stored
+		// persistent options.
+		uint32_t eth_dns_ip = 0;
+		#if defined(ESP32)
+		{
+			esp_netif_t *eth_netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+			if (!eth_netif) {
+				// Fallback: try the first ETH netif by iterating
+				esp_netif_t *n = nullptr;
+				while ((n = esp_netif_next_unsafe(n)) != nullptr) {
+					const char *k = esp_netif_get_ifkey(n);
+					if (k && strncmp(k, "ETH", 3) == 0) { eth_netif = n; break; }
+				}
+			}
+			if (eth_netif) {
+				esp_netif_dns_info_t dns_info = {};
+				if (esp_netif_get_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns_info) == ESP_OK) {
+					eth_dns_ip = dns_info.ip.u_addr.ip4.addr;
+				}
+			}
+		}
+		#else
+		// ESP8266: read the primary DNS from lwIP directly (eth object has no dnsIP())
+		{
+			const ip_addr_t *dns_addr = dns_getserver(0);
+			if (dns_addr) eth_dns_ip = dns_addr->addr;
+		}
+		#endif
 		DEBUG_PRINT(F("eth.dns:"));
-		DEBUG_PRINTLN(WiFi.dnsIP());
+		DEBUG_PRINTLN(IPAddress(eth_dns_ip));
 
 		if (iopts[IOPT_USE_DHCP]) {
 			memcpy(iopts+IOPT_STATIC_IP1, &(eth.localIP()[0]), 4);
 			memcpy(iopts+IOPT_GATEWAY_IP1, &(eth.gatewayIP()[0]),4);
-			memcpy(iopts+IOPT_DNS_IP1, &(WiFi.dnsIP()[0]), 4); // todo: lwip need dns ip
+			memcpy(iopts+IOPT_DNS_IP1, &eth_dns_ip, 4);
 			memcpy(iopts+IOPT_SUBNET_MASK1, &(eth.subnetMask()[0]), 4);
 			iopts_save();
 		}

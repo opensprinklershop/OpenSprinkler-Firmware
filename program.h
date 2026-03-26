@@ -116,12 +116,21 @@ protected:
 
 extern OpenSprinkler os;
 
+// q->pid encoding for manually-started real programs:
+//   bit 7 set + lower 7 bits = 1-based program id (values 0x81..0x81+MAX_NUM_PROGRAMS)
+//   q->pid = 254  → test/run-once (no real program, still bypasses rain/sensor via >=99 check)
+//   q->pid = 1..MAX_NUM_PROGRAMS+1 → normally scheduled program (pid+1 from 0-based index)
+static inline uint8_t qpid_decode(uint8_t p) {
+	// If the manual flag bit is set and the value is in the valid real-program range, strip the flag.
+	return (p >= 0x81 && p < (uint8_t)(0x81 + MAX_NUM_PROGRAMS)) ? (p & 0x7F) : p;
+}
+
 class RuntimeQueueStruct {
 public:
 	time_os_t   st;  // start time
 	uint16_t dur; // water time
 	unsigned char  sid;
-	unsigned char  pid;
+	unsigned char  pid;  // 1-based program id; bit 7 set for manually-started real programs
 	time_os_t   deque_time; // deque time, which can be larger than st+dur to allow positive master off adjustment time
 };
 
@@ -131,6 +140,7 @@ public:
 	static unsigned char nqueue;  // number of queue elements
 	static unsigned char station_qid[];  // this array stores the queue element index for each scheduled station
 	static unsigned char nprograms;  // number of programs
+	static uint8_t current_mpid;    // currently manually-running program id (1-based, 0=none)
 	static LogStruct lastrun;
 	static time_os_t last_seq_stop_times[]; // the last stop time of a sequential station (for each sequential group respectively)
 

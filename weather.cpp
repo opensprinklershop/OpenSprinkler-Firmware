@@ -281,7 +281,7 @@ bool parse_wto(char* wto) {
 		if (error) {
 			DEBUG_PRINT(F("wto: deserializeJson() failed: "));
 			DEBUG_PRINTLN(error.c_str());
-			strcpy(wto, "{}");  // reset wto to empty object
+			strcpy(wto, "");  // reset wto to empty string
 			return false;
 		} else {
 			if(doc.containsKey("scales")){

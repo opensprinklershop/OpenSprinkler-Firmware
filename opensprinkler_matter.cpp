@@ -29,6 +29,7 @@
 #include <MatterEndpoints/MatterHumiditySensor.h>
 #include <MatterEndpoints/MatterPressureSensor.h>
 #include <esp_heap_caps.h>
+#include <freertos/queue.h>
 
 // Matter event defines
 #define MATTER_EVENT_COMMISSIONED 0x01
@@ -59,6 +60,7 @@ template<typename T, typename U>
 bool operator!=(const PSRAMAllocator<T>&, const PSRAMAllocator<U>&) { return false; }
 
 extern OpenSprinkler os;
+extern ProgramData pd;
 
 // ====== State Storage (Module-level with PSRAM) ======
 namespace {
@@ -67,6 +69,10 @@ namespace {
     std::hash<uint8_t>, std::equal_to<uint8_t>,
     PSRAMAllocator<std::pair<const uint8_t, std::unique_ptr<MatterOnOffPlugin>>>>;
   
+  using ProgramMap = std::unordered_map<uint8_t, std::unique_ptr<MatterOnOffPlugin>,
+    std::hash<uint8_t>, std::equal_to<uint8_t>,
+    PSRAMAllocator<std::pair<const uint8_t, std::unique_ptr<MatterOnOffPlugin>>>>;
+
   using TempSensorMap = std::unordered_map<uint16_t, std::unique_ptr<MatterTemperatureSensor>,
     std::hash<uint16_t>, std::equal_to<uint16_t>,
     PSRAMAllocator<std::pair<const uint16_t, std::unique_ptr<MatterTemperatureSensor>>>>;
@@ -82,6 +88,7 @@ namespace {
   // NOTE: std::unordered_map cannot use EXT_RAM_BSS_ATTR - has internal hash table pointers
   // The PSRAMAllocator handles dynamic allocations in PSRAM
   StationMap stations;
+  ProgramMap programs;
   TempSensorMap temp_sensors;
   HumiditySensorMap humidity_sensors;
   PressureSensorMap pressure_sensors;
@@ -133,6 +140,26 @@ namespace {
     return true;
   }
   
+  // ── Deferred command queue (Matter callbacks → main loop) ──────────────
+  // onChange callbacks run in the Matter/CHIP stack task. pd/os state must
+  // only be mutated from the Arduino main loop. Commands are enqueued here
+  // and drained by process_matter_cmds() from OSMatter::loop().
+  enum MatterCmdType : uint8_t {
+    MATTER_CMD_STATION_ON,
+    MATTER_CMD_STATION_OFF,
+    MATTER_CMD_PROG_START,
+    MATTER_CMD_PROG_STOP,
+  };
+  struct MatterCmd {
+    MatterCmdType type;
+    union {
+      struct { uint8_t sid; } station;
+      struct { uint8_t pid; } prog;
+    };
+  };
+  #define MATTER_CMD_QUEUE_LEN 16
+  static QueueHandle_t matter_cmd_queue = nullptr;
+
   bool matter_started = false;
   bool commissioned = false;
   bool matter_ble_lock_held = false;
@@ -157,6 +184,7 @@ inline int16_t pressure_to_matter(float hPa) { return (int16_t)(hPa * 10.0f); }
 
 uint32_t compute_config_signature() {
   uint32_t sig = os.nstations;
+  sig = sig * 31 + pd.nprograms;
   for(uint8_t i = 0; i < os.nstations; i++) {
     uint8_t bid = i >> 3, sbit = i & 0x07;
     sig = sig * 31 + ((os.attrib_dis[bid] >> sbit) & 1);
@@ -279,6 +307,31 @@ void create_station_endpoints() {
     }
   }
   DEBUG_PRINTF("[Matter] %zu station endpoints created\n", stations.size());
+}
+
+// ====== Program Management ======
+void create_program_endpoints() {
+  DEBUG_PRINTF("[Matter] Creating program endpoints for %d programs\n", pd.nprograms);
+
+  for (uint8_t pid = 0; pid < pd.nprograms; pid++) {
+    void *mem = heap_caps_malloc(sizeof(MatterOnOffPlugin), MALLOC_CAP_SPIRAM);
+    if (!mem) {
+      DEBUG_PRINTLN("[Matter] PSRAM allocation failed for program");
+      continue;
+    }
+    programs[pid] = std::unique_ptr<MatterOnOffPlugin>(new(mem) MatterOnOffPlugin());
+    if (programs[pid]->begin(false)) {
+      programs[pid]->onChange([pid](bool value) {
+        DEBUG_PRINTF("[Matter] Program %d -> %s (queued)\n", pid, value ? "START" : "STOP");
+        MatterCmd cmd{};
+        cmd.type = value ? MATTER_CMD_PROG_START : MATTER_CMD_PROG_STOP;
+        cmd.prog.pid = pid;
+        xQueueSend(matter_cmd_queue, &cmd, 0);
+        return true;
+      });
+    }
+  }
+  DEBUG_PRINTF("[Matter] %zu program endpoints created\n", programs.size());
 }
 
 // ====== Sensor Management ======
@@ -408,6 +461,11 @@ void OSMatter::init() {
     return;
   }
 
+  // Create deferred command queue (if not already created)
+  if (!matter_cmd_queue) {
+    matter_cmd_queue = xQueueCreate(MATTER_CMD_QUEUE_LEN, sizeof(MatterCmd));
+  }
+
   // Runtime check: only start Matter when IEEE 802.15.4 mode is MATTER
   if (!ieee802154_is_matter()) {
     DEBUG_PRINTLN("[Matter] Not in MATTER mode - Matter disabled");
@@ -439,6 +497,7 @@ void OSMatter::init() {
   #endif
   
   create_station_endpoints();
+  create_program_endpoints();
   create_sensor_endpoints();
   Matter.onEvent(matter_event_handler);
   
@@ -494,7 +553,36 @@ void OSMatter::init() {
   DEBUG_PRINTLN("[Matter] Init complete");
 }
 
+static void process_matter_cmds() {
+  if (!matter_cmd_queue) return;
+  MatterCmd cmd;
+  while (xQueueReceive(matter_cmd_queue, &cmd, 0) == pdTRUE) {
+    switch (cmd.type) {
+      case MATTER_CMD_STATION_ON:
+        if (cmd.station.sid < os.nstations)
+          os.set_station_bit(cmd.station.sid, 1);
+        break;
+      case MATTER_CMD_STATION_OFF:
+        if (cmd.station.sid < os.nstations)
+          os.set_station_bit(cmd.station.sid, 0);
+        break;
+      case MATTER_CMD_PROG_START:
+        manual_start_program(cmd.prog.pid + 1, 255, QUEUE_OPTION_INSERT_FRONT);
+        break;
+      case MATTER_CMD_PROG_STOP:
+        for (unsigned char sid = 0; sid < os.nstations; sid++) {
+          unsigned char qid = pd.station_qid[sid];
+          if (qid < pd.nqueue && qpid_decode(pd.queue[qid].pid) == (uint8_t)(cmd.prog.pid + 1)) {
+            turn_off_station(sid, os.now_tz(), 1);
+          }
+        }
+        break;
+    }
+  }
+}
+
 void OSMatter::loop() {
+  process_matter_cmds();
   if(!matter_started) return;
 
   // Prevent re-initialization during WiFi connection/scan (avoids PSRAM access conflicts)
@@ -520,10 +608,12 @@ void OSMatter::loop() {
   if(current_sig != config_signature) {
     DEBUG_PRINTLN("[Matter] Config changed - reinitializing");
     stations.clear();
+    programs.clear();
     temp_sensors.clear();
     humidity_sensors.clear();
     pressure_sensors.clear();
     create_station_endpoints();
+    create_program_endpoints();
     create_sensor_endpoints();
     config_signature = current_sig;
   }
@@ -540,6 +630,13 @@ void OSMatter::update_station(uint8_t sid, bool is_on) {
   auto it = stations.find(sid);
   if(it != stations.end() && it->second) {
     it->second->setOnOff(is_on);
+  }
+}
+
+void OSMatter::update_program(uint8_t pid, bool running) {
+  auto it = programs.find(pid);
+  if(it != programs.end() && it->second) {
+    it->second->setOnOff(running);
   }
 }
 
@@ -578,12 +675,18 @@ bool OSMatter::open_commissioning_window(uint16_t timeout_seconds) {
 
 void OSMatter::station_on(unsigned char sid) {
   if(sid >= os.nstations) return;
-  os.set_station_bit(sid, 1);
+  MatterCmd cmd{};
+  cmd.type = MATTER_CMD_STATION_ON;
+  cmd.station.sid = sid;
+  xQueueSend(matter_cmd_queue, &cmd, 0);
 }
 
 void OSMatter::station_off(unsigned char sid) {
   if(sid >= os.nstations) return;
-  os.set_station_bit(sid, 0);
+  MatterCmd cmd{};
+  cmd.type = MATTER_CMD_STATION_OFF;
+  cmd.station.sid = sid;
+  xQueueSend(matter_cmd_queue, &cmd, 0);
 }
 
 OSMatter& OSMatter::instance() {

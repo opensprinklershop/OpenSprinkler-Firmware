@@ -259,6 +259,31 @@ except:
     echo ""
 }
 
+# ── esptool resolver ────────────────────────────────────────────────────────
+# Prefer system esptool (>= 4.6 required for ESP32-C5 support) over the
+# outdated version bundled by PlatformIO in .pio/packages/tool-esptoolpy/.
+# Sets global ESPTOOL_CMD to the invocation string (e.g. "python3 -m esptool").
+_find_esptool() {
+    # 1. system esptool binary
+    if command -v esptool.py &>/dev/null; then
+        ESPTOOL_CMD=(esptool.py); return 0
+    fi
+    # 2. python3 -m esptool (pip-installed)
+    if python3 -m esptool version &>/dev/null 2>&1; then
+        ESPTOOL_CMD=(python3 -m esptool); return 0
+    fi
+    # 3. PlatformIO bundled (last resort — may be too old)
+    local pio_tool="${SCRIPT_DIR}/.pio/packages/tool-esptoolpy/esptool.py"
+    local pio_py="${HOME}/.platformio/penv/bin/python3"
+    [[ ! -x "$pio_py" ]] && pio_py="python3"
+    if [[ -f "$pio_tool" ]]; then
+        warn "Using PlatformIO-bundled esptool — may not support ESP32-C5. Upgrade with: pip install -U esptool"
+        ESPTOOL_CMD=("$pio_py" "$pio_tool"); return 0
+    fi
+    error "esptool not found. Install with: pip install esptool"
+    exit 1
+}
+
 # ── Matter manufacturing data helpers ─────────────────────────────────────────
 
 # Generate Matter manufacturing data (PAA → PAI → DAC chain + NVS partition)
@@ -378,19 +403,13 @@ flash_matter_kvs() {
         exit 1
     fi
 
-    local esptool="${SCRIPT_DIR}/.pio/packages/tool-esptoolpy/esptool.py"
-    if [[ ! -f "$esptool" ]]; then
-        error "esptool.py not found. Run a PlatformIO build first."
-        exit 1
-    fi
-    local python="${HOME}/.platformio/penv/bin/python3"
-    [[ ! -x "$python" ]] && python="python3"
+    _find_esptool
 
     local port="${UPLOAD_PORT:-/dev/ttyACM0}"
     local baud="${UPLOAD_SPEED:-460800}"
 
     info "Flashing ${MATTER_KVS_BIN} → ${MATTER_KVS_ADDR}"
-    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
         --before default_reset --after hard_reset \
         write_flash "$MATTER_KVS_ADDR" "$MATTER_KVS_BIN" \
     || { error "Flash failed"; exit 1; }
@@ -429,13 +448,7 @@ full_flash_env() {
         fi
     done
 
-    local esptool="${SCRIPT_DIR}/.pio/packages/tool-esptoolpy/esptool.py"
-    if [[ ! -f "$esptool" ]]; then
-        error "esptool.py not found. Run a PlatformIO build first."
-        exit 1
-    fi
-    local python="${HOME}/.platformio/penv/bin/python3"
-    [[ ! -x "$python" ]] && python="python3"
+    _find_esptool
 
     local port="${UPLOAD_PORT:-/dev/ttyUSB2}"
     local baud="${UPLOAD_SPEED:-460800}"
@@ -461,13 +474,13 @@ full_flash_env() {
     # Optional: erase entire flash first (ERASE_FLASH=1 ./fw.sh full-flash zigbee)
     if [[ "${ERASE_FLASH:-0}" == "1" ]]; then
         warn "Erasing entire flash first …"
-        "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+        "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
             erase_flash \
         || { error "Erase failed"; exit 1; }
         ok "Flash erased"
     fi
 
-    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
         --before default_reset --after hard_reset \
         write_flash "${flash_args[@]}" \
     || { error "Full flash failed"; exit 1; }
@@ -476,13 +489,13 @@ full_flash_env() {
     # fctry partition (0x7EA000, 0x6000): RainMaker node_id, certs, claiming data
     # nvs   partition (0x9000,   0x5000): user mapping, WiFi creds, runtime state
     info "Erasing RainMaker fctry partition (0x7EA000, 24K) …"
-    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
         --before default_reset --after no_reset \
         erase_region 0x7EA000 0x6000 \
     || warn "fctry erase failed (non-fatal)"
 
     info "Erasing NVS partition (0x9000, 20K) …"
-    "$python" "$esptool" --chip esp32c5 --port "$port" --baud "$baud" \
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
         --before default_reset --after hard_reset \
         erase_region 0x9000 0x5000 \
     || warn "NVS erase failed (non-fatal)"

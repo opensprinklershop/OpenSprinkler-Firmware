@@ -127,16 +127,20 @@ SDKCONFIG_OVERRIDES = {
     # =====================================================================
     # RainMaker Claiming: Assisted Claiming (production workflow)
     # =====================================================================
-    # ESP32-C5 does NOT support Self-Claiming (no eFuse HMAC key).
-    # Assisted Claiming: phone app handles claiming during provisioning.
-    # Device ships with empty fctry partition; credentials are obtained
-    # automatically when the customer provisions via the ESP RainMaker app.
-    # For development/testing, use Host Driven Claiming:
-    #   esp-rainmaker-cli claim /dev/ttyUSB2 --addr 0x7EA000
-    "CONFIG_ESP_RMAKER_SELF_CLAIM": None,      # Disable self-claiming (not supported on C5)
+    # Self-Claiming: device auto-generates TLS credentials and registers
+    # with the RainMaker cloud on first boot.  The .sav implementation used
+    # self-claiming with the challenge-response protocol (ch_resp endpoint +
+    # _esp_rmaker_chal_resp._tcp mDNS) for On-Network phone-app discovery.
+    # The __wrap_esp_rmaker_node_auth_sign_msg linker wrap provides RSA/EC
+    # key signing for the challenge-response handshake.
+    "CONFIG_ESP_RMAKER_SELF_CLAIM": "y",       # Enable self-claiming
     "CONFIG_ESP_RMAKER_NO_CLAIM": None,        # Disable no-claim mode
-    "CONFIG_ESP_RMAKER_ASSISTED_CLAIM": "y",   # Enable assisted claiming via phone app
-    "CONFIG_ESP_RMAKER_CLAIM_TYPE": "2",       # 2 = assisted claim
+    "CONFIG_ESP_RMAKER_ASSISTED_CLAIM": None,  # Disable assisted claiming
+    "CONFIG_ESP_RMAKER_CLAIM_TYPE": "1",       # 1 = self-claim
+    # Built-in Rainmaker challenge-response is incompatible with self-claiming
+    # on first boot (need_claim=true).  Our firmware provides its own ch_resp
+    # endpoint via esp_local_ctrl — the library's built-in one must be off.
+    "CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE": None,
 
     # =====================================================================
     # RainMaker Local Control / On-Network Discovery
@@ -147,12 +151,30 @@ SDKCONFIG_OVERRIDES = {
     # for challenge-response discovery even though RainMaker itself is active.
     "CONFIG_ESP_RMAKER_LOCAL_CTRL_FEATURE_ENABLE": "y",
     "CONFIG_ESP_RMAKER_LOCAL_CTRL_AUTO_ENABLE": "y",
+
+    # =====================================================================
+    # RainMaker Network Transport (requires esp_rainmaker >= 1.10.5 / 1.12.1)
+    # =====================================================================
+    # Enable both WiFi and Ethernet so MQTT connects on whichever interface
+    # is active. Without these, MQTT only listens for IP_EVENT_STA_GOT_IP.
+    "CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI": "y",
+    "CONFIG_ESP_RMAKER_NETWORK_OVER_ETHERNET": "y",
+
+    # =====================================================================
+    # RainMaker MQTT Budgeting - Disable for single-device installations
+    # =====================================================================
+    # The budget system allows 100 messages initially, then only 1 per 5
+    # seconds. OpenSprinkler publishes ~7+ params every 30s (controller +
+    # sensors + LED devices) which exhausts the budget in ~1-2 hours.
+    # For a single irrigation controller there is no cloud cost concern.
+    "CONFIG_ESP_RMAKER_MQTT_ENABLE_BUDGETING": None,
 }
 
 # Path to the workspace-local custom-compiled framework.
-# This version has CONFIG_ESP_RMAKER_ASSISTED_CLAIM enabled (no auto self-claim at boot).
-# The installed .pio/packages/ version may ship with CONFIG_ESP_RMAKER_SELF_CLAIM which
-# causes the device to auto-link to an account on every boot—exactly the bug this fixes.
+# This version has CONFIG_ESP_RMAKER_SELF_CLAIM enabled (self-claiming with
+# challenge-response protocol for On-Network discovery).
+# The installed .pio/packages/ version may ship with CONFIG_ESP_RMAKER_ASSISTED_CLAIM
+# which prevents proper self-claiming at boot.
 _WORKSPACE_RMAKER_FRAMEWORK = "/data/Workspace/framework-arduinoespressif32-libs"
 
 # RainMaker prebuilt libraries whose claim-mode is baked in at compile time.
@@ -164,119 +186,88 @@ _RMAKER_LIBS_TO_SYNC = [
 
 def sync_rmaker_framework(env):
     """
-    Detect and fix a SELF_CLAIM / ASSISTED_CLAIM mismatch between the installed
-    .pio/packages/ framework and the workspace-compiled framework.
+    Ensure all framework sdkconfig.h files for the target MCU use self-claiming
+    (CONFIG_ESP_RMAKER_SELF_CLAIM) instead of assisted claiming
+    (CONFIG_ESP_RMAKER_ASSISTED_CLAIM).
 
-    Problem: PlatformIO uses package-version caching. When both frameworks carry
-    the same version string (5.5.0+sha.dac6094f34), PlatformIO never reinstalls
-    from the workspace `file://` source even though the workspace was rebuilt with
-    CONFIG_ESP_RMAKER_ASSISTED_CLAIM=1. The stale installed copy keeps
-    CONFIG_ESP_RMAKER_SELF_CLAIM=1, which makes the device auto-claim and
-    auto-link to an account on every boot — preventing proper "On Network"-only
-    provisioning.
+    Background: the prebuilt arduino-esp32 framework ships sdkconfig.h with
+    CONFIG_ESP_RMAKER_ASSISTED_CLAIM=1 for esp32c5.  Assisted claiming requires
+    BLE transport and refuses to connect to MQTT when the device is already on
+    Wi-Fi ("Node connected to Wi-Fi without Assisted claiming").  The esp32c5
+    default per Kconfig is SELF_CLAIM; we enforce this at build time by patching
+    every sdkconfig.h variant directly.  The managed_components source is
+    compiled from scratch, so the sdkconfig.h value is authoritative.
 
-    Fix: copy the relevant sdkconfig.h headers and prebuilt RMAKER .a libs from
-    the workspace build into .pio/packages/ so the next compilations picks up the
-    correct claim-mode code.
+    This function is idempotent: it only writes if a change is needed.
     """
-    if not os.path.isdir(_WORKSPACE_RMAKER_FRAMEWORK):
-        print(f"[RMAKER SYNC] Workspace framework not found at {_WORKSPACE_RMAKER_FRAMEWORK}, skipping sync.")
-        return
-
+    # Collect all framework directories to patch (installed + optional workspace).
+    framework_dirs = []
     installed_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
-    if not installed_dir or not os.path.isdir(installed_dir):
-        print("[RMAKER SYNC] Installed framework-arduinoespressif32-libs not found, skipping sync.")
+    if installed_dir and os.path.isdir(installed_dir):
+        framework_dirs.append(installed_dir)
+    if os.path.isdir(_WORKSPACE_RMAKER_FRAMEWORK):
+        framework_dirs.append(_WORKSPACE_RMAKER_FRAMEWORK)
+
+    if not framework_dirs:
+        print("[RMAKER SYNC] No framework directories found — skipping sdkconfig.h patch.")
         return
 
     board_mcu = env.BoardConfig().get("build.mcu", "esp32")  # e.g. "esp32c5"
-
-    # Determine the active sdkconfig.h variant from platformio flash/psram settings.
-    # IMPORTANT: board_build.psram_type in platformio.ini (e.g. "qio") does NOT always
-    # match the framework directory naming convention (e.g. "qspi" in "qio_qspi").
-    # Strategy: build a candidate from board config, verify it exists, then fall back
-    # to directory probe so we always land on a real variant directory.
-    flash_mode = env.BoardConfig().get("build.flash_mode", "qio")
-    psram_type  = env.BoardConfig().get("build.psram_type",  "")
-    mcu_dir     = os.path.join(installed_dir, board_mcu)
-
-    primary_variant = None
-    # 1. Try board config value first (if it resolves to an existing directory)
-    if psram_type:
-        candidate = f"{flash_mode}_{psram_type}"
-        if os.path.isdir(os.path.join(mcu_dir, candidate)):
-            primary_variant = candidate
-    # 2. Fall back to probing: qspi is the typical PSRAM interface on ESP32-C5
-    if primary_variant is None:
-        for candidate_psram in ("qspi", "opi", "qio", "dio"):
-            candidate = f"{flash_mode}_{candidate_psram}"
-            if os.path.isdir(os.path.join(mcu_dir, candidate)):
-                primary_variant = candidate
-                break
-    # 3. Final fallback
-    if primary_variant is None:
-        primary_variant = f"{flash_mode}_qspi"
-
-    primary_inst_cfg = os.path.join(installed_dir,           board_mcu, primary_variant, "include", "sdkconfig.h")
-    primary_ws_cfg   = os.path.join(_WORKSPACE_RMAKER_FRAMEWORK, board_mcu, primary_variant, "include", "sdkconfig.h")
-
-    if not os.path.exists(primary_inst_cfg):
-        print(f"[RMAKER SYNC] {primary_inst_cfg} not found — skipping sync.")
-        return
-    if not os.path.exists(primary_ws_cfg):
-        print(f"[RMAKER SYNC] {primary_ws_cfg} not found — skipping sync.")
-        return
-
-    def _has_flag(path, flag):
-        try:
-            with open(path, "r") as fh:
-                return flag in fh.read()
-        except OSError:
-            return False
-
-    installed_has_self_claim      = _has_flag(primary_inst_cfg, "#define CONFIG_ESP_RMAKER_SELF_CLAIM 1")
-    workspace_has_assisted_claim  = _has_flag(primary_ws_cfg,   "#define CONFIG_ESP_RMAKER_ASSISTED_CLAIM 1")
-
-    if not (installed_has_self_claim and workspace_has_assisted_claim):
-        # Nothing to do — installed framework already has ASSISTED_CLAIM or
-        # workspace hasn't been built with it yet.
-        return
-
-    print("[RMAKER SYNC] *** CLAIM-MODE MISMATCH DETECTED ***")
-    print(f"[RMAKER SYNC]   Installed ({installed_dir}) → CONFIG_ESP_RMAKER_SELF_CLAIM=1  (WRONG)")
-    print(f"[RMAKER SYNC]   Workspace ({_WORKSPACE_RMAKER_FRAMEWORK}) → CONFIG_ESP_RMAKER_ASSISTED_CLAIM=1  (CORRECT)")
-    print("[RMAKER SYNC] Syncing sdkconfig.h headers and prebuilt RMAKER libraries …")
-
-    # ── 1. Copy sdkconfig.h for every available variant ────────────────────
     known_variants = ["qio_qspi", "dio_qspi", "qio_opi", "dio_opi"]
-    for v in known_variants:
-        ws_cfg   = os.path.join(_WORKSPACE_RMAKER_FRAMEWORK, board_mcu, v, "include", "sdkconfig.h")
-        inst_cfg = os.path.join(installed_dir,               board_mcu, v, "include", "sdkconfig.h")
-        if os.path.exists(ws_cfg) and os.path.exists(inst_cfg):
+
+    patched = 0
+    skipped = 0
+    for fdir in framework_dirs:
+        mcu_dir = os.path.join(fdir, board_mcu)
+        if not os.path.isdir(mcu_dir):
+            continue
+        for variant in known_variants:
+            cfg = os.path.join(mcu_dir, variant, "include", "sdkconfig.h")
+            if not os.path.exists(cfg):
+                continue
             try:
-                shutil.copy2(ws_cfg, inst_cfg)
-                print(f"[RMAKER SYNC]   sdkconfig.h ({v}) ✓")
+                with open(cfg, "r") as fh:
+                    content = fh.read()
+
+                CLAIM_URL_DEF = '#define CONFIG_ESP_RMAKER_CLAIM_SERVICE_BASE_URL "https://esp-claiming.rainmaker.espressif.com"'
+
+                # Already correct — nothing to do.
+                if "#define CONFIG_ESP_RMAKER_SELF_CLAIM 1" in content and \
+                   "#define CONFIG_ESP_RMAKER_ASSISTED_CLAIM 1" not in content and \
+                   "CONFIG_ESP_RMAKER_CLAIM_SERVICE_BASE_URL" in content and \
+                   "#define CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE 1" not in content and \
+                   "#define CONFIG_ESP_RMAKER_MQTT_ENABLE_BUDGETING 1" not in content:
+                    skipped += 1
+                    continue
+
+                new_content = content \
+                    .replace("#define CONFIG_ESP_RMAKER_ASSISTED_CLAIM 1",
+                             "#define CONFIG_ESP_RMAKER_SELF_CLAIM 1") \
+                    .replace("#define CONFIG_ESP_RMAKER_CLAIM_TYPE 2",
+                             "#define CONFIG_ESP_RMAKER_CLAIM_TYPE 1") \
+                    .replace("#define CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE 1",
+                             "/* CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE is not set */") \
+                    .replace("#define CONFIG_ESP_RMAKER_MQTT_ENABLE_BUDGETING 1",
+                             "/* CONFIG_ESP_RMAKER_MQTT_ENABLE_BUDGETING is not set */")
+
+                # Add CLAIM_SERVICE_BASE_URL if missing (needed for self-claim HTTPS URL)
+                if "CONFIG_ESP_RMAKER_CLAIM_SERVICE_BASE_URL" not in new_content:
+                    new_content = new_content.replace(
+                        "#define CONFIG_ESP_RMAKER_CLAIM_TYPE 1",
+                        "#define CONFIG_ESP_RMAKER_CLAIM_TYPE 1\n" + CLAIM_URL_DEF
+                    )
+
+                with open(cfg, "w") as fh:
+                    fh.write(new_content)
+                print(f"[RMAKER SYNC] Patched SELF_CLAIM: {cfg}")
+                patched += 1
             except OSError as e:
-                print(f"[RMAKER SYNC]   sdkconfig.h ({v}) FAILED: {e}")
+                print(f"[RMAKER SYNC] Failed to patch {cfg}: {e}")
 
-    # ── 2. Copy prebuilt RMAKER .a libraries ────────────────────────────────
-    lib_dir_ws   = os.path.join(_WORKSPACE_RMAKER_FRAMEWORK, board_mcu, "lib")
-    lib_dir_inst = os.path.join(installed_dir,               board_mcu, "lib")
-
-    for lib in _RMAKER_LIBS_TO_SYNC:
-        ws_lib   = os.path.join(lib_dir_ws,   lib)
-        inst_lib = os.path.join(lib_dir_inst, lib)
-        if os.path.exists(ws_lib) and os.path.exists(inst_lib):
-            try:
-                shutil.copy2(ws_lib, inst_lib)
-                print(f"[RMAKER SYNC]   {lib} ✓")
-            except OSError as e:
-                print(f"[RMAKER SYNC]   {lib} FAILED: {e}")
-        elif os.path.exists(ws_lib):
-            print(f"[RMAKER SYNC]   {lib}: exists in workspace but NOT in installed dir — skipped")
-        else:
-            print(f"[RMAKER SYNC]   {lib}: not found in workspace")
-
-    print("[RMAKER SYNC] Sync complete. Full rebuild required if libraries were updated.")
+    if patched:
+        print(f"[RMAKER SYNC] {patched} sdkconfig.h file(s) patched to SELF_CLAIM. Full rebuild may be needed.")
+    elif skipped:
+        print(f"[RMAKER SYNC] All {skipped} sdkconfig.h file(s) already use SELF_CLAIM — nothing to do.")
 
 
 def update_sdkconfig(source, target, env):

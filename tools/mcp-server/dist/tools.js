@@ -315,7 +315,7 @@ export function registerTools(server, getClient) {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     });
     // ─── RainMaker (ESP32 only) ─────────────────────────────────────────
-    server.tool("get_rainmaker_status", "Get ESP RainMaker status: node ID, cloud MQTT connection, user mapping state. ESP32 only. Equivalent to /rk.", {}, async () => {
+    server.tool("get_rainmaker_status", "Get ESP RainMaker status: node ID, cloud MQTT connection, user mapping state, NVS claiming diagnostics (cert_exists, key_exists, mqtt_host). ESP32 only. Equivalent to /rk. Claiming diagnostics: cert_exists=0 and key_exists=0 means claiming never ran; cert_exists=0 and key_exists=1 means key generated but claiming failed; cert_exists=1 means claiming completed.", {}, async () => {
         const data = await getClient().get("/rk");
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     });

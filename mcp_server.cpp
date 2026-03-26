@@ -1,6 +1,6 @@
 /* OpenSprinkler Unified Firmware
  * MCP (Model Context Protocol) Server — built-in HTTP endpoint /mcp
- * ESP32 only. Requires USE_OTF.
+ * Requires USE_OTF. Supported on ESP32 and Linux/OSPI.
  *
  * See mcp_server.h for full documentation.
  */
@@ -9,7 +9,7 @@
 // is defined by the time the preprocessor evaluates the #if below.
 #include "defines.h"
 
-#if defined(ESP32) && defined(USE_OTF)
+#if defined(USE_OTF)
 
 #include "mcp_server.h"
 #include "OpenSprinkler.h"
@@ -17,8 +17,13 @@
 #include "opensprinkler_server.h"
 #include "ArduinoJson.hpp"
 #include "psram_utils.h"
+#if defined(ESP32)
 #include <LittleFS.h>
 #include <WiFi.h>
+#endif // ESP32
+#if !defined(ARDUINO)
+#include <unistd.h>   // sysconf
+#endif
 
 #if defined(ENABLE_RAINMAKER)
 extern "C" {
@@ -301,6 +306,7 @@ static String tool_get_debug(const OTF::Request& /*req*/, OTF::Response& /*res*/
   auto obj = doc.to<ArduinoJson::JsonObject>();
   obj["date"]  = __DATE__;
   obj["time"]  = __TIME__;
+#if defined(ESP32)
   obj["heap"]  = (unsigned long)ESP.getFreeHeap();
   obj["flash"] = (unsigned long)LittleFS.totalBytes();
   obj["used"]  = (unsigned long)LittleFS.usedBytes();
@@ -310,9 +316,21 @@ static String tool_get_debug(const OTF::Request& /*req*/, OTF::Response& /*res*/
     obj["rssi"] = (int)WiFi.RSSI();
     obj["bssid"] = WiFi.BSSIDstr().c_str();
   }
-#if defined(BOARD_HAS_PSRAM)
+#  if defined(BOARD_HAS_PSRAM)
   obj["psram_free"] = (unsigned long)ESP.getFreePsram();
   obj["psram_total"] = (unsigned long)ESP.getPsramSize();
+#  endif
+#elif defined(ARDUINO)
+  // ESP8266 (and other non-ESP32 Arduino platforms)
+  obj["heap"] = (unsigned long)ESP.getFreeHeap();
+  obj["rssi"] = (int)WiFi.RSSI();
+#else
+  // Linux / OSPI: provide basic memory info via sysconf
+  long avpages = sysconf(_SC_AVPHYS_PAGES);
+  long pgsz    = sysconf(_SC_PAGE_SIZE);
+  if (avpages > 0 && pgsz > 0)
+    obj["heap"] = (unsigned long)(avpages * pgsz);
+  obj["ETH"] = 1;  // OSPi is always wired (no WiFi)
 #endif
   String out;
   ArduinoJson::serializeJson(doc, out);
@@ -432,7 +450,9 @@ static int tool_start_rainmaker_provisioning(const ArduinoJson::JsonObjectConst&
 // Additional helpers from main.cpp / opensprinkler_server.cpp (not in headers):
 extern void make_logfile_name(char *name);
 extern int  available_ether_buffer();
+#if defined(ESP8266) || defined(ESP32)
 extern int  file_fgets(File file, char* buf, int maxsize);
+#endif
 extern void send_packet(const OTF::Request& req, OTF::Response& res);
 extern unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen,
                                 const char *key, bool key_in_pgm = false,
@@ -524,13 +544,26 @@ static String tool_get_log(const OTF::Request& req, OTF::Response& res,
     snprintf(name_buf, sizeof(name_buf), "%u", i);
     make_logfile_name(name_buf);
 
+#if defined(ESP8266) || defined(ESP32)
     File file = LittleFS.open(name_buf, "r");
     if (!file) continue;
+#else
+    FILE *file = fopen(get_filename_fullpath(name_buf), "rb");
+    if (!file) continue;
+#endif
 
     while (true) {
+#if defined(ESP8266) || defined(ESP32)
       int result = file_fgets(file, tmp_buffer, TMP_BUFFER_SIZE);
       if (result <= 0) { file.close(); break; }
       tmp_buffer[result] = '\0';
+#else
+      if (!fgets(tmp_buffer, TMP_BUFFER_SIZE, file)) { fclose(file); break; }
+      int result = strlen(tmp_buffer);
+      // Strip trailing newline
+      if (result > 0 && tmp_buffer[result - 1] == '\n') tmp_buffer[--result] = '\0';
+      if (result <= 0) { fclose(file); break; }
+#endif
 
       // Find type field after first comma
       char *ptype = tmp_buffer;
@@ -1147,4 +1180,4 @@ void server_mcp_delete_handler(const OTF::Request& req, OTF::Response& res) {
   res.writeBodyData("", 0);
 }
 
-#endif // ESP32 && USE_OTF
+#endif // USE_OTF

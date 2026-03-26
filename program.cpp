@@ -34,6 +34,7 @@
 // Declare static data members
 unsigned char ProgramData::nprograms = 0;
 unsigned char ProgramData::nqueue = 0;
+uint8_t ProgramData::current_mpid = 0;
 PSRAM_ATTR RuntimeQueueStruct ProgramData::queue[RUNTIME_QUEUE_SIZE];
 PSRAM_ATTR unsigned char ProgramData::station_qid[MAX_NUM_STATIONS];
 LogStruct ProgramData::lastrun;
@@ -49,6 +50,7 @@ void ProgramData::init() {
 void ProgramData::reset_runtime() {
 	memset(station_qid, 0xFF, MAX_NUM_STATIONS);  // reset station qid to 0xFF
 	nqueue = 0;
+	current_mpid = 0;  // clear currently-running manual program
 	memset(last_seq_stop_times, 0, sizeof(last_seq_stop_times));
 }
 

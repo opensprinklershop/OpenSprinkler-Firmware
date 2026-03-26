@@ -23,6 +23,7 @@
 #include "main.h"
 #include <Arduino.h>
 #include <vector>
+#include <freertos/queue.h>
 
 #include "Zigbee.h"
 #include "ZigbeeEP.h"
@@ -36,8 +37,27 @@ extern OpenSprinkler os;
 extern ProgramData pd;
 
 // =========================================================================
-// Constants
+// Deferred command queue (Zigbee task → main loop)
 // =========================================================================
+// zbAttributeSet overrides run in the esp_zb_main_task. pd/os state must
+// only be mutated from the Arduino main loop. Commands are enqueued in the
+// callback and drained by drain_zb_cmds() from client_expose_update_loop().
+
+enum ZbCmdType : uint8_t {
+  ZB_CMD_ZONE_ON,
+  ZB_CMD_ZONE_OFF,
+  ZB_CMD_PROG_START,
+};
+
+struct ZbCmd {
+  ZbCmdType type;
+  union {
+    struct { uint8_t sid; uint16_t dur_sec; } zone;
+    struct { uint8_t pid; }                  prog;
+  };
+};
+#define ZB_CMD_QUEUE_LEN 16
+static QueueHandle_t s_zb_cmd_queue = nullptr;
 static constexpr uint8_t  EP_SENSOR_BASE  = 11;
 static constexpr uint8_t  EP_SENSOR_MAX   = 26;   // ep 11-26 (up to 16 sensors)
 static constexpr uint8_t  EP_ZONE_BASE    = 31;
@@ -124,38 +144,20 @@ void OSZoneEndpoint::zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t *m
     bool state = *(bool *)message->attribute.data.value;
     uint8_t sid = _sid;
 
-    DEBUG_PRINTF(F("[ZB-EXPOSE] Zone %d (%s) → %s (from hub)\n"),
+    DEBUG_PRINTF(F("[ZB-EXPOSE] Zone %d (%s) → %s (queued)\n"),
                  sid, "", state ? "ON" : "OFF");
 
+    if (!s_zb_cmd_queue) return;
+    ZbCmd cmd{};
     if (state) {
-        // Turn on station with default duration
-        // Skip master stations
-        if ((os.status.mas == sid + 1) || (os.status.mas2 == sid + 1)) {
-            DEBUG_PRINTF(F("[ZB-EXPOSE] Zone %d is master — skipped\n"), sid);
-            return;
-        }
-        unsigned long curr_time = os.now_tz();
-        RuntimeQueueStruct *q = nullptr;
-        unsigned char sqi = pd.station_qid[sid];
-        if (sqi == 0xFF) {
-            q = pd.enqueue();
-        }
-        if (q) {
-            q->st = 0;
-            q->dur = ZONE_DEFAULT_DURATION;
-            q->sid = sid;
-            q->pid = 99; // manual
-            schedule_all_stations(curr_time);
-        }
+        cmd.type = ZB_CMD_ZONE_ON;
+        cmd.zone.sid = sid;
+        cmd.zone.dur_sec = ZONE_DEFAULT_DURATION;
     } else {
-        // Turn off station
-        if (pd.station_qid[sid] != 255) {
-            unsigned long curr_time = os.now_tz();
-            RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
-            q->deque_time = curr_time;
-            turn_off_station(sid, curr_time);
-        }
+        cmd.type = ZB_CMD_ZONE_OFF;
+        cmd.zone.sid = sid;
     }
+    xQueueSend(s_zb_cmd_queue, &cmd, 0);
 }
 
 // =========================================================================
@@ -168,12 +170,12 @@ void OSProgramEndpoint::zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t
 
     bool state = *(bool *)message->attribute.data.value;
 
-    if (state) {
-        // pid is 0-indexed here; manual_start_program expects 1-indexed pid
-        // (pid=0 → test program, pid=1 → first real program index 0)
-        uint8_t pid_1based = _pid + 1;
-        DEBUG_PRINTF(F("[ZB-EXPOSE] Program %d → START (from hub)\n"), _pid);
-        manual_start_program(pid_1based, 255, 0); // 255 = use program's weather setting
+    if (state && s_zb_cmd_queue) {
+        DEBUG_PRINTF(F("[ZB-EXPOSE] Program %d → START (queued)\n"), _pid);
+        ZbCmd cmd{};
+        cmd.type = ZB_CMD_PROG_START;
+        cmd.prog.pid = _pid;
+        xQueueSend(s_zb_cmd_queue, &cmd, 0);
     }
     // Off: programs run to completion, no stop action
 }
@@ -200,6 +202,11 @@ static SensorEPType classify_sensor(SensorBase* sensor) {
 // Create all endpoints — call BEFORE Zigbee.begin()
 // =========================================================================
 void client_expose_create_endpoints() {
+    // Create deferred command queue (if not already created)
+    if (!s_zb_cmd_queue) {
+        s_zb_cmd_queue = xQueueCreate(ZB_CMD_QUEUE_LEN, sizeof(ZbCmd));
+    }
+
     // ---- Sensor endpoints ----
     {
         uint8_t ep_num = EP_SENSOR_BASE;
@@ -326,9 +333,57 @@ void client_expose_create_endpoints() {
 }
 
 // =========================================================================
+// Drain deferred Zigbee commands — called from client_expose_update_loop()
+// =========================================================================
+static void drain_zb_cmds() {
+    if (!s_zb_cmd_queue) return;
+    ZbCmd cmd;
+    while (xQueueReceive(s_zb_cmd_queue, &cmd, 0) == pdTRUE) {
+        switch (cmd.type) {
+            case ZB_CMD_ZONE_ON: {
+                uint8_t sid = cmd.zone.sid;
+                // Skip master stations
+                if ((os.status.mas == sid + 1) || (os.status.mas2 == sid + 1)) {
+                    DEBUG_PRINTF(F("[ZB-EXPOSE] Zone %d is master — skipped\n"), sid);
+                    break;
+                }
+                RuntimeQueueStruct *q = nullptr;
+                unsigned char sqi = pd.station_qid[sid];
+                if (sqi == 0xFF) {
+                    q = pd.enqueue();
+                }
+                if (q) {
+                    q->st = 0;
+                    q->dur = cmd.zone.dur_sec;
+                    q->sid = sid;
+                    q->pid = 99; // manual
+                    schedule_all_stations(os.now_tz());
+                }
+                break;
+            }
+            case ZB_CMD_ZONE_OFF: {
+                uint8_t sid = cmd.zone.sid;
+                if (pd.station_qid[sid] != 255) {
+                    unsigned long curr_time = os.now_tz();
+                    RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
+                    q->deque_time = curr_time;
+                    turn_off_station(sid, curr_time);
+                }
+                break;
+            }
+            case ZB_CMD_PROG_START:
+                // pid is 0-indexed; manual_start_program expects 1-indexed
+                manual_start_program(cmd.prog.pid + 1, 255, 0);
+                break;
+        }
+    }
+}
+
+// =========================================================================
 // Update loop — sync OS values to ZCL attributes and report
 // =========================================================================
 void client_expose_update_loop() {
+    drain_zb_cmds();
     unsigned long now = millis();
 
     // ---- Sensor values (every 30s) ----

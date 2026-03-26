@@ -48,14 +48,68 @@ public:
 
   void init();
   void loop();
+  void process_pending_cmds();         // drain RainMaker command queue in main loop context
   void update_station(uint8_t sid, bool is_on);
   void update_sensors();
   void update_rain_sensor(bool rain_detected);
   void update_rain_delay(bool delayed);
   void update_controller_enabled(bool enabled);
+  /** Report whether program pid is currently running (call when a program starts/stops). */
+  void update_program(uint8_t pid, bool running);
+
+  /**
+   * Re-sync all program devices to the current pd.nprograms list.
+   * Call after any structural change (add, delete, moveup) or after a
+   * program is renamed / its enabled flag toggled.
+   * Removes stale devices from the node, allocates fresh device objects
+   * and adds them — esp_rmaker_start() must already have been called.
+   */
+  void sync_programs();
+
+  /**
+   * Re-sync all zone devices to the current station configuration.
+   * Call after a station is renamed or its disable attribute changes.
+   */
+  void sync_zones();
+
+  /**
+   * Update just the Name param of one program device (cheaper than a full
+   * sync when only a rename occurred and the program count did not change).
+   */
+  void update_program_name(uint8_t pid);
+
+  /**
+   * Update just the Name param of one zone device (cheaper than a full
+   * sync when only a rename occurred and the zone set did not change).
+   */
+  void update_zone_name(uint8_t sid);
 
   /** Trigger RainMaker unlink: stops agent, clears NVS, schedules reboot. */
   bool unlink();
+
+  /** Reset user-node mapping only (preserves TLS certs). */
+  int reset_mapping();
+
+  /** Full factory reset: erase certs + mapping, reboot after delay_sec. */
+  int factory_reset(int delay_sec = 2);
+
+  // ── Stubs for BLE/assisted-claiming API (always inactive in self-claiming mode) ──
+
+  /** Self-claiming never needs BLE provisioning — always returns false. */
+  static bool needs_provisioning() { return false; }
+
+  /// No-ops: BLE claiming lifecycle hooks (unused in self-claiming mode)
+  void on_wifi_connected() {}
+  void on_claim_successful() {}
+  void notify_claim_successful() {}
+  void notify_claim_failed() {}
+
+  /// Always false: no BLE provisioning in self-claiming mode
+  bool is_provisioning() const { return false; }
+  bool is_ble_claiming() const { return false; }
+
+  /// Self-claiming never defers sensors (no BLE claiming active)
+  bool sensors_deferred() const { return false; }
 
   bool is_initialized() const;
 

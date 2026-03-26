@@ -72,6 +72,7 @@ extern "C" {
 #include <esp_rmaker_mqtt.h>
 #include <esp_rmaker_user_mapping.h>
 #include <esp_rmaker_utils.h>
+#include "managed_components/espressif__esp_rainmaker/src/core/esp_rmaker_client_data.h"
 }
 #include "opensprinkler_rainmaker.h"
 #endif
@@ -132,7 +133,7 @@ using ArduinoJson::DeserializationError;
 // When g_mcp_capture_active is true, send_packet() appends ether_buffer to
 // g_mcp_capture_buf instead of writing to the OTF response.  This lets the
 // embedded MCP server reuse all existing _main() helper functions.
-#if defined(ESP32)
+#if defined(USE_OTF)
 bool   g_mcp_capture_active = false;
 String g_mcp_capture_buf;
 #endif
@@ -314,14 +315,14 @@ void send_packet(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	int len = (int)bfill.position();
 	if (len > 0) {
-#if defined(ESP32)
+#if defined(USE_OTF)
 		if (g_mcp_capture_active) {
 			// MCP capture mode: accumulate into string instead of HTTP response
 			g_mcp_capture_buf.concat(ether_buffer, (unsigned int)len);
 		} else {
 #endif
 			res.writeBodyData(ether_buffer, len);
-#if defined(ESP32)
+#if defined(USE_OTF)
 		}
 #endif
 	}
@@ -879,6 +880,9 @@ void server_change_stations(OTF_PARAMS_DEF) {
 	server_change_board_attrib(FKV_SOURCE, 'p', os.attrib_spe);
 
 	os.attribs_save();
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
+	if (auto *rm = OSRainMaker::get()) rm->sync_zones();
+#endif
 	handle_return(HTML_SUCCESS);
 }
 
@@ -1125,6 +1129,9 @@ void server_delete_program(OTF_PARAMS_DEF) {
 		handle_return(HTML_DATA_OUTOFBOUND);
 	}
 
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
+	if (auto *rm = OSRainMaker::get()) rm->sync_programs();
+#endif
 	handle_return(HTML_SUCCESS);
 }
 
@@ -1150,7 +1157,9 @@ void server_moveup_program(OTF_PARAMS_DEF) {
 		handle_return(HTML_DATA_OUTOFBOUND);
 
 	pd.moveup(pid);
-
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
+	if (auto *rm = OSRainMaker::get()) rm->sync_programs();
+#endif
 	handle_return(HTML_SUCCESS);
 }
 
@@ -1287,8 +1296,14 @@ void server_change_program(OTF_PARAMS_DEF) {
 
 	if (pid==-1) {
 		if(!pd.add(&prog)) handle_return(HTML_DATA_OUTOFBOUND);
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
+		if (auto *rm = OSRainMaker::get()) rm->sync_programs();
+#endif
 	} else {
 		if(!pd.modify(pid, &prog)) handle_return(HTML_DATA_OUTOFBOUND);
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
+		if (auto *rm = OSRainMaker::get()) rm->update_program_name((uint8_t)pid);
+#endif
 	}
 	handle_return(HTML_SUCCESS);
 }
@@ -1561,17 +1576,31 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 						 wt_restricted,
 						 SOPT_DEVICE_NAME);
 #else
-	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$O},\"ifkey\":\"$O\",\"mqtt\":{$O},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
-						 SOPT_LOCATION,
-						 SOPT_JAVASCRIPTURL,
-						 SOPT_WEATHERURL,
-						 SOPT_WEATHER_OPTS,
-						 SOPT_IFTTT_KEY,
-						 SOPT_MQTT_OPTS,
-						 strlen(wt_rawData)==0?"{}":wt_rawData,
-						 wt_errCode,
-						 wt_restricted,
-						 SOPT_DEVICE_NAME);
+	// Normalize wto and mqtt: strip outer {} if stored with braces to avoid double-wrapping in format
+	{
+		char wto_buf[MAX_SOPTS_SIZE + 1];
+		char mqtt_buf[MAX_SOPTS_SIZE + 1];
+		os.sopt_load(SOPT_WEATHER_OPTS, wto_buf, MAX_SOPTS_SIZE);
+		os.sopt_load(SOPT_MQTT_OPTS, mqtt_buf, MAX_SOPTS_SIZE);
+		for (char *buf : {wto_buf, mqtt_buf}) {
+			int len = (int)strlen(buf);
+			if (len >= 2 && buf[0] == '{' && buf[len-1] == '}') {
+				memmove(buf, buf+1, len-2);
+				buf[len-2] = '\0';
+			}
+		}
+		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
+					 SOPT_LOCATION,
+					 SOPT_JAVASCRIPTURL,
+					 SOPT_WEATHERURL,
+					 wto_buf,
+					 SOPT_IFTTT_KEY,
+					 mqtt_buf,
+					 strlen(wt_rawData)==0?"{}":wt_rawData,
+					 wt_errCode,
+					 wt_restricted,
+					 SOPT_DEVICE_NAME);
+	}
 #endif
 
 #if defined(SUPPORT_EMAIL)
@@ -1616,7 +1645,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 			if(rem>65535) rem = 0;
 		}
 		bfill.emit_p(PSTR("[$D,$L,$L,$D]"),
-		(qid<255)?q->pid:0, (uint32_t)rem, (uint32_t)((qid<255)?q->st:0), os.attrib_grp[sid]);
+		(qid<255)?qpid_decode(q->pid):0, (uint32_t)rem, (uint32_t)((qid<255)?q->st:0), os.attrib_grp[sid]);
 		bfill.emit_p((sid<os.nstations-1)?PSTR(","):PSTR("]"));
 	}
 
@@ -1647,6 +1676,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	uint16_t below_value = os.iopts[IOPT_BELOW2] | os.iopts[IOPT_BELOW1] << 8;
 	bfill.emit_p(PSTR(",\"belowmode\":$D,\"belowvalue\":$D"), os.iopts[IOPT_BELOW_HANDLING], below_value);
 	//end belowmode
+
+	// Currently manually-running program id (1-based pid, 0 = none in manual execution)
+	bfill.emit_p(PSTR(",\"nqpid\":$D"), pd.current_mpid);
 
 	bfill.emit_p(PSTR("}"));
 }
@@ -2202,8 +2234,8 @@ void server_change_manual(OTF_PARAMS_DEF) {
 		}
 		// mark station for removal
 		if(pd.station_qid[sid]==255) {
-			// return error message if turning off a zone that's not currently in the queue
-			handle_return(HTML_DATA_OUTOFBOUND);
+			// Station is already stopped (not in queue) - desired state achieved, return success
+			handle_return(HTML_SUCCESS);
 		} else {
 			RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
 			q->deque_time = curr_time;
@@ -2619,10 +2651,16 @@ void server_matter_commission(OTF_PARAMS_DEF) {
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)
 /** Output ESP RainMaker status in JSON.
  * GET /rk?pw=xxx
+ * GET /rk?pw=xxx&reset_mapping=1  — reset user-node mapping (device stays claimed)
+ * GET /rk?pw=xxx&factory_reset=1  — full RainMaker factory reset (erase certs, reboot)
  * Response: {"enabled":0|1, "node_id":"...", "name":"...", "type":"...",
  *            "fw_version":"...", "model":"...", "mqtt_connected":0|1,
  *            "user_mapping":N, "use_eth":0|1, "pop":"...",
- *            "local_ctrl_active":0|1, "prov_service":"..."}
+ *            "local_ctrl_active":0|1, "prov_service":"...",
+ *            "cert_exists":0|1, "key_exists":0|1, "mqtt_host":"..."}
+ * Claiming diagnostics: cert_exists=0 & key_exists=0 → claiming never ran;
+ *   cert_exists=0 & key_exists=1 → key generated but claiming failed/incomplete;
+ *   cert_exists=1 → claiming complete; mqtt_connected=0 → MQTT connection issue.
  */
 void server_json_rainmaker(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -2633,9 +2671,34 @@ void server_json_rainmaker(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
+	// ── Action: reset_mapping=1 → reset user-node mapping only ──────────
+	char tmp_buf[4] = {};
+	if (findKeyVal(FKV_SOURCE, tmp_buf, sizeof(tmp_buf), PSTR("reset_mapping"), true)
+	    && tmp_buf[0] == '1') {
+		auto *rm_rm = OSRainMaker::get();
+		int rc = rm_rm ? rm_rm->reset_mapping() : -1;
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"reset_mapping\"}"),
+			(rc == 0) ? 1 : 0);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	// ── Action: factory_reset=1 → erase certs + mapping, reboot ─────────
+	if (findKeyVal(FKV_SOURCE, tmp_buf, sizeof(tmp_buf), PSTR("factory_reset"), true)
+	    && tmp_buf[0] == '1') {
+		auto *rm_fr = OSRainMaker::get();
+		int rc = rm_fr ? rm_fr->factory_reset(2) : -1;
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"factory_reset\",\"rebooting\":1}"),
+			(rc == 0) ? 1 : 0);
+		handle_return(HTML_OK);
+		return;
+	}
+
 	auto *rm = OSRainMaker::get();
 	if (!rm || !rm->is_initialized()) {
-		bfill.emit_p(PSTR("{\"enabled\":0,\"feature_enabled\":$D}"), os.iopts[IOPT_RAINMAKER_ENABLE]);
+		bfill.emit_p(PSTR("{\"enabled\":0,\"feature_enabled\":$D,\"needs_claiming\":$D}"),
+			os.iopts[IOPT_RAINMAKER_ENABLE],
+			(rm && rm->is_ble_claiming()) ? 1 : 0);
 		handle_return(HTML_OK);
 		return;
 	}
@@ -2668,6 +2731,11 @@ void server_json_rainmaker(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR(",\"user_mapping\":$D"), (int)esp_rmaker_user_node_mapping_get_state());
 	bfill.emit_p(PSTR(",\"local_ctrl_active\":$D"), rm->is_local_ctrl_started() ? 1 : 0);
 
+	// Provisioning / claiming state
+	bfill.emit_p(PSTR(",\"provisioning\":$D"), rm->is_provisioning() ? 1 : 0);
+	bfill.emit_p(PSTR(",\"ble_claiming\":$D"), rm->is_ble_claiming() ? 1 : 0);
+	bfill.emit_p(PSTR(",\"sensors_deferred\":$D"), rm->sensors_deferred() ? 1 : 0);
+
 	// Ethernet / WiFi mode
 	bfill.emit_p(PSTR(",\"use_eth\":$D"), rm->is_ethernet() ? 1 : 0);
 
@@ -2681,6 +2749,23 @@ void server_json_rainmaker(OTF_PARAMS_DEF) {
 	const char *svc = rm->get_prov_service_name();
 	if (svc && svc[0]) {
 		bfill.emit_p(PSTR(",\"prov_service\":\"$S\""), svc);
+	}
+
+	// NVS claiming diagnostics: cert_exists / key_exists / mqtt_host
+	{
+		char *cert = esp_rmaker_get_client_cert();
+		bfill.emit_p(PSTR(",\"cert_exists\":$D"), cert ? 1 : 0);
+		if (cert) free(cert);
+
+		char *key = esp_rmaker_get_client_key();
+		bfill.emit_p(PSTR(",\"key_exists\":$D"), key ? 1 : 0);
+		if (key) free(key);
+
+		char *mqtt_host = esp_rmaker_get_mqtt_host();
+		if (mqtt_host) {
+			bfill.emit_p(PSTR(",\"mqtt_host\":\"$S\""), mqtt_host);
+			free(mqtt_host);
+		}
 	}
 
 	bfill.emit_p(PSTR("}"));
@@ -2749,8 +2834,8 @@ void server_rainmaker_unlink(OTF_PARAMS_DEF) {
 #endif
 
 	auto *rm_ul = OSRainMaker::get();
-	if (!rm_ul || !rm_ul->is_initialized()) {
-		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"RainMaker not initialized\"}"));
+	if (!rm_ul) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"RainMaker not enabled\"}"));
 		handle_return(HTML_OK);
 		return;
 	}
@@ -6084,6 +6169,12 @@ void initialize_otf() {
 	if(!callback_initialized) {
 		otf->on("/", server_home);  // handle home page
 		otf->on("/index.html", server_home);
+
+		// MCP (Model Context Protocol) JSON-RPC endpoint
+		otf->on("/mcp", server_mcp_handler, OTF::OTF_HTTP_POST);
+		otf->on("/mcp", server_mcp_get_handler, OTF::OTF_HTTP_GET);
+		otf->on("/mcp", server_mcp_options_handler, OTF::OTF_HTTP_OPTIONS);
+		otf->on("/mcp", server_mcp_delete_handler, OTF::OTF_HTTP_DELETE);
 
 		// set up all other handlers
 		char uri[4];

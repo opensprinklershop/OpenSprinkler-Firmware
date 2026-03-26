@@ -1,0 +1,830 @@
+/* OpenSprinkler – Trivial RainMaker (single switch → Zone 1, 10 s)
+ * + On-Network provisioning (local_ctrl + mDNS + challenge-response)
+ *
+ * Minimum to verify that:
+ *   1. RMaker.initNode() + RMaker.start() succeed
+ *   2. The ESP RainMaker phone app can DISCOVER the device
+ *   3. A switch toggle actually turns Zone 1 on/off
+ */
+
+#include "defines.h"
+
+#if defined(ESP32) && defined(ENABLE_RAINMAKER)
+
+#include "opensprinkler_rainmaker.h"
+#include "OpenSprinkler.h"
+#include "program.h"
+
+#include "RMaker.h"
+
+extern "C" {
+#include <esp_rmaker_core.h>
+#include <esp_rmaker_standard_types.h>
+#include <esp_rmaker_standard_params.h>
+#include <esp_rmaker_mqtt.h>
+#include <esp_rmaker_user_mapping.h>
+#include <esp_efuse.h>
+#include <esp_efuse_table.h>
+#include <esp_mac.h>
+#include <esp_local_ctrl.h>
+#include <esp_wifi.h>
+#include <nvs.h>
+
+// Exported by prebuilt RainMaker library — handles CmdSetUserMapping protobuf
+esp_err_t esp_rmaker_user_mapping_handler(uint32_t session_id,
+                                          const uint8_t *inbuf, ssize_t inlen,
+                                          uint8_t **outbuf, ssize_t *outlen,
+                                          void *priv_data);
+
+// Exported by prebuilt RainMaker library
+esp_err_t esp_rmaker_reset_user_node_mapping(void);
+
+// Internal RainMaker library accessors — needed by sign wrapper
+char   *esp_rmaker_get_client_key(void);
+size_t  esp_rmaker_get_client_key_len(void);
+}
+
+#include <esp_log.h>
+#include <esp_event.h>
+#include <esp_netif.h>
+#include <mdns.h>
+
+#include "mbedtls/pk.h"
+#include "mbedtls/sha256.h"
+
+#include <ctype.h>
+
+static const char *TAG = "RMAKER-TRIVIAL";
+
+// ─── Constants for On-Network provisioning ────────────────────────────────
+static const char     *CHAL_RESP_ENDPOINT       = "ch_resp";
+static const char     *CHAL_RESP_MDNS_TYPE      = "_esp_rmaker_chal_resp";
+static const char     *CHAL_RESP_MDNS_PROTO     = "_tcp";
+static const uint16_t  CHAL_RESP_LOCAL_CTRL_PORT = 12312;
+static const uint32_t  CHAL_RESP_SEC_VERSION     = 0;  // SEC0: no PoP required
+
+enum ChalRespMsgType {
+  CHAL_RESP_MSG_CMD_CHALLENGE     = 0,
+  CHAL_RESP_MSG_RESP_CHALLENGE    = 1,
+  CHAL_RESP_MSG_CMD_GET_NODE_ID   = 2,
+  CHAL_RESP_MSG_RESP_GET_NODE_ID  = 3,
+  CHAL_RESP_MSG_CMD_DISABLE       = 4,
+  CHAL_RESP_MSG_RESP_DISABLE      = 5,
+};
+
+enum ChalRespStatus {
+  CHAL_RESP_STATUS_SUCCESS       = 0,
+  CHAL_RESP_STATUS_FAIL          = 1,
+  CHAL_RESP_STATUS_INVALID_PARAM = 2,
+  CHAL_RESP_STATUS_DISABLED      = 3,
+};
+
+// Forward declarations
+static esp_err_t start_local_ctrl_manually();
+static esp_err_t enable_local_ctrl_chal_resp();
+
+// Persistent local_ctrl config (must survive while service runs)
+static httpd_ssl_config_t           s_lc_httpd_cfg = {};
+static protocomm_security1_params_t s_lc_sec1      = {};
+static esp_local_ctrl_handlers_t    s_lc_handlers  = {};
+
+// ── From main.cpp ──
+extern ProgramData pd;
+extern void schedule_all_stations(time_os_t curr_time, unsigned char qo);
+extern void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shift);
+extern bool useEth;
+
+// ── Singleton ──
+static OSRainMaker *g_inst = nullptr;
+
+OSRainMaker* OSRainMaker::get() { return g_inst; }
+OSRainMaker& OSRainMaker::instance() {
+  if (!g_inst) g_inst = new OSRainMaker();
+  return *g_inst;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sign wrapper: replaces prebuilt library's ECDSA-only signing with
+// generic mbedtls_pk_sign that handles both RSA and EC keys.
+// ═══════════════════════════════════════════════════════════════════════════
+
+static int rmaker_sign_rng(void *, unsigned char *out, size_t len) {
+  for (size_t i = 0; i < len; ) {
+    uint32_t r = esp_random();
+    size_t chunk = ((len - i) < 4u) ? (len - i) : 4u;
+    memcpy(out + i, &r, chunk);
+    i += chunk;
+  }
+  return 0;
+}
+
+extern "C" esp_err_t __wrap_esp_rmaker_node_auth_sign_msg(
+    const void *challenge, size_t inlen, void **response, size_t *outlen) {
+
+  if (!challenge || inlen == 0 || !response || !outlen) {
+    ESP_LOGE(TAG, "[sign] invalid args");
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  char *priv_key = esp_rmaker_get_client_key();
+  size_t priv_key_len = esp_rmaker_get_client_key_len();
+  if (!priv_key || priv_key_len == 0) {
+    ESP_LOGE(TAG, "[sign] no private key in NVS fctry");
+    return ESP_FAIL;
+  }
+
+  uint8_t hash[32];
+  mbedtls_sha256((const unsigned char *)challenge, inlen, hash, 0);
+
+  mbedtls_pk_context pk;
+  mbedtls_pk_init(&pk);
+  int ret = mbedtls_pk_parse_key(&pk, (const uint8_t *)priv_key, priv_key_len,
+                                  NULL, 0, NULL, 0);
+  if (ret != 0) {
+    ESP_LOGE(TAG, "[sign] pk_parse_key failed: -0x%04x", -ret);
+    mbedtls_pk_free(&pk);
+    return ESP_FAIL;
+  }
+
+  ESP_LOGI(TAG, "[sign] key_type=%d key_bits=%u",
+           (int)mbedtls_pk_get_type(&pk), (unsigned)mbedtls_pk_get_bitlen(&pk));
+
+  const size_t sig_buf_size = 512;
+  uint8_t *sig = (uint8_t *)calloc(1, sig_buf_size);
+  if (!sig) { mbedtls_pk_free(&pk); return ESP_ERR_NO_MEM; }
+
+  size_t slen = 0;
+  ret = mbedtls_pk_sign(&pk, MBEDTLS_MD_SHA256, hash, sizeof(hash),
+                        sig, sig_buf_size, &slen, rmaker_sign_rng, NULL);
+  mbedtls_pk_free(&pk);
+
+  if (ret != 0 || slen == 0) {
+    ESP_LOGE(TAG, "[sign] pk_sign failed: -0x%04x slen=%u", -ret, (unsigned)slen);
+    free(sig);
+    return ESP_FAIL;
+  }
+
+  // Hex-encode the DER signature
+  char *hex = (char *)malloc(slen * 2 + 1);
+  if (!hex) { free(sig); return ESP_ERR_NO_MEM; }
+  for (size_t i = 0; i < slen; i++)
+    snprintf(hex + i * 2, 3, "%02x", sig[i]);
+  hex[slen * 2] = '\0';
+  free(sig);
+
+  *response = hex;
+  *outlen   = slen;
+  ESP_LOGI(TAG, "[sign] OK slen=%u hex_len=%u", (unsigned)slen, (unsigned)(slen * 2));
+  return ESP_OK;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Debug helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+static void log_hex(const char *label, const uint8_t *data, size_t len) {
+  if (!data || len == 0) { ESP_LOGI(TAG, "%s: (empty)", label); return; }
+  char hex_buf[145];
+  size_t print_len = len > 64 ? 64 : len;
+  for (size_t i = 0; i < print_len; i++)
+    snprintf(hex_buf + i*2, 3, "%02x", data[i]);
+  if (len > 64)
+    ESP_LOGI(TAG, "%s (%u bytes, first 64): %s ...", label, (unsigned)len, hex_buf);
+  else
+    ESP_LOGI(TAG, "%s (%u bytes): %s", label, (unsigned)len, hex_buf);
+}
+
+static void log_device_network_state() {
+  esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (sta) {
+    esp_netif_ip_info_t ip_info = {};
+    if (esp_netif_get_ip_info(sta, &ip_info) == ESP_OK)
+      ESP_LOGI(TAG, "[NET] WiFi STA IP: " IPSTR, IP2STR(&ip_info.ip));
+  }
+  char hostname[64] = {};
+  if (mdns_hostname_get(hostname) == ESP_OK && hostname[0])
+    ESP_LOGI(TAG, "[NET] mDNS hostname: %s", hostname);
+  ESP_LOGI(TAG, "[NET] MQTT=%d mapping=%d",
+           esp_rmaker_is_mqtt_connected(),
+           (int)esp_rmaker_user_node_mapping_get_state());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Protobuf helpers (minimal varint + length-delimited encoding/decoding)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static bool read_varint32(const uint8_t *buf, size_t len, size_t *index, uint32_t *value) {
+  if (!buf || !index || !value) return false;
+  uint32_t result = 0, shift = 0;
+  while (*index < len && shift < 32) {
+    uint8_t byte = buf[(*index)++];
+    result |= (uint32_t)(byte & 0x7F) << shift;
+    if ((byte & 0x80) == 0) { *value = result; return true; }
+    shift += 7;
+  }
+  return false;
+}
+
+static bool skip_field(const uint8_t *buf, size_t len, size_t *index, uint32_t wire_type) {
+  uint32_t ignored = 0;
+  switch (wire_type) {
+    case 0: return read_varint32(buf, len, index, &ignored);
+    case 1: if (*index + 8 > len) return false; *index += 8; return true;
+    case 2: {
+      uint32_t flen = 0;
+      if (!read_varint32(buf, len, index, &flen)) return false;
+      if (*index + flen > len) return false;
+      *index += flen; return true;
+    }
+    case 5: if (*index + 4 > len) return false; *index += 4; return true;
+    default: return false;
+  }
+}
+
+static bool read_length_delimited(const uint8_t *buf, size_t len, size_t *index,
+                                  const uint8_t **data, size_t *data_len) {
+  uint32_t flen = 0;
+  if (!read_varint32(buf, len, index, &flen)) return false;
+  if (*index + flen > len) return false;
+  *data = &buf[*index]; *data_len = flen; *index += flen;
+  return true;
+}
+
+static bool parse_cmd_cr_payload(const uint8_t *buf, size_t len,
+                                 const uint8_t **payload, size_t *payload_len) {
+  size_t index = 0;
+  while (index < len) {
+    uint32_t key = 0;
+    if (!read_varint32(buf, len, &index, &key)) return false;
+    uint32_t field_no = key >> 3, wire_type = key & 0x07;
+    if (field_no == 1 && wire_type == 2)
+      return read_length_delimited(buf, len, &index, payload, payload_len);
+    if (!skip_field(buf, len, &index, wire_type)) return false;
+  }
+  return false;
+}
+
+static bool parse_chal_resp_request(const uint8_t *buf, size_t len,
+                                    ChalRespMsgType *msg_type,
+                                    const uint8_t **payload, size_t *payload_len) {
+  if (!buf || len == 0 || !msg_type || !payload || !payload_len) return false;
+  size_t index = 0;
+  bool msg_seen = false;
+  *payload = nullptr; *payload_len = 0;
+
+  while (index < len) {
+    uint32_t key = 0;
+    if (!read_varint32(buf, len, &index, &key)) return false;
+    uint32_t field_no = key >> 3, wire_type = key & 0x07;
+
+    if (field_no == 1 && wire_type == 0) {
+      uint32_t msg = 0;
+      if (!read_varint32(buf, len, &index, &msg)) return false;
+      *msg_type = (ChalRespMsgType)msg;
+      msg_seen = true;
+      continue;
+    }
+    if (field_no == 10 && wire_type == 2) {
+      const uint8_t *nested = nullptr; size_t nested_len = 0;
+      if (!read_length_delimited(buf, len, &index, &nested, &nested_len)) return false;
+      if (!parse_cmd_cr_payload(nested, nested_len, payload, payload_len)) return false;
+      continue;
+    }
+    if (!skip_field(buf, len, &index, wire_type)) return false;
+  }
+  if (!msg_seen) {
+    *msg_type = CHAL_RESP_MSG_CMD_CHALLENGE;  // Proto3 default
+  }
+  return true;
+}
+
+static size_t write_varint32(uint32_t value, uint8_t *out) {
+  size_t written = 0;
+  do {
+    uint8_t byte = value & 0x7F; value >>= 7;
+    if (value) byte |= 0x80;
+    out[written++] = byte;
+  } while (value);
+  return written;
+}
+
+static size_t append_varint_field(uint8_t *out, uint32_t field_no, uint32_t value) {
+  size_t i = 0;
+  i += write_varint32((field_no << 3) | 0, out + i);
+  i += write_varint32(value, out + i);
+  return i;
+}
+
+static size_t append_bytes_field(uint8_t *out, uint32_t field_no,
+                                 const uint8_t *data, size_t len) {
+  size_t i = 0;
+  i += write_varint32((field_no << 3) | 2, out + i);
+  i += write_varint32((uint32_t)len, out + i);
+  if (len > 0 && data) { memcpy(out + i, data, len); i += len; }
+  return i;
+}
+
+static size_t append_string_field(uint8_t *out, uint32_t field_no, const char *value) {
+  return append_bytes_field(out, field_no, (const uint8_t *)value, value ? strlen(value) : 0);
+}
+
+static esp_err_t build_simple_response(ChalRespMsgType msg_type, ChalRespStatus status,
+                                       uint8_t **outbuf, ssize_t *outlen) {
+  uint8_t *buf = (uint8_t *)calloc(1, 16);
+  if (!buf) return ESP_ERR_NO_MEM;
+  size_t i = 0;
+  i += append_varint_field(buf + i, 1, (uint32_t)msg_type);
+  i += append_varint_field(buf + i, 2, (uint32_t)status);
+  *outbuf = buf; *outlen = (ssize_t)i;
+  return ESP_OK;
+}
+
+static esp_err_t build_get_node_id_response(ChalRespStatus status,
+                                            uint8_t **outbuf, ssize_t *outlen) {
+  const char *node_id = esp_rmaker_get_node_id();
+  uint8_t nested[128] = {};
+  size_t nested_len = append_string_field(nested, 1, node_id ? node_id : "");
+
+  uint8_t *buf = (uint8_t *)calloc(1, nested_len + 64);
+  if (!buf) return ESP_ERR_NO_MEM;
+  size_t i = 0;
+  i += append_varint_field(buf + i, 1, CHAL_RESP_MSG_RESP_GET_NODE_ID);
+  i += append_varint_field(buf + i, 2, (uint32_t)status);
+  i += append_bytes_field(buf + i, 13, nested, nested_len);
+  *outbuf = buf; *outlen = (ssize_t)i;
+  return ESP_OK;
+}
+
+static esp_err_t build_signed_challenge_response(ChalRespStatus status,
+                                                 const uint8_t *signature, size_t signature_len,
+                                                 uint8_t **outbuf, ssize_t *outlen) {
+  const char *node_id = esp_rmaker_get_node_id();
+  const size_t nested_cap = signature_len + (node_id ? strlen(node_id) : 0) + 24;
+  uint8_t *nested = (uint8_t *)calloc(1, nested_cap);
+  if (!nested) return ESP_ERR_NO_MEM;
+
+  size_t nested_len = 0;
+  nested_len += append_bytes_field(nested + nested_len, 1, signature, signature_len);
+  nested_len += append_string_field(nested + nested_len, 2, node_id ? node_id : "");
+
+  uint8_t *buf = (uint8_t *)calloc(1, nested_len + 32);
+  if (!buf) { free(nested); return ESP_ERR_NO_MEM; }
+  size_t i = 0;
+  i += append_varint_field(buf + i, 1, CHAL_RESP_MSG_RESP_CHALLENGE);
+  i += append_varint_field(buf + i, 2, (uint32_t)status);
+  i += append_bytes_field(buf + i, 11, nested, nested_len);
+  free(nested);
+  *outbuf = buf; *outlen = (ssize_t)i;
+  return ESP_OK;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// User mapping handler (wraps prebuilt library's esp_rmaker_user_mapping_handler)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static esp_err_t user_mapping_handler_dbg(uint32_t session_id, const uint8_t *inbuf,
+                                           ssize_t inlen, uint8_t **outbuf,
+                                           ssize_t *outlen, void *priv_data) {
+  ESP_LOGI(TAG, "[MAP] cloud_user_assoc: session=%lu inlen=%d",
+           (unsigned long)session_id, (int)inlen);
+  log_hex("[MAP] request", inbuf, (size_t)(inlen > 0 ? inlen : 0));
+
+  esp_err_t err = esp_rmaker_user_mapping_handler(session_id, inbuf, inlen,
+                                                   outbuf, outlen, priv_data);
+  ESP_LOGI(TAG, "[MAP] result=%s mapping_state=%d",
+           esp_err_to_name(err), (int)esp_rmaker_user_node_mapping_get_state());
+  return err;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Challenge-response handler (On-Network provisioning)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static esp_err_t local_ctrl_chal_resp_handler(uint32_t session_id, const uint8_t *inbuf,
+                                              ssize_t inlen, uint8_t **outbuf,
+                                              ssize_t *outlen, void *priv_data) {
+  (void)priv_data;
+  ESP_LOGI(TAG, "[CR] ch_resp: session=%lu inlen=%d", (unsigned long)session_id, (int)inlen);
+
+  if (!inbuf || inlen <= 0 || !outbuf || !outlen) return ESP_ERR_INVALID_ARG;
+
+  log_hex("[CR] request", inbuf, (size_t)inlen);
+
+  const uint8_t *payload = nullptr;
+  size_t payload_len = 0;
+  ChalRespMsgType msg_type = CHAL_RESP_MSG_CMD_CHALLENGE;
+  if (!parse_chal_resp_request(inbuf, (size_t)inlen, &msg_type, &payload, &payload_len)) {
+    ESP_LOGE(TAG, "[CR] parse failed");
+    return build_simple_response(CHAL_RESP_MSG_RESP_CHALLENGE,
+                                 CHAL_RESP_STATUS_INVALID_PARAM, outbuf, outlen);
+  }
+
+  ESP_LOGI(TAG, "[CR] msg_type=%d payload_len=%u", (int)msg_type, (unsigned)payload_len);
+
+  // Check if the owning instance has disabled chal_resp
+  OSRainMaker *rm = OSRainMaker::get();
+  if (rm && rm->chal_resp_disabled_) {
+    ESP_LOGW(TAG, "[CR] disabled");
+    return build_simple_response(CHAL_RESP_MSG_RESP_CHALLENGE,
+                                 CHAL_RESP_STATUS_DISABLED, outbuf, outlen);
+  }
+
+  if (msg_type == CHAL_RESP_MSG_CMD_GET_NODE_ID) {
+    ESP_LOGI(TAG, "[CR] GET_NODE_ID -> %s", esp_rmaker_get_node_id() ?: "?");
+    return build_get_node_id_response(CHAL_RESP_STATUS_SUCCESS, outbuf, outlen);
+  }
+
+  if (msg_type == CHAL_RESP_MSG_CMD_DISABLE) {
+    ESP_LOGI(TAG, "[CR] DISABLE received");
+    if (rm) {
+      rm->chal_resp_disabled_ = true;
+      rm->local_chal_resp_enabled_ = false;
+    }
+    mdns_service_remove(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO);
+    return build_simple_response(CHAL_RESP_MSG_RESP_DISABLE,
+                                 CHAL_RESP_STATUS_SUCCESS, outbuf, outlen);
+  }
+
+  if (msg_type != CHAL_RESP_MSG_CMD_CHALLENGE || !payload || payload_len == 0) {
+    ESP_LOGE(TAG, "[CR] unexpected msg_type=%d", (int)msg_type);
+    return build_simple_response(CHAL_RESP_MSG_RESP_CHALLENGE,
+                                 CHAL_RESP_STATUS_INVALID_PARAM, outbuf, outlen);
+  }
+
+  log_hex("[CR] challenge", payload, payload_len);
+
+  void *signed_data = nullptr;
+  size_t signed_len = 0;
+  esp_err_t err = esp_rmaker_node_auth_sign_msg(payload, payload_len, &signed_data, &signed_len);
+  ESP_LOGI(TAG, "[CR] sign -> %s signed_len=%u", esp_err_to_name(err), (unsigned)signed_len);
+  if (err != ESP_OK) {
+    return build_simple_response(CHAL_RESP_MSG_RESP_CHALLENGE,
+                                 CHAL_RESP_STATUS_FAIL, outbuf, outlen);
+  }
+
+  // sign_msg returns hex string; convert to binary for protobuf response
+  size_t hex_str_len = signed_data ? strlen((const char *)signed_data) : 0;
+  if (hex_str_len == 0 || hex_str_len % 2 != 0) {
+    ESP_LOGE(TAG, "[CR] bad hex sig len=%u", (unsigned)hex_str_len);
+    free(signed_data);
+    return build_simple_response(CHAL_RESP_MSG_RESP_CHALLENGE,
+                                 CHAL_RESP_STATUS_FAIL, outbuf, outlen);
+  }
+
+  size_t binary_len = hex_str_len / 2;
+  uint8_t *binary_sig = (uint8_t *)malloc(binary_len);
+  if (!binary_sig) { free(signed_data); return ESP_ERR_NO_MEM; }
+
+  const char *hexstr = (const char *)signed_data;
+  auto hval = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  bool hex_ok = true;
+  for (size_t j = 0; j < binary_len; j++) {
+    int hi = hval(hexstr[2*j]), lo = hval(hexstr[2*j+1]);
+    if (hi < 0 || lo < 0) { hex_ok = false; break; }
+    binary_sig[j] = (uint8_t)((hi << 4) | lo);
+  }
+  free(signed_data);
+  if (!hex_ok) {
+    free(binary_sig);
+    return build_simple_response(CHAL_RESP_MSG_RESP_CHALLENGE,
+                                 CHAL_RESP_STATUS_FAIL, outbuf, outlen);
+  }
+
+  err = build_signed_challenge_response(CHAL_RESP_STATUS_SUCCESS,
+                                        binary_sig, binary_len, outbuf, outlen);
+  free(binary_sig);
+  return err;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// mDNS + local_ctrl setup
+// ═══════════════════════════════════════════════════════════════════════════
+
+static esp_err_t enable_local_ctrl_chal_resp() {
+  OSRainMaker *rm = OSRainMaker::get();
+  if (!rm || !rm->local_ctrl_started_) {
+    ESP_LOGE(TAG, "[CR] local_ctrl not started yet");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (rm) rm->chal_resp_disabled_ = false;
+
+  // Register ch_resp handler
+  ESP_LOGI(TAG, "[CR] Registering ch_resp handler");
+  esp_err_t err = esp_local_ctrl_set_handler(CHAL_RESP_ENDPOINT,
+                                             local_ctrl_chal_resp_handler, nullptr);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "[CR] ch_resp register failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  // Init mDNS
+  err = mdns_init();
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+    ESP_LOGW(TAG, "mDNS init: %s", esp_err_to_name(err));
+
+  const char *node_id = esp_rmaker_get_node_id();
+  ESP_LOGI(TAG, "[mDNS] node_id=%s", node_id ? node_id : "(null)");
+  if (node_id && node_id[0])
+    mdns_hostname_set(node_id);
+
+  log_device_network_state();
+
+  // mDNS was init'd after WiFi got IP → manually enable+announce STA interface
+  esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (sta_netif) {
+    esp_netif_ip_info_t ip_info = {};
+    if (esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK)
+      ESP_LOGI(TAG, "[mDNS] STA IP: " IPSTR, IP2STR(&ip_info.ip));
+    mdns_netif_action(sta_netif,
+        (mdns_event_actions_t)(MDNS_EVENT_ENABLE_IP4 | MDNS_EVENT_ANNOUNCE_IP4));
+    ESP_LOGI(TAG, "[mDNS] STA interface enabled and announced");
+  }
+
+  const char *instance_name = rm->get_prov_service_name();
+  if (!instance_name || !instance_name[0]) instance_name = node_id;
+
+  // 1. Register _esp_local_ctrl._tcp
+  mdns_service_remove("_esp_local_ctrl", "_tcp");
+  err = mdns_service_add(instance_name, "_esp_local_ctrl", "_tcp",
+                         CHAL_RESP_LOCAL_CTRL_PORT, nullptr, 0);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "[mDNS] _esp_local_ctrl._tcp failed: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "[mDNS] _esp_local_ctrl._tcp on port %u", CHAL_RESP_LOCAL_CTRL_PORT);
+    if (node_id && node_id[0])
+      mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "node_id", node_id);
+    mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "version_endpoint", "/esp_local_ctrl/version");
+    mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "session_endpoint", "/esp_local_ctrl/session");
+    mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "control_endpoint", "/esp_local_ctrl/control");
+  }
+
+  // 2. Register _esp_rmaker_chal_resp._tcp
+  mdns_service_remove(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO);
+  err = mdns_service_add(instance_name, CHAL_RESP_MDNS_TYPE,
+                         CHAL_RESP_MDNS_PROTO, CHAL_RESP_LOCAL_CTRL_PORT, nullptr, 0);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "[mDNS] %s.%s failed: %s", CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO,
+             esp_err_to_name(err));
+  } else {
+    char port_str[8], sec_str[4];
+    snprintf(port_str, sizeof(port_str), "%u", CHAL_RESP_LOCAL_CTRL_PORT);
+    snprintf(sec_str, sizeof(sec_str), "%u", (unsigned)CHAL_RESP_SEC_VERSION);
+    const char *pop_required = (CHAL_RESP_SEC_VERSION != 0 && rm->get_pop()[0]) ? "true" : "false";
+
+    if (node_id && node_id[0])
+      mdns_service_txt_item_set(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO, "node_id", node_id);
+    mdns_service_txt_item_set(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO, "port", port_str);
+    mdns_service_txt_item_set(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO, "sec_version", sec_str);
+    mdns_service_txt_item_set(CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO, "pop_required", pop_required);
+    ESP_LOGI(TAG, "[mDNS] %s.%s port=%s sec=%s pop_req=%s",
+             CHAL_RESP_MDNS_TYPE, CHAL_RESP_MDNS_PROTO, port_str, sec_str, pop_required);
+  }
+
+  if (rm) rm->local_chal_resp_enabled_ = true;
+  ESP_LOGI(TAG, "[mDNS] On-network provisioning fully advertised");
+  return ESP_OK;
+}
+
+static esp_err_t start_local_ctrl_manually() {
+  OSRainMaker *rm = OSRainMaker::get();
+  if (!rm) return ESP_ERR_INVALID_STATE;
+  if (rm->local_ctrl_started_) return ESP_OK;
+
+  s_lc_handlers = {
+    .get_prop_values = [](size_t, const esp_local_ctrl_prop_t[],
+                          esp_local_ctrl_prop_val_t[], void*) -> esp_err_t { return ESP_OK; },
+    .set_prop_values = [](size_t, const esp_local_ctrl_prop_t[],
+                          const esp_local_ctrl_prop_val_t[], void*) -> esp_err_t { return ESP_OK; },
+    .usr_ctx = nullptr,
+    .usr_ctx_free_fn = nullptr,
+  };
+
+  s_lc_httpd_cfg = HTTPD_SSL_CONFIG_DEFAULT();
+  s_lc_httpd_cfg.port_insecure = CHAL_RESP_LOCAL_CTRL_PORT;
+  s_lc_httpd_cfg.transport_mode = HTTPD_SSL_TRANSPORT_INSECURE;
+  s_lc_httpd_cfg.httpd.ctrl_port = s_lc_httpd_cfg.httpd.ctrl_port + 10;
+  s_lc_httpd_cfg.httpd.max_uri_handlers = 12;
+
+  const char *pop_str = rm->get_pop();
+  s_lc_sec1 = {};
+  s_lc_sec1.data = (const uint8_t *)pop_str;
+  s_lc_sec1.len  = strlen(pop_str);
+
+  ESP_LOGI(TAG, "[LC] Starting: port=%u sec=SEC%u pop='%s'",
+           CHAL_RESP_LOCAL_CTRL_PORT, (unsigned)CHAL_RESP_SEC_VERSION, pop_str);
+  log_device_network_state();
+
+  esp_local_ctrl_config_t config = {};
+  config.transport = ESP_LOCAL_CTRL_TRANSPORT_HTTPD;
+  config.transport_config.httpd = &s_lc_httpd_cfg;
+  if (CHAL_RESP_SEC_VERSION == 0) {
+    config.proto_sec.version = PROTOCOM_SEC0;
+    config.proto_sec.sec_params = nullptr;
+  } else {
+    config.proto_sec.version = PROTOCOM_SEC1;
+    config.proto_sec.sec_params = &s_lc_sec1;
+  }
+  config.handlers = s_lc_handlers;
+  config.max_properties = 4;
+
+  esp_err_t err = esp_local_ctrl_start(&config);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "[LC] start FAILED: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  rm->local_ctrl_started_ = true;
+  ESP_LOGI(TAG, "[LC] started on port %u", CHAL_RESP_LOCAL_CTRL_PORT);
+
+  // Register user-node mapping endpoint
+  err = esp_local_ctrl_set_handler("cloud_user_assoc", user_mapping_handler_dbg, nullptr);
+  if (err != ESP_OK)
+    ESP_LOGE(TAG, "[LC] cloud_user_assoc register failed: %s", esp_err_to_name(err));
+  else
+    ESP_LOGI(TAG, "[LC] cloud_user_assoc registered");
+
+  // Register challenge-response endpoint + mDNS
+  enable_local_ctrl_chal_resp();
+  return ESP_OK;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RainMaker event handler
+// ═══════════════════════════════════════════════════════════════════════════
+
+static void rmaker_event_handler(void *arg, esp_event_base_t base,
+                                 int32_t id, void *data) {
+  if (base != RMAKER_EVENT) return;
+
+  const char *names[] = {"INIT_DONE","CLAIM_STARTED","CLAIM_SUCCESSFUL",
+    "CLAIM_FAILED","MAPPING_DONE","LOCAL_CTRL_STARTED","MAPPING_RESET","LOCAL_CTRL_STOPPED"};
+  const char *name = (id >= 0 && id < 8) ? names[id] : "UNKNOWN";
+  ESP_LOGI(TAG, "[RMAKER] Event %s (%ld)", name, (long)id);
+
+  OSRainMaker *rm = OSRainMaker::get();
+  if (id == RMAKER_EVENT_LOCAL_CTRL_STARTED) {
+    if (rm && !rm->local_ctrl_started_) {
+      rm->local_ctrl_started_ = true;
+      enable_local_ctrl_chal_resp();
+    }
+  } else if (id == RMAKER_EVENT_LOCAL_CTRL_STOPPED) {
+    if (rm) {
+      rm->local_ctrl_started_ = false;
+      rm->local_chal_resp_enabled_ = false;
+    }
+  } else if (id == RMAKER_EVENT_USER_NODE_MAPPING_RESET) {
+    if (rm && rm->unlinking_) {
+      rm->unlinking_ = false;
+      ESP_LOGI(TAG, "[UNLINK] Cloud reset confirmed. Factory-resetting.");
+      esp_rmaker_factory_reset(0, 2);
+    }
+  }
+}
+
+// ── Trivial switch write callback ──
+static esp_rmaker_device_t *s_switch_dev = nullptr;
+
+static esp_err_t switch_write_cb(const esp_rmaker_device_t *device,
+                                 const esp_rmaker_param_t *param,
+                                 const esp_rmaker_param_val_t val,
+                                 void *priv_data,
+                                 esp_rmaker_write_ctx_t *ctx)
+{
+  const char *param_type = esp_rmaker_param_get_type(
+      const_cast<esp_rmaker_param_t*>(param));
+  if (!param_type || strcmp(param_type, ESP_RMAKER_PARAM_POWER) != 0)
+    return ESP_OK;
+
+  bool power_on = val.val.b;
+  time_os_t now = os.now_tz();
+
+  if (power_on) {
+    // Queue Zone 1 (sid=0) for 10 seconds
+    RuntimeQueueStruct *q = pd.enqueue();
+    if (q) {
+      q->st  = 0;
+      q->dur = 10;
+      q->sid = 0;   // Zone 1
+      q->pid = 99;  // synthetic program id
+      schedule_all_stations(now, 0);
+      ESP_LOGI(TAG, "Zone 1 ON for 10 s via RainMaker switch");
+    }
+  } else {
+    turn_off_station(0, now, 0);
+    ESP_LOGI(TAG, "Zone 1 OFF via RainMaker switch");
+  }
+
+  esp_rmaker_param_update_and_report(
+      const_cast<esp_rmaker_param_t*>(param), val);
+  return ESP_OK;
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+void OSRainMaker::init() {
+  if (initialized_) return;
+
+  // Generate PoP from eFuse / MAC
+  {
+    uint8_t uid[16] = {};
+    esp_err_t e = esp_efuse_read_field_blob(ESP_EFUSE_OPTIONAL_UNIQUE_ID, uid, 128);
+    if (e == ESP_OK && (uid[0]|uid[1]|uid[2]|uid[3]) != 0)
+      snprintf(pop_, sizeof(pop_), "%02x%02x%02x%02x", uid[0], uid[1], uid[2], uid[3]);
+    else {
+      uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_BASE);
+      snprintf(pop_, sizeof(pop_), "%02x%02x%02x%02x", mac[2], mac[3], mac[4], mac[5]);
+    }
+  }
+  {
+    uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_BASE);
+    snprintf(svc_name_, sizeof(svc_name_), "PROV_%02x%02x%02x", mac[3], mac[4], mac[5]);
+  }
+
+  ESP_LOGI(TAG, "=== Trivial RainMaker init ===");
+  ESP_LOGI(TAG, "PoP: %s  Service: %s", pop_, svc_name_);
+
+  // 1. Init node
+  Node node = RMaker.initNode("OpenSprinkler");
+  if (!node.getNodeHandle()) {
+    ESP_LOGE(TAG, "initNode FAILED");
+    return;
+  }
+
+  // 2. Create a single switch device "Zone 1"
+  s_switch_dev = esp_rmaker_switch_device_create("Zone 1", nullptr, false);
+  esp_rmaker_device_add_cb(s_switch_dev, switch_write_cb, nullptr);
+  esp_rmaker_node_add_device(node.getNodeHandle(), s_switch_dev);
+  ESP_LOGI(TAG, "Switch device 'Zone 1' created");
+
+  // 3. Enable standard services
+  RMaker.enableOTA(OTA_USING_TOPICS);
+  RMaker.enableTZService();
+  RMaker.enableSchedule();
+
+  // 4. Register event handler BEFORE start (catches INIT_DONE etc.)
+  esp_event_handler_register(RMAKER_EVENT, ESP_EVENT_ANY_ID, rmaker_event_handler, nullptr);
+
+  // 5. Start
+  esp_err_t err = RMaker.start();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "RMaker.start() FAILED: %s", esp_err_to_name(err));
+    return;
+  }
+
+  char *nid = esp_rmaker_get_node_id();
+  ESP_LOGI(TAG, "RainMaker started — node_id=%s", nid ? nid : "?");
+
+  // 6. Start local_ctrl + mDNS for On-Network provisioning
+  start_local_ctrl_manually();
+
+  initialized_ = true;
+}
+
+void OSRainMaker::loop() {
+  // nothing — the trivial version has no periodic work
+}
+
+void OSRainMaker::update_station(uint8_t sid, bool is_on) {
+  if (sid == 0 && s_switch_dev) {
+    esp_rmaker_param_t *p = esp_rmaker_device_get_param_by_type(
+        s_switch_dev, ESP_RMAKER_PARAM_POWER);
+    if (p) esp_rmaker_param_update_and_report(p, esp_rmaker_bool(is_on));
+  }
+}
+
+bool OSRainMaker::unlink() {
+  if (!initialized_) return false;
+  unlinking_ = true;
+  // Try to reset user mapping via MQTT first (event handler will factory reset on PUBACK)
+  esp_rmaker_reset_user_node_mapping();
+  // Fallback: factory reset after 20s if MQTT never confirms
+  esp_rmaker_factory_reset(0, 20);
+  return true;
+}
+
+int OSRainMaker::reset_mapping() {
+  ESP_LOGI(TAG, "reset_mapping: resetting user-node mapping");
+  esp_rmaker_reset_user_node_mapping();
+  return 0;
+}
+
+int OSRainMaker::factory_reset(int delay_sec) {
+  esp_rmaker_factory_reset(0, delay_sec);
+  return 0;
+}
+
+bool OSRainMaker::is_initialized()       const { return initialized_; }
+bool OSRainMaker::is_unlinking()         const { return unlinking_; }
+bool OSRainMaker::is_ethernet()          const { return false; }
+bool OSRainMaker::is_local_ctrl_started() const { return local_ctrl_started_; }
+bool OSRainMaker::is_mqtt_connected()    const { return esp_rmaker_is_mqtt_connected(); }
+const char* OSRainMaker::get_pop()              const { return pop_; }
+const char* OSRainMaker::get_prov_service_name() const { return svc_name_; }
+const char* OSRainMaker::get_local_ctrl_pop()   const { return pop_; }
+
+#endif // ESP32 && ENABLE_RAINMAKER

@@ -488,7 +488,7 @@ void ui_state_machine() {
 		if ((button & BUTTON_MASK)==BUTTON_3) {
 			if (button & BUTTON_FLAG_HOLD) {
 				// start
-				manual_start_program(ui_state_runprog, 0, QUEUE_OPTION_INSERT_FRONT);
+				manual_start_program(ui_state_runprog, 255, QUEUE_OPTION_INSERT_FRONT);
 				ui_state = UI_STATE_DEFAULT;
 			} else {
 				ui_state_runprog = (ui_state_runprog+1) % (pd.nprograms+1);
@@ -875,7 +875,25 @@ void do_loop()
 		#else
 		ready = (boot_elapsed >= 5000);
 		#endif
+
+		#ifdef ENABLE_RAINMAKER
+		// Defer sensor_api_connect while BLE claiming is active (BLE priority)
+		if (os.iopts[IOPT_RAINMAKER_ENABLE]) {
+			auto *rm = OSRainMaker::get();
+			if (rm && rm->sensors_deferred()) {
+				ready = false;  // sensors must wait for claiming to complete
+			}
+		}
+		#endif
+
 		if(ready && os.network_connected()) {
+			// If sensor radio init was deferred (BLE claiming), do it now
+			#if defined(ESP32C5)
+			if (!ieee802154_is_matter() && !is_radio_early_init_done()) {
+				DEBUG_PRINTLN(F("[PROV] Claiming complete — initializing sensor radio (BLE+Zigbee)"));
+				sensor_radio_early_init();
+			}
+			#endif
 			DEBUG_PRINTF("[INIT] Calling sensor_api_connect (boot_elapsed=%lu, useEth=%d)\n", boot_elapsed, useEth);
 			sensor_api_connect();
 			sensor_api_connected = true;
@@ -939,7 +957,31 @@ void do_loop()
 			os.save_wifi_ip();
 			// Ethernet is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
-			// Ethernet: init BLE + Zigbee immediately (non-Matter)
+
+			#ifdef ENABLE_RAINMAKER
+			// BLE claiming has PRIORITY over sensor BLE: if no TLS certs,
+			// defer sensor_radio_early_init and start BLE provisioning first.
+			if (os.iopts[IOPT_RAINMAKER_ENABLE] && OSRainMaker::needs_provisioning()) {
+				DEBUG_PRINTLN(F("[PROV] Ethernet + BLE claiming — deferring sensor init"));
+				OSRainMaker::instance().init();  // starts BLE provisioning
+				start_server_client();  // web UI accessible on Ethernet
+				os.state = OS_STATE_CONNECTED;
+				connecting_timeout = 0;
+				os.lcd.setCursor(0, -1);
+				os.lcd.print(F("BLE Claiming"));
+				os.lcd.setCursor(0, 2);
+				os.lcd.print(OSRainMaker::instance().get_prov_service_name());
+				break;
+			}
+			#endif
+
+			// RainMaker MUST run before sensor_radio_early_init(): on ESP32-C5,
+			// BLE/Zigbee init deinits the WiFi driver, breaking esp_wifi_get_mac()
+			// inside esp_rmaker_node_init(). With WiFi still active, it succeeds.
+			#ifdef ENABLE_RAINMAKER
+			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
+			#endif
+			// Ethernet: init BLE + Zigbee after RainMaker (non-Matter)
 			#if defined(ESP32C5)
 			if (!ieee802154_is_matter()) {
 				sensor_radio_early_init();
@@ -950,9 +992,6 @@ void do_loop()
 				DEBUG_PRINTLN("[Matter] Network up (Ethernet) - initializing Matter");
 				OSMatter::instance().init();
 			}
-			#endif
-			#ifdef ENABLE_RAINMAKER
-			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif
 			start_server_client();
 			os.state = OS_STATE_CONNECTED;
@@ -979,6 +1018,22 @@ void do_loop()
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else {
+			#ifdef ENABLE_RAINMAKER
+			// If RainMaker needs BLE provisioning (no TLS certs from claiming),
+			// don't connect WiFi ourselves. Let WiFiProv handle WiFi + claiming.
+			if (os.iopts[IOPT_RAINMAKER_ENABLE] && OSRainMaker::needs_provisioning()) {
+				led_blink_ms = LED_FAST_BLINK;
+				psram_restore_after_wifi_init();
+				OSRainMaker::instance().init();  // starts BLE provisioning
+				os.state = OS_STATE_CONNECTING;
+				connecting_timeout = millis() + 300000L; // 5 min for BLE provisioning
+				os.lcd.setCursor(0, -1);
+				os.lcd.print(F("BLE Provisioning"));
+				os.lcd.setCursor(0, 2);
+				os.lcd.print(OSRainMaker::instance().get_prov_service_name());
+				break;
+			}
+			#endif
 			led_blink_ms = LED_SLOW_BLINK;
 			if(os.sopt_load(SOPT_STA_BSSID_CHL).length()>0 && os.wifi_channel<255) {
 				start_network_sta(os.wifi_ssid.c_str(), os.wifi_pass.c_str(), (int32_t)os.wifi_channel, os.wifi_bssid);
@@ -1026,20 +1081,46 @@ void do_loop()
 			os.lcd.clear();
 			os.save_wifi_ip();
 			
-			#if defined(ESP32C5)
-			if (!ieee802154_is_matter()) {
-				sensor_radio_early_init();
+			// RainMaker MUST run before sensor_radio_early_init(): on ESP32-C5,
+			// BLE/Zigbee init deinits WiFi, breaking esp_wifi_get_mac() inside
+			// esp_rmaker_node_init(). Call init() first while WiFi is still active.
+			#ifdef ENABLE_RAINMAKER
+			if (os.iopts[IOPT_RAINMAKER_ENABLE]) {
+				auto &rm = OSRainMaker::instance();
+				if (rm.is_provisioning()) {
+					// WiFi came from BLE provisioning — finish provisioning setup
+					rm.on_wifi_connected();
+				} else {
+					rm.init();  // BEFORE sensor_radio_early_init
+				}
 			}
 			#endif
-			
+
+			#if defined(ESP32C5)
+			if (!ieee802154_is_matter()) {
+				#ifdef ENABLE_RAINMAKER
+				// Skip sensor radio init during BLE claiming (BLE used for provisioning)
+				if (os.iopts[IOPT_RAINMAKER_ENABLE]) {
+					auto *rm = OSRainMaker::get();
+					if (rm && rm->sensors_deferred()) {
+						DEBUG_PRINTLN(F("[PROV] BLE claiming active — deferring sensor_radio_early_init"));
+					} else {
+						sensor_radio_early_init();
+					}
+				} else {
+					sensor_radio_early_init();
+				}
+				#else
+				sensor_radio_early_init();
+				#endif
+			}
+			#endif
+
 			#ifdef ENABLE_MATTER
 			if (ieee802154_is_matter()) {
 				DEBUG_PRINTLN("[Matter] WiFi connected - initializing Matter");
 				OSMatter::instance().init();
 			}
-			#endif
-			#ifdef ENABLE_RAINMAKER
-			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif
 			start_server_client();
 			
@@ -1048,6 +1129,16 @@ void do_loop()
 		} else {
 			if((long)(millis()-connecting_timeout)>0) {
 				psram_restore_after_wifi_init(); // Restore PSRAM before retry
+				#ifdef ENABLE_RAINMAKER
+				// If we were in BLE provisioning mode and timed out,
+				// fall back to STA+AP so user can access web UI
+				if (os.iopts[IOPT_RAINMAKER_ENABLE] && OSRainMaker::instance().is_provisioning()) {
+					DEBUG_PRINTLN(F("BLE provisioning timeout — falling back to AP mode"));
+					// WiFiProv will be cleaned up when WiFi reconnects
+					os.state = OS_STATE_TRY_CONNECT;
+					break;
+				}
+				#endif
 				os.state = OS_STATE_INITIAL;
 				WiFi.disconnect(true);
 				DEBUG_PRINTLN(F("timeout"));
@@ -1263,10 +1354,10 @@ void do_loop()
 			reset_all_stations_immediate(); // immediately stop all stations
 		}
 		if (pswitch & 0x01) {
-			if(pd.nprograms > 0)	manual_start_program(1, 0, QUEUE_OPTION_INSERT_FRONT);
+			if(pd.nprograms > 0)	manual_start_program(1, 255, QUEUE_OPTION_INSERT_FRONT);
 		}
 		if (pswitch & 0x02) {
-			if(pd.nprograms > 1)	manual_start_program(2, 0, QUEUE_OPTION_INSERT_FRONT);
+			if(pd.nprograms > 1)	manual_start_program(2, 255, QUEUE_OPTION_INSERT_FRONT);
 		}
 
 		// ====== Flow anomaly detection checks ======
@@ -1755,7 +1846,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 				// record lastrun log (only for non-master stations)
 				if (os.status.mas != (flow_sid + 1) && os.status.mas2 != (flow_sid + 1)) {
 					pd.lastrun.station = flow_sid;
-					pd.lastrun.program = q->pid;
+					pd.lastrun.program = qpid_decode(q->pid);
 					pd.lastrun.duration = curr_time - q->st;
 					pd.lastrun.endtime = curr_time;
 					write_log(LOGDATA_STATION, curr_time); // LOG_TODO
@@ -1774,9 +1865,42 @@ void turn_on_station(unsigned char sid, ulong duration) {
 		notif.add(NOTIFY_STATION_ON, sid, duration);
 #ifdef ENABLE_MATTER
 		OSMatter::instance().update_station(sid, true);
+		{
+			unsigned char tqid = pd.station_qid[sid];
+			if (tqid < pd.nqueue) {
+				uint8_t pid = pd.queue[tqid].pid;
+				if (pid < (uint8_t)pd.nprograms) {
+					bool first = true;
+					for (unsigned char i = 0; i < pd.nqueue; i++) {
+						if (i == tqid) continue;
+						if (pd.queue[i].pid == pid && os.is_running(pd.queue[i].sid)) {
+							first = false; break;
+						}
+					}
+					if (first) OSMatter::instance().update_program(pid, true);
+				}
+			}
+		}
 #endif
 #ifdef ENABLE_RAINMAKER
-		if (auto *rm = OSRainMaker::get()) rm->update_station(sid, true);
+		if (auto *rm = OSRainMaker::get()) {
+			rm->update_station(sid, true);
+			// Report program start when the first station of a real program begins running
+			unsigned char tqid = pd.station_qid[sid];
+			if (tqid < pd.nqueue) {
+				uint8_t pid = pd.queue[tqid].pid;
+				if (pid < (uint8_t)pd.nprograms) {
+					bool first = true;
+					for (unsigned char i = 0; i < pd.nqueue; i++) {
+						if (i == tqid) continue;
+						if (pd.queue[i].pid == pid && os.is_running(pd.queue[i].sid)) {
+							first = false; break;
+						}
+					}
+					if (first) rm->update_program(pid, true);
+				}
+			}
+		}
 #endif
 	}
 
@@ -1888,9 +2012,32 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 
 #ifdef ENABLE_MATTER
 	OSMatter::instance().update_station(sid, false);
+	{
+		uint8_t pid = qpid_decode(q->pid);
+		if (pid > 0 && pid <= (uint8_t)pd.nprograms) {
+			bool any_remaining = false;
+			for (unsigned char i = 0; i < pd.nqueue; i++) {
+				if (pd.queue + i == q) continue;
+				if (qpid_decode(pd.queue[i].pid) == pid) { any_remaining = true; break; }
+			}
+			if (!any_remaining) OSMatter::instance().update_program(pid - 1, false);  // 0-based
+		}
+	}
 #endif
 #ifdef ENABLE_RAINMAKER
-	if (auto *rm = OSRainMaker::get()) rm->update_station(sid, false);
+	if (auto *rm = OSRainMaker::get()) {
+		rm->update_station(sid, false);
+		// Report program done when the last station of a real program finishes
+		uint8_t pid = qpid_decode(q->pid);
+		if (pid > 0 && pid <= (uint8_t)pd.nprograms) {
+			bool any_remaining = false;
+			for (unsigned char i = 0; i < pd.nqueue; i++) {
+				if (pd.queue + i == q) continue;
+				if (qpid_decode(pd.queue[i].pid) == pid) { any_remaining = true; break; }
+			}
+			if (!any_remaining) rm->update_program(pid - 1, false);  // 0-based
+		}
+	}
 #endif
 
 	// RAH implementation of flow sensor
@@ -1908,7 +2055,7 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 			// record lastrun log (only for non-master stations)
 			if (os.status.mas != (sid + 1) && os.status.mas2 != (sid + 1)) {
 				pd.lastrun.station = sid;
-				pd.lastrun.program = q->pid;
+				pd.lastrun.program = qpid_decode(q->pid);
 				pd.lastrun.duration = curr_time - q->st;
 				pd.lastrun.endtime = curr_time;
 
@@ -2149,7 +2296,9 @@ void schedule_all_stations(time_os_t curr_time, unsigned char qo) {
 	for(q=pd.queue;q<pd.queue+pd.nqueue;q++) {
 		DEBUG_PRINT("[");
 		DEBUG_PRINT(q->sid);
-		DEBUG_PRINT(",");
+		DEBUG_PRINT(",pid=");
+		DEBUG_PRINT(qpid_decode(q->pid));
+		DEBUG_PRINT(",dur=");
 		DEBUG_PRINT(q->dur);
 		DEBUG_PRINT(",");
 		DEBUG_PRINT(q->st);
@@ -2266,6 +2415,8 @@ void stop_program(unsigned char pid) {
  */
 void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo) {
 	boolean match_found = false;
+	// Track which real program is being run manually so the UI can display correct program name/progress
+	pd.current_mpid = (pid > 0 && pid < 255) ? pid : 0;
 	if (uwt != 255)
 		reset_all_stations_immediate();
 	ProgramStruct prog;
@@ -2308,7 +2459,10 @@ void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo
 				q->st = 0;
 				q->dur = dur;
 				q->sid = sid;
-				q->pid = 254;
+				// Encode real 1-based pid with bit 7 set (manual flag).
+				// This preserves the >= 99 sensor/rain bypass check while
+				// allowing the /js status output to decode the real program number.
+				q->pid = (pid > 0 && pid < 255) ? (pid | 0x80) : 254;
 				match_found = true;
 			}
 		}

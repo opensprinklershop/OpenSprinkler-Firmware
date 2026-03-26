@@ -19,6 +19,7 @@ public:
   void loop();
   
   void update_station(uint8_t sid, bool is_on);
+  void update_program(uint8_t pid, bool running);
   bool is_commissioned();
   
   // Get Matter pairing information

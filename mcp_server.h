@@ -34,7 +34,7 @@
 
 #pragma once
 
-#if defined(ESP32) && defined(USE_OTF)
+#if defined(USE_OTF)
 
 namespace OTF {
   class Request;
@@ -64,4 +64,4 @@ void server_mcp_options_handler(const OTF::Request& req, OTF::Response& res);
  */
 void server_mcp_delete_handler(const OTF::Request& req, OTF::Response& res);
 
-#endif // ESP32 && USE_OTF
+#endif // USE_OTF

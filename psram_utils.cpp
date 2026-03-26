@@ -50,7 +50,7 @@ extern "C" void heap_caps_malloc_extmem_enable(size_t limit);
 // ============================================================================
 static void __attribute__((constructor(101))) psram_early_threshold() {
     if (psramFound()) {
-        heap_caps_malloc_extmem_enable(128);
+        heap_caps_malloc_extmem_enable(16);
     }
 }
 
@@ -108,8 +108,8 @@ void init_psram_buffers() {
   // ESP32-C5 PSRAM is DMA-capable — no reason to burn internal RAM for most allocs.
   // Only tiny allocations (<= 128 bytes) will still prefer internal RAM for speed.
   if (psramFound()) {
-    heap_caps_malloc_extmem_enable(128);
-    DEBUG_PRINTLN(F("[PSRAM] Lowered ALWAYSINTERNAL threshold: 4096 → 128 bytes"));
+    heap_caps_malloc_extmem_enable(16);
+    DEBUG_PRINTLN(F("[PSRAM] Lowered ALWAYSINTERNAL threshold: 4096 → 16 bytes"));
   }
 
   // Register allocation failed callback for PSRAM fallback
