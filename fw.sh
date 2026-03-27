@@ -58,10 +58,35 @@ header()  { echo -e "\n${BOLD}${BLUE}══════════════�
             echo -e "${BOLD}${BLUE}  $*${NC}"; \
             echo -e "${BOLD}${BLUE}══════════════════════════════════════${NC}"; }
 
+# ── Load .env (gitignored local config) ──────────────────────────────────────
+# Resolve SCRIPT_DIR first so we can find .env relative to this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+    # Export only lines that look like VAR=value (skip comments and blanks).
+    # Variables already set in the environment take precedence.
+    while IFS= read -r _line || [[ -n "$_line" ]]; do
+        [[ "$_line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${_line// }" ]] && continue
+        if [[ "$_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            _key="${BASH_REMATCH[1]}"
+            _val="${BASH_REMATCH[2]}"
+            # Only set if not already exported from the calling environment
+            [[ -z "${!_key+x}" ]] && export "${_key}=${_val}"
+        fi
+    done < "${SCRIPT_DIR}/.env"
+    unset _line _key _val
+fi
+
 # ── Configuration ────────────────────────────────────────────────────────────
 DEVICE_IP="${OS_IP:-192.168.0.151}"
 PIO_BIN="platformio"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── OsPi remote build configuration ─────────────────────────────────────────
+# Set OSPI_PI_PASS in .env, or configure SSH key auth (ssh-copy-id)
+OSPI_PI_HOST="${OSPI_PI_HOST:-192.168.0.167}"
+OSPI_PI_USER="${OSPI_PI_USER:-pi}"
+OSPI_PI_PASS="${OSPI_PI_PASS:-}"
+OSPI_PI_DIR="${OSPI_PI_DIR:-/home/pi/OpenSprinkler-Firmware}"
 DEFINES_H="${SCRIPT_DIR}/defines.h"
 UPGRADE_DIR="${OS_UPGRADE_DIR:-/srv/www/htdocs/upgrade}"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
@@ -123,6 +148,113 @@ copy_to_dist() {
         cp "$src" "${dist}/firmware_${env}.bin"
         ok "Dist copy → .pio/dist/firmware_${env}.bin"
     fi
+}
+
+# ── OsPi (Raspberry Pi) remote build helpers ────────────────────────────────
+
+# Verify sshpass is available when a password is configured.
+check_ospi_conn() {
+    if [[ -n "$OSPI_PI_PASS" ]]; then
+        if ! command -v sshpass &>/dev/null; then
+            error "sshpass not found (needed when OSPI_PI_PASS is set)."
+            error "Install: sudo apt install sshpass"
+            error "Or use SSH key auth: ssh-copy-id ${OSPI_PI_USER}@${OSPI_PI_HOST}"
+            exit 1
+        fi
+    fi
+    if ! command -v rsync &>/dev/null; then
+        error "rsync not found. Install: sudo apt install rsync"
+        exit 1
+    fi
+}
+
+# Run a command on the Pi as root via sudo.
+_ospi_ssh() {
+    if [[ -n "$OSPI_PI_PASS" ]]; then
+        sshpass -p "$OSPI_PI_PASS" \
+            ssh -o StrictHostKeyChecking=no -o BatchMode=no \
+            "${OSPI_PI_USER}@${OSPI_PI_HOST}" \
+            "sudo bash -c $(printf '%q' "$*")"
+    else
+        ssh -o StrictHostKeyChecking=no \
+            "${OSPI_PI_USER}@${OSPI_PI_HOST}" \
+            "sudo bash -c $(printf '%q' "$*")"
+    fi
+}
+
+# rsync wrapper that injects the password via sshpass when set.
+_ospi_rsync() {
+    local ssh_cmd="ssh -o StrictHostKeyChecking=no"
+    if [[ -n "$OSPI_PI_PASS" ]]; then
+        SSHPASS="$OSPI_PI_PASS" sshpass -e rsync -e "$ssh_cmd" "$@"
+    else
+        rsync -e "$ssh_cmd" "$@"
+    fi
+}
+
+# Rsync-exclude list shared by push and pull operations.
+_OSPI_RSYNC_EXCLUDES=(
+    --exclude='.git/'
+    --exclude='.pio/'
+    --exclude='node_modules/'
+    --exclude='dist/'
+    --exclude='managed_components/'
+    --exclude='OpenSprinkler'       # compiled binary
+    --exclude='*.o'
+    --exclude='build_log.txt'
+    --exclude='upload.log'
+    --exclude='test.log'
+)
+
+# Push local workspace to the Pi.
+ospi_push() {
+    info "Syncing source → ${OSPI_PI_HOST}:${OSPI_PI_DIR} …"
+    _ospi_rsync -az --info=progress2 \
+        "${_OSPI_RSYNC_EXCLUDES[@]}" \
+        "${SCRIPT_DIR}/" \
+        "${OSPI_PI_USER}@${OSPI_PI_HOST}:${OSPI_PI_DIR}/"
+    ok "Source synced to Pi."
+}
+
+# Pull Pi workspace back to local (to capture bug fixes made on the device).
+ospi_pull_back() {
+    info "Syncing ${OSPI_PI_HOST}:${OSPI_PI_DIR} → local …"
+    _ospi_rsync -az --info=progress2 \
+        "${_OSPI_RSYNC_EXCLUDES[@]}" \
+        "${OSPI_PI_USER}@${OSPI_PI_HOST}:${OSPI_PI_DIR}/" \
+        "${SCRIPT_DIR}/"
+    ok "Sync-back complete. Review changes with: git diff"
+}
+
+# Build only: push source and compile via build2.sh.
+build_ospi() {
+    header "OsPi – remote build (${OSPI_PI_HOST})"
+    check_ospi_conn
+    ospi_push
+    info "Running build2.sh on Pi …"
+    _ospi_ssh "cd '${OSPI_PI_DIR}' && ./build2.sh"
+    ok "OsPi build complete."
+}
+
+# Full deploy: clean Pi working tree, then run updater.sh (git pull + build +
+# service install).  Any files previously pushed via ospi_push must be
+# removed / stashed first so that 'git pull' inside updater.sh succeeds.
+deploy_ospi() {
+    header "OsPi – remote deploy (${OSPI_PI_HOST})"
+    check_ospi_conn
+
+    info "Cleaning Pi working tree to allow git pull …"
+    _ospi_ssh "
+        cd '${OSPI_PI_DIR}'
+        git reset --hard HEAD 2>/dev/null || true
+        git clean -fd         2>/dev/null || true
+        git submodule foreach --recursive 'git reset --hard HEAD; git clean -fd' 2>/dev/null || true
+    "
+    ok "Pi working tree clean."
+
+    info "Running ./updater.sh on Pi (git pull + build + service restart) …"
+    _ospi_ssh "cd '${OSPI_PI_DIR}' && ./updater.sh"
+    ok "OsPi deploy complete."
 }
 
 build_env() {
@@ -967,29 +1099,36 @@ ${BOLD}Usage:${NC}
   ./fw.sh <action> [variant]
 
 ${BOLD}Actions:${NC}
-  build   [matter|zigbee|esp8266|all]  Build firmware (default: all)
-  upload  [matter|zigbee|esp8266|all]  Upload firmware via USB (default: all)
-  deploy  [matter|zigbee|esp8266|all]  Build + Upload (default: all)
-  release                              Bump version, build all firmwares,
-                                       copy to upgrade dir, git tag & push,
-                                       create GitHub release
-  release rebuild                      Rebuild all firmwares without version
-                                       bump, no git tag/release — build only
-  generate-mfg                         Generate Matter manufacturing data
-                                       (test PAA → PAI → DAC chain + NVS binary)
-  flash-mfg                            Flash matter_kvs partition to device
-                                       (standalone, without firmware)
-  full-flash [matter|zigbee|all]        Full flash: bootloader + partition table
-                                       + firmware via esptool (ESP32-C5 only)
+  build   [matter|zigbee|esp8266|ospi|all]  Build firmware (default: all)
+  upload  [matter|zigbee|esp8266|all]       Upload firmware via USB (default: all)
+  deploy  [matter|zigbee|esp8266|ospi|all]  Build + Upload/Deploy (default: all)
+  sync-back                                 Pull OsPi changes back to local workspace
+  release                                   Bump version, build all firmwares,
+                                            copy to upgrade dir, git tag & push,
+                                            create GitHub release
+  release rebuild                           Rebuild all firmwares without version
+                                            bump, no git tag/release — build only
+  generate-mfg                              Generate Matter manufacturing data
+                                            (test PAA → PAI → DAC chain + NVS binary)
+  flash-mfg                                 Flash matter_kvs partition to device
+                                            (standalone, without firmware)
+  full-flash [matter|zigbee|all]            Full flash: bootloader + partition table
+                                            + firmware via esptool (ESP32-C5 only)
   switch <matter|zigbee|zigbee-client|disabled>
-                                       Switch firmware via REST API + reboot
-  status                               Show device status
+                                            Switch firmware via REST API + reboot
+  status                                    Show device status
 
 ${BOLD}Variants (build/upload/deploy):${NC}
   matter        ESP32-C5 Matter firmware  (OTA slot 1 @ 0x3A0000)
   zigbee        ESP32-C5 ZigBee firmware  (OTA slot 0 @ 0x10000)
   esp8266       OS 3.x ESP8266 firmware   (env: os3x_esp8266)
-  all           All firmwares (matter + zigbee + esp8266)
+  ospi          OsPi / Raspberry Pi firmware — remote build (see OsPi vars below)
+  all           All firmwares (matter + zigbee + esp8266, not ospi)
+
+${BOLD}OsPi workflow:${NC}
+  build ospi        Push local source to Pi, compile with build2.sh (dev/test)
+  deploy ospi       Clean Pi working tree, git pull + build + service restart
+  sync-back         Pull Pi changes (bug fixes) back to local workspace
 
 ${BOLD}Variants (switch – ESP32-C5 only):${NC}
   matter         → Matter mode
@@ -1005,12 +1144,20 @@ ${BOLD}Environment variables:${NC}
   UPLOAD_SPEED=<baud>     Upload baud rate  (default: 460800)
   ERASE_FLASH=1           Erase entire flash before full-flash
 
+${BOLD}OsPi environment variables:${NC}
+  OSPI_PI_HOST=<IP>       OsPi host        (default: 192.168.0.167)
+  OSPI_PI_USER=<user>     OsPi SSH user    (default: pi)
+  OSPI_PI_PASS=<password> OsPi SSH password (leave empty to use SSH keys)
+  OSPI_PI_DIR=<path>      OsPi firmware dir (default: /home/pi/OpenSprinkler-Firmware)
+
 ${BOLD}Examples:${NC}
   ./fw.sh build
   ./fw.sh build matter
   ./fw.sh build esp8266
+  ./fw.sh build ospi
   ./fw.sh deploy zigbee
-  ./fw.sh deploy esp8266
+  ./fw.sh deploy ospi
+  ./fw.sh sync-back
   ./fw.sh switch matter
   ./fw.sh switch zigbee
   ./fw.sh release
@@ -1022,6 +1169,8 @@ ${BOLD}Examples:${NC}
   ERASE_FLASH=1 ./fw.sh full-flash zigbee
   OS_IP=192.168.0.151 OS_PASSWORD=opendoor ./fw.sh switch zigbee
   OS_IP=192.168.0.86  OS_HASH=a6d82bced638de3def1e9bbb4983225c ./fw.sh status
+  OSPI_PI_PASS=secret ./fw.sh build ospi
+  OSPI_PI_PASS=secret ./fw.sh deploy ospi
 
 ${BOLD}Environment variables (release):${NC}
   GITHUB_TOKEN=<token>    GitHub personal access token (optional, for release upload)
@@ -1034,21 +1183,26 @@ VARIANT="${2:-all}"
 
 case "$ACTION" in
     build)
-        check_pio
         case "$VARIANT" in
-            matter)   build_env "$ENV_C5_MATTER" ;;
-            zigbee)   build_env "$ENV_C5_ZIGBEE" ;;
-            esp8266)  build_env "$ENV_ESP8266" ;;
-            all|"")
-                build_env "$ENV_C5_MATTER"
-                build_env "$ENV_C5_ZIGBEE"
-                build_env "$ENV_ESP8266"
-                header "All builds successful"
-                ok "Matter:   .pio/build/${ENV_C5_MATTER}/firmware.bin"
-                ok "ZigBee:   .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
-                ok "ESP8266:  .pio/build/${ENV_ESP8266}/firmware.bin"
+            ospi)     build_ospi ;;
+            *)
+                check_pio
+                case "$VARIANT" in
+                matter)   build_env "$ENV_C5_MATTER" ;;
+                zigbee)   build_env "$ENV_C5_ZIGBEE" ;;
+                esp8266)  build_env "$ENV_ESP8266" ;;
+                all|"")
+                    build_env "$ENV_C5_MATTER"
+                    build_env "$ENV_C5_ZIGBEE"
+                    build_env "$ENV_ESP8266"
+                    header "All builds successful"
+                    ok "Matter:   .pio/build/${ENV_C5_MATTER}/firmware.bin"
+                    ok "ZigBee:   .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
+                    ok "ESP8266:  .pio/build/${ENV_ESP8266}/firmware.bin"
+                    ;;
+                *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|ospi|all)"; exit 1 ;;
+                esac
                 ;;
-            *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
         esac
         ;;
 
@@ -1069,33 +1223,40 @@ case "$ACTION" in
         ;;
 
     deploy)
-        check_pio
         case "$VARIANT" in
-            matter)
-                build_env "$ENV_C5_MATTER"
-                upload_env "$ENV_C5_MATTER"
+            ospi)
+                deploy_ospi
                 ;;
-            zigbee)
-                build_env "$ENV_C5_ZIGBEE"
-                upload_env "$ENV_C5_ZIGBEE"
+            *)
+                check_pio
+                case "$VARIANT" in
+                matter)
+                    build_env "$ENV_C5_MATTER"
+                    upload_env "$ENV_C5_MATTER"
+                    ;;
+                zigbee)
+                    build_env "$ENV_C5_ZIGBEE"
+                    upload_env "$ENV_C5_ZIGBEE"
+                    ;;
+                esp8266)
+                    build_env "$ENV_ESP8266"
+                    upload_env "$ENV_ESP8266"
+                    ;;
+                all|"")
+                    build_env "$ENV_C5_MATTER"
+                    build_env "$ENV_C5_ZIGBEE"
+                    build_env "$ENV_ESP8266"
+                    upload_env "$ENV_C5_MATTER"
+                    upload_env "$ENV_C5_ZIGBEE"
+                    upload_env "$ENV_ESP8266"
+                    header "Deploy complete"
+                    ok "Matter:   flashed to ota_1 (0x3A0000)"
+                    ok "ZigBee:   flashed to ota_0 (0x10000)"
+                    ok "ESP8266:  flashed"
+                    ;;
+                *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|ospi|all)"; exit 1 ;;
+                esac
                 ;;
-            esp8266)
-                build_env "$ENV_ESP8266"
-                upload_env "$ENV_ESP8266"
-                ;;
-            all|"")
-                build_env "$ENV_C5_MATTER"
-                build_env "$ENV_C5_ZIGBEE"
-                build_env "$ENV_ESP8266"
-                upload_env "$ENV_C5_MATTER"
-                upload_env "$ENV_C5_ZIGBEE"
-                upload_env "$ENV_ESP8266"
-                header "Deploy complete"
-                ok "Matter:   flashed to ota_1 (0x3A0000)"
-                ok "ZigBee:   flashed to ota_0 (0x10000)"
-                ok "ESP8266:  flashed"
-                ;;
-            *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
         esac
         ;;
 
@@ -1135,6 +1296,13 @@ case "$ACTION" in
 
     switch)
         switch_firmware "$VARIANT"
+        ;;
+
+    sync-back)
+        # Pull changes made directly on the OsPi back to the local workspace
+        # (e.g., compiler-error fixes applied on the device).
+        check_ospi_conn
+        ospi_pull_back
         ;;
 
     status)

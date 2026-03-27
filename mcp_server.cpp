@@ -62,7 +62,9 @@ void server_usage(const OTF::Request& req, OTF::Response& res);
 void server_sensorprog_list(const OTF::Request& req, OTF::Response& res);
 void server_monitor_list(const OTF::Request& req, OTF::Response& res);
 void server_sensorconfig_backup(const OTF::Request& req, OTF::Response& res);
+#if defined(ESP32C5)
 void server_ieee802154_get(const OTF::Request& req, OTF::Response& res);
+#endif
 #if defined(OS_ENABLE_ZIGBEE)
 void server_zigbee_discovered_devices(const OTF::Request& req, OTF::Response& res);
 void server_zigbee_status(const OTF::Request& req, OTF::Response& res);
@@ -76,10 +78,9 @@ void server_rainmaker_provision(const OTF::Request& req, OTF::Response& res);
 #endif
 void server_json_log(const OTF::Request& req, OTF::Response& res);
 
-// Action helpers from opensprinkler_server.cpp / main.cpp
-extern void schedule_all_stations(unsigned long curr_time, unsigned char req_option);
-extern void turn_off_station(unsigned char sid, unsigned long curr_time, unsigned char shift);
-extern void reset_all_stations(bool running_only);
+// Action helpers — pulled from main.h to get the correct time_os_t types
+// (avoids C++ name-mangling mismatch on Linux where time_os_t = time_t = signed long)
+#include "main.h"
 extern uint32_t reboot_timer;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -151,7 +152,11 @@ static String mcp_end_capture() {
   // Append whatever is still in ether_buffer
   unsigned int remaining = (unsigned int)bfill.position();
   if (remaining > 0) {
+#if defined(ARDUINO)
     g_mcp_capture_buf.concat(ether_buffer, remaining);
+#else
+    g_mcp_capture_buf.append(ether_buffer, (size_t)remaining);
+#endif
   }
   g_mcp_capture_active = false;
   String result = std::move(g_mcp_capture_buf);
@@ -163,7 +168,11 @@ static String mcp_end_capture() {
 static void mcp_flush_segment() {
   unsigned int len = (unsigned int)bfill.position();
   if (len > 0) {
+#if defined(ARDUINO)
     g_mcp_capture_buf.concat(ether_buffer, len);
+#else
+    g_mcp_capture_buf.append(ether_buffer, (size_t)len);
+#endif
   }
   rewind_ether_buffer();
 }
@@ -387,9 +396,11 @@ static String tool_get_system_resources(const OTF::Request& req, OTF::Response& 
 
 // ─── Tool: get_ieee802154_config ─────────────────────────────────────────────
 
+#if defined(ESP32C5)
 static String tool_get_ieee802154_config(const OTF::Request& req, OTF::Response& res) {
   return tool_capture(server_ieee802154_get, req, res);
 }
+#endif
 
 // ─── Tool: get_zigbee_devices ────────────────────────────────────────────────
 
@@ -725,8 +736,10 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
     "Export full sensor/adjustment/monitor configuration backup. Equivalent to /sx.");
   add_ro("get_system_resources",
     "Get system resource usage: memory, storage, network, MQTT status. Equivalent to /du.");
+#if defined(ESP32C5)
   add_ro("get_ieee802154_config",
     "Read IEEE 802.15.4 radio configuration (ZigBee/Matter mode, boot variant). ESP32-C5 only. Equivalent to /ir.");
+#endif
 #if defined(OS_ENABLE_ZIGBEE)
   add_ro("get_zigbee_devices",
     "Get ZigBee device list (gateway mode) or discovered devices. ESP32-C5 only. Equivalent to /zg.");
@@ -1030,8 +1043,10 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
     } else if (strcmp(tool_name, "get_system_resources") == 0) {
       content_json = tool_get_system_resources(req, res);
 
+#if defined(ESP32C5)
     } else if (strcmp(tool_name, "get_ieee802154_config") == 0) {
       content_json = tool_get_ieee802154_config(req, res);
+#endif
 
 #if defined(OS_ENABLE_ZIGBEE)
     } else if (strcmp(tool_name, "get_zigbee_devices") == 0) {

@@ -35,7 +35,7 @@
 #include "osinfluxdb.h"
 #include "ArduinoJson.hpp"
 #include "sensor_fyta.h"
-#if defined(ESP32) && defined(USE_OTF)
+#if defined(USE_OTF)
 #include "mcp_server.h"
 #endif
 #include "sensor_mqtt.h"
@@ -318,7 +318,11 @@ void send_packet(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 		if (g_mcp_capture_active) {
 			// MCP capture mode: accumulate into string instead of HTTP response
+#if defined(ARDUINO)
 			g_mcp_capture_buf.concat(ether_buffer, (unsigned int)len);
+#else
+			g_mcp_capture_buf.append(ether_buffer, (size_t)len);
+#endif
 		} else {
 #endif
 			res.writeBodyData(ether_buffer, len);

@@ -27,3 +27,5 @@ matter_mfg/
 docs
 *.pem
 .rainmaker-env/
+.env
+!.env.example
