@@ -1926,6 +1926,7 @@ void server_change_options(OTF_PARAMS_DEF)
 			if (v>=0 && v<=max_value) {
 				os.iopts[oid] = v;
 			} else {
+				DEBUG_PRINTF("/co: OUTOFBOUND oid=%d key=%s val=%d max=%d\n", oid, tbuf2, (int)v, (int)max_value);
 				err = 1;
 			}
 		}
@@ -1948,6 +1949,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		urlDecode(tmp_buffer);
 		#endif
 		strReplaceQuoteBackslash(tmp_buffer);
+		DEBUG_PRINTF("/co: loc='%s'\n", tmp_buffer);
 		if (os.sopt_save(SOPT_LOCATION, tmp_buffer)) { // if location string has changed
 			weather_change = true;
 		}
@@ -1957,6 +1959,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
 		#endif
+		DEBUG_PRINTF("/co: wto='%s'\n", tmp_buffer);
 		if (os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer)) {
 			if (!parse_wto(tmp_buffer)) { // parse wto
 				os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer); // reset to empty string if parsing failed
@@ -2068,7 +2071,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		RTC.set(t);
 #endif
 	}
-	if (err)	handle_return(HTML_DATA_OUTOFBOUND);
+	if (err) { DEBUG_PRINTLN(F("/co: returning HTML_DATA_OUTOFBOUND due to err")); handle_return(HTML_DATA_OUTOFBOUND); }
 
 	os.iopts_save();
 	os.populate_master();
@@ -2894,7 +2897,7 @@ void server_update_check(OTF_PARAMS_DEF) {
 	}
 
 	OnlineUpdateManifest manifest;
-	bool newer = online_update_check(manifest);
+	bool newer = online_update_check_safe(manifest);
 
 	if (manifest.valid) {
 		online_update_cache_manifest(manifest);
@@ -2952,6 +2955,14 @@ void server_update_upgrade(OTF_PARAMS_DEF) {
 		override_manifest.fw_minor   = 0;
 		override_manifest.valid      = (override_manifest.zigbee_url[0] != 0);
 		online_update_cache_manifest(override_manifest);
+	}
+
+	// Optional variant override: vt=zigbee|matter — selects boot target after OTA
+	char vt_buf[8] = {0};
+	if (findKeyVal(FKV_SOURCE, vt_buf, sizeof(vt_buf), PSTR("vt"), true) && vt_buf[0]) {
+		online_update_set_variant(vt_buf);
+	} else {
+		online_update_set_variant(NULL); // clear any stale override
 	}
 
 	online_update_start();

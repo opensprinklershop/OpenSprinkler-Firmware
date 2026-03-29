@@ -15,6 +15,7 @@
 #include <mbedtls/sha256.h>
 #include <mbedtls/error.h>
 #include "ArduinoJson.hpp"
+#include "psram_utils.h"
 
 #define ACME_TAG "[ACME]"
 
@@ -542,7 +543,7 @@ static void acme_request_task(void* param) {
     s_status = ACME_STATUS_ERROR;
     mbedtls_pk_free(&account_key);
     s_requesting = false;
-    vTaskDelete(NULL);
+    PSRAM_TASK_SELF_DELETE();
     return;
   }
 
@@ -555,7 +556,7 @@ static void acme_request_task(void* param) {
     mbedtls_pk_free(&account_key);
     mbedtls_pk_free(&domain_key);
     s_requesting = false;
-    vTaskDelete(NULL);
+    PSRAM_TASK_SELF_DELETE();
     return;
   }
 
@@ -915,7 +916,7 @@ cleanup:
   if (s_status == ACME_STATUS_ERROR) {
     DEBUG_PRINTF("%s Error: %s\n", ACME_TAG, s_last_error);
   }
-  vTaskDelete(NULL);
+  PSRAM_TASK_SELF_DELETE();
 }
 
 // ── Renewal timer callback ───────────────────────────────────────────────────
@@ -996,7 +997,7 @@ bool acme_request_certificate() {
 
   s_requesting = true;
   // Run in a dedicated task — ACME protocol has multiple HTTPS roundtrips
-  BaseType_t ret = xTaskCreate(acme_request_task, "acme", 8192, NULL, 2, NULL);
+  BaseType_t ret = PSRAM_TASK_CREATE(acme_request_task, "acme", 8192, NULL, 2, NULL);
   if (ret != pdPASS) {
     s_requesting = false;
     snprintf(s_last_error, sizeof(s_last_error), "Failed to create ACME task");

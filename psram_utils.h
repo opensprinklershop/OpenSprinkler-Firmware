@@ -49,6 +49,16 @@ void psram_restore_after_wifi_init();
 // Memory optimization logging (Matter & BLE)
 void log_matter_ble_memory_optimization();
 
+// FreeRTOS task stack in PSRAM.
+// Tasks created with PSRAM_TASK_CREATE() must release their SPIRAM-allocated
+// stack by calling PSRAM_TASK_SELF_DELETE() on every exit path instead of
+// the plain vTaskDelete(NULL).
+#include <esp_heap_caps.h>
+#include <freertos/idf_additions.h>
+#define PSRAM_TASK_CREATE(fn, name, sz, prm, pri, hdl) \
+    xTaskCreateWithCaps(fn, name, sz, prm, pri, hdl, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define PSRAM_TASK_SELF_DELETE() vTaskDeleteWithCaps(NULL)
+
 #else
 // Non-PSRAM platforms
 extern char ether_buffer[];
@@ -60,6 +70,9 @@ inline void init_mbedtls_psram_allocator() {}
 inline void psram_protect_wifi_init() {}
 inline void psram_restore_after_wifi_init() {}
 inline void log_matter_ble_memory_optimization() {}
+
+#define PSRAM_TASK_CREATE(fn, name, sz, prm, pri, hdl) xTaskCreate(fn, name, sz, prm, pri, hdl)
+#define PSRAM_TASK_SELF_DELETE() vTaskDelete(NULL)
 
 #endif
 

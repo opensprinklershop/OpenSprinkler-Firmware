@@ -6,14 +6,11 @@
 #include <Arduino.h>
 
 // Update server base URL (no trailing slash)
+// Using plain HTTP to avoid HSTS/TLS overhead on embedded devices
 #define OTA_UPDATE_HOST "opensprinklershop.de"
-#define OTA_UPDATE_BASE_URL "https://opensprinklershop.de/upgrade"
+#define OTA_UPDATE_BASE_URL "http://opensprinklershop.de/upgrade"
 #define OTA_MANIFEST_URL OTA_UPDATE_BASE_URL "/manifest.json"
-#if defined(ESP8266)
-#define OTA_ESP8266_FW_URL "http://opensprinklershop.de/upgrade/firmware_esp8266.bin"
-#else
 #define OTA_ESP8266_FW_URL OTA_UPDATE_BASE_URL "/firmware_esp8266.bin"
-#endif
 
 // Status codes for the online update process
 enum OnlineUpdateStatus {
@@ -39,6 +36,9 @@ struct OnlineUpdateManifest {
 	uint16_t fw_minor;         // e.g. 186
 	char zigbee_url[200];
 	char matter_url[200];
+	char zigbee_sha256[65];    // lowercase hex SHA-256, or empty if not provided
+	char matter_sha256[65];
+	char esp8266_sha256[65];
 	char changelog[512];
 	bool valid;
 };
@@ -54,9 +54,18 @@ struct OnlineUpdateState {
 // Returns true if a newer version is available.
 bool online_update_check(OnlineUpdateManifest &manifest);
 
+// Safe variant: runs online_update_check() on a dedicated 12 KB FreeRTOS task to
+// prevent overflowing the caller's stack (loopTask default = 8 KB).  Blocks up to
+// 20 s.  Use this from HTTP request handlers instead of online_update_check().
+bool online_update_check_safe(OnlineUpdateManifest &manifest);
+
 // Start the OTA update process (downloads & flashes both slots).
 // This is a blocking call — runs on a FreeRTOS task internally.
 void online_update_start();
+
+// Override which variant (\"zigbee\" or \"matter\") is set as the boot target after OTA.
+// Must be called before online_update_start(). Empty/invalid string clears override.
+void online_update_set_variant(const char* variant);
 
 // Get current update state (thread-safe read).
 OnlineUpdateState online_update_get_state();

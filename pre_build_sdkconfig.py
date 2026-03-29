@@ -76,6 +76,16 @@ SDKCONFIG_OVERRIDES = {
     "CONFIG_ARDUINO_LOOP_STACK_SIZE": "16384",
 
     # =====================================================================
+    # SPIRAM DMA Reserve — keep enough internal RAM for PSRAM re-timing
+    # after WiFi start (ESP32-C5 resets MSPI timing when RF calibrates).
+    # v190 added RainMaker self-claiming which allocates DMA-capable internal
+    # RAM between PSRAM init and WiFi start, depleting the 32 KB default
+    # reserve → "Failed to allocate dummy cacheline for PSRAM memory barrier!"
+    # 64 KB is sufficient headroom for PSRAM retiming + WiFi + BLE DMA bufs.
+    # =====================================================================
+    "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL": "65536",
+
+    # =====================================================================
     # BLE Stack Size Reduction
     # =====================================================================
     # Reduce NimBLE host task stack: 5120 -> 3584 (saves ~1.5KB internal RAM)

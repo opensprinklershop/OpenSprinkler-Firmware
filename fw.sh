@@ -13,6 +13,7 @@
 #   full-flash [matter|zigbee|all]       – Full flash (bootloader + partitions + firmware)
 #   switch  [matter|zigbee|mode]         – Switch firmware variant via REST API
 #                                          (automatically reboots the device)
+#   reset                                 – Reset/reboot device via USB (RTS/DTR)
 #
 # Usage:
 #   ./fw.sh build
@@ -635,6 +636,23 @@ full_flash_env() {
     ok "Full flash successful: ${env}"
 }
 
+# ── USB reset ───────────────────────────────────────────────────────────────
+# Trigger a hardware reset on the connected ESP32-C5 via RTS/DTR signalling.
+# esptool's "run" command pulses DTR/RTS exactly as it does before flashing,
+# so no data is written to flash — the chip is simply rebooted.
+do_reset() {
+    header "USB Reset"
+    _find_esptool
+
+    local port="${UPLOAD_PORT:-/dev/ttyUSB2}"
+    info "Resetting device on ${port} …"
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" \
+        --before default_reset --after hard_reset \
+        run \
+    || { error "Reset failed — is the device connected on ${port}?"; exit 1; }
+    ok "Device reset."
+}
+
 # ── Release helpers ──────────────────────────────────────────────────────────
 
 # Read current version numbers from defines.h
@@ -719,9 +737,12 @@ build_release_env() {
 # Copy firmware binaries to upgrade directory
 copy_to_upgrade() {
     mkdir -p "$UPGRADE_DIR"
-    local zigbee_bin="${SCRIPT_DIR}/.pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
-    local matter_bin="${SCRIPT_DIR}/.pio/build/${ENV_C5_MATTER}/firmware.bin"
-    local esp8266_bin="${SCRIPT_DIR}/.pio/build/${ENV_ESP8266}/firmware.bin"
+    # Use .pio/dist/ copies (which survive per-env build-dir cleans) rather than
+    # .pio/build/<env>/firmware.bin which can disappear when platformio.ini is
+    # modified or when a subsequent build env wipes the shared build directory.
+    local zigbee_bin="${SCRIPT_DIR}/.pio/dist/firmware_${ENV_C5_ZIGBEE}.bin"
+    local matter_bin="${SCRIPT_DIR}/.pio/dist/firmware_${ENV_C5_MATTER}.bin"
+    local esp8266_bin="${SCRIPT_DIR}/.pio/dist/firmware_${ENV_ESP8266}.bin"
 
     for f in "$zigbee_bin" "$matter_bin" "$esp8266_bin"; do
         if [[ ! -f "$f" ]]; then
@@ -786,6 +807,12 @@ update_versions_catalog() {
     local date_str
     date_str=$(date +%Y-%m-%d)
 
+    # Compute SHA-256 checksums for this release
+    local zigbee_sha256 matter_sha256 esp8266_sha256
+    zigbee_sha256=$(sha256sum "${UPGRADE_DIR}/firmware_zigbee.bin" | awk '{print $1}')
+    matter_sha256=$(sha256sum "${UPGRADE_DIR}/firmware_matter.bin" | awk '{print $1}')
+    esp8266_sha256=$(sha256sum "${UPGRADE_DIR}/firmware_esp8266.bin" | awk '{print $1}')
+
     # Build a new entry for the current version
     local new_entry
     new_entry=$(python3 -c "
@@ -794,13 +821,16 @@ entry = {
     'fw_version': int(sys.argv[1]),
     'fw_minor': int(sys.argv[2]),
     'date': sys.argv[3],
-    'zigbee_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
-    'matter_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
-    'esp8266_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
+    'zigbee_url': 'http://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
+    'matter_url': 'http://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
+    'esp8266_url': 'http://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
+    'zigbee_sha256': sys.argv[5],
+    'matter_sha256': sys.argv[6],
+    'esp8266_sha256': sys.argv[7],
     'changelog': sys.argv[4]
 }
 print(json.dumps(entry))
-" "$OS_FW_VERSION" "$OS_FW_MINOR" "$date_str" "$changelog_text")
+" "$OS_FW_VERSION" "$OS_FW_MINOR" "$date_str" "$changelog_text" "$zigbee_sha256" "$matter_sha256" "$esp8266_sha256")
 
     # Merge into existing catalog or create new one
     if [[ -f "$VERSIONS_JSON" ]]; then
@@ -838,20 +868,28 @@ update_manifest() {
     if [[ -n "$prev_tag" ]]; then
         prev_release_url="https://github.com/${GITHUB_REPO}/releases/tag/${prev_tag}"
     fi
+    # Compute SHA-256 checksums for integrity verification
+    local zigbee_sha256 matter_sha256 esp8266_sha256
+    zigbee_sha256=$(sha256sum "${UPGRADE_DIR}/firmware_zigbee.bin" | awk '{print $1}')
+    matter_sha256=$(sha256sum "${UPGRADE_DIR}/firmware_matter.bin" | awk '{print $1}')
+    esp8266_sha256=$(sha256sum "${UPGRADE_DIR}/firmware_esp8266.bin" | awk '{print $1}')
     cat > "$MANIFEST" <<EOFM
 {
 	"fw_version": ${OS_FW_VERSION},
 	"fw_minor": ${OS_FW_MINOR},
-	"zigbee_url": "https://opensprinklershop.de/upgrade/firmware_zigbee.bin",
-	"matter_url": "https://opensprinklershop.de/upgrade/firmware_matter.bin",
-	"esp8266_url": "https://opensprinklershop.de/upgrade/firmware_esp8266.bin",
+	"zigbee_url": "http://opensprinklershop.de/upgrade/firmware_zigbee.bin",
+	"matter_url": "http://opensprinklershop.de/upgrade/firmware_matter.bin",
+	"esp8266_url": "http://opensprinklershop.de/upgrade/firmware_esp8266.bin",
+	"zigbee_sha256": "${zigbee_sha256}",
+	"matter_sha256": "${matter_sha256}",
+	"esp8266_sha256": "${esp8266_sha256}",
 	"versions_url": "https://opensprinklershop.de/upgrade/versions.json",
 	"releases_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$releases_url"),
 	"prev_release_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$prev_release_url"),
 	"changelog": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$changelog_text")
 }
 EOFM
-    ok "manifest.json updated."
+    ok "manifest.json updated (with SHA-256)."
 }
 
 # Update CHANGELOG.md header for the new release
@@ -1114,6 +1152,7 @@ ${BOLD}Actions:${NC}
                                             (standalone, without firmware)
   full-flash [matter|zigbee|all]            Full flash: bootloader + partition table
                                             + firmware via esptool (ESP32-C5 only)
+  reset                                     Reset/reboot device via USB (RTS/DTR)
   switch <matter|zigbee|zigbee-client|disabled>
                                             Switch firmware via REST API + reboot
   status                                    Show device status
@@ -1167,6 +1206,8 @@ ${BOLD}Examples:${NC}
   ./fw.sh full-flash zigbee
   ./fw.sh full-flash matter
   ERASE_FLASH=1 ./fw.sh full-flash zigbee
+  ./fw.sh reset
+  UPLOAD_PORT=/dev/ttyACM0 ./fw.sh reset
   OS_IP=192.168.0.151 OS_PASSWORD=opendoor ./fw.sh switch zigbee
   OS_IP=192.168.0.86  OS_HASH=a6d82bced638de3def1e9bbb4983225c ./fw.sh status
   OSPI_PI_PASS=secret ./fw.sh build ospi
@@ -1292,6 +1333,10 @@ case "$ACTION" in
                 ;;
             *) error "Unknown variant: $VARIANT (matter|zigbee|all)"; exit 1 ;;
         esac
+        ;;
+
+    reset)
+        do_reset
         ;;
 
     switch)

@@ -19,6 +19,8 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **ACME client**: header file for certificate management (7b90ee6)
 
 ### Fixed
+- **OTA: complete redesign (buffer-to-PSRAM → SHA-256 verify → flash)**: new `ota_download_verify_flash()` replaces the streaming-while-flashing approach; the entire firmware image is first downloaded into a PSRAM buffer using a 4 KB internal-RAM receive chunk, SHA-256 verified against the manifest digest (`zigbee_sha256` / `matter_sha256` / `esp8266_sha256`), then flashed in 4 KB internal-RAM chunks via `esp_ota_write()` — eliminates the `esp_cache_freeze_caches_disable_interrupts` cache-freeze assert (task stacks MUST be in internal RAM when flashing), enables pre-flash integrity verification, and reduces OTA task stack requirement to 8 KB internal RAM; SHA-256 hashes are computed by `fw.sh` at release time and embedded in `manifest.json` and `versions.json`
+- **OTA: continuation file now stores SHA-256**: `ota_save_continuation()` writes the `sha256` field alongside `url`/`label`/`variant`/`pw`; `ota_phase2_task` reads and forwards it to the new flash function
 - **Stop program via API no longer causes lockup**: `reset_all_stations_immediate()` is no longer called before the stop command is processed in `server_manual_program()`
 - **`stop_program()` PID matching**: corrected comparison from `q->pid==pid-1` to `qpid_decode(q->pid)==pid` for correct detection of manually started programs
 - **RainMaker `is_program_running()`**: now uses `qpid_decode()` for correct PID comparison

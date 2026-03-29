@@ -306,81 +306,85 @@ const char iopt_prompts[] PROGMEM =
 
 /** Option maximum values (stored in PROGMEM to reduce RAM usage) */
 const unsigned char iopt_max[] PROGMEM = {
-	0,
-	108,
-	1,
-	1,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	0,
-	255,
-	MAX_EXT_BOARDS,
-	1,
-	255,
-	MAX_NUM_STATIONS,
-	255,
-	255,
-	255,
-	1,
-	250,
-	1,
-	1,
-	255,
-	255,
-	255,
-	255,
-	250,
-	255,
-	255,
-	255,
-	255,
-	255,
-	1,
-	MAX_NUM_STATIONS,
-	255,
-	255,
-	0,
-	255,
-	255,
-	1,
-	255,
-	255,
-	255,
-	255,
-	1,
-	255,
-	255,
-	1,
-	255,
-	1,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	255,
-	1,
-	24,
-	24,
-	255,
-	100,
-	255,
-	210,
-	2,
-	1,
-	255,
-		1,  // IOPT_NOTIF4_ENABLE max
-		1   // IOPT_RAINMAKER_ENABLE max
+	0,               // IOPT_FW_VERSION (ro)
+	108,             // IOPT_TIMEZONE
+	1,               // IOPT_USE_NTP
+	1,               // IOPT_USE_DHCP
+	255,             // IOPT_STATIC_IP1
+	255,             // IOPT_STATIC_IP2
+	255,             // IOPT_STATIC_IP3
+	255,             // IOPT_STATIC_IP4
+	255,             // IOPT_GATEWAY_IP1
+	255,             // IOPT_GATEWAY_IP2
+	255,             // IOPT_GATEWAY_IP3
+	255,             // IOPT_GATEWAY_IP4
+	255,             // IOPT_HTTPPORT_0
+	255,             // IOPT_HTTPPORT_1
+	0,               // IOPT_HW_VERSION (ro)
+	MAX_EXT_BOARDS,  // IOPT_EXT_BOARDS
+	1,               // IOPT_SEQUENTIAL_RETIRED (ro)
+	255,             // IOPT_STATION_DELAY_TIME (water_time_encode_signed: ±255 → 0..255)
+	MAX_NUM_STATIONS,// IOPT_MASTER_STATION
+	255,             // IOPT_MASTER_ON_ADJ (water_time_encode_signed: ±255 → 0..255)
+	255,             // IOPT_MASTER_OFF_ADJ (water_time_encode_signed: ±255 → 0..255)
+	255,             // IOPT_URS_RETIRED (ro)
+	255,             // IOPT_RSO_RETIRED (ro)
+	250,             // IOPT_WATER_PERCENTAGE (max 250%)
+	1,               // IOPT_DEVICE_ENABLE (boolean; editable via jc not co)
+	1,               // IOPT_IGNORE_PASSWORD
+	255,             // IOPT_DEVICE_ID
+	255,             // IOPT_LCD_CONTRAST
+	255,             // IOPT_LCD_BACKLIGHT
+	255,             // IOPT_LCD_DIMMING
+	255,             // IOPT_BOOST_TIME
+	250,             // IOPT_USE_WEATHER
+	255,             // IOPT_NTP_IP1
+	255,             // IOPT_NTP_IP2
+	255,             // IOPT_NTP_IP3
+	255,             // IOPT_NTP_IP4
+	255,             // IOPT_ENABLE_LOGGING
+	MAX_NUM_STATIONS,// IOPT_MASTER_STATION_2
+	255,             // IOPT_MASTER_ON_ADJ_2 (water_time_encode_signed: ±255 → 0..255)
+	255,             // IOPT_MASTER_OFF_ADJ_2 (water_time_encode_signed: ±255 → 0..255)
+	255,             // IOPT_FW_MINOR (ro)
+	255,             // IOPT_PULSE_RATE_0
+	255,             // IOPT_PULSE_RATE_1
+	255,             // IOPT_REMOTE_EXT_MODE (editable via jc)
+	255,             // IOPT_DNS_IP1
+	255,             // IOPT_DNS_IP2
+	255,             // IOPT_DNS_IP3
+	255,             // IOPT_DNS_IP4
+	255,             // IOPT_SPE_AUTO_REFRESH
+	255,             // IOPT_NOTIF_ENABLE (bitmask byte 1)
+	255,             // IOPT_SENSOR1_TYPE
+	255,             // IOPT_SENSOR1_OPTION
+	255,             // IOPT_SENSOR2_TYPE
+	255,             // IOPT_SENSOR2_OPTION
+	255,             // IOPT_SENSOR1_ON_DELAY
+	255,             // IOPT_SENSOR1_OFF_DELAY
+	255,             // IOPT_SENSOR2_ON_DELAY
+	255,             // IOPT_SENSOR2_OFF_DELAY
+	255,             // IOPT_SUBNET_MASK1
+	255,             // IOPT_SUBNET_MASK2
+	255,             // IOPT_SUBNET_MASK3
+	255,             // IOPT_SUBNET_MASK4
+	255,             // IOPT_FORCE_WIRED
+	24,              // IOPT_LATCH_ON_VOLTAGE
+	24,              // IOPT_LATCH_OFF_VOLTAGE
+	255,             // IOPT_NOTIF2_ENABLE (bitmask byte 2)
+	255,             // IOPT_I_MIN_THRESHOLD
+	100,             // IOPT_I_MAX_LIMIT
+	255,             // IOPT_TARGET_PD_VOLTAGE
+	210,             // IOPT_RESERVED_TEMPCON
+	2,               // IOPT_RESERVED_COMBCHART
+	1,               // IOPT_WIFI_MODE (ro)
+	255,             // IOPT_RESET (ro)
+	6,               // IOPT_BELOW_HANDLING (NUM_BELOW_MODES-1 = BELOW_DISABLED_MINUTES)
+	255,             // IOPT_BELOW1 (high byte of uint16_t threshold)
+	255,             // IOPT_BELOW2 (low byte of uint16_t threshold)
+	255,             // IOPT_NOTIF3_ENABLE (bitmask byte 3)
+	255,             // IOPT_NOTIF4_ENABLE (bitmask byte 4)
+	1                // IOPT_RAINMAKER_ENABLE
 };
 
 // string options do not have maximum values

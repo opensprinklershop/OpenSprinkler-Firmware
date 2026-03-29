@@ -4,23 +4,83 @@
 #include "defines.h"
 #include "OpenSprinkler.h"
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_heap_caps.h>
+#include <mbedtls/sha256.h>
 #include "ArduinoJson.hpp"
 #include <LittleFS.h>
+#include <ETH.h>
 
 #if defined(ESP32C5)
 #include "ieee802154_config.h"
+#include "psram_utils.h"
 #endif
 
 extern OpenSprinkler os;
+extern bool useEth;   // true when the device is connected via Ethernet (main.cpp)
+extern ETHClass eth;  // Ethernet interface object (main.cpp)
 
 // Thread-safe state
 static SemaphoreHandle_t s_ota_mutex = NULL;
 static OnlineUpdateState s_state = { OTA_STATUS_IDLE, 0, "" };
 static OnlineUpdateManifest* s_manifest_ptr = NULL; // heap-allocated only during OTA
 static TaskHandle_t s_ota_task = NULL;
+// Optional variant override ("zigbee" or "matter"); empty = keep current
+static char s_ota_requested_variant[8] = {0};
+
+void online_update_set_variant(const char* variant) {
+	if (variant && (strcmp(variant, "zigbee") == 0 || strcmp(variant, "matter") == 0)) {
+		strncpy(s_ota_requested_variant, variant, sizeof(s_ota_requested_variant) - 1);
+	} else {
+		s_ota_requested_variant[0] = 0;
+	}
+}
+
+// ─── Check helper task ────────────────────────────────────────────────────────
+// online_update_check() opens a TCP connection which can use several KB of stack.
+// Running it from loopTask (default 8 KB) causes a stack-protection fault.
+// This wrapper task gives the check its own 12 KB stack; the caller blocks on a
+// notification until the check finishes or times out (20 s).
+static void ota_set_state(OnlineUpdateStatus status, uint8_t progress, const char* msg); // fwd decl
+
+struct OTACheckTaskParam {
+	OnlineUpdateManifest* manifest;   // caller-allocated, filled by task
+	bool*                 newer_out;  // written by task
+	TaskHandle_t          caller;     // notified when done
+};
+
+static void ota_check_task(void* pvParam) {
+	OTACheckTaskParam* p = static_cast<OTACheckTaskParam*>(pvParam);
+	*p->newer_out = online_update_check(*p->manifest);
+	xTaskNotifyGive(p->caller);
+	PSRAM_TASK_SELF_DELETE();
+}
+
+/**
+ * Run online_update_check() on a dedicated 12 KB task to avoid overflowing the
+ * caller's stack.  Blocks until the check completes or the 20 s timeout expires.
+ * Returns true when a newer version is available (same semantics as
+ * online_update_check).
+ */
+bool online_update_check_safe(OnlineUpdateManifest &manifest) {
+	bool newer = false;
+	OTACheckTaskParam param = { &manifest, &newer, xTaskGetCurrentTaskHandle() };
+	BaseType_t ok = PSRAM_TASK_CREATE(ota_check_task, "ota_check", 12288, &param, 1, NULL);
+	if (ok != pdPASS) {
+		DEBUG_PRINTLN(F("[OTA] ERROR: failed to create check task"));
+		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Check task alloc failed");
+		return false;
+	}
+	// Wait up to 20 s for the task to finish
+	if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20000))) {
+		DEBUG_PRINTLN(F("[OTA] check task timed out"));
+		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Check timed out");
+		return false;
+	}
+	return newer;
+}
 
 static void ota_set_state(OnlineUpdateStatus status, uint8_t progress, const char* msg) {
 	if (!s_ota_mutex) s_ota_mutex = xSemaphoreCreateMutex();
@@ -61,16 +121,15 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 
 	ota_set_state(OTA_STATUS_CHECKING, 0, "Checking for updates...");
 
-	WiFiClientSecure *client = new WiFiClientSecure();
+	WiFiClient *client = new WiFiClient();
 	if (!client) {
-		DEBUG_PRINTLN(F("[OTA] ERROR: WiFiClientSecure allocation failed"));
-		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Failed to create SSL client");
+		DEBUG_PRINTLN(F("[OTA] ERROR: WiFiClient allocation failed"));
+		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Failed to create HTTP client");
 		return false;
 	}
-	client->setInsecure(); // opensprinklershop.de — trusted server, skip cert verification for embedded device
 
 	// Scope block: HTTPClient must be destroyed BEFORE delete client,
-	// because its destructor may access the WiFiClientSecure through _client.
+	// because its destructor may access the WiFiClient through _client.
 	String payload;
 	bool httpOk = false;
 	{
@@ -114,6 +173,9 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	manifest.fw_minor = doc["fw_minor"] | 0;
 	strncpy(manifest.zigbee_url, doc["zigbee_url"] | "", sizeof(manifest.zigbee_url) - 1);
 	strncpy(manifest.matter_url, doc["matter_url"] | "", sizeof(manifest.matter_url) - 1);
+	strncpy(manifest.zigbee_sha256, doc["zigbee_sha256"] | "", sizeof(manifest.zigbee_sha256) - 1);
+	strncpy(manifest.matter_sha256, doc["matter_sha256"] | "", sizeof(manifest.matter_sha256) - 1);
+	strncpy(manifest.esp8266_sha256, doc["esp8266_sha256"] | "", sizeof(manifest.esp8266_sha256) - 1);
 	strncpy(manifest.changelog, doc["changelog"] | "", sizeof(manifest.changelog) - 1);
 	manifest.valid = (manifest.fw_version > 0 && manifest.zigbee_url[0] && manifest.matter_url[0]);
 
@@ -142,151 +204,264 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	return newer;
 }
 
-// Flash a single OTA partition from a URL.
-// partLabel: "zigbee" or "matter" (matches partition table labels).
-// pMin/pMax: overall progress range (0-100) this flash maps to.
-// Returns true on success.
-static bool ota_flash_partition(const char* url, const char* partLabel,
-	OnlineUpdateStatus dl_status, OnlineUpdateStatus err_status,
-	uint8_t pMin = 0, uint8_t pMax = 100) {
-	char msg[80];
+// Download firmware from `url` into a PSRAM buffer, optionally verify SHA-256,
+// then flash the named partition using a small internal-RAM write buffer.
+//
+// Design:
+//   1. HTTP GET → stream full image into a PSRAM buffer (receive via 4 KB internal chunk).
+//   2. Verify SHA-256 against `sha256_hex` if provided (mbedtls, no cache impact).
+//   3. Flash: copy 4 KB chunks PSRAM → internal-RAM → esp_ota_write().
+//      esp_ota_write() freezes the CPU cache; source MUST be internal RAM.
+//
+// Progress: download pMin→pMin+60%, verify +60-65%, flash +65-100%.
+// sha256_hex: 64-char lowercase hex, or NULL/"" to skip verification.
+// Returns true on success; error OTA state is set on failure.
+static bool ota_download_verify_flash(
+		const char* url, const char* sha256_hex, const char* partLabel,
+		OnlineUpdateStatus dl_status, OnlineUpdateStatus err_status,
+		uint8_t pMin = 0, uint8_t pMax = 100)
+{
+	constexpr size_t IO_BUF_SIZE = 4096;
+	const uint8_t    range       = pMax - pMin;
+
+	char     msg[96];
+	bool     success     = false;
+	uint8_t *img_buf     = nullptr;  // full firmware image buffered in PSRAM
+	uint8_t *io_buf      = nullptr;  // 4 KB internal-RAM rx / write buffer
+	int      imgSize     = 0;        // content-length / total bytes
+	bool     download_ok = false;
+
+	// ── 0. Normalise https → http ────────────────────────────────────────
+	char url_buf[256];
+	if (strncmp(url, "https://", 8) == 0) {
+		snprintf(url_buf, sizeof(url_buf), "http://%s", url + 8);
+		DEBUG_PRINTF("[OTA] Normalised URL: %s\n", url_buf);
+		url = url_buf;
+	}
+
 	snprintf(msg, sizeof(msg), "Downloading %s firmware...", partLabel);
-	ota_set_state(dl_status, 0, msg);
+	ota_set_state(dl_status, pMin, msg);
 
-	// Find target partition by label so we flash the correct slot
-	const esp_partition_t *target = esp_partition_find_first(
-		ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partLabel);
-	if (!target) {
-		snprintf(msg, sizeof(msg), "Partition '%s' not found", partLabel);
-		ota_set_state(err_status, 0, msg);
-		return false;
-	}
-	DEBUG_PRINTF("[OTA] Target partition: %s at 0x%06x (%u bytes)\n",
-		target->label, (unsigned)target->address, (unsigned)target->size);
-
-	DEBUG_PRINTF("[OTA] Downloading %s from: %s\n", partLabel, url);
-
-	WiFiClientSecure *client = new WiFiClientSecure();
+	// ── 1. HTTP GET + stream into PSRAM buffer ──────────────────────────
+	WiFiClient *client = new WiFiClient();
 	if (!client) {
-		ota_set_state(err_status, 0, "Failed to create SSL client");
+		ota_set_state(err_status, 0, "WiFiClient alloc failed");
 		return false;
 	}
-	client->setInsecure();
 
-	// Scope block: HTTPClient must be destroyed BEFORE delete client,
-	// because its destructor may access the WiFiClientSecure through _client.
-	bool success = false;
-	{
+	{   // scope keeps HTTPClient alive until http.end(); destroyed before delete client
 		HTTPClient http;
 		http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 		http.setTimeout(30000);
 
 		if (!http.begin(*client, url)) {
-			DEBUG_PRINTF("[OTA] ERROR: http.begin() failed for %s\n", partLabel);
+			DEBUG_PRINTF("[OTA] http.begin() failed for %s\n", partLabel);
 			ota_set_state(err_status, 0, "HTTP begin failed");
-			goto cleanup;
+			goto dl_done;
 		}
 
 		{
-			int httpCode = http.GET();
-			DEBUG_PRINTF("[OTA] HTTP response for %s: %d\n", partLabel, httpCode);
-			if (httpCode != HTTP_CODE_OK) {
-				snprintf(msg, sizeof(msg), "Download %s failed: HTTP %d", partLabel, httpCode);
-				DEBUG_PRINTF("[OTA] ERROR: %s\n", msg);
+			int code = http.GET();
+			DEBUG_PRINTF("[OTA] HTTP %d for %s\n", code, partLabel);
+			if (code != HTTP_CODE_OK) {
+				snprintf(msg, sizeof(msg), "%s HTTP error %d", partLabel, code);
 				ota_set_state(err_status, 0, msg);
 				http.end();
-				goto cleanup;
+				goto dl_done;
 			}
 
-			int contentLength = http.getSize();
-			if (contentLength <= 0) {
-				snprintf(msg, sizeof(msg), "Invalid content length for %s", partLabel);
+			imgSize = http.getSize();
+			DEBUG_PRINTF("[OTA] Content-Length for %s: %d bytes\n", partLabel, imgSize);
+			if (imgSize <= 0) {
+				snprintf(msg, sizeof(msg), "No Content-Length for %s", partLabel);
 				ota_set_state(err_status, 0, msg);
 				http.end();
-				goto cleanup;
+				goto dl_done;
 			}
 
-			if ((size_t)contentLength > target->size) {
-				snprintf(msg, sizeof(msg), "Image too large for %s (%d > %u)", partLabel, contentLength, (unsigned)target->size);
+			// Allocate full image buffer in PSRAM
+			img_buf = (uint8_t*)heap_caps_malloc(imgSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+			if (!img_buf) {
+				DEBUG_PRINTF("[OTA] PSRAM alloc %d bytes failed (PSRAM free=%u)\n",
+					imgSize, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+				snprintf(msg, sizeof(msg), "PSRAM alloc failed for %s", partLabel);
 				ota_set_state(err_status, 0, msg);
 				http.end();
-				goto cleanup;
+				goto dl_done;
 			}
+			DEBUG_PRINTF("[OTA] PSRAM image buffer: %d bytes @ %p\n", imgSize, (void*)img_buf);
 
-			snprintf(msg, sizeof(msg), "Flashing %s (%d bytes)...", partLabel, contentLength);
-			ota_set_state(dl_status, pMin + 1, msg);
-
-			// Use ESP-IDF OTA API directly — targets the specific partition by label
-			esp_ota_handle_t ota_handle = 0;
-			esp_err_t err = esp_ota_begin(target, contentLength, &ota_handle);
-			if (err != ESP_OK) {
-				snprintf(msg, sizeof(msg), "esp_ota_begin failed: 0x%x", err);
-				ota_set_state(err_status, 0, msg);
+			// Allocate small internal-RAM I/O buffer for network receive and flash writes
+			io_buf = (uint8_t*)heap_caps_malloc(IO_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+			if (!io_buf) {
+				DEBUG_PRINTF("[OTA] Internal I/O buf alloc failed (internal free=%u)\n",
+					(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+				ota_set_state(err_status, 0, "I/O buf alloc failed");
 				http.end();
-				goto cleanup;
+				goto dl_done;
 			}
 
 			WiFiClient *stream = http.getStreamPtr();
-			uint8_t buf[1024];
-			int totalWritten = 0;
-			bool write_error = false;
-			uint8_t lastReportedPct = 0;
+			int      totalRead  = 0;
+			uint8_t  lastPct    = 255;
+			uint32_t t0         = millis();
+			uint32_t lastDataMs = millis();
 
-			while (http.connected() && totalWritten < contentLength) {
+			while ((http.connected() || stream->available()) && totalRead < imgSize) {
 				size_t avail = stream->available();
-				if (avail) {
-					int bytesRead = stream->readBytes(buf, min(avail, sizeof(buf)));
-					if (bytesRead > 0) {
-						err = esp_ota_write(ota_handle, buf, bytesRead);
-						if (err != ESP_OK) {
-							snprintf(msg, sizeof(msg), "Write error: 0x%x at %d bytes", err, totalWritten);
-							ota_set_state(err_status, 0, msg);
-							esp_ota_abort(ota_handle);
-							http.end();
-							write_error = true;
-							goto cleanup;
-						}
-						totalWritten += bytesRead;
-						uint8_t raw_pct = (uint8_t)((totalWritten * 100L) / contentLength);
-						if (raw_pct / 10 != lastReportedPct / 10) {
-							uint8_t pct = pMin + (uint8_t)((long)raw_pct * (pMax - pMin) / 100);
-							snprintf(msg, sizeof(msg), "Flashing %s: %d%%", partLabel, raw_pct);
-							ota_set_state(dl_status, pct, msg);
-							lastReportedPct = raw_pct;
+				if (avail > 0) {
+					lastDataMs = millis();
+					int n = stream->readBytes(io_buf, (int)min(avail, IO_BUF_SIZE));
+					if (n > 0) {
+						memcpy(img_buf + totalRead, io_buf, n);
+						totalRead += n;
+						uint8_t raw = (uint8_t)((totalRead * 100LL) / imgSize);
+						if (raw / 5 != lastPct / 5) {
+							// Download fills pMin → pMin + 60% of range
+							uint8_t p = pMin + (uint8_t)((long)raw * range * 60 / 100 / 100);
+							snprintf(msg, sizeof(msg), "Downloading %s: %d%%", partLabel, raw);
+							ota_set_state(dl_status, p, msg);
+							lastPct = raw;
 						}
 					}
+				} else {
+					if (millis() - lastDataMs > 10000) {
+						DEBUG_PRINTF("[OTA] Download stall for %s after %d/%d bytes\n",
+							partLabel, totalRead, imgSize);
+						break;
+					}
+					delay(1);
 				}
-				delay(1);
 			}
 
-			if (totalWritten < contentLength) {
-				snprintf(msg, sizeof(msg), "Download incomplete: %d/%d bytes", totalWritten, contentLength);
+			http.end();
+
+			uint32_t elapsed = millis() - t0;
+			DEBUG_PRINTF("[OTA] Download done: %d/%d bytes in %ums (~%u kB/s)\n",
+				totalRead, imgSize, (unsigned)elapsed,
+				elapsed ? (unsigned)((uint64_t)totalRead * 1000 / elapsed / 1024) : 0u);
+
+			if (totalRead < imgSize) {
+				snprintf(msg, sizeof(msg), "Incomplete: %d/%d bytes", totalRead, imgSize);
+				ota_set_state(err_status, 0, msg);
+				goto dl_done;
+			}
+
+			download_ok = true;
+		}
+
+	dl_done:
+		;	// HTTPClient destroyed here, before delete client
+	}
+	delete client;
+
+	if (!download_ok) goto final_cleanup;
+
+	// ── 2. SHA-256 verification ────────────────────────────────────────────
+	if (sha256_hex && strlen(sha256_hex) == 64) {
+		ota_set_state(dl_status, pMin + (uint8_t)(range * 60 / 100), "Verifying checksum...");
+
+		uint8_t hash[32];
+		mbedtls_sha256(img_buf, (size_t)imgSize, hash, 0);  // 0 = SHA-256
+
+		char computed[65];
+		for (int i = 0; i < 32; i++) snprintf(computed + i * 2, 3, "%02x", hash[i]);
+		computed[64] = '\0';
+
+		DEBUG_PRINTF("[OTA] SHA-256 expected : %s\n", sha256_hex);
+		DEBUG_PRINTF("[OTA] SHA-256 computed : %s\n", computed);
+
+		if (strncasecmp(computed, sha256_hex, 64) != 0) {
+			snprintf(msg, sizeof(msg), "SHA-256 mismatch for %s", partLabel);
+			DEBUG_PRINTF("[OTA] ERROR: %s\n", msg);
+			ota_set_state(err_status, 0, msg);
+			goto final_cleanup;
+		}
+		DEBUG_PRINTF("[OTA] SHA-256 OK for %s\n", partLabel);
+	} else {
+		DEBUG_PRINTF("[OTA] No digest in manifest for %s — skipping verify\n", partLabel);
+	}
+
+	// ── 3. Find target partition ───────────────────────────────────────────
+	{
+		const esp_partition_t *target = esp_partition_find_first(
+			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partLabel);
+		if (!target) {
+			snprintf(msg, sizeof(msg), "Partition '%s' not found", partLabel);
+			ota_set_state(err_status, 0, msg);
+			goto final_cleanup;
+		}
+		if ((size_t)imgSize > target->size) {
+			snprintf(msg, sizeof(msg), "Image too large for %s (%d > %u)",
+				partLabel, imgSize, (unsigned)target->size);
+			ota_set_state(err_status, 0, msg);
+			goto final_cleanup;
+		}
+		DEBUG_PRINTF("[OTA] Flashing %s at 0x%06x (%d bytes)\n",
+			target->label, (unsigned)target->address, imgSize);
+
+		// ── 4. Flash PSRAM buffer → flash via internal-RAM io_buf ─────────
+		// esp_ota_write() freezes the CPU cache. The source buffer MUST be
+		// internal RAM. We copy 4 KB chunks from PSRAM → io_buf (internal RAM),
+		// then call esp_ota_write(). Safely decoupled from the network stack.
+		snprintf(msg, sizeof(msg), "Flashing %s...", partLabel);
+		ota_set_state(dl_status, pMin + (uint8_t)(range * 65 / 100), msg);
+
+		esp_ota_handle_t ota_handle = 0;
+		esp_err_t err = esp_ota_begin(target, (size_t)imgSize, &ota_handle);
+		if (err != ESP_OK) {
+			snprintf(msg, sizeof(msg), "esp_ota_begin failed: 0x%x", err);
+			ota_set_state(err_status, 0, msg);
+			goto final_cleanup;
+		}
+
+		int     offset       = 0;
+		uint8_t flashLastPct = 255;
+		bool    flash_err    = false;
+
+		while (offset < imgSize) {
+			size_t chunk = (size_t)min((int)IO_BUF_SIZE, imgSize - offset);
+			memcpy(io_buf, img_buf + offset, chunk);        // PSRAM → internal RAM
+			err = esp_ota_write(ota_handle, io_buf, chunk); // internal RAM → flash
+			if (err != ESP_OK) {
+				snprintf(msg, sizeof(msg), "esp_ota_write 0x%x at +%d", err, offset);
 				ota_set_state(err_status, 0, msg);
 				esp_ota_abort(ota_handle);
-				http.end();
-				goto cleanup;
+				flash_err = true;
+				break;
 			}
+			offset += (int)chunk;
+			uint8_t raw = (uint8_t)((offset * 100LL) / imgSize);
+			if (raw / 10 != flashLastPct / 10) {
+				// Flash fills pMin+65% → pMax
+				uint8_t p = pMin + (uint8_t)(range * 65 / 100)
+				           + (uint8_t)((long)raw * range * 35 / 100 / 100);
+				snprintf(msg, sizeof(msg), "Flashing %s: %d%%", partLabel, raw);
+				ota_set_state(dl_status, p, msg);
+				flashLastPct = raw;
+			}
+		}
 
+		if (!flash_err) {
 			err = esp_ota_end(ota_handle);
 			if (err != ESP_OK) {
 				snprintf(msg, sizeof(msg), "esp_ota_end failed: 0x%x", err);
 				ota_set_state(err_status, 0, msg);
-				http.end();
-				goto cleanup;
+				flash_err = true;
 			}
+		}
 
-			http.end();
+		if (!flash_err) {
+			DEBUG_PRINTF("[OTA] %s flashed and verified OK\n", partLabel);
+			snprintf(msg, sizeof(msg), "%s ready", partLabel);
+			ota_set_state(dl_status, pMax, msg);
 			success = true;
 		}
-cleanup:
-		; // HTTPClient destroyed here while client is still valid
 	}
-	delete client;
 
-	if (success) {
-		snprintf(msg, sizeof(msg), "%s firmware flashed OK", partLabel);
-		ota_set_state(dl_status, pMax, msg);
-	}
+final_cleanup:
+	if (io_buf)  { heap_caps_free(io_buf);  io_buf  = nullptr; }
+	if (img_buf) { heap_caps_free(img_buf); img_buf = nullptr; }
 	return success;
 }
 
@@ -368,7 +543,7 @@ static void ota_restore_sensor_files() {
 // url: firmware URL for the remaining partition, label: partition label,
 // variant: boot variant name to restore after both partitions are flashed.
 // Also saves the current password hash so it can be restored after factory_reset.
-static bool ota_save_continuation(const char* url, const char* label, const char* variant) {
+static bool ota_save_continuation(const char* url, const char* sha256_hex, const char* label, const char* variant) {
 	File f = LittleFS.open(OTA_CONTINUE_FILE, "w");
 	if (!f) {
 		DEBUG_PRINTLN(F("[OTA] Failed to write continuation file"));
@@ -377,9 +552,10 @@ static bool ota_save_continuation(const char* url, const char* label, const char
 	// Save password hash: factory_reset() on phase 2 boot will reset it to default
 	char pwBuf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_PASSWORD, pwBuf);
-	f.printf("{\"url\":\"%s\",\"label\":\"%s\",\"variant\":\"%s\",\"pw\":\"%s\"}", url, label, variant, pwBuf);
+	f.printf("{\"url\":\"%s\",\"sha256\":\"%s\",\"label\":\"%s\",\"variant\":\"%s\",\"pw\":\"%s\"}",
+	         url, sha256_hex ? sha256_hex : "", label, variant, pwBuf);
 	f.close();
-	DEBUG_PRINTLN(F("[OTA] Continuation state saved (incl. password)"));
+	DEBUG_PRINTLN(F("[OTA] Continuation state saved (incl. password + sha256)"));
 	return true;
 }
 
@@ -418,31 +594,39 @@ static void ota_update_task(void* param) {
 	DEBUG_PRINTF("[OTA] Running partition: %s\n", running ? running->label : "unknown");
 
 	IEEE802154BootVariant target_variant = ieee802154_get_boot_variant();
+	// Consume requested variant override (set by server_update_upgrade via online_update_set_variant)
+	char requested_variant_buf[8] = {0};
+	strncpy(requested_variant_buf, s_ota_requested_variant, sizeof(requested_variant_buf) - 1);
+	s_ota_requested_variant[0] = 0; // consume
+	if (requested_variant_buf[0]) {
+		target_variant = (strcmp(requested_variant_buf, "matter") == 0)
+			? IEEE802154BootVariant::MATTER : IEEE802154BootVariant::ZIGBEE;
+	}
 	const char* target_variant_name = (target_variant == IEEE802154BootVariant::MATTER) ? "matter" : "zigbee";
 
 	if (running && strcmp(running->label, "matter") == 0) {
 		// Running from matter (ota_1) → flash zigbee (ota_0) first
-		if (!ota_flash_partition(manifest.zigbee_url, "zigbee",
-		                         OTA_STATUS_DOWNLOADING_ZIGBEE, OTA_STATUS_ERROR_FLASH_ZIGBEE, 5, 48)) {
+		if (!ota_download_verify_flash(manifest.zigbee_url, manifest.zigbee_sha256, "zigbee",
+		                               OTA_STATUS_DOWNLOADING_ZIGBEE, OTA_STATUS_ERROR_FLASH_ZIGBEE, 5, 48)) {
 			s_ota_task = NULL;
 			vTaskDelete(NULL);
 			return;
 		}
 		// Save continuation: need to flash matter after reboot
-		ota_save_continuation(manifest.matter_url, "matter", target_variant_name);
+		ota_save_continuation(manifest.matter_url, manifest.matter_sha256, "matter", target_variant_name);
 		// Set boot to zigbee (the partition we just flashed) so phase 2 can write matter
 		esp_ota_set_boot_partition(esp_partition_find_first(
 			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, "zigbee"));
 	} else {
 		// Running from zigbee (ota_0) → flash matter (ota_1) first
-		if (!ota_flash_partition(manifest.matter_url, "matter",
-		                         OTA_STATUS_DOWNLOADING_MATTER, OTA_STATUS_ERROR_FLASH_MATTER, 5, 48)) {
+		if (!ota_download_verify_flash(manifest.matter_url, manifest.matter_sha256, "matter",
+		                               OTA_STATUS_DOWNLOADING_MATTER, OTA_STATUS_ERROR_FLASH_MATTER, 5, 48)) {
 			s_ota_task = NULL;
 			vTaskDelete(NULL);
 			return;
 		}
 		// Save continuation: need to flash zigbee after reboot
-		ota_save_continuation(manifest.zigbee_url, "zigbee", target_variant_name);
+		ota_save_continuation(manifest.zigbee_url, manifest.zigbee_sha256, "zigbee", target_variant_name);
 		// Set boot to matter (the partition we just flashed) so phase 2 can write zigbee
 		esp_ota_set_boot_partition(esp_partition_find_first(
 			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, "matter"));
@@ -454,8 +638,8 @@ static void ota_update_task(void* param) {
 	os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 #else
 	// Single-partition boards: flash only the zigbee URL as main firmware
-	if (!ota_flash_partition(manifest.zigbee_url, "app",
-	                         OTA_STATUS_DOWNLOADING_ZIGBEE, OTA_STATUS_ERROR_FLASH_ZIGBEE, 5, 98)) {
+	if (!ota_download_verify_flash(manifest.zigbee_url, manifest.zigbee_sha256, "app",
+	                               OTA_STATUS_DOWNLOADING_ZIGBEE, OTA_STATUS_ERROR_FLASH_ZIGBEE, 5, 98)) {
 		s_ota_task = NULL;
 		vTaskDelete(NULL);
 		return;
@@ -484,12 +668,52 @@ void online_update_start() {
 	s_manifest_ptr = NULL;
 	xSemaphoreGive(s_ota_mutex);
 
-	xTaskCreate(ota_update_task, "ota_update", 16384, param, 1, &s_ota_task);
+	// ota_update_task calls esp_ota_write() which freezes the CPU cache to write flash.
+	// With cache frozen PSRAM is inaccessible — any stack access would crash the CPU.
+	// This task MUST have its stack in internal RAM; use xTaskCreate, not PSRAM_TASK_CREATE.
+	BaseType_t task_ok = xTaskCreate(ota_update_task, "ota_update", 8192, param, 1, &s_ota_task);
+	if (task_ok != pdPASS) {
+		DEBUG_PRINTF("[OTA] ERROR: ota_update_task create failed (err=%d, int_free=%u)\n",
+		             (int)task_ok, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "OTA task creation failed (low memory)");
+		delete param;
+	}
 }
 
 // FreeRTOS task for phase 2 of OTA update (after reboot)
 static void ota_phase2_task(void* param) {
 	(void)param;
+
+	// Wait for network connectivity before attempting the download.
+	// This task is started early during boot (from online_update_resume()), before
+	// WiFi/Ethernet has had time to connect.  Without this wait the HTTP request
+	// fails, the continuation file gets deleted, and phase 2 never completes.
+	// Supports both WiFi (WL_CONNECTED) and Ethernet (useEth + valid IP).
+	{
+		auto network_ready = []() -> bool {
+			if (useEth) return (bool)eth.localIP();
+			return WiFi.status() == WL_CONNECTED;
+		};
+		const uint32_t NETWORK_WAIT_MS = 60000; // 60 s max
+		uint32_t t0 = millis();
+		while (!network_ready()) {
+			if (millis() - t0 > NETWORK_WAIT_MS) {
+				DEBUG_PRINTLN(F("[OTA] Phase 2: network not ready after 60 s — retrying on next boot"));
+				// Do NOT remove the continuation file so the next boot can retry.
+				s_ota_task = NULL;
+				vTaskDelete(NULL);
+				return;
+			}
+			vTaskDelay(pdMS_TO_TICKS(500));
+		}
+		if (useEth) {
+			DEBUG_PRINTF("[OTA] Phase 2: Ethernet ready (%s) — starting download\n",
+			             eth.localIP().toString().c_str());
+		} else {
+			DEBUG_PRINTF("[OTA] Phase 2: WiFi ready (%s) — starting download\n",
+			             WiFi.localIP().toString().c_str());
+		}
+	}
 
 	// Read continuation file
 	File f = LittleFS.open(OTA_CONTINUE_FILE, "r");
@@ -513,6 +737,7 @@ static void ota_phase2_task(void* param) {
 	}
 
 	const char* url = doc["url"] | "";
+	const char* sha256_hex = doc["sha256"] | "";
 	const char* label = doc["label"] | "";
 	const char* variant = doc["variant"] | "";
 	if (!url[0] || !label[0]) {
@@ -524,6 +749,7 @@ static void ota_phase2_task(void* param) {
 	}
 
 	DEBUG_PRINTF("[OTA] Phase 2: flashing %s from %s\n", label, url);
+	if (sha256_hex[0]) DEBUG_PRINTF("[OTA] Phase 2 SHA-256: %s\n", sha256_hex);
 
 	// Determine status codes based on which partition we're flashing
 	OnlineUpdateStatus dl_status = (strcmp(label, "matter") == 0)
@@ -531,8 +757,9 @@ static void ota_phase2_task(void* param) {
 	OnlineUpdateStatus err_status = (strcmp(label, "matter") == 0)
 		? OTA_STATUS_ERROR_FLASH_MATTER : OTA_STATUS_ERROR_FLASH_ZIGBEE;
 
-	// Phase 2 flash maps to 52-98% overall progress
-	if (!ota_flash_partition(url, label, dl_status, err_status, 52, 98)) {
+	// Phase 2: download → verify → flash (52-98% overall progress)
+	if (!ota_download_verify_flash(url, sha256_hex[0] ? sha256_hex : nullptr, label,
+	                               dl_status, err_status, 52, 98)) {
 		LittleFS.remove(OTA_CONTINUE_FILE);
 		s_ota_task = NULL;
 		vTaskDelete(NULL);
@@ -588,7 +815,13 @@ void online_update_resume() {
 	}
 
 	ota_set_state(OTA_STATUS_DOWNLOADING_ZIGBEE, 50, "Resuming update phase 2...");
-	xTaskCreate(ota_phase2_task, "ota_phase2", 16384, NULL, 1, &s_ota_task);
+	// Same constraint as ota_update_task: esp_ota_write requires an internal-RAM stack.
+	BaseType_t task_ok = xTaskCreate(ota_phase2_task, "ota_phase2", 8192, NULL, 1, &s_ota_task);
+	if (task_ok != pdPASS) {
+		DEBUG_PRINTF("[OTA] ERROR: ota_phase2_task create failed (err=%d, int_free=%u)\n",
+		             (int)task_ok, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Phase 2 task creation failed (low memory)");
+	}
 }
 
 // Helper: cache manifest after a check so the update task can use it
@@ -888,6 +1121,16 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 void online_update_cache_manifest(const OnlineUpdateManifest &manifest) {
 	if (!s_manifest_ptr) s_manifest_ptr = new OnlineUpdateManifest();
 	*s_manifest_ptr = manifest;
+}
+
+// Variant selection is ESP32C5-only; no-op stub for ESP8266
+void online_update_set_variant(const char* variant) {
+	(void)variant;
+}
+
+// Safe-check wrapper is ESP32-only; on ESP8266 call the regular check directly
+bool online_update_check_safe(OnlineUpdateManifest &manifest) {
+	return online_update_check(manifest);
 }
 
 void online_update_start() {
