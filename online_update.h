@@ -6,9 +6,8 @@
 #include <Arduino.h>
 
 // Update server base URL (no trailing slash)
-// Using plain HTTP to avoid HSTS/TLS overhead on embedded devices
 #define OTA_UPDATE_HOST "opensprinklershop.de"
-#define OTA_UPDATE_BASE_URL "http://opensprinklershop.de/upgrade"
+#define OTA_UPDATE_BASE_URL "https://opensprinklershop.de/upgrade"
 #define OTA_MANIFEST_URL OTA_UPDATE_BASE_URL "/manifest.json"
 #define OTA_ESP8266_FW_URL OTA_UPDATE_BASE_URL "/firmware_esp8266.bin"
 
@@ -28,6 +27,8 @@ enum OnlineUpdateStatus {
 	OTA_STATUS_ERROR_FLASH_ZIGBEE,
 	OTA_STATUS_ERROR_FLASH_MATTER,
 	OTA_STATUS_REBOOTING_PHASE2,     // Rebooting to flash remaining partition
+	OTA_STATUS_REBOOTING_OTA,        // Rebooting to free RAM before starting OTA (phase 0)
+	OTA_STATUS_ERROR_LOW_MEMORY,     // Not enough internal RAM — disable IEEE802.15.4 and reboot
 };
 
 // Manifest data parsed from the remote JSON
@@ -83,8 +84,10 @@ void online_update_resume();
 // Service deferred online update work from the main loop.
 void online_update_loop();
 
-// Continuation file path on LittleFS
+// Continuation file path on LittleFS (phase 2: second partition after reboot)
 #define OTA_CONTINUE_FILE "/ota_continue.json"
+// Start manifest file (phase 0: full manifest saved before reboot-to-OTA)
+#define OTA_START_FILE    "/ota_start.json"
 
 #endif // ESP32 || ESP8266
 #endif // ONLINE_UPDATE_H

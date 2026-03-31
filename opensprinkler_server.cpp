@@ -2942,15 +2942,21 @@ void server_update_upgrade(OTF_PARAMS_DEF) {
 	char zu_buf[200] = {0};
 	char mu_buf[200] = {0};
 	char fu_buf[200] = {0};
+	char zs_buf[65]  = {0};  // zigbee sha256 (64 hex chars + NUL)
+	char ms_buf[65]  = {0};  // matter sha256
 	bool has_zu = findKeyVal(FKV_SOURCE, zu_buf, sizeof(zu_buf), PSTR("zu"), true) && zu_buf[0];
 	bool has_mu = findKeyVal(FKV_SOURCE, mu_buf, sizeof(mu_buf), PSTR("mu"), true) && mu_buf[0];
 	bool has_fu = findKeyVal(FKV_SOURCE, fu_buf, sizeof(fu_buf), PSTR("fu"), true) && fu_buf[0];
+	bool has_zs = findKeyVal(FKV_SOURCE, zs_buf, sizeof(zs_buf), PSTR("zs"), true) && strlen(zs_buf) == 64;
+	bool has_ms = findKeyVal(FKV_SOURCE, ms_buf, sizeof(ms_buf), PSTR("ms"), true) && strlen(ms_buf) == 64;
 	if (has_zu || has_mu || has_fu) {
 		OnlineUpdateManifest override_manifest = {};
 		strncpy(override_manifest.zigbee_url,
 			has_fu ? fu_buf : (has_zu ? zu_buf : ""),
 			sizeof(override_manifest.zigbee_url) - 1);
 		strncpy(override_manifest.matter_url,  has_mu ? mu_buf : "", sizeof(override_manifest.matter_url)  - 1);
+		if (has_zs) strncpy(override_manifest.zigbee_sha256, zs_buf, sizeof(override_manifest.zigbee_sha256) - 1);
+		if (has_ms) strncpy(override_manifest.matter_sha256, ms_buf, sizeof(override_manifest.matter_sha256) - 1);
 		override_manifest.fw_version = 0;  // not checked by the task
 		override_manifest.fw_minor   = 0;
 		override_manifest.valid      = (override_manifest.zigbee_url[0] != 0);
@@ -2965,9 +2971,16 @@ void server_update_upgrade(OTF_PARAMS_DEF) {
 		online_update_set_variant(NULL); // clear any stale override
 	}
 
-	online_update_start();
+	// Flush the response BEFORE starting the OTA sequence, then start OTA.
+	// We cannot use handle_return() here because its macro contains `return;`
+	// which would make the online_update_start() call unreachable.
 	bfill.emit_p(PSTR("{\"result\":1}"));
-	handle_return(HTML_OK);
+#if defined(USE_OTF)
+	res.writeBodyData(ether_buffer, (int)bfill.position());
+#else
+	return_code = HTML_OK;
+#endif
+	online_update_start();
 }
 
 /** Get online update status (for progress polling).

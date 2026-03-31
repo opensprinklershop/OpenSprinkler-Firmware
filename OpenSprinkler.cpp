@@ -2592,6 +2592,10 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 			if(pos+nbytes>ETHER_BUFFER_SIZE) nbytes=ETHER_BUFFER_SIZE-pos; // cannot read more than buffer size
 			client->read((uint8_t*)ether_buffer+pos, nbytes);
 			pos+=nbytes;
+		} else {
+			// Yield while waiting for data: allows higher-priority FreeRTOS tasks (WiFi/TCP)
+			// to run and prevents starving the task watchdog on single-core ESP32 devices.
+			delay(1);
 		}
 		if(millis()>stoptime) {
 			DEBUG_PRINTLN(F("host timeout occured"));
@@ -3088,6 +3092,24 @@ void OpenSprinkler::mwdata_load() {
 	if(mwdata.nrecords > MONTHLY_WATER_NMONTHS) {
 		// invalid data, reset
 		memset(&mwdata, 0, sizeof(MonthlyWaterData));
+		return;
+	}
+	// Scrub records with implausible year (pre-2020 = NTP not yet synced at time of write)
+	const uint16_t MIN_VALID_YM = (uint16_t)(2020U * 12U);
+	uint8_t valid = 0;
+	for(uint8_t i = 0; i < mwdata.nrecords; i++) {
+		if(mwdata.records[i].ym >= MIN_VALID_YM) {
+			mwdata.records[valid++] = mwdata.records[i];
+		}
+	}
+	if(valid != mwdata.nrecords) {
+		mwdata.nrecords = valid;
+		mwdata_save();
+	}
+	// Also reset a bogus curr_ym (e.g. Jan 1970 from pre-NTP first boot)
+	if(mwdata.curr_ym != 0 && mwdata.curr_ym < MIN_VALID_YM) {
+		mwdata.curr_ym = 0;
+		mwdata_save();
 	}
 }
 
@@ -3114,6 +3136,15 @@ void OpenSprinkler::mwdata_check_month(time_os_t curr_time) {
 	struct tm *ti = gmtime(&ct);
 	curr_ym = (uint16_t)(ti->tm_year + 1900) * 12 + ti->tm_mon;
 #endif
+
+	// Reject implausible time — NTP not yet synced (device booted at epoch 0 = Jan 1970)
+	const uint16_t MIN_VALID_YM = (uint16_t)(2020U * 12U);
+	if(curr_ym < MIN_VALID_YM) return;
+
+	// Treat a stored bogus curr_ym (pre-2020, e.g. from old firmware) as uninitialized
+	if(mwdata.curr_ym != 0 && mwdata.curr_ym < MIN_VALID_YM) {
+		mwdata.curr_ym = 0;
+	}
 
 	if(mwdata.curr_ym == 0) {
 		// first run or fresh data: just set the current month

@@ -5,6 +5,7 @@
 #include "OpenSprinkler.h"
 #include <HTTPClient.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_heap_caps.h>
@@ -21,6 +22,7 @@
 extern OpenSprinkler os;
 extern bool useEth;   // true when the device is connected via Ethernet (main.cpp)
 extern ETHClass eth;  // Ethernet interface object (main.cpp)
+extern void reboot_in(uint32_t ms); // main.cpp — Ticker-based deferred reboot
 
 // Thread-safe state
 static SemaphoreHandle_t s_ota_mutex = NULL;
@@ -29,6 +31,10 @@ static OnlineUpdateManifest* s_manifest_ptr = NULL; // heap-allocated only durin
 static TaskHandle_t s_ota_task = NULL;
 // Optional variant override ("zigbee" or "matter"); empty = keep current
 static char s_ota_requested_variant[8] = {0};
+// Set true during boot when OTA files are detected.  Stays true until the
+// update finishes and the device reboots to normal mode.  Heavy services
+// (Matter, RainMaker, BLE, Zigbee, sensor radios) must not start.
+static bool s_ota_boot = false;
 
 void online_update_set_variant(const char* variant) {
 	if (variant && (strcmp(variant, "zigbee") == 0 || strcmp(variant, "matter") == 0)) {
@@ -104,9 +110,12 @@ OnlineUpdateState online_update_get_state() {
 }
 
 bool online_update_in_progress() {
+	if (s_ota_boot) return true;   // booted into OTA-only mode
 	if (!s_ota_mutex) return false;
 	xSemaphoreTake(s_ota_mutex, portMAX_DELAY);
-	bool busy = (s_state.status >= OTA_STATUS_DOWNLOADING_ZIGBEE && s_state.status <= OTA_STATUS_FLASHING_MATTER);
+	bool busy = (s_state.status >= OTA_STATUS_DOWNLOADING_ZIGBEE && s_state.status <= OTA_STATUS_FLASHING_MATTER)
+	         || s_state.status == OTA_STATUS_REBOOTING_PHASE2
+	         || s_state.status == OTA_STATUS_REBOOTING_OTA;
 	xSemaphoreGive(s_ota_mutex);
 	return busy;
 }
@@ -115,18 +124,23 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	memset(&manifest, 0, sizeof(manifest));
 	manifest.valid = false;
 
-	DEBUG_PRINTF("[OTA] WiFi status: %d, IP: %s\n",
-		(int)WiFi.status(), WiFi.localIP().toString().c_str());
+	if (useEth) {
+		DEBUG_PRINTF("[OTA] Ethernet IP: %s\n", eth.localIP().toString().c_str());
+	} else {
+		DEBUG_PRINTF("[OTA] WiFi status: %d, IP: %s\n",
+			(int)WiFi.status(), WiFi.localIP().toString().c_str());
+	}
 	DEBUG_PRINTF("[OTA] Manifest URL: %s\n", OTA_MANIFEST_URL);
 
 	ota_set_state(OTA_STATUS_CHECKING, 0, "Checking for updates...");
 
-	WiFiClient *client = new WiFiClient();
+	WiFiClientSecure *client = new WiFiClientSecure();
 	if (!client) {
-		DEBUG_PRINTLN(F("[OTA] ERROR: WiFiClient allocation failed"));
+		DEBUG_PRINTLN(F("[OTA] ERROR: WiFiClientSecure allocation failed"));
 		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Failed to create HTTP client");
 		return false;
 	}
+	client->setInsecure();
 
 	// Scope block: HTTPClient must be destroyed BEFORE delete client,
 	// because its destructor may access the WiFiClient through _client.
@@ -222,6 +236,8 @@ static bool ota_download_verify_flash(
 		uint8_t pMin = 0, uint8_t pMax = 100)
 {
 	constexpr size_t IO_BUF_SIZE = 4096;
+	constexpr int    MAX_DL_RETRIES = 10;
+	constexpr int    RETRY_DELAY_MS = 5000;
 	const uint8_t    range       = pMax - pMin;
 
 	char     msg[96];
@@ -231,52 +247,66 @@ static bool ota_download_verify_flash(
 	int      imgSize     = 0;        // content-length / total bytes
 	bool     download_ok = false;
 
-	// ── 0. Normalise https → http ────────────────────────────────────────
-	char url_buf[256];
-	if (strncmp(url, "https://", 8) == 0) {
-		snprintf(url_buf, sizeof(url_buf), "http://%s", url + 8);
-		DEBUG_PRINTF("[OTA] Normalised URL: %s\n", url_buf);
-		url = url_buf;
-	}
-
 	snprintf(msg, sizeof(msg), "Downloading %s firmware...", partLabel);
 	ota_set_state(dl_status, pMin, msg);
 
-	// ── 1. HTTP GET + stream into PSRAM buffer ──────────────────────────
-	WiFiClient *client = new WiFiClient();
-	if (!client) {
-		ota_set_state(err_status, 0, "WiFiClient alloc failed");
-		return false;
+	// Allocate internal-RAM I/O buffer once — reused across retries and for flash writes
+	io_buf = (uint8_t*)heap_caps_malloc(IO_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	if (!io_buf) {
+		DEBUG_PRINTF("[OTA] Internal I/O buf alloc failed (internal free=%u)\n",
+			(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+		ota_set_state(err_status, 0, "I/O buf alloc failed");
+		goto final_cleanup;
 	}
 
-	{   // scope keeps HTTPClient alive until http.end(); destroyed before delete client
-		HTTPClient http;
-		http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-		http.setTimeout(30000);
-
-		if (!http.begin(*client, url)) {
-			DEBUG_PRINTF("[OTA] http.begin() failed for %s\n", partLabel);
-			ota_set_state(err_status, 0, "HTTP begin failed");
-			goto dl_done;
+	// ── 1. HTTPS download with retry ────────────────────────────────────
+	for (int attempt = 1; attempt <= MAX_DL_RETRIES && !download_ok; attempt++) {
+		if (attempt > 1) {
+			snprintf(msg, sizeof(msg), "Retry %d/%d: downloading %s...", attempt, MAX_DL_RETRIES, partLabel);
+			ota_set_state(dl_status, pMin, msg);
+			DEBUG_PRINTF("[OTA] Download retry %d/%d for %s\n", attempt, MAX_DL_RETRIES, partLabel);
+			vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
 		}
 
-		{
+		// Free previous image buffer when retrying
+		if (img_buf) { heap_caps_free(img_buf); img_buf = nullptr; }
+		imgSize = 0;
+
+		WiFiClientSecure *client = new WiFiClientSecure();
+		if (!client) {
+			DEBUG_PRINTLN(F("[OTA] WiFiClientSecure alloc failed"));
+			continue; // retry with fresh allocation
+		}
+		client->setInsecure();
+
+		{   // scope: HTTPClient must be destroyed BEFORE delete client
+			HTTPClient http;
+			http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+			http.setTimeout(30000);
+
+			if (!http.begin(*client, url)) {
+				DEBUG_PRINTF("[OTA] http.begin() failed for %s (attempt %d)\n", partLabel, attempt);
+				delete client;
+				continue;
+			}
+
 			int code = http.GET();
-			DEBUG_PRINTF("[OTA] HTTP %d for %s\n", code, partLabel);
+			DEBUG_PRINTF("[OTA] HTTP %d for %s (attempt %d)\n", code, partLabel, attempt);
 			if (code != HTTP_CODE_OK) {
 				snprintf(msg, sizeof(msg), "%s HTTP error %d", partLabel, code);
-				ota_set_state(err_status, 0, msg);
+				DEBUG_PRINTF("[OTA] %s (attempt %d)\n", msg, attempt);
 				http.end();
-				goto dl_done;
+				delete client;
+				continue;
 			}
 
 			imgSize = http.getSize();
 			DEBUG_PRINTF("[OTA] Content-Length for %s: %d bytes\n", partLabel, imgSize);
 			if (imgSize <= 0) {
-				snprintf(msg, sizeof(msg), "No Content-Length for %s", partLabel);
-				ota_set_state(err_status, 0, msg);
+				DEBUG_PRINTF("[OTA] No Content-Length for %s (attempt %d)\n", partLabel, attempt);
 				http.end();
-				goto dl_done;
+				delete client;
+				continue;
 			}
 
 			// Allocate full image buffer in PSRAM
@@ -287,19 +317,10 @@ static bool ota_download_verify_flash(
 				snprintf(msg, sizeof(msg), "PSRAM alloc failed for %s", partLabel);
 				ota_set_state(err_status, 0, msg);
 				http.end();
-				goto dl_done;
+				delete client;
+				goto final_cleanup; // PSRAM exhaustion won't be helped by retry
 			}
 			DEBUG_PRINTF("[OTA] PSRAM image buffer: %d bytes @ %p\n", imgSize, (void*)img_buf);
-
-			// Allocate small internal-RAM I/O buffer for network receive and flash writes
-			io_buf = (uint8_t*)heap_caps_malloc(IO_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-			if (!io_buf) {
-				DEBUG_PRINTF("[OTA] Internal I/O buf alloc failed (internal free=%u)\n",
-					(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-				ota_set_state(err_status, 0, "I/O buf alloc failed");
-				http.end();
-				goto dl_done;
-			}
 
 			WiFiClient *stream = http.getStreamPtr();
 			int      totalRead  = 0;
@@ -326,8 +347,8 @@ static bool ota_download_verify_flash(
 					}
 				} else {
 					if (millis() - lastDataMs > 10000) {
-						DEBUG_PRINTF("[OTA] Download stall for %s after %d/%d bytes\n",
-							partLabel, totalRead, imgSize);
+						DEBUG_PRINTF("[OTA] Download stall for %s after %d/%d bytes (attempt %d)\n",
+							partLabel, totalRead, imgSize, attempt);
 						break;
 					}
 					delay(1);
@@ -342,20 +363,23 @@ static bool ota_download_verify_flash(
 				elapsed ? (unsigned)((uint64_t)totalRead * 1000 / elapsed / 1024) : 0u);
 
 			if (totalRead < imgSize) {
-				snprintf(msg, sizeof(msg), "Incomplete: %d/%d bytes", totalRead, imgSize);
-				ota_set_state(err_status, 0, msg);
-				goto dl_done;
+				snprintf(msg, sizeof(msg), "Incomplete: %d/%d bytes (attempt %d/%d)",
+					totalRead, imgSize, attempt, MAX_DL_RETRIES);
+				DEBUG_PRINTF("[OTA] %s\n", msg);
+				delete client;
+				continue; // retry
 			}
 
 			download_ok = true;
-		}
+		} // HTTPClient destroyed here, before delete client
+		delete client;
+	} // retry loop
 
-	dl_done:
-		;	// HTTPClient destroyed here, before delete client
+	if (!download_ok) {
+		snprintf(msg, sizeof(msg), "Download failed after %d attempts for %s", MAX_DL_RETRIES, partLabel);
+		ota_set_state(err_status, 0, msg);
+		goto final_cleanup;
 	}
-	delete client;
-
-	if (!download_ok) goto final_cleanup;
 
 	// ── 2. SHA-256 verification ────────────────────────────────────────────
 	if (sha256_hex && strlen(sha256_hex) == 64) {
@@ -539,6 +563,30 @@ static void ota_restore_sensor_files() {
 	}
 }
 
+// Save the full manifest to OTA_START_FILE for a deferred phase-0 start after reboot.
+// Called by online_update_start() to persist the manifest before triggering a
+// reboot-to-lean-mode so the OTA task has enough free internal RAM for its stack.
+static bool ota_save_start_manifest(const OnlineUpdateManifest& m) {
+	File f = LittleFS.open(OTA_START_FILE, "w");
+	if (!f) {
+		DEBUG_PRINTLN(F("[OTA] Failed to write start manifest file"));
+		return false;
+	}
+	char pwBuf[MAX_SOPTS_SIZE + 1];
+	os.sopt_load(SOPT_PASSWORD, pwBuf);
+	f.printf("{\"fw_version\":%u,\"fw_minor\":%u,"
+	         "\"zigbee_url\":\"%s\",\"matter_url\":\"%s\","
+	         "\"zigbee_sha256\":\"%s\",\"matter_sha256\":\"%s\","
+	         "\"variant\":\"%s\",\"pw\":\"%s\"}",
+	         m.fw_version, m.fw_minor,
+	         m.zigbee_url, m.matter_url,
+	         m.zigbee_sha256, m.matter_sha256,
+	         s_ota_requested_variant, pwBuf);
+	f.close();
+	DEBUG_PRINTLN(F("[OTA] Start manifest saved — OTA will begin after reboot"));
+	return true;
+}
+
 // Save OTA continuation state to LittleFS for phase 2 after reboot.
 // url: firmware URL for the remaining partition, label: partition label,
 // variant: boot variant name to restore after both partitions are flashed.
@@ -566,6 +614,32 @@ static void ota_update_task(void* param) {
 
 	ota_set_state(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, "Starting update...");
 
+	// Wait for network connectivity. This is a no-op when the task is created
+	// from a running system, but essential when started via online_update_resume()
+	// on a fresh reboot (phase 0: reboot-before-OTA path) before WiFi is up.
+	{
+		auto network_ready = []() -> bool {
+			if (useEth) return (bool)eth.localIP();
+			return WiFi.status() == WL_CONNECTED;
+		};
+		const uint32_t NETWORK_WAIT_MS = 60000;
+		uint32_t t0 = millis();
+		while (!network_ready()) {
+			if (millis() - t0 > NETWORK_WAIT_MS) {
+				DEBUG_PRINTLN(F("[OTA] Network not ready after 60 s — aborting"));
+				ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Network not ready for OTA");
+				delete cached;
+				s_ota_task = NULL;
+				delay(5000);
+				os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
+				vTaskDelete(NULL);
+				return;
+			}
+			vTaskDelay(pdMS_TO_TICKS(500));
+		}
+		DEBUG_PRINTLN(F("[OTA] Network ready — proceeding with update"));
+	}
+
 	// Step 1: Backup settings (0-4% overall)
 	ota_set_state(OTA_STATUS_DOWNLOADING_ZIGBEE, 2, "Backing up settings...");
 	ota_backup_settings();
@@ -581,6 +655,8 @@ static void ota_update_task(void* param) {
 		if (!online_update_check(manifest)) {
 			ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "No update available or check failed");
 			s_ota_task = NULL;
+			delay(5000);
+			os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 			vTaskDelete(NULL);
 			return;
 		}
@@ -609,6 +685,8 @@ static void ota_update_task(void* param) {
 		if (!ota_download_verify_flash(manifest.zigbee_url, manifest.zigbee_sha256, "zigbee",
 		                               OTA_STATUS_DOWNLOADING_ZIGBEE, OTA_STATUS_ERROR_FLASH_ZIGBEE, 5, 48)) {
 			s_ota_task = NULL;
+			delay(5000);
+			os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 			vTaskDelete(NULL);
 			return;
 		}
@@ -622,6 +700,8 @@ static void ota_update_task(void* param) {
 		if (!ota_download_verify_flash(manifest.matter_url, manifest.matter_sha256, "matter",
 		                               OTA_STATUS_DOWNLOADING_MATTER, OTA_STATUS_ERROR_FLASH_MATTER, 5, 48)) {
 			s_ota_task = NULL;
+			delay(5000);
+			os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 			vTaskDelete(NULL);
 			return;
 		}
@@ -641,6 +721,8 @@ static void ota_update_task(void* param) {
 	if (!ota_download_verify_flash(manifest.zigbee_url, manifest.zigbee_sha256, "app",
 	                               OTA_STATUS_DOWNLOADING_ZIGBEE, OTA_STATUS_ERROR_FLASH_ZIGBEE, 5, 98)) {
 		s_ota_task = NULL;
+		delay(5000);
+		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 		vTaskDelete(NULL);
 		return;
 	}
@@ -668,15 +750,28 @@ void online_update_start() {
 	s_manifest_ptr = NULL;
 	xSemaphoreGive(s_ota_mutex);
 
-	// ota_update_task calls esp_ota_write() which freezes the CPU cache to write flash.
-	// With cache frozen PSRAM is inaccessible — any stack access would crash the CPU.
-	// This task MUST have its stack in internal RAM; use xTaskCreate, not PSRAM_TASK_CREATE.
-	BaseType_t task_ok = xTaskCreate(ota_update_task, "ota_update", 8192, param, 1, &s_ota_task);
-	if (task_ok != pdPASS) {
-		DEBUG_PRINTF("[OTA] ERROR: ota_update_task create failed (err=%d, int_free=%u)\n",
-		             (int)task_ok, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "OTA task creation failed (low memory)");
+	if (!param || !param->valid) {
 		delete param;
+		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "No manifest cached — check for updates first");
+		return;
+	}
+
+	// Always reboot into OTA-only mode: save manifest to LittleFS and reboot.
+	// On the next boot online_update_resume() picks up OTA_START_FILE and creates
+	// the OTA task before any heavy services (Matter/BLE/Zigbee/RainMaker/sensors)
+	// are initialized.  The s_ota_boot flag prevents those services from starting
+	// in do_loop(), guaranteeing enough internal RAM for the 8 KB OTA task stack.
+	DEBUG_PRINTF("[OTA] Saving manifest and rebooting into OTA-only mode (int_free=%u)\n",
+	             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+
+	if (ota_save_start_manifest(*param)) {
+		delete param;
+		ota_set_state(OTA_STATUS_REBOOTING_OTA, 0, "Rebooting to free memory for OTA...");
+		reboot_in(1500);
+	} else {
+		delete param;
+		ota_set_state(OTA_STATUS_ERROR_LOW_MEMORY, 0,
+			"Failed to save OTA manifest. Try rebooting and retrying.");
 	}
 }
 
@@ -701,6 +796,8 @@ static void ota_phase2_task(void* param) {
 				DEBUG_PRINTLN(F("[OTA] Phase 2: network not ready after 60 s — retrying on next boot"));
 				// Do NOT remove the continuation file so the next boot can retry.
 				s_ota_task = NULL;
+				delay(5000);
+				os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 				vTaskDelete(NULL);
 				return;
 			}
@@ -720,6 +817,8 @@ static void ota_phase2_task(void* param) {
 	if (!f) {
 		DEBUG_PRINTLN(F("[OTA] Phase 2: continuation file not readable"));
 		s_ota_task = NULL;
+		delay(5000);
+		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 		vTaskDelete(NULL);
 		return;
 	}
@@ -732,6 +831,8 @@ static void ota_phase2_task(void* param) {
 		DEBUG_PRINTLN(F("[OTA] Phase 2: JSON parse error in continuation file"));
 		LittleFS.remove(OTA_CONTINUE_FILE);
 		s_ota_task = NULL;
+		delay(5000);
+		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 		vTaskDelete(NULL);
 		return;
 	}
@@ -744,6 +845,8 @@ static void ota_phase2_task(void* param) {
 		DEBUG_PRINTLN(F("[OTA] Phase 2: invalid continuation data"));
 		LittleFS.remove(OTA_CONTINUE_FILE);
 		s_ota_task = NULL;
+		delay(5000);
+		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 		vTaskDelete(NULL);
 		return;
 	}
@@ -762,6 +865,8 @@ static void ota_phase2_task(void* param) {
 	                               dl_status, err_status, 52, 98)) {
 		LittleFS.remove(OTA_CONTINUE_FILE);
 		s_ota_task = NULL;
+		delay(5000);
+		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 		vTaskDelete(NULL);
 		return;
 	}
@@ -790,6 +895,80 @@ static void ota_phase2_task(void* param) {
 // Called during boot to check for and resume a two-phase OTA update.
 // Restores password immediately (factory_reset in options_setup may have wiped it).
 void online_update_resume() {
+	if (!s_ota_mutex) s_ota_mutex = xSemaphoreCreateMutex();
+
+	// ── Detect OTA-only boot ──────────────────────────────────────────────────
+	// If either the start manifest or continuation file exists, we booted into
+	// OTA-only mode.  Set s_ota_boot so that online_update_in_progress() returns
+	// true immediately, preventing do_loop() from starting heavy services
+	// (Matter, RainMaker, BLE, Zigbee, sensor radios).
+	if (LittleFS.exists(OTA_START_FILE) || LittleFS.exists(OTA_CONTINUE_FILE)) {
+		s_ota_boot = true;
+		DEBUG_PRINTLN(F("[OTA] OTA-only boot mode — heavy services will be skipped"));
+	}
+
+	// ── Phase 0: deferred start ───────────────────────────────────────────────
+	// online_update_start() saved the manifest and rebooted into OTA-only mode.
+	// Pick it up here — before Zigbee/BLE/Matter are initialized — so the 8 KB
+	// internal-RAM task stack can be allocated without contention.
+	if (LittleFS.exists(OTA_START_FILE)) {
+		DEBUG_PRINTLN(F("[OTA] Phase-0 start manifest found — beginning OTA after reboot"));
+
+		OnlineUpdateManifest* task_param = new OnlineUpdateManifest();
+		bool ok = false;
+
+		File f = LittleFS.open(OTA_START_FILE, "r");
+		if (f) {
+			String json = f.readString();
+			f.close();
+			LittleFS.remove(OTA_START_FILE); // consume before starting task
+
+			ArduinoJson::JsonDocument doc;
+			if (!ArduinoJson::deserializeJson(doc, json)) {
+				task_param->fw_version = doc["fw_version"] | (uint16_t)0;
+				task_param->fw_minor   = doc["fw_minor"]   | (uint16_t)0;
+				strncpy(task_param->zigbee_url,    doc["zigbee_url"]    | "", sizeof(task_param->zigbee_url)    - 1);
+				strncpy(task_param->matter_url,    doc["matter_url"]    | "", sizeof(task_param->matter_url)    - 1);
+				strncpy(task_param->zigbee_sha256, doc["zigbee_sha256"] | "", sizeof(task_param->zigbee_sha256) - 1);
+				strncpy(task_param->matter_sha256, doc["matter_sha256"] | "", sizeof(task_param->matter_sha256) - 1);
+				task_param->valid = (task_param->zigbee_url[0] != '\0');
+
+				const char* variant = doc["variant"] | "";
+				if (variant[0])
+					strncpy(s_ota_requested_variant, variant, sizeof(s_ota_requested_variant) - 1);
+
+				const char* savedPw = doc["pw"] | "";
+				if (savedPw[0]) {
+					os.sopt_save(SOPT_PASSWORD, savedPw);
+					DEBUG_PRINTLN(F("[OTA] Password restored from phase-0 manifest"));
+				}
+				ok = task_param->valid;
+			} else {
+				DEBUG_PRINTLN(F("[OTA] Failed to parse phase-0 manifest JSON"));
+			}
+		} else {
+			LittleFS.remove(OTA_START_FILE);
+		}
+
+		if (ok) {
+			ota_set_state(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, "Starting update (post-reboot)...");
+			DEBUG_PRINTF("[OTA] Creating OTA task (int_free=%u)\n",
+			             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+			BaseType_t task_ok = xTaskCreate(ota_update_task, "ota_update", 8192, task_param, 1, &s_ota_task);
+			if (task_ok != pdPASS) {
+				DEBUG_PRINTF("[OTA] ERROR: task create failed even after reboot (int_free=%u)\n",
+				             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+				ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "OTA task creation failed even after reboot");
+				delete task_param;
+			}
+		} else {
+			DEBUG_PRINTLN(F("[OTA] Phase-0 manifest invalid — ignoring"));
+			delete task_param;
+		}
+		return; // do not fall through to phase-2 check
+	}
+
+	// ── Phase 2: continuation after phase-1 reboot ───────────────────────────
 	if (!LittleFS.exists(OTA_CONTINUE_FILE)) return;
 
 	DEBUG_PRINTLN(F("[OTA] Continuation file found — resuming phase 2"));
@@ -846,6 +1025,7 @@ void online_update_loop() {
 #include "opensprinkler_server.h"
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
+#include <WiFiClientSecureBearSSL.h>
 #include <Updater.h>
 #include <LittleFS.h>
 #include "ArduinoJson.hpp"
@@ -911,11 +1091,17 @@ static void ota_save_esp8266_restore_state() {
 	DEBUG_PRINTLN(F("[OTA-ESP8266] Sensor files backed up"));
 }
 
-static bool ota_parse_http_url(const char* url, String &host, uint16_t &port, String &uri) {
-	if (!url || strncmp(url, "http://", 7) != 0) {
+static bool ota_parse_http_url(const char* url, String &host, uint16_t &port, String &uri, bool &is_https) {
+	is_https = false;
+	const char* p = nullptr;
+	if (strncmp(url, "https://", 8) == 0) {
+		is_https = true;
+		p = url + 8;
+	} else if (strncmp(url, "http://", 7) == 0) {
+		p = url + 7;
+	} else {
 		return false;
 	}
-	const char* p = url + 7;
 	const char* slash = strchr(p, '/');
 	String host_port = slash ? String(p).substring(0, (int)(slash - p)) : String(p);
 	uri = slash ? String(slash) : String("/");
@@ -923,10 +1109,10 @@ static bool ota_parse_http_url(const char* url, String &host, uint16_t &port, St
 	if (colon >= 0) {
 		host = host_port.substring(0, colon);
 		port = (uint16_t)host_port.substring(colon + 1).toInt();
-		if (port == 0) port = 80;
+		if (port == 0) port = (is_https ? 443 : 80);
 	} else {
 		host = host_port;
-		port = 80;
+		port = (is_https ? 443 : 80);
 	}
 	return host.length() > 0;
 }
@@ -1174,35 +1360,47 @@ void online_update_loop() {
 
 	const char* ota_urls[2] = {
 		manifest.zigbee_url,
-		"http://www.opensprinklershop.de/upgrade/firmware_esp8266.bin"
+		"https://www.opensprinklershop.de/upgrade/firmware_esp8266.bin"
 	};
 	int last_http_code = 0;
 	for (uint8_t i = 0; i < 2 && !ok; i++) {
 		if (i > 0) {
 			DEBUG_PRINTF("[OTA-ESP8266] Retrying with fallback URL: %s\n", ota_urls[i]);
 		}
+		// Create appropriate TCP client based on URL scheme.
+		// BearSSL on ESP8266 needs reduced buffer sizes to fit in heap.
+		BearSSL::WiFiClientSecure secureClient;
 		WiFiClient plainClient;
 		HTTPClient http;
 		String host;
 		String uri;
 		uint16_t port = 80;
 		String host_header;
+		bool is_https = false;
 		bool began = false;
-		if (ota_parse_http_url(ota_urls[i], host, port, uri)) {
+		if (ota_parse_http_url(ota_urls[i], host, port, uri, is_https)) {
+			if (is_https) {
+				secureClient.setInsecure();
+				secureClient.setBufferSizes(512, 512);
+			}
 			IPAddress resolved_ip;
 			int resolve_ok = WiFi.hostByName(host.c_str(), resolved_ip, 2000);
 			if (resolve_ok == 1 && (bool)resolved_ip) {
 				String ip_host = resolved_ip.toString();
 				DEBUG_PRINTF("[OTA-ESP8266] Resolved %s -> %s\n", host.c_str(), ip_host.c_str());
 				host_header = host;
-				began = http.begin(plainClient, ip_host, port, uri);
+				began = is_https
+					? http.begin(secureClient, ip_host, port, uri, true)
+					: http.begin(plainClient, ip_host, port, uri);
 			} else {
 				DEBUG_PRINTF("[OTA-ESP8266] DNS resolve failed for %s, falling back to URL begin\n", host.c_str());
 			}
 		}
 		http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 		if (!began) {
-			began = http.begin(plainClient, ota_urls[i]);
+			began = is_https
+				? http.begin(secureClient, ota_urls[i])
+				: http.begin(plainClient, ota_urls[i]);
 		}
 		if (!began) {
 			ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");

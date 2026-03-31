@@ -755,6 +755,65 @@ copy_to_upgrade() {
     cp "$matter_bin" "${UPGRADE_DIR}/firmware_matter.bin"
     cp "$esp8266_bin" "${UPGRADE_DIR}/firmware_esp8266.bin"
     ok "Binaries copied to ${UPGRADE_DIR}/"
+    sync_manifest_sha256
+}
+
+# Copy a single variant's firmware to upgrade directory (used by single-variant deploy)
+copy_one_to_upgrade() {
+    local env="$1"
+    local dest_name="$2"
+    mkdir -p "$UPGRADE_DIR"
+    local src="${SCRIPT_DIR}/.pio/dist/firmware_${env}.bin"
+    if [[ ! -f "$src" ]]; then
+        error "Binary not found: ${src}"
+        return 1
+    fi
+    cp "$src" "${UPGRADE_DIR}/${dest_name}"
+    ok "upgrade/${dest_name} synced with current build"
+    sync_manifest_sha256
+}
+
+# Recompute SHA-256 of whichever firmware binaries are present in upgrade/ and
+# patch only the *_sha256 fields in manifest.json — all other fields are unchanged.
+# Safe to call after every deploy so manifest always matches the served files.
+sync_manifest_sha256() {
+    if [[ ! -f "$MANIFEST" ]]; then
+        return 0  # nothing to update
+    fi
+    python3 - "$MANIFEST" \
+        "${UPGRADE_DIR}/firmware_zigbee.bin" \
+        "${UPGRADE_DIR}/firmware_matter.bin" \
+        "${UPGRADE_DIR}/firmware_esp8266.bin" <<'PYEOF'
+import json, hashlib, sys, os
+
+manifest_path = sys.argv[1]
+bins = {"zigbee": sys.argv[2], "matter": sys.argv[3], "esp8266": sys.argv[4]}
+
+def sha256file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+d = json.load(open(manifest_path))
+changed = []
+for variant, path in bins.items():
+    key = f"{variant}_sha256"
+    if os.path.isfile(path):
+        new_hash = sha256file(path)
+        if d.get(key) != new_hash:
+            d[key] = new_hash
+            changed.append(f"{key}={new_hash[:16]}…")
+if changed:
+    with open(manifest_path, "w") as f:
+        json.dump(d, f, indent=4, ensure_ascii=False)
+    print("  manifest.json SHA-256 updated:", ", ".join(changed))
+PYEOF
+    # Reload Squid config (cache bypass for /upgrade/ is enforced server-side via ACL + .htaccess no-cache)
+    if command -v squid &>/dev/null; then
+        sudo systemctl reload squid 2>/dev/null && info "Squid reloaded" || true
+    fi
 }
 
 # Archive the previous release binaries into a versioned subdirectory
@@ -801,6 +860,23 @@ except Exception:
     ok "Previous version v${prev_version} (build ${prev_minor}) archived to ${archive_dir}/"
 }
 
+# Archive the current (just-built) release into its own versioned subdirectory.
+# Must be called AFTER copy_to_upgrade and update_manifest so the binaries and
+# manifest in upgrade/ are already the authoritative, consistent post-build files.
+archive_current_version() {
+    local archive_dir="${UPGRADE_DIR}/archive/v${OS_FW_VERSION}_${OS_FW_MINOR}"
+    mkdir -p "$archive_dir"
+
+    for bin_name in firmware_zigbee.bin firmware_matter.bin firmware_esp8266.bin; do
+        if [[ -f "${UPGRADE_DIR}/${bin_name}" ]]; then
+            cp "${UPGRADE_DIR}/${bin_name}" "${archive_dir}/${bin_name}"
+        fi
+    done
+    cp "$MANIFEST" "${archive_dir}/manifest.json"
+
+    ok "Current version v${OS_FW_VERSION} (build ${OS_FW_MINOR}) self-archived to ${archive_dir}/"
+}
+
 # Update (or create) the versions.json catalog with all known releases
 update_versions_catalog() {
     local changelog_text="$1"
@@ -821,9 +897,9 @@ entry = {
     'fw_version': int(sys.argv[1]),
     'fw_minor': int(sys.argv[2]),
     'date': sys.argv[3],
-    'zigbee_url': 'http://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
-    'matter_url': 'http://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
-    'esp8266_url': 'http://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
+    'zigbee_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
+    'matter_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
+    'esp8266_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
     'zigbee_sha256': sys.argv[5],
     'matter_sha256': sys.argv[6],
     'esp8266_sha256': sys.argv[7],
@@ -877,9 +953,9 @@ update_manifest() {
 {
 	"fw_version": ${OS_FW_VERSION},
 	"fw_minor": ${OS_FW_MINOR},
-	"zigbee_url": "http://opensprinklershop.de/upgrade/firmware_zigbee.bin",
-	"matter_url": "http://opensprinklershop.de/upgrade/firmware_matter.bin",
-	"esp8266_url": "http://opensprinklershop.de/upgrade/firmware_esp8266.bin",
+	"zigbee_url": "https://opensprinklershop.de/upgrade/firmware_zigbee.bin",
+	"matter_url": "https://opensprinklershop.de/upgrade/firmware_matter.bin",
+	"esp8266_url": "https://opensprinklershop.de/upgrade/firmware_esp8266.bin",
 	"zigbee_sha256": "${zigbee_sha256}",
 	"matter_sha256": "${matter_sha256}",
 	"esp8266_sha256": "${esp8266_sha256}",
@@ -890,6 +966,10 @@ update_manifest() {
 }
 EOFM
     ok "manifest.json updated (with SHA-256)."
+    # Reload Squid config (cache bypass for /upgrade/ is enforced server-side via ACL + .htaccess no-cache)
+    if command -v squid &>/dev/null; then
+        sudo systemctl reload squid 2>/dev/null && info "Squid reloaded" || true
+    fi
 }
 
 # Update CHANGELOG.md header for the new release
@@ -1097,6 +1177,10 @@ All releases: https://github.com/${GITHUB_REPO}/releases
 ${changelog_section}"
 
     update_manifest "$release_notes"
+    # Ensure the archive directory for this version contains the same consistent
+    # post-build binaries and manifest that are now in upgrade/.  This must run
+    # AFTER update_manifest so the archive manifest carries the correct SHA-256.
+    archive_current_version
     update_versions_catalog "$release_notes"
 
     if ! $is_rebuild; then
@@ -1273,20 +1357,24 @@ case "$ACTION" in
                 case "$VARIANT" in
                 matter)
                     build_env "$ENV_C5_MATTER"
+                    copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
                     upload_env "$ENV_C5_MATTER"
                     ;;
                 zigbee)
                     build_env "$ENV_C5_ZIGBEE"
+                    copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
                     upload_env "$ENV_C5_ZIGBEE"
                     ;;
                 esp8266)
                     build_env "$ENV_ESP8266"
+                    copy_one_to_upgrade "$ENV_ESP8266" "firmware_esp8266.bin"
                     upload_env "$ENV_ESP8266"
                     ;;
                 all|"")
                     build_env "$ENV_C5_MATTER"
                     build_env "$ENV_C5_ZIGBEE"
                     build_env "$ENV_ESP8266"
+                    copy_to_upgrade
                     upload_env "$ENV_C5_MATTER"
                     upload_env "$ENV_C5_ZIGBEE"
                     upload_env "$ENV_ESP8266"
@@ -1294,6 +1382,7 @@ case "$ACTION" in
                     ok "Matter:   flashed to ota_1 (0x3A0000)"
                     ok "ZigBee:   flashed to ota_0 (0x10000)"
                     ok "ESP8266:  flashed"
+                    ok "upgrade/  synced with current build"
                     ;;
                 *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|ospi|all)"; exit 1 ;;
                 esac

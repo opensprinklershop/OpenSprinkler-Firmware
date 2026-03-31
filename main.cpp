@@ -666,7 +666,7 @@ void do_setup() {
 
 	#if defined(OS_ENABLE_ZIGBEE)
 	// In ZigBee Client mode: automatically start network search on boot
-	if (ieee802154_is_zigbee_client() && sensor_zigbee_ensure_started()) {
+	if (!online_update_in_progress() && ieee802154_is_zigbee_client() && sensor_zigbee_ensure_started()) {
 		sensor_zigbee_open_network(60);
 		DEBUG_PRINTLN("[ZigBee] Auto-join started on boot (60 s)");
 	}
@@ -859,7 +859,7 @@ void do_loop()
 	// Matter mode: wait 15s after Matter init (BLE/Zigbee managed by Matter).
 	// Non-Matter: BLE+Zigbee already initialized via sensor_radio_early_init(),
 	//             only MQTT/FYTA need a short delay (5s) for network stability.
-	if(!sensor_api_connected) {
+	if(!sensor_api_connected && !online_update_in_progress()) {
 		bool ready = false;
 		#ifdef ENABLE_MATTER
 		{
@@ -958,6 +958,15 @@ void do_loop()
 			// Ethernet is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
 
+			// ── OTA-only boot: skip heavy services, start HTTP server only ──
+			if (online_update_in_progress()) {
+				DEBUG_PRINTLN(F("[OTA] OTA-only boot (Ethernet) — skipping Matter/RainMaker/BLE/Zigbee"));
+				start_server_client();
+				os.state = OS_STATE_CONNECTED;
+				connecting_timeout = 0;
+				break;
+			}
+
 			#ifdef ENABLE_RAINMAKER
 			// BLE claiming has PRIORITY over sensor BLE: if no TLS certs,
 			// defer sensor_radio_early_init and start BLE provisioning first.
@@ -999,6 +1008,7 @@ void do_loop()
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
 			// WiFi AP is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
+			if (!online_update_in_progress()) {
 			#ifdef ENABLE_MATTER
 			// AP mode: init Matter for BLE commissioning (mDNS not available in AP mode)
 			if (ieee802154_is_matter()) {
@@ -1009,6 +1019,7 @@ void do_loop()
 			#ifdef ENABLE_RAINMAKER
 			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif
+			}
 			start_server_ap();
 			dns->setErrorReplyCode(DNSReplyCode::NoError);
 			dns->setTTL(300);
@@ -1021,7 +1032,7 @@ void do_loop()
 			#ifdef ENABLE_RAINMAKER
 			// If RainMaker needs BLE provisioning (no TLS certs from claiming),
 			// don't connect WiFi ourselves. Let WiFiProv handle WiFi + claiming.
-			if (os.iopts[IOPT_RAINMAKER_ENABLE] && OSRainMaker::needs_provisioning()) {
+			if (!online_update_in_progress() && os.iopts[IOPT_RAINMAKER_ENABLE] && OSRainMaker::needs_provisioning()) {
 				led_blink_ms = LED_FAST_BLINK;
 				psram_restore_after_wifi_init();
 				OSRainMaker::instance().init();  // starts BLE provisioning
@@ -1060,6 +1071,7 @@ void do_loop()
 		os.config_ip();
 		// WiFi AP is up — safe to route malloc back to PSRAM
 		psram_restore_after_wifi_init();
+		if (!online_update_in_progress()) {
 		#ifdef ENABLE_MATTER
 		if (ieee802154_is_matter()) {
 			DEBUG_PRINTLN("[Matter] Network up (STA+AP) - initializing Matter");
@@ -1069,6 +1081,7 @@ void do_loop()
 		#ifdef ENABLE_RAINMAKER
 		if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 		#endif
+		}
 		os.state = OS_STATE_CONNECTED;
 		break;
 
@@ -1081,6 +1094,7 @@ void do_loop()
 			os.lcd.clear();
 			os.save_wifi_ip();
 			
+		  if (!online_update_in_progress()) {
 			// RainMaker MUST run before sensor_radio_early_init(): on ESP32-C5,
 			// BLE/Zigbee init deinits WiFi, breaking esp_wifi_get_mac() inside
 			// esp_rmaker_node_init(). Call init() first while WiFi is still active.
@@ -1122,6 +1136,9 @@ void do_loop()
 				OSMatter::instance().init();
 			}
 			#endif
+		  } else {
+			DEBUG_PRINTLN(F("[OTA] OTA-only boot (WiFi) — skipping Matter/RainMaker/BLE/Zigbee"));
+		  }
 			start_server_client();
 			
 			os.state = OS_STATE_CONNECTED;
@@ -1251,7 +1268,7 @@ void do_loop()
 #endif	// Process Ethernet packets
 
 	// Start up MQTT when we have a network connection (skip during ZigBee lock or join)
-	if (os.status.req_mqtt_restart && os.network_connected() && boot_elapsed >= 15000) {
+	if (!online_update_in_progress() && os.status.req_mqtt_restart && os.network_connected() && boot_elapsed >= 15000) {
 		DEBUG_PRINTLN(F("req_mqtt_restart"));
 		os.mqtt.begin();
 		os.status.req_mqtt_restart = false;
