@@ -639,7 +639,7 @@ int OSMqtt::_init(void) {
 	mqtt_client->setSocketTimeout(2);  // 2s instead of 15s default — avoid blocking main loop
 	mqtt_client->setKeepAlive(OS_MQTT_KEEPALIVE);
 	#if defined(ESP32)
-	mqtt_client->setBufferSize(8192);
+	mqtt_client->setBufferSize(4096);
 	#else
 	mqtt_client->setBufferSize(ESP8266_MQTT_BUFFER_SIZE);
 	#endif

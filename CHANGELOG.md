@@ -17,10 +17,19 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **ZigBee: vendor API lookups**: lookups for ZigBee device vendor information (26bab15)
 - **ZigBee client mode**: local data exposure and ZigBee notifications after sensor updates in client mode (5822c4b, 36d9504)
 - **ACME client**: header file for certificate management (7b90ee6)
+- **OTA-only boot mode**: OTA update now always reboots into a lean mode where heavy services (Matter, RainMaker, BLE, Zigbee, sensor radios, MQTT) are prevented from starting — guarantees enough internal RAM for the 8 KB OTA task stack on ESP32-C5
+- **OTA UI improvements**: progress bar starts at 0% immediately, close-button warns when update is in progress, reconnect probes alternate between original and default password, phase-2 detection fallback when progress exceeds 50%
+
+### Changed
+- **MQTT buffer size**: reduced ESP32 MQTT buffer from 8 KB to 4 KB; increased ESP8266 MQTT buffer from 1 KB to 4 KB — unified at 4 KB across platforms
+- **OTA download retries**: increased from 3 to 10 attempts with 1 s delay (was 3 s)
 
 ### Fixed
 - **OTA: complete redesign (buffer-to-PSRAM → SHA-256 verify → flash)**: new `ota_download_verify_flash()` replaces the streaming-while-flashing approach; the entire firmware image is first downloaded into a PSRAM buffer using a 4 KB internal-RAM receive chunk, SHA-256 verified against the manifest digest (`zigbee_sha256` / `matter_sha256` / `esp8266_sha256`), then flashed in 4 KB internal-RAM chunks via `esp_ota_write()` — eliminates the `esp_cache_freeze_caches_disable_interrupts` cache-freeze assert (task stacks MUST be in internal RAM when flashing), enables pre-flash integrity verification, and reduces OTA task stack requirement to 8 KB internal RAM; SHA-256 hashes are computed by `fw.sh` at release time and embedded in `manifest.json` and `versions.json`
 - **OTA: continuation file now stores SHA-256**: `ota_save_continuation()` writes the `sha256` field alongside `url`/`label`/`variant`/`pw`; `ota_phase2_task` reads and forwards it to the new flash function
+- **OTA memory exhaustion**: heavy services (Matter, BLE/Zigbee radio, RainMaker, sensor API, MQTT) are now gated in `do_loop()` and `do_setup()` when `online_update_in_progress()` is true — the HTTP server still starts for `/us` status polling
+- **OTA progress display**: removed misleading overall-progress percentage from step indicator text (was showing firmware progress, not per-partition)
+- **OTA reconnect after reboot**: reconnect probe now uses direct `$.ajax` with password alternation (original + default "opendoor") instead of `sendToOS` which only tried one password
 - **Stop program via API no longer causes lockup**: `reset_all_stations_immediate()` is no longer called before the stop command is processed in `server_manual_program()`
 - **`stop_program()` PID matching**: corrected comparison from `q->pid==pid-1` to `qpid_decode(q->pid)==pid` for correct detection of manually started programs
 - **RainMaker `is_program_running()`**: now uses `qpid_decode()` for correct PID comparison

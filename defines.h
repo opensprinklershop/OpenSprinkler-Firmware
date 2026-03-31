@@ -82,7 +82,7 @@ typedef unsigned long ulong;
 
 #if defined(ESP8266)
 // ESP8266 memory tuning: keep MQTT/TLS allocations conservative so MQTT + HTTPS can coexist.
-#define ESP8266_MQTT_BUFFER_SIZE      1024
+#define ESP8266_MQTT_BUFFER_SIZE      4096
 #define ESP8266_TLS_BUFFER_FALLBACK   1024
 #endif
 
@@ -91,7 +91,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      191  // Firmware minor version
+#define OS_FW_MINOR      192  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
