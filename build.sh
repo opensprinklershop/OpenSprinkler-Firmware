@@ -63,8 +63,9 @@ if git submodule status | grep --quiet '^-'; then
     git submodule update --recursive --init
 else
     echo "Updating submodules."
-    git submodule update --recursive
+    git submodule update --recursive || true
 fi
+# influxdb-cpp: keep local checkout (remote commit may not exist)
 
 if [ "$1" == "demo" ]; then
 	echo "Installing required libraries..."
