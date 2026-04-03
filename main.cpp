@@ -521,6 +521,7 @@ void do_setup() {
 	DEBUG_BEGIN(115200);
 	DEBUG_PRINTLN(F("started"));
 
+
 #if defined(ESP32C5)
 	DEBUG_PRINTLN(F("\n============================================"));
 #if defined(ENABLE_MATTER)
@@ -606,6 +607,7 @@ void do_setup() {
 	// Restore password/WiFi settings after OTA reboot if a restore marker exists.
 	online_update_resume();
 	#endif
+
 
 #if defined(ESP32C5)
 	// Load IEEE 802.15.4 radio mode (disabled/matter/zigbee_gw/zigbee_client)
@@ -1211,6 +1213,7 @@ void do_loop()
 		gratuitousARPTask(); // send gratuitous ARP every 5 seconds
 		arp_check = curr_time + ARP_REQUEST_INTERVAL;
 	}
+	yield();
 	#endif
 	#else // AVR
 
@@ -1257,7 +1260,6 @@ void do_loop()
 		yield();
 		return;
 	}
-
 	ui_state_machine();
 
 #else // Process Ethernet packets for RPI/LINUX
@@ -1276,8 +1278,14 @@ void do_loop()
 	}
 	os.mqtt.loop();
 	
+	// Service web clients between potentially blocking operations
+	if(otf) otf->loop();
+
 	// Legacy sensor maintenance loop (BLE/Zigbee auto-stop timers)
 	sensor_api_loop();
+
+	// Service web clients after sensor/radio maintenance
+	if(otf) otf->loop();
 
 #ifdef ENABLE_MATTER
 	// Matter loop handler
@@ -1290,7 +1298,6 @@ void do_loop()
 
 	// The main control loop runs once every second
 	if (curr_time != last_time) {
-
 		#if defined(ESP8266) || defined(ESP32)
 		if(os.hw_rev>=2) {
 			pinMode(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
@@ -1767,8 +1774,11 @@ void do_loop()
 
                 read_all_sensors(curr_time && os.network_connected());
 
+                // Service web clients after sensor reads (can be blocking)
+                if(otf) otf->loop();
+
 		static unsigned char reboot_notification = 1;
-		if(reboot_notification) {
+		if(reboot_notification && os.network_connected() && boot_elapsed >= 10000) {
 			reboot_notification = 0;
 			notif.add(NOTIFY_REBOOT);
 			}
@@ -2839,6 +2849,7 @@ static void check_network() {
 
 	if (os.status.req_network) {
 		os.status.req_network = 0;
+		DEBUG_PRINTLN(F("[NET_CHECK] Starting network check"));
 		// change LCD icon to indicate it's checking network
 		if (!ui_state) {
 			os.lcd.setCursor(LCD_CURSOR_NETWORK, 1);
@@ -2976,17 +2987,16 @@ static void check_network() {
 				os.nvdata.reboot_cause = REBOOT_CAUSE_NETWORK_FAIL;
 				os.status.safe_reboot = 1;
 			}
-			#if defined(ESP32) && defined(ENABLE_DEBUG)
 			DEBUG_PRINTLN(F("[NET_CHECK] Ethernet connectivity lost"));
-			#endif
 			return;
 		}
 		if (!useEth && (!WiFi.isConnected() || !WiFi.gatewayIP() || !(bool)WiFi.gatewayIP() || os.get_wifi_mode()==WIFI_MODE_AP)) {
 			os.status.network_fails++;
+			DEBUG_PRINTF("[NET_CHECK] WiFi check failed (count=%d)\n", os.status.network_fails);
 			#if defined(ESP32)
 			// Attempt WiFi reconnection after check_network detects failure
 			if(os.get_wifi_mode() == WIFI_MODE_STA && os.status.network_fails >= 2) {
-				DEBUG_PRINTF("[NET_CHECK] WiFi check failed (count=%d), forcing reconnect\n", os.status.network_fails);
+				DEBUG_PRINTLN(F("[NET_CHECK] Forcing WiFi reconnect"));
 				WiFi.setAutoReconnect(true);
 				WiFi.reconnect();
 			}
@@ -3002,28 +3012,29 @@ static void check_network() {
 		switch(os.status.network_fails % 3) {
 			case 0:
 #if defined(ARDUINO)
-				ping_ok = pinger->Ping(useEth?eth.gatewayIP() : WiFi.gatewayIP());
+				DEBUG_PRINTF("[NET_CHECK] Pinging gateway %s\n", (useEth?eth.gatewayIP():WiFi.gatewayIP()).toString().c_str());
+				ping_ok = pinger->Ping(useEth?eth.gatewayIP() : WiFi.gatewayIP(), 1);
 #else
 				// Linux: ping common DNS server (Google DNS) as gateway
-				ping_ok = pinger->Ping("8.8.8.8");
+				ping_ok = pinger->Ping("8.8.8.8", 1);
 #endif
 				break;
 			case 1:
-				ping_ok = pinger->Ping("google.com");
+				DEBUG_PRINTLN(F("[NET_CHECK] Pinging google.com"));
+				ping_ok = pinger->Ping("google.com", 1);
 				break;
 			case 2:
-				ping_ok = pinger->Ping("opensprinkler.com");
+				DEBUG_PRINTLN(F("[NET_CHECK] Pinging opensprinkler.com"));
+				ping_ok = pinger->Ping("opensprinkler.com", 1);
 				break;
 		}
 		if(!ping_ok) {
 			os.status.network_fails++;
-#if defined(ENABLE_DEBUG)
-#if defined(ARDUINO)
-    		Serial.println("Error during last ping command.");
-#else
-			printf("Error during last ping command.\n");
-#endif
-#endif
+			DEBUG_PRINTF("[NET_CHECK] Ping failed to start (fails=%d), recreating pinger\n", os.status.network_fails);
+			// Pinger may be stuck (e.g. pbuf_alloc failure left m_requestsToSend>0).
+			// Destroy and recreate on next check to clear internal state.
+			delete pinger;
+			pinger = NULL;
   		}
 	}
 #endif

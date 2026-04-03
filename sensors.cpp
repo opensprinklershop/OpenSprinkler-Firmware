@@ -890,6 +890,13 @@ void sensor_load() {
  * @brief Store sensor data
  *
  */
+void sensor_request_save() {
+  // Schedule a deferred save (~5 seconds from now) instead of saving immediately.
+  // The periodic sensor loop checks (time - last_save_time > 3600) so setting
+  // last_save_time to now-3595 triggers a save after ~5 seconds.
+  last_save_time = os.now_tz() - 3600 + 5;
+}
+
 void sensor_save() {
   if (!apiInit) return;
   // DEBUG_PRINTLN(F("sensor_save (json)"));
@@ -897,13 +904,21 @@ void sensor_save() {
   // Remove old json file if present (write fresh)
   if (file_exists(SENSOR_FILENAME_JSON)) remove_file(SENSOR_FILENAME_JSON);
 
-  // Build JSON
-  JsonDocument doc;
-  JsonArray arr = doc.to<JsonArray>();
+  // Stream-serialize sensors one at a time to minimize peak heap usage.
+  // Building the full array in a single JsonDocument can OOM on ESP8266.
+  FileWriter writer(SENSOR_FILENAME_JSON);
+  writer.write('[');
 
+  bool first = true;
   for (auto &kv : sensorsMap) {
     SensorBase *sensor = kv.second;
-    JsonObject obj = arr.add<JsonObject>();
+
+    if (!first) writer.write(',');
+    first = false;
+
+    // Build a temporary per-sensor JsonDocument (freed each iteration)
+    JsonDocument doc;
+    JsonObject obj = doc.to<JsonObject>();
 
     // For GenericSensors that preserve a raw JSON snapshot (unsupported type
     // in this firmware variant), first restore ALL original fields so that
@@ -922,11 +937,10 @@ void sensor_save() {
 
     // Always write current base-class values (name, enable, log, etc.).
     sensor->toJson(obj);
+    serializeJson(doc, writer);
   }
 
-  // Serialize directly to file
-  FileWriter writer(SENSOR_FILENAME_JSON);
-  serializeJson(doc, writer);
+  writer.write(']');
 
   last_save_time = os.now_tz();
   // DEBUG_PRINTLN(F("sensor_save2"));

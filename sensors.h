@@ -454,6 +454,7 @@ int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
                           int16_t offset2, int16_t sensor_define_userdef);
 void sensor_load();
 void sensor_save();
+void sensor_request_save();
 uint sensor_count();
 boolean sensor_isgroup(const SensorBase *sensor);
 void sensor_update_groups();

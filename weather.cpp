@@ -222,9 +222,10 @@ void GetWeather() {
 		host_start = host + 8;
 	}
 	#if defined(ESP8266)	
-	if (use_ssl && freeMemory() < 8000) {
+	if (use_ssl && freeMemory() < 12000) {
 		use_ssl = false;
 		port = 80;
+		DEBUG_PRINTF("[WEATHER] SSL disabled, free mem=%d\n", (int)freeMemory());
 	}
 	#endif
 

@@ -810,7 +810,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
 					free_tmp_memory();
 					#if defined(ESP8266)
-					if (freeMemory() < 8000) {
+					if (freeMemory() < 12000) {
 						DEBUG_PRINTLN(F("Not enough memory to send email"));
 						restore_tmp_memory();
 						return;

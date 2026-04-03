@@ -2521,7 +2521,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	unsigned char tries = 0;
 	int conn_result = 0;
 	(void)conn_result; // Used in DEBUG_PRINT but not in release builds
-	#if defined(ESP32)
+	#if defined(ESP8266) || defined(ESP32)
 	client->setTimeout(2000); // 2s connect timeout (default 5s blocks main loop too long)
 	#endif
 	do {

@@ -3429,15 +3429,19 @@ void server_sensor_config(OTF_PARAMS_DEF)
 		const char* key = qp->key;
 		const char* value = qp->value;
 		if (key && value) {
-			char decoded_value[TMP_BUFFER_SIZE];
-			strncpy(decoded_value, value, TMP_BUFFER_SIZE-1);
-			urlDecodeAndUnescape(decoded_value);
-			config[key] = decoded_value;
+			// Reuse global tmp_buffer instead of stack-local buffer
+			// to reduce stack pressure on ESP8266 (saves 320 bytes)
+			strncpy(tmp_buffer, value, TMP_BUFFER_SIZE-1);
+			tmp_buffer[TMP_BUFFER_SIZE-1] = '\0';
+			urlDecodeAndUnescape(tmp_buffer);
+			config[key] = tmp_buffer;  // ArduinoJson copies char* (isLinked=false)
 		}
 		qp = qp->next;
 	}
-	// Call sensor_define with JSON
-	int ret = sensor_define(config, true);  // save=true
+	// Call sensor_define with JSON (don't save immediately to avoid OOM
+	// when rapid-fire requests arrive — schedule deferred save instead)
+	int ret = sensor_define(config, false);
+	if (ret == HTTP_RQT_SUCCESS) sensor_request_save();
 	
 	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
@@ -3631,6 +3635,84 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
 }
 
 /**
+ * Emit interface warnings for configured sensors.
+ * Checks if required interfaces (I2C/ASB, RS485, MQTT, Zigbee, BLE) are
+ * available for the sensor types currently configured.
+ */
+void emit_sensor_warnings() {
+	bool has_asb = false, has_rs485 = false, has_mqtt = false;
+	bool has_zigbee = false, has_ble = false;
+	uint16_t detected = get_asb_detected_boards();
+
+	for (auto it = sensors_iterate_begin(); ; ) {
+		SensorBase *sensor = sensors_iterate_next(it);
+		if (!sensor) break;
+		int t = sensor->type;
+		if (t >= ASB_SENSORS_START && t <= ASB_SENSORS_END) has_asb = true;
+		else if (t >= RS485_SENSORS_START && t <= RS485_SENSORS_END) has_rs485 = true;
+		else if (t == SENSOR_MQTT) has_mqtt = true;
+		else if (t == SENSOR_ZIGBEE) has_zigbee = true;
+		else if (t == SENSOR_BLE) has_ble = true;
+	}
+
+	bfill.emit_p(PSTR("\"warnings\":["));
+	bool first = true;
+
+	// ASB/I2C sensor but no board detected
+	if (has_asb && !(detected & (ASB_BOARD1 | ASB_BOARD2 | OSPI_PCF8591 | OSPI_ADS1115))) {
+		bfill.emit_p(PSTR("\"I2C_NO_BOARD\""));
+		first = false;
+	}
+
+	// RS485 sensor but no adapter detected
+	if (has_rs485 && !(detected & (RS485_TRUEBNER1 | RS485_TRUEBNER2 | RS485_TRUEBNER3 | RS485_TRUEBNER4 | OSPI_USB_RS485 | ASB_I2C_RS485))) {
+		if (!first) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("\"RS485_NO_ADAPTER\""));
+		first = false;
+	}
+
+	// MQTT sensor but MQTT not connected
+	if (has_mqtt) {
+		if (!os.mqtt.enabled()) {
+			if (!first) bfill.emit_p(PSTR(","));
+			bfill.emit_p(PSTR("\"MQTT_DISABLED\""));
+			first = false;
+		} else if (!os.mqtt.connected()) {
+			if (!first) bfill.emit_p(PSTR(","));
+			bfill.emit_p(PSTR("\"MQTT_DISCONNECTED\""));
+			first = false;
+		}
+	}
+
+	// Zigbee sensor checks
+	if (has_zigbee) {
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+		if (!ieee802154_is_zigbee()) {
+			if (!first) bfill.emit_p(PSTR(","));
+			bfill.emit_p(PSTR("\"ZIGBEE_WRONG_MODE\""));
+			first = false;
+		}
+#else
+		if (!first) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("\"ZIGBEE_NOT_AVAILABLE\""));
+		first = false;
+#endif
+	}
+
+	// BLE sensor checks
+	if (has_ble) {
+#if !defined(OS_ENABLE_BLE)
+		if (!first) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("\"BLE_NOT_AVAILABLE\""));
+		first = false;
+#endif
+	}
+
+	bfill.emit_p(PSTR("],"));
+	(void)first; // suppress unused warning
+}
+
+/**
  * sl
  * @brief Lists all sensors
  *
@@ -3665,6 +3747,7 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 	} else {
 		bfill.emit_p(PSTR("{\"count\":$D,"), sensor_count());
 		bfill.emit_p(PSTR("\"detected\":$D,"), get_asb_detected_boards());
+		emit_sensor_warnings();
 		bfill.emit_p(PSTR("\"sensors\":["));
 		sensorconfig_json(OTF_PARAMS);
 		bfill.emit_p(PSTR("]"));
@@ -4686,6 +4769,11 @@ void free_tmp_memory() {
 	}
 	os.influxdb.suspend();
 
+	// Disconnect OTF cloud WebSocket to free TCP buffers
+	#if defined(USE_OTF)
+	//if (otf) otf->disconnectCloud();
+	#endif
+
 	sensor_save_all();
 	sensor_api_free();
 
@@ -4697,6 +4785,11 @@ void free_tmp_memory() {
 void restore_tmp_memory() {
 #if defined(ESP8266)
 	sensor_api_init(false);
+
+	// Reconnect OTF cloud WebSocket
+	#if defined(USE_OTF)
+	//if (otf) otf->reconnectCloud();
+	#endif
 
 	// Re-enable MQTT and InfluxDB
 	OSMqtt::resume();

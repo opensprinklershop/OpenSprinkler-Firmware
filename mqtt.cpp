@@ -524,9 +524,9 @@ void OSMqtt::begin(void) {
 
 	DEBUG_LOGF("MQTT Begin: Config (%s:%d %s) %s\r\n", _host, _port, _username, _enabled ? "Enabled" : "Disabled");
 
-	if (mqtt_client == NULL || os.status.network_fails > 0) return;
+	if (os.status.network_fails > 0) return;
 
-	if (_connected()) {
+	if (mqtt_client && _connected()) {
 		_disconnect();
 	}
 
@@ -568,14 +568,16 @@ void OSMqtt::subscribe(void){
 void OSMqtt::loop(void) {
 	static unsigned long last_reconnect_attempt = 0;
 
-	if (mqtt_client == NULL || !_enabled || os.status.network_fails > 0) return;
+	if (!_enabled || os.status.network_fails > 0) return;
 
-	// Only attemp to reconnect every MQTT_RECONNECT_DELAY seconds to avoid blocking the main loop
-	if (!_connected() && (millis() - last_reconnect_attempt >= MQTT_RECONNECT_DELAY * 1000UL)) {
+	// Reconnect (or lazily allocate) when not connected
+	if ((mqtt_client == NULL || !_connected()) && (millis() - last_reconnect_attempt >= MQTT_RECONNECT_DELAY * 1000UL)) {
 		_done_subscribed = false;
 		_connect();
 		last_reconnect_attempt = millis();
 	}
+
+	if (mqtt_client == NULL) return;
 
 	if(!_done_subscribed){
 		subscribe();
@@ -607,6 +609,9 @@ void OSMqtt::loop(void) {
 #if defined(ARDUINO)
 
 int OSMqtt::_init(void) {
+	// Cleanup only — actual allocation deferred to _connect()
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdelete-non-virtual-dtor"
 	if (mqtt_client) { 
 		delete mqtt_client; 
 		mqtt_client = 0; 
@@ -615,44 +620,43 @@ int OSMqtt::_init(void) {
 		delete client;
 		client = 0;
 	}
-
-	#if defined(ESP8266)
-		// Guard: MQTT client + PubSubClient buffer need ~2-3KB;
-		// refuse to init if heap is critically low to avoid OOM crash.
-		if (freeMemory() < 8000) {
-			DEBUG_PRINTLN(F("MQTT init skipped (low heap)"));
-			return MQTT_ERROR;
-		}
-	#endif
-
-	#if defined(ESP8266) || defined(ESP32)
-		client = new WiFiClient();
-		#if defined(ESP32)
-		client->setTimeout(2);  // 2s TCP connect timeout (default 5s blocks main loop)
-		#endif
-	#else
-		client = new EthernetClient();
-	#endif
-
-	mqtt_client = new PubSubClient(*client);
-	mqtt_client->setCallback(key_callback);
-	mqtt_client->setSocketTimeout(2);  // 2s instead of 15s default — avoid blocking main loop
-	mqtt_client->setKeepAlive(OS_MQTT_KEEPALIVE);
-	#if defined(ESP32)
-	mqtt_client->setBufferSize(4096);
-	#else
-	mqtt_client->setBufferSize(ESP8266_MQTT_BUFFER_SIZE);
-	#endif
-
-	if (mqtt_client == NULL) {
-		DEBUG_LOGF("MQTT Init: Failed to initialise client\r\n");
-		return MQTT_ERROR;
-	}
-
+#pragma GCC diagnostic pop
 	return MQTT_SUCCESS;
 }
 
 int OSMqtt::_connect(void) {
+	// Lazy allocation: create network + MQTT clients on first connect
+	if (!client) {
+		#if defined(ESP8266)
+		if (freeMemory() < 8000) {
+			DEBUG_PRINTLN(F("MQTT connect skipped (low heap)"));
+			return MQTT_ERROR;
+		}
+		#endif
+		#if defined(ESP8266) || defined(ESP32)
+		client = new WiFiClient();
+		#if defined(ESP32)
+		client->setTimeout(2);  // 2s TCP connect timeout (default 5s blocks main loop)
+		#endif
+		#else
+		client = new EthernetClient();
+		#endif
+	}
+	if (!mqtt_client) {
+		mqtt_client = new PubSubClient(*client);
+		if (!mqtt_client) {
+			DEBUG_LOGF("MQTT connect: Failed to allocate client\r\n");
+			return MQTT_ERROR;
+		}
+		mqtt_client->setCallback(key_callback);
+		mqtt_client->setSocketTimeout(2);
+		mqtt_client->setKeepAlive(OS_MQTT_KEEPALIVE);
+		#if defined(ESP32)
+		mqtt_client->setBufferSize(8192);
+		#else
+		mqtt_client->setBufferSize(ESP8266_MQTT_BUFFER_SIZE);
+		#endif
+	}
 	mqtt_client->setServer(_host, _port);
 	boolean state;
 	#define MQTT_CONNECT_NTRIES 1
@@ -797,8 +801,18 @@ bool OSMqtt::reconnect() {
 }
 
 void OSMqtt::suspend(void) {
-	if (_enabled && _connected()) { _disconnect(); }
+	if (_enabled && mqtt_client && _connected()) { _disconnect(); }
 	_enabled = false;
+	#if defined(ESP8266)
+	// Actually free MQTT heap (~7 KB: PubSubClient buffer + WiFiClient)
+	// resume() -> begin() -> _init() will recreate them
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdelete-non-virtual-dtor"
+	if (mqtt_client) { delete mqtt_client; mqtt_client = 0; }
+	if (client) { delete client; client = 0; }
+#pragma GCC diagnostic pop
+	DEBUG_PRINTF("[MQTT] suspend: freed, heap=%d\n", (int)freeMemory());
+	#endif
 }
 
 void OSMqtt::resume(void) {
