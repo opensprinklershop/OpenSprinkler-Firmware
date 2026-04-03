@@ -21,6 +21,9 @@
 #elif defined(ESP8266)
   #include <Arduino.h>
   #include <ESP8266WiFi.h>
+  extern "C" {
+    #include <ping.h>
+  }
   #include <functional>
   using std::function;
 #elif defined(OSPI) || defined(OSBO)
@@ -105,6 +108,8 @@ private:
   
 #if defined(ESP32)
   bool ping_ip(uint32_t ip_addr);
+#elif defined(ESP8266)
+  bool ping_ip_esp8266(uint32_t ip_addr);
 #elif defined(OSPI) || defined(OSBO)
   bool ping_ip_linux(uint32_t ip_addr);
 #endif
@@ -125,6 +130,71 @@ public:
 };
 
 // ============ Implementation ============
+
+#if defined(ESP8266)
+// Async ping result state for ESP8266 SDK callback
+static volatile bool _esp8266_ping_done;
+static volatile bool _esp8266_ping_success;
+static volatile uint32_t _esp8266_ping_time;
+
+static void ICACHE_FLASH_ATTR _ping_recv_cb(void* opt, void* resp) {
+  struct ping_resp* pr = reinterpret_cast<struct ping_resp*>(resp);
+  if (pr->ping_err == 0 && pr->resp_time > 0) {
+    _esp8266_ping_success = true;
+    _esp8266_ping_time = pr->resp_time;
+  }
+  _esp8266_ping_done = true;
+}
+
+bool Pinger::ping_ip_esp8266(uint32_t ip_addr) {
+  struct ping_option opt;
+  memset(&opt, 0, sizeof(opt));
+  opt.count = 1;
+  opt.ip = ip_addr;
+  opt.coarse_time = (ping_timeout_ms + 999) / 1000;  // round up to seconds
+  if (opt.coarse_time == 0) opt.coarse_time = 1;
+
+  _esp8266_ping_done = false;
+  _esp8266_ping_success = false;
+  _esp8266_ping_time = 0;
+
+  ping_regist_recv(&opt, _ping_recv_cb);
+
+  if (!ping_start(&opt)) {
+    response.ReceivedResponse = false;
+    if (onReceive) onReceive(response);
+    return false;
+  }
+
+  // Wait for SDK callback with yield to prevent WDT
+  uint32_t start = millis();
+  while (!_esp8266_ping_done && (millis() - start) < (ping_timeout_ms + 1000)) {
+    delay(10);
+  }
+
+  if (_esp8266_ping_success) {
+    response.ReceivedResponse = true;
+    response.ResponseTime = _esp8266_ping_time;
+    response.TotalReceivedResponses++;
+
+    if (response.MinResponseTime == 0 || response.ResponseTime < response.MinResponseTime)
+      response.MinResponseTime = response.ResponseTime;
+    if (response.ResponseTime > response.MaxResponseTime)
+      response.MaxResponseTime = response.ResponseTime;
+
+    response.AvgResponseTime =
+      (response.AvgResponseTime * (response.TotalReceivedResponses - 1) + response.ResponseTime)
+      / response.TotalReceivedResponses;
+
+    if (onReceive) onReceive(response);
+    return true;
+  }
+
+  response.ReceivedResponse = false;
+  if (onReceive) onReceive(response);
+  return false;
+}
+#endif
 
 bool Pinger::resolve_hostname(const char* hostname, uint32_t& ip_addr) {
 #if defined(ESP8266)
@@ -345,15 +415,15 @@ bool Pinger::Ping(IPAddress ip, uint32_t count, uint32_t timeout_ms) {
   response.EchoMessageSize = 64;
   
   // Convert IPAddress to uint32_t using operator cast
-#if defined(ESP32) || defined(OSPI) || defined(OSBO)
   uint32_t ip_addr = (uint32_t)ip;
-#endif
   
   // Perform pings
   for (uint32_t i = 0; i < count; i++) {
     response.TotalSentRequests++;
 #if defined(ESP32)
     ping_ip(ip_addr);
+#elif defined(ESP8266)
+    ping_ip_esp8266(ip_addr);
 #elif defined(OSPI) || defined(OSBO)
     ping_ip_linux(ip_addr);
 #endif

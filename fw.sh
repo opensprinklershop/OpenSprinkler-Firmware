@@ -1354,6 +1354,8 @@ case "$ACTION" in
                 ;;
             *)
                 check_pio
+                disable_release_debug
+                trap 'restore_release_debug' EXIT
                 case "$VARIANT" in
                 matter)
                     build_env "$ENV_C5_MATTER"
@@ -1386,6 +1388,8 @@ case "$ACTION" in
                     ;;
                 *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|ospi|all)"; exit 1 ;;
                 esac
+                restore_release_debug
+                trap - EXIT
                 ;;
         esac
         ;;
