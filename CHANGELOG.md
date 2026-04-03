@@ -6,37 +6,25 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (190)] — unveröffentlicht
+## [2.4.0 (193)] — unveröffentlicht
 
 ### Added
-- **Program PID encoding in queue**: manually started programs now encode the real 1-based program number in `q->pid` (bit 7 flag + pid) via `qpid_decode()` in `program.h`; `/js` status API, logs, and UI now display the correct program name
-- **RainMaker: program start/stop via `manual_start_program()` / `stop_program()`**: `RM_CMD_PROG_START` delegates to `manual_start_program()` with `uwt=255`; `RM_CMD_PROG_STOP` delegates to `stop_program()` for consistent behaviour with the web API
-- **API `/mp`: default `uwt=255`**: without an explicit `uwt` parameter, programs started via the API now use their own weather adjustment setting
-- **MCP Server**: OpenSprinkler MCP server implementation in `tools/mcp-server/` (4013b9c)
-- **Online OTA update**: firmware can now be updated directly through the web interface with enhanced logging and progress reporting (1470e9e, 5a7f9e2)
-- **ZigBee: vendor API lookups**: lookups for ZigBee device vendor information (26bab15)
-- **ZigBee client mode**: local data exposure and ZigBee notifications after sensor updates in client mode (5822c4b, 36d9504)
-- **ACME client**: header file for certificate management (7b90ee6)
-- **OTA-only boot mode**: OTA update now always reboots into a lean mode where heavy services (Matter, RainMaker, BLE, Zigbee, sensor radios, MQTT) are prevented from starting — guarantees enough internal RAM for the 8 KB OTA task stack on ESP32-C5
-- **OTA UI improvements**: progress bar starts at 0% immediately, close-button warns when update is in progress, reconnect probes alternate between original and default password, phase-2 detection fallback when progress exceeds 50%
+- **Sensor interface warnings (`/sl` API)**: new `emit_sensor_warnings()` emits a `"warnings"` array in the sensor list response; warns when configured sensor interfaces are unavailable (I2C board missing, RS485 adapter missing, MQTT disabled/disconnected, Zigbee wrong mode, BLE not available)
+- **`sensor_request_save()` API**: public function to schedule a deferred sensor config save (~5 s) instead of saving immediately — avoids heap pressure from rapid-fire `/sc` requests
 
 ### Changed
-- **MQTT buffer size**: reduced ESP32 MQTT buffer from 8 KB to 4 KB; increased ESP8266 MQTT buffer from 1 KB to 4 KB — unified at 4 KB across platforms
-- **OTA download retries**: increased from 3 to 10 attempts with 1 s delay (was 3 s)
+- **MQTT lazy allocation**: MQTT client and WiFiClient are no longer allocated in `_init()` but lazily in `_connect()` on first use; `suspend()` on ESP8266 now frees both objects (~7 KB), `resume()` recreates them on next connect
+- **MQTT buffer size (ESP32)**: increased from 4 KB to 8 KB for larger payloads
+- **Network check improvements**: ping now uses single-packet (`Ping(…, 1)`); pinger is recreated after failure to clear stuck internal state; added debug logging for gateway/WiFi checks
+- **ESP8266 HTTP timeout**: `client->setTimeout(2000)` now also applied on ESP8266 (was ESP32-only)
+- **Web client servicing**: additional `otf->loop()` calls inserted between blocking operations in the main loop (after sensor reads, after sensor/radio maintenance) to improve HTTP responsiveness
+- **Reboot notification timing**: deferred until network is connected and boot elapsed ≥ 10 s (was immediate)
 
 ### Fixed
-- **OTA: complete redesign (buffer-to-PSRAM → SHA-256 verify → flash)**: new `ota_download_verify_flash()` replaces the streaming-while-flashing approach; the entire firmware image is first downloaded into a PSRAM buffer using a 4 KB internal-RAM receive chunk, SHA-256 verified against the manifest digest (`zigbee_sha256` / `matter_sha256` / `esp8266_sha256`), then flashed in 4 KB internal-RAM chunks via `esp_ota_write()` — eliminates the `esp_cache_freeze_caches_disable_interrupts` cache-freeze assert (task stacks MUST be in internal RAM when flashing), enables pre-flash integrity verification, and reduces OTA task stack requirement to 8 KB internal RAM; SHA-256 hashes are computed by `fw.sh` at release time and embedded in `manifest.json` and `versions.json`
-- **OTA: continuation file now stores SHA-256**: `ota_save_continuation()` writes the `sha256` field alongside `url`/`label`/`variant`/`pw`; `ota_phase2_task` reads and forwards it to the new flash function
-- **OTA memory exhaustion**: heavy services (Matter, BLE/Zigbee radio, RainMaker, sensor API, MQTT) are now gated in `do_loop()` and `do_setup()` when `online_update_in_progress()` is true — the HTTP server still starts for `/us` status polling
-- **OTA progress display**: removed misleading overall-progress percentage from step indicator text (was showing firmware progress, not per-partition)
-- **OTA reconnect after reboot**: reconnect probe now uses direct `$.ajax` with password alternation (original + default "opendoor") instead of `sendToOS` which only tried one password
-- **Stop program via API no longer causes lockup**: `reset_all_stations_immediate()` is no longer called before the stop command is processed in `server_manual_program()`
-- **`stop_program()` PID matching**: corrected comparison from `q->pid==pid-1` to `qpid_decode(q->pid)==pid` for correct detection of manually started programs
-- **RainMaker `is_program_running()`**: now uses `qpid_decode()` for correct PID comparison
-- **Matter `MATTER_CMD_PROG_STOP`**: PID comparison corrected to use `qpid_decode()` and 1-based encoding
-- **ESP8266 boot crash**: removed `PROGMEM` from mutable `iopts[]` array (f3e3857)
-- **OSPi PCF8591 compile error** (3cfa17a)
-- **OSPi Trixie build** (cc4a067)
+- **ESP8266 stack smashing on `/sc`**: replaced 320-byte stack-local `decoded_value[TMP_BUFFER_SIZE]` with global `tmp_buffer` in `server_sensor_config()` — the previous allocation plus `JsonDocument` on the stack exceeded ESP8266's 4 KB continuation stack
+- **ESP8266 OOM crash on sensor save**: `sensor_save()` refactored to stream-serialize one sensor at a time instead of building a full in-memory `JsonDocument` of all sensors — peak heap drops from O(all sensors) to O(one sensor)
+- **ESP8266 `/sc` deferred save**: `server_sensor_config()` now calls `sensor_define(config, false)` + `sensor_request_save()` instead of `sensor_define(config, true)` — prevents rapid-fire requests from each triggering a full file write that OOMs
+- **MQTT suspend null-check**: `suspend()` now checks `mqtt_client` before calling `_connected()` to avoid null pointer dereference
 
 ---
 
