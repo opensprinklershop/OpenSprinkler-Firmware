@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (193)] — unveröffentlicht
+## [2.4.0 (193)] — 2026-04-03
 
 ### Added
 - **Sensor interface warnings (`/sl` API)**: new `emit_sensor_warnings()` emits a `"warnings"` array in the sensor list response; warns when configured sensor interfaces are unavailable (I2C board missing, RS485 adapter missing, MQTT disabled/disconnected, Zigbee wrong mode, BLE not available)
