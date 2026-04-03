@@ -2430,13 +2430,19 @@ void add_influx_data(SensorBase *sensor) {
   os.influxdb.write_influx_data(sensor_data);
 
   #else
+  // Backoff: skip InfluxDB 60s after failure
+  static ulong influx_last_fail = 0;
+  static int influx_fail_count = 0;
+  if (influx_fail_count > 0 && (millis() - influx_last_fail) < 60000UL)
+    return;
+
   influxdb_cpp::server_info * client = os.influxdb.get_client();
   if (!client)
     return;
 
   char nr_buf[10];
   snprintf(nr_buf, 10, "%d", sensor->nr);
-  influxdb_cpp::builder()
+  int rc = influxdb_cpp::builder()
     .meas("analogsensor")
     .tag("devicename", devname_safe)
     .tag("nr", nr_buf)
@@ -2446,6 +2452,13 @@ void add_influx_data(SensorBase *sensor) {
     .field("data", sensor->last_data, 2)
     .timestamp(millis())
     .post_http(*client);
+
+  if (rc != 0) {
+    influx_fail_count++;
+    influx_last_fail = millis();
+  } else {
+    influx_fail_count = 0;
+  }
 
   #endif
 #endif // DISABLE_INFLUXDB

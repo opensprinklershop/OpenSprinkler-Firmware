@@ -63,8 +63,24 @@ if git submodule status | grep --quiet '^-'; then
     git submodule update --recursive --init
 else
     echo "Updating submodules."
-    git submodule update --recursive
+    git submodule update --recursive || true
 fi
+# influxdb-cpp: keep local checkout (remote commit may not exist)
+# Apply local patches to external libraries
+# Patch filename convention: <submodule-dir>--<description>.patch
+for patch in patches/*.patch; do
+    [ -f "$patch" ] || continue
+    name="$(basename "$patch")"
+    target="$(echo "$name" | sed s/--.*//)"
+    if [ -n "$target" ] && [ -d "external/$target" ]; then
+        if patch --dry-run -p1 -d "external/$target" < "$patch" > /dev/null 2>&1; then
+            echo "Applying patch $name to external/$target"
+            patch -p1 -d "external/$target" < "$patch"
+        else
+            echo "Patch $name already applied or not applicable, skipping"
+        fi
+    fi
+done
 
 if [ "$1" == "demo" ]; then
 	echo "Installing required libraries..."

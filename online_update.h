@@ -89,5 +89,15 @@ void online_update_loop();
 // Start manifest file (phase 0: full manifest saved before reboot-to-OTA)
 #define OTA_START_FILE    "/ota_start.json"
 
+#else // not ESP32 || ESP8266
+// Linux/OSPi stubs: online update not supported on this platform
+#include <string>
+struct OnlineUpdateManifest {};
+enum OnlineUpdateState { OTA_STATE_IDLE = 0 };
+inline bool online_update_in_progress() { return false; }
+inline void online_update_resume() {}
+inline void online_update_loop() {}
+inline OnlineUpdateState online_update_get_state() { return OTA_STATE_IDLE; }
+inline void online_update_cache_manifest(const OnlineUpdateManifest &) {}
 #endif // ESP32 || ESP8266
 #endif // ONLINE_UPDATE_H
