@@ -2,6 +2,117 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { OpenSprinklerClient } from "./client.js";
 
+type NamedItem = { id: number; name: string };
+
+const NAME_ALIASES: Record<string, string[]> = {
+  rosen: ["rose"],
+  rasenzone: ["rasen zone", "rasen-zone", "lawn", "lawn zone"],
+};
+
+function normName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function expandNameCandidates(query: string): string[] {
+  const q = normName(query);
+  const out = new Set<string>([q]);
+
+  for (const [canonical, aliases] of Object.entries(NAME_ALIASES)) {
+    if (q === canonical || aliases.includes(q)) {
+      out.add(canonical);
+      for (const a of aliases) out.add(a);
+    }
+  }
+
+  return Array.from(out);
+}
+
+function extractPrograms(raw: unknown): NamedItem[] {
+  const data = raw as Record<string, unknown>;
+
+  // Legacy/firmware format: { pd: [[..., name, ...], ...] }
+  const pd = data["pd"];
+  if (Array.isArray(pd)) {
+    const out: NamedItem[] = [];
+    for (let i = 0; i < pd.length; i++) {
+      const row = pd[i];
+      if (Array.isArray(row) && typeof row[5] === "string") {
+        out.push({ id: i, name: row[5] });
+      }
+    }
+    if (out.length > 0) return out;
+  }
+
+  // Alternate format: { programs: [{name: ...}, ...] }
+  const programs = data["programs"];
+  if (Array.isArray(programs)) {
+    const out: NamedItem[] = [];
+    for (let i = 0; i < programs.length; i++) {
+      const p = programs[i];
+      if (p && typeof p === "object" && "name" in p && typeof (p as { name?: unknown }).name === "string") {
+        out.push({ id: i, name: (p as { name: string }).name });
+      }
+    }
+    return out;
+  }
+
+  return [];
+}
+
+function extractStations(raw: unknown): NamedItem[] {
+  const data = raw as Record<string, unknown>;
+
+  // Common format: { snames: ["S01", ...] }
+  const snames = data["snames"];
+  if (Array.isArray(snames)) {
+    return snames
+      .map((name, i) => (typeof name === "string" ? { id: i, name } : null))
+      .filter((v): v is NamedItem => v !== null);
+  }
+
+  // Optional format: { stations: {"0": {name: ...}, ...} }
+  const stations = data["stations"];
+  if (stations && typeof stations === "object") {
+    const out: NamedItem[] = [];
+    for (const [k, v] of Object.entries(stations as Record<string, unknown>)) {
+      const id = Number.parseInt(k, 10);
+      if (Number.isNaN(id) || !v || typeof v !== "object") continue;
+      const name = (v as { name?: unknown }).name;
+      if (typeof name === "string") out.push({ id, name });
+    }
+    out.sort((a, b) => a.id - b.id);
+    return out;
+  }
+
+  return [];
+}
+
+function resolveByName(items: NamedItem[], query: string):
+  | { kind: "ok"; item: NamedItem }
+  | { kind: "none" }
+  | { kind: "ambiguous"; candidates: NamedItem[] } {
+  const q = normName(query);
+  const candidates = expandNameCandidates(q);
+
+  // 1) exact match (including aliases/canonical candidates)
+  const exact = items.filter((i) => {
+    const n = normName(i.name);
+    return candidates.includes(n);
+  });
+  if (exact.length === 1) return { kind: "ok", item: exact[0] };
+  if (exact.length > 1) return { kind: "ambiguous", candidates: exact };
+
+  // 2) unique contains match
+  const fuzzy = items.filter((i) => {
+    const n = normName(i.name);
+    return candidates.some((c) => n.includes(c));
+  });
+  if (fuzzy.length === 1) return { kind: "ok", item: fuzzy[0] };
+  if (fuzzy.length > 1) return { kind: "ambiguous", candidates: fuzzy };
+
+  return { kind: "none" };
+}
+
 /**
  * Register all OpenSprinkler tools on the given MCP server instance.
  */
@@ -149,9 +260,9 @@ export function registerTools(
 
   server.tool(
     "manual_station_run",
-    "Manually open or close a single station. Equivalent to /cm.",
+    "Manually open or close a single station or watering zone. Equivalent to /cm. Use this for requests like start/open/run zone 1 or a named zone after resolving its station index.",
     {
-      sid: z.number().min(0).describe("Station index (0-based)"),
+      sid: z.number().min(0).describe("Station or zone index (0-based). User-facing zone 1 maps to sid=0. Resolve names like 'Rosen' via get_stations first."),
       en: z.number().min(0).max(1).describe("1 = open station, 0 = close station"),
       t: z.number().min(0).max(64800).optional().describe("Duration in seconds (required when opening, max 64800 = 18h)"),
       qo: z.number().min(0).max(1).optional().describe("Queue option: 0 = append (default), 1 = insert at front"),
@@ -193,6 +304,105 @@ export function registerTools(
     async (args) => {
       const data = await getClient().command("/mp", args as Record<string, number>);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    },
+  );
+
+  server.tool(
+    "start_program_by_name",
+    "Safely start a saved program by name. Resolves name to pid via /jp with strict matching (exact/alias first, then unique fuzzy).",
+    {
+      name: z.string().min(1).describe("Program name, e.g. Rasenzone"),
+      uwt: z.number().min(0).max(1).optional().describe("Use weather (1 = apply watering level, 0 = 100%)"),
+      qo: z.number().min(0).max(2).optional().describe("Queue option: 0 = append, 1 = insert front, 2 = replace all (default)"),
+    },
+    async (args) => {
+      const raw = await getClient().get("/jp");
+      const programs = extractPrograms(raw);
+      const resolved = resolveByName(programs, args.name);
+
+      if (resolved.kind === "none") {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ result: 0, error: `Program '${args.name}' not found`, available: programs.map((p) => p.name) }),
+          }],
+        };
+      }
+
+      if (resolved.kind === "ambiguous") {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ result: 0, error: `Program name '${args.name}' is ambiguous`, candidates: resolved.candidates }),
+          }],
+        };
+      }
+
+      const params: Record<string, number> = { pid: resolved.item.id };
+      if (args.uwt !== undefined) params.uwt = args.uwt;
+      if (args.qo !== undefined) params.qo = args.qo;
+
+      const data = await getClient().command("/mp", params);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ...data,
+            resolved: { pid: resolved.item.id, name: resolved.item.name },
+          }),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    "start_zone_by_name",
+    "Safely open a station/zone by name for a given duration. Resolves zone name via /jn with strict matching.",
+    {
+      name: z.string().min(1).describe("Zone/station name, e.g. Rosen"),
+      duration: z.number().min(1).max(64800).describe("Duration in seconds"),
+      qo: z.number().min(0).max(1).optional().describe("Queue option: 0 = append, 1 = insert front"),
+    },
+    async (args) => {
+      const raw = await getClient().get("/jn");
+      const stations = extractStations(raw);
+      const resolved = resolveByName(stations, args.name);
+
+      if (resolved.kind === "none") {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ result: 0, error: `Zone '${args.name}' not found`, available: stations.map((s) => s.name) }),
+          }],
+        };
+      }
+
+      if (resolved.kind === "ambiguous") {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ result: 0, error: `Zone name '${args.name}' is ambiguous`, candidates: resolved.candidates }),
+          }],
+        };
+      }
+
+      const params: Record<string, number> = {
+        sid: resolved.item.id,
+        en: 1,
+        t: args.duration,
+      };
+      if (args.qo !== undefined) params.qo = args.qo;
+
+      const data = await getClient().command("/cm", params);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ...data,
+            resolved: { sid: resolved.item.id, name: resolved.item.name, duration: args.duration },
+          }),
+        }],
+      };
     },
   );
 

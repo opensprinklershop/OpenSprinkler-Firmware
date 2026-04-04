@@ -302,6 +302,7 @@ enum {
 
 // Sequential Groups
 #define NUM_SEQ_GROUPS		4
+#define NUM_SCHED_GROUPS	(NUM_SEQ_GROUPS + 1)
 #define PARALLEL_GROUP_ID	255
 
 /** Macro define of each option
@@ -387,6 +388,7 @@ enum {
 	IOPT_NOTIF3_ENABLE,
 	IOPT_NOTIF4_ENABLE,
 	IOPT_RAINMAKER_ENABLE, ///< 0 = off (default); 1 = init RainMaker on connect
+	IOPT_INVERT_GROUP_SCHEDULING, ///< 0 = default: same group sequential; 1 = invert: same group parallel
 	NUM_IOPTS // total number of integer options
 };
 

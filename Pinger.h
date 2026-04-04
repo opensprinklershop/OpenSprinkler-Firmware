@@ -9,14 +9,11 @@
 #if defined(ESP32)
   #include <Arduino.h>
   #include <WiFi.h>
+  #include "ping/ping_sock.h"
   #include <lwip/icmp.h>
-  #include <lwip/inet_chksum.h>
-  #include <lwip/ip.h>
-  #include <lwip/sockets.h>
   #include <lwip/netdb.h>
+  #include "freertos/semphr.h"
   #include <functional>
-  // ESP32 Arduino provides native IPAddress class - use it directly
-  // IPAddress has operator uint32_t() or can cast to it
   using std::function;
 #elif defined(ESP8266)
   #include <Arduino.h>
@@ -215,91 +212,81 @@ bool Pinger::resolve_hostname(const char* hostname, uint32_t& ip_addr) {
 }
 
 #if defined(ESP32)
+
+// Context passed to esp_ping callbacks
+struct _PingerCtx {
+  SemaphoreHandle_t done;
+  Pinger* self;
+  uint32_t elapsed_ms;
+  bool     received;
+};
+
+static void _pinger_on_success(esp_ping_handle_t hdl, void* args) {
+  auto* ctx = static_cast<_PingerCtx*>(args);
+  uint32_t elapsed = 0;
+  esp_ping_get_profile(hdl, ESP_PING_PROF_TIMEGAP, &elapsed, sizeof(elapsed));
+  ctx->elapsed_ms = elapsed;
+  ctx->received   = true;
+}
+static void _pinger_on_timeout(esp_ping_handle_t /*hdl*/, void* /*args*/) {}
+static void _pinger_on_end(esp_ping_handle_t /*hdl*/, void* args) {
+  auto* ctx = static_cast<_PingerCtx*>(args);
+  if (ctx->done) xSemaphoreGive(ctx->done);
+}
+
 bool Pinger::ping_ip(uint32_t ip_addr) {
-  int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-  if (sock < 0) {
+  esp_ping_config_t cfg = {};
+  cfg.count          = 1;
+  cfg.interval_ms    = 0;
+  cfg.timeout_ms     = ping_timeout_ms;
+  cfg.data_size      = 32;
+  cfg.ttl            = 64;
+  cfg.task_stack_size = 2048;
+  cfg.task_prio      = 2;
+  cfg.target_addr.type              = IPADDR_TYPE_V4;
+  cfg.target_addr.u_addr.ip4.addr   = ip_addr;  // same byte-order as Arduino IPAddress
+
+  SemaphoreHandle_t done = xSemaphoreCreateBinary();
+  if (!done) return false;
+
+  _PingerCtx ctx = { done, this, 0, false };
+
+  esp_ping_callbacks_t cbs = {};
+  cbs.cb_args        = &ctx;
+  cbs.on_ping_success = _pinger_on_success;
+  cbs.on_ping_timeout = _pinger_on_timeout;
+  cbs.on_ping_end     = _pinger_on_end;
+
+  esp_ping_handle_t handle;
+  if (esp_ping_new_session(&cfg, &cbs, &handle) != ESP_OK) {
+    vSemaphoreDelete(done);
     return false;
   }
-  
-  // Set socket timeout
-  struct timeval tv;
-  tv.tv_sec = ping_timeout_ms / 1000;
-  tv.tv_usec = (ping_timeout_ms % 1000) * 1000;
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  
-  // Prepare ICMP echo request
-  struct icmp_echo_hdr {
-    uint8_t type;
-    uint8_t code;
-    uint16_t chksum;
-    uint16_t id;
-    uint16_t seqno;
-  };
-  
-  char packet[64];
-  struct icmp_echo_hdr* echo = (struct icmp_echo_hdr*)packet;
-  echo->type = ICMP_ECHO;
-  echo->code = 0;
-  echo->id = 0xABCD;
-  echo->seqno = 1;
-  memset(packet + sizeof(struct icmp_echo_hdr), 0xA5, 
-         sizeof(packet) - sizeof(struct icmp_echo_hdr));
-  
-  // Calculate checksum using lwip
-  echo->chksum = 0;
-  echo->chksum = inet_chksum(echo, sizeof(packet));
-  
-  // Send ping
-  struct sockaddr_in addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = ip_addr;
-  
-  uint32_t start_time = millis();
-  
-  if (sendto(sock, packet, sizeof(packet), 0, 
-             (struct sockaddr*)&addr, sizeof(addr)) <= 0) {
-    close(sock);
-    return false;
-  }
-  
-  // Wait for reply
-  char recv_buf[256];
-  socklen_t addr_len = sizeof(addr);
-  int bytes = recvfrom(sock, recv_buf, sizeof(recv_buf), 0,
-                       (struct sockaddr*)&addr, &addr_len);
-  
-  uint32_t end_time = millis();
-  
-  close(sock);
-  
-  if (bytes > 0) {
-    response.ReceivedResponse = true;
-    response.ResponseTime = end_time - start_time;
+
+  esp_ping_start(handle);
+  xSemaphoreTake(done, pdMS_TO_TICKS(ping_timeout_ms + 500));
+  esp_ping_stop(handle);
+  esp_ping_delete_session(handle);
+  vSemaphoreDelete(done);
+
+  if (ctx.received) {
+    uint32_t rtt = ctx.elapsed_ms;
     response.TotalReceivedResponses++;
-    
-    if (response.MinResponseTime == 0 || response.ResponseTime < response.MinResponseTime) {
-      response.MinResponseTime = response.ResponseTime;
-    }
-    if (response.ResponseTime > response.MaxResponseTime) {
-      response.MaxResponseTime = response.ResponseTime;
-    }
-    
-    // Update average
-    response.AvgResponseTime = 
-      (response.AvgResponseTime * (response.TotalReceivedResponses - 1) + response.ResponseTime) 
+    response.ReceivedResponse = true;
+    response.ResponseTime     = rtt;
+    if (!response.MinResponseTime || rtt < response.MinResponseTime)
+      response.MinResponseTime = rtt;
+    if (rtt > response.MaxResponseTime)
+      response.MaxResponseTime = rtt;
+    response.AvgResponseTime =
+      (response.AvgResponseTime * (response.TotalReceivedResponses - 1) + rtt)
       / response.TotalReceivedResponses;
-    
-    if (onReceive) {
-      onReceive(response);
-    }
+    if (onReceive) onReceive(response);
     return true;
   }
-  
+
   response.ReceivedResponse = false;
-  if (onReceive) {
-    onReceive(response);
-  }
+  if (onReceive) onReceive(response);
   return false;
 }
 #elif defined(OSPI) || defined(OSBO)
@@ -449,7 +436,8 @@ bool Pinger::Ping(const char* hostname, uint32_t count, uint32_t timeout_ms) {
   }
   
   response.DestHostname = hostname;
-  return Ping(IPAddress(ntohl(ip_addr)), count, timeout_ms);
+  // h_addr bytes are already in network order; IPAddress uses same layout - no ntohl needed
+  return Ping(IPAddress(ip_addr), count, timeout_ms);
 }
 
 #endif // PINGER_H

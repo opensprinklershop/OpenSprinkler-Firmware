@@ -808,14 +808,11 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 		#if defined(ARDUINO)
 			#if defined(ESP8266) || defined(ESP32)
 				if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
-					free_tmp_memory();
-					#if defined(ESP8266)
-					if (freeMemory() < 12000) {
+					if (!free_tmp_memory(12000)) {
 						DEBUG_PRINTLN(F("Not enough memory to send email"));
-						restore_tmp_memory();
+						restore_tmp_memory(12000);
 						return;
 					}
-					#endif
 					DEBUG_PRINTLN(F("Sending email..."));
 					EMailSender emailSend(email_login, email_password, email_username, "OpenSprinkler");
 					emailSend.setSMTPServer(email_host);
@@ -825,7 +822,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					DEBUG_PRINTLN(resp.status);
 					DEBUG_PRINTLN(resp.code);
 					DEBUG_PRINTLN(resp.desc);
-					restore_tmp_memory();
+					restore_tmp_memory(12000);
 				}
 			#endif
 		#else

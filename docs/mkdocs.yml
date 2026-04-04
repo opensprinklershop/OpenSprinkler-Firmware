@@ -7,6 +7,9 @@ theme: readthedocs
 nav:
   - 'Home': 'index.md'
   - 'FAQ': 'faq.md'
+  - 'MCP Server (EN)': 'mcp-server.md'
+  - 'MCP Server (DE)': 'mcp-server-de.md'
+  - 'RainMaker Provisioning': 'rainmaker-provisioning.md'
   - 'Firmware v2.2.1(4)':
     - 'User Manual': '2.2.1/221_4_manual.md'
     - 'API Reference': '2.2.1/221_4_api.md'

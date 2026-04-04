@@ -83,8 +83,14 @@ extern "C" {
 	#define OTF_PARAMS_DEF const OTF::Request &req,OTF::Response &res
 	#define OTF_PARAMS req,res
 	#define FKV_SOURCE req
-#if defined(ESP32)
-	#define handle_return(x) { if(g_mcp_capture_active){if((x)==HTML_OK){int _l=(int)bfill.position();if(_l>0)g_mcp_capture_buf.concat(ether_buffer,(unsigned int)_l);}return;} if((x)==HTML_OK)res.writeBodyData(ether_buffer,(int)bfill.position());else otf_send_result(req,res,(x));return;}
+#if defined(USE_OTF)
+// Portable append for String (Arduino) / std::string (Linux)
+#if defined(ARDUINO)
+  #define MCP_BUF_APPEND(buf, data, len) (buf).concat((data), (unsigned int)(len))
+#else
+  #define MCP_BUF_APPEND(buf, data, len) (buf).append((data), (size_t)(len))
+#endif
+	#define handle_return(x) { if(g_mcp_capture_active){if((x)==HTML_OK){int _l=(int)bfill.position();if(_l>0)MCP_BUF_APPEND(g_mcp_capture_buf,ether_buffer,_l);}rewind_ether_buffer();return;} if((x)==HTML_OK)res.writeBodyData(ether_buffer,(int)bfill.position());else otf_send_result(req,res,(x));return;}
 #else
 	#define handle_return(x) {if(x==HTML_OK) res.writeBodyData(ether_buffer, (int)bfill.position()); else otf_send_result(req,res,x); return;}
 #endif
@@ -349,9 +355,7 @@ char dec2hexchar(unsigned char dec) {
 
 #if defined(USE_OTF)
 void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
-#if defined(ESP32)
 	if (g_mcp_capture_active) return;
-#endif
 	 // Signal radio coex: WiFi is serving a request
 	res.writeStatus(200, F("OK"));
 	res.writeHeader(F("Content-Type"), isJson?F("application/json"):F("text/html"));
@@ -590,7 +594,7 @@ boolean check_password(char *p)
 #if defined(DEMO)
 	return true;
 #endif
-#if defined(ESP32) && defined(USE_OTF)
+#if defined(USE_OTF)
 	// MCP capture mode: auth already verified by the MCP handler
 	if (g_mcp_capture_active) return true;
 #endif
@@ -4758,45 +4762,81 @@ static const char* sensor_names[] = {
 #endif
 };
 
-void free_tmp_memory() {
-#if defined(ESP8266)
-	DEBUG_PRINT(F("freememory start: "));
-	DEBUG_PRINTLN(freeMemory());
+// Tracks whether free_tmp_memory() actually released resources
+static bool _memory_freed_for_op = false;
 
-	// Disconnect MQTT and free InfluxDB client to reclaim RAM
+// Returns the size of the largest contiguous free heap block (fragmentation indicator)
+static size_t get_max_free_block() {
+#if defined(ESP8266)
+	return (size_t)ESP.getMaxFreeBlockSize();
+#elif defined(ESP32)
+	return (size_t)ESP.getMaxAllocHeap();
+#else
+	return SIZE_MAX;
+#endif
+}
+
+bool free_tmp_memory(size_t needed) {
+#if defined(ESP8266) || defined(ESP32)
+	size_t free_heap = freeMemory();
+	size_t max_block = get_max_free_block();
+
+	// Already enough: total free and largest contiguous block both cover needed
+	// Note: require max_block >= needed * 0.75 (75% contiguous) to avoid fragmentation
+	// issues during TCP buffer allocation. This prevents heap corruption when maxblock
+	// is smaller than peak allocation needs during response serialization + transmission.
+	if (free_heap >= needed && max_block >= (needed * 3 / 4)) {
+		return true;
+	}
+
+	DEBUG_PRINTF("[MEM] Freeing: need=%u, free=%u, maxblock=%u\n",
+	             (unsigned)needed, (unsigned)free_heap, (unsigned)max_block);
+
+	// Suspend MQTT and InfluxDB to reclaim their heap
 	if (OSMqtt::enabled()) {
 		OSMqtt::suspend();
 	}
 	os.influxdb.suspend();
 
-	// Disconnect OTF cloud WebSocket to free TCP buffers
-	#if defined(USE_OTF)
-	//if (otf) otf->disconnectCloud();
-	#endif
-
+#if defined(ESP8266)
+	// Save and release sensor subsystem (significant heap savings on ESP8266)
 	sensor_save_all();
 	sensor_api_free();
+#endif
 
-	DEBUG_PRINT(F("freememory now: "));
-	DEBUG_PRINTLN(freeMemory());
+	_memory_freed_for_op = true;
+
+	// Let the heap consolidator run
+	delay(10);
+
+	free_heap = freeMemory();
+	max_block = get_max_free_block();
+	bool ok = (free_heap >= needed && max_block >= (needed * 3 / 4));
+	DEBUG_PRINTF("[MEM] After free: free=%u, maxblock=%u -> %s\n",
+	             (unsigned)free_heap, (unsigned)max_block, ok ? "ok" : "insufficient");
+	return ok;
+#else
+	(void)needed;
+	return true;
 #endif
 }
 
-void restore_tmp_memory() {
-#if defined(ESP8266)
-	sensor_api_init(false);
+void restore_tmp_memory(size_t needed) {
+	(void)needed;  // parameter kept for API symmetry; release guard is the static flag
+#if defined(ESP8266) || defined(ESP32)
+	if (!_memory_freed_for_op) return;
+	_memory_freed_for_op = false;
 
-	// Reconnect OTF cloud WebSocket
-	#if defined(USE_OTF)
-	//if (otf) otf->reconnectCloud();
-	#endif
+#if defined(ESP8266)
+	// Restore sensor subsystem
+	sensor_api_init(false);
+#endif
 
 	// Re-enable MQTT and InfluxDB
 	OSMqtt::resume();
 	os.influxdb.resume();
 
-	DEBUG_PRINT(F("freememory restore: "));
-	DEBUG_PRINTLN(freeMemory());
+	DEBUG_PRINTF("[MEM] Restored: free=%u\n", (unsigned)freeMemory());
 #endif
 }
 
@@ -6198,7 +6238,7 @@ void start_server_client() {
 #if defined(ESP32)
 		otf->on("/ca.der", on_serve_cert);  // CA cert download for HTTPS trust setup
 #endif
-#if defined(ESP32) && defined(USE_OTF)
+#if defined(USE_OTF)
 		// MCP (Model Context Protocol) JSON-RPC endpoint
 		otf->on("/mcp", server_mcp_handler, OTF::OTF_HTTP_POST);
 		otf->on("/mcp", server_mcp_get_handler, OTF::OTF_HTTP_GET);

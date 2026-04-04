@@ -204,8 +204,14 @@ public:
 };
 
 void server_influx_get_main();
-void free_tmp_memory();
-void restore_tmp_memory();
+// Free resources (MQTT, InfluxDB, sensors) if needed bytes are not available.
+// Considers heap fragmentation via largest free block.
+// Returns true if enough memory is now available; false if still insufficient.
+// Only frees if necessary – call restore_tmp_memory() when done.
+bool free_tmp_memory(size_t needed);
+
+// Restore resources freed by free_tmp_memory(). No-op if nothing was freed.
+void restore_tmp_memory(size_t needed);
 
 // _main() data-building helpers — callable from mcp_server.cpp
 // (declared with explicit OTF types to avoid requiring OTF_PARAMS_DEF macro here)
@@ -218,8 +224,8 @@ void server_json_stations_main(const OTF::Request& req, OTF::Response& res);
 void server_json_programs_main(const OTF::Request& req, OTF::Response& res);
 #endif
 
-// MCP capture-mode globals (ESP32 only, defined in opensprinkler_server.cpp)
-#if defined(ESP32) && defined(USE_OTF)
+// MCP capture-mode globals (all platforms with USE_OTF)
+#if defined(USE_OTF)
 extern bool   g_mcp_capture_active;
 extern String g_mcp_capture_buf;
 #endif

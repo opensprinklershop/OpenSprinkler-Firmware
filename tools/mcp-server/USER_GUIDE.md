@@ -87,7 +87,7 @@ Ersetze `dein_admin_passwort` mit deinem echten Admin-Passwort und kopiere den b
 
 ## Häufige Aufgaben
 
-### Station manuell öffnen
+### Station oder Zone manuell öffnen
 
 **Beispiel**: Station 2 (Index 1) für 5 Minuten öffnen
 
@@ -97,6 +97,12 @@ Sage dem KI-Assistenten:
 Der Assistant benutzt dann:
 - Tool: `manual_station_run`
 - Parameter: `sid=1, en=1, t=300`
+
+Dasselbe funktioniert auch mit dem Begriff "Zone":
+> "Starte Zone 2 für 5 Minuten"
+
+Bei benannten Zonen muss der Assistant zuerst `get_stations` verwenden, um den Namen auf den 0-basierten `sid` aufzulösen, zum Beispiel:
+> "Starte Rosen für 5 Sekunden"
 
 ### Bewässerungsprotokoll anzeigen
 
@@ -187,6 +193,21 @@ Der Assistant erstellt das Programm mit zwei Zeitpunkten.
 > "Richte einen Sensor-Monitor ein, der bei Bodenfeuchte < 20% automatisch gießt"
 
 Der Assistant nutzt `configure_monitor`.
+
+### 4. Sicherer Start per Name (empfohlen)
+
+Wenn Namen statt IDs verwendet werden sollen, nutze die sicheren Name-Tools:
+
+- `start_zone_by_name` (löst Zonenname auf und startet dann `/cm`)
+- `start_program_by_name` (löst Programmnamen auf und startet dann `/mp`)
+
+Beispiele:
+
+> "Starte Zone Rosen für 30 Sekunden"
+
+> "Starte Programm Rasenzone"
+
+Bei Mehrdeutigkeit wird **nicht** gestartet, sondern Kandidaten werden zurückgegeben.
 
 ### 4. Debugging
 

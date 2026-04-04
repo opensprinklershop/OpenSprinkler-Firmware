@@ -1,7 +1,7 @@
 /* OpenSprinkler Unified Firmware
  * MCP (Model Context Protocol) Server — built-in HTTP endpoint /mcp
  *
- * ESP32 only. Requires USE_OTF.
+ * All platforms with USE_OTF (ESP32, ESP8266, Linux/OSPI).
  *
  * Implements the MCP Streamable-HTTP transport (JSON-RPC 2.0).
  *

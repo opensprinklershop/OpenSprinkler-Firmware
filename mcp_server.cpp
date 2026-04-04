@@ -1,6 +1,6 @@
 /* OpenSprinkler Unified Firmware
  * MCP (Model Context Protocol) Server — built-in HTTP endpoint /mcp
- * Requires USE_OTF. Supported on ESP32 and Linux/OSPI.
+ * Requires USE_OTF. Supported on all platforms (ESP32, ESP8266, Linux/OSPI).
  *
  * See mcp_server.h for full documentation.
  */
@@ -17,11 +17,14 @@
 #include "opensprinkler_server.h"
 #include "ArduinoJson.hpp"
 #include "psram_utils.h"
-#if defined(ESP32)
+#if defined(ARDUINO)
 #include <LittleFS.h>
-#include <WiFi.h>
-#endif // ESP32
-#if !defined(ARDUINO)
+#  if defined(ESP32)
+#    include <WiFi.h>
+#  elif defined(ESP8266)
+#    include <ESP8266WiFi.h>
+#  endif
+#else
 #include <unistd.h>   // sysconf
 #endif
 
@@ -103,11 +106,15 @@ static char g_mcp_session_id[24] = {0};
 
 static const char* mcp_get_session_id() {
   if (g_mcp_session_id[0] == '\0') {
-    // Generate session ID from chip ID + uptime for uniqueness
+    // Generate session ID from chip/process ID + uptime for uniqueness
     uint32_t chip = 0;
 #if defined(ESP32)
     uint64_t mac = ESP.getEfuseMac();
     chip = (uint32_t)(mac ^ (mac >> 32));
+#elif defined(ESP8266)
+    chip = ESP.getChipId();
+#else
+    chip = (uint32_t)getpid();
 #endif
     snprintf(g_mcp_session_id, sizeof(g_mcp_session_id), "os-%08lx-%08lx",
              (unsigned long)chip, (unsigned long)millis());
@@ -144,6 +151,10 @@ static bool mcp_check_auth(const OTF::Request& req) {
 static void mcp_begin_capture() {
   g_mcp_capture_active = true;
   g_mcp_capture_buf.clear();
+#if defined(ESP8266)
+  // Pre-allocate to avoid repeated reallocation and fragmentation
+  g_mcp_capture_buf.reserve(3072);
+#endif
   rewind_ether_buffer();
 }
 
@@ -180,10 +191,17 @@ static void mcp_flush_segment() {
 // ─── JSON-RPC response helpers ────────────────────────────────────────────────
 
 // Write a complete JSON-RPC response (result or error) to res.
+// The document is cleared after serialization to free heap before writing.
 static void mcp_send_response(OTF::Response& res,
-                              const ArduinoJson::JsonDocument& doc) {
+                              ArduinoJson::JsonDocument& doc) {
+  size_t expected = ArduinoJson::measureJson(doc);
   String body;
+  body.reserve(expected);
   ArduinoJson::serializeJson(doc, body);
+  doc.clear();  // free ArduinoJson memory before HTTP write
+  DEBUG_PRINTF("[MCP] expected=%u body=%u heap=%u\n",
+               (unsigned)expected, (unsigned)body.length(),
+               (unsigned)freeMemory());
 
   res.writeStatus(200, F("OK"));
   res.writeHeader(F("Content-Type"), F("application/json"));
@@ -793,12 +811,12 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
   {
     auto t = tools.add<ArduinoJson::JsonObject>();
     t["name"]        = "manual_station_run";
-    t["description"] = "Manually open or close a single station. Equivalent to /cm.";
+    t["description"] = "Manually open or close a single station or watering zone. Equivalent to /cm. Use this for requests like start/open/run zone 1 or a named zone after resolving its station index.";
     auto schema = t["inputSchema"].to<ArduinoJson::JsonObject>();
     schema["type"] = "object";
     auto props = schema["properties"].to<ArduinoJson::JsonObject>();
     auto sid = props["sid"].to<ArduinoJson::JsonObject>();
-    sid["type"] = "integer"; sid["description"] = "Station index (0-based)";
+    sid["type"] = "integer"; sid["description"] = "Station or zone index (0-based). User-facing zone 1 maps to sid=0. Resolve names like 'Rosen' via get_stations first.";
     auto en = props["en"].to<ArduinoJson::JsonObject>();
     en["type"] = "integer"; en["description"] = "1 = open station, 0 = close station";
     auto ti = props["t"].to<ArduinoJson::JsonObject>();
@@ -1004,6 +1022,21 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
     String content_json;
     bool handled = true;
 
+#if defined(ESP8266)
+    // ESP8266: suspend MQTT/sensors to maximise heap for capture + serialisation.
+    // Threshold: 14000 bytes is realistic for this device (maxblock ~12KB after suspend).
+    // RAII guard ensures restore_tmp_memory() runs on every return path.
+    struct MemGuard { ~MemGuard() { restore_tmp_memory(0); } } _mem_guard;
+    
+    // free_tmp_memory will return false if insufficient contiguous memory after freeing.
+    // In that case, reject rather than risk heap corruption.
+    if (!free_tmp_memory(14000)) {
+      mcp_build_error(resp_doc, rpc_id, -32603, "Insufficient memory (fragmented)");
+      mcp_send_response(res, resp_doc);
+      return;
+    }
+#endif
+
     if (strcmp(tool_name, "get_all") == 0) {
       content_json = tool_get_all(req, res);
 
@@ -1117,7 +1150,11 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
     }
 
     // Return text result (for read-only tools)
+    req_doc.clear();  // free request doc before building large response
     mcp_build_text_result(resp_doc, rpc_id, content_json);
+    DEBUG_PRINTF("[MCP] capture=%u overflowed=%d\n",
+                 (unsigned)content_json.length(), (int)resp_doc.overflowed());
+    content_json = String();  // free captured data before serializing response
     mcp_send_response(res, resp_doc);
     return;
   }

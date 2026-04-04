@@ -8,10 +8,13 @@
 // LittleFS file paths for custom certificate and key (DER format)
 #define CUSTOM_CERT_FILENAME "/custom_cert.der"
 #define CUSTOM_KEY_FILENAME  "/custom_key.der"
+// Marker file indicating cert was auto-generated (not user-uploaded)
+#define AUTO_CERT_MARKER_FILE "/auto_cert.txt"
 
 // Certificate info structure
 struct CertInfo {
 	bool is_custom;           // true if custom cert is loaded
+	bool is_auto;             // true if auto-generated self-signed cert
 	char subject[128];        // Subject CN
 	char issuer[128];         // Issuer CN
 	char not_before[32];      // Validity start (ISO date)
@@ -47,6 +50,19 @@ const unsigned char* custom_cert_get_cert_data();
 uint16_t custom_cert_get_cert_len();
 const unsigned char* custom_cert_get_key_data();
 uint16_t custom_cert_get_key_len();
+
+// Generate a self-signed certificate (DNS SANs only, 10-year validity).
+// Stores cert+key as DER on LittleFS and sets auto-cert marker.
+// Returns true on success.
+bool auto_cert_generate();
+
+// Check if the active cert is auto-generated
+bool auto_cert_is_active();
+
+// Check if auto-cert has expired. If so, regenerate.
+// Call after WiFi/NTP is available so system time is set.
+// Returns true if cert was regenerated.
+bool auto_cert_check_expiry();
 
 #endif // ESP32
 #endif // CUSTOM_CERT_H

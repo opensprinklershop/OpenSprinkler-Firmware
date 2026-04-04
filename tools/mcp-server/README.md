@@ -123,8 +123,10 @@ In `~/.config/claude/claude_desktop_config.json`:
 | `change_controller_variables` | Betrieb ein/aus, Rain Delay setzen, Stationen zurücksetzen, Neustart | `/cv` |
 | `change_options` | Einstellungen ändern (Zeitzone, Sensoren, Master, Logging, etc.) | `/co` |
 | `manual_station_run` | Station manuell öffnen/schließen | `/cm` |
+| `start_zone_by_name` | Zone/Station sicher per Name starten (mit Namensauflösung) | `/jn` + `/cm` |
 | `run_once` | Einmal-Programm mit individueller Stationsdauer starten | `/cr` |
 | `manual_program_start` | Gespeichertes Programm manuell starten | `/mp` |
+| `start_program_by_name` | Programm sicher per Name starten (mit Namensauflösung) | `/jp` + `/mp` |
 | `pause_queue` | Programm-Warteschlange pausieren/fortsetzen | `/pq` |
 
 ### Programmverwaltung

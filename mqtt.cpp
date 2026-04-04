@@ -165,6 +165,10 @@ char OSMqtt::_sub_topic[MQTT_MAX_TOPIC_LEN + 1] = {0}; // topic for subscribing
 bool OSMqtt::_done_subscribed = false;		//Flag indicating if command topic has been subscribed to
 #if defined(ARDUINO)
 Client * OSMqtt::client = NULL;
+// Deferred-resume flag: set by resume() when called from an HTTP handler context;
+// loop() picks this up and calls begin() from the main loop to avoid blocking TCP
+// connect (which triggers Soft WDT on ESP8266 Wiznet5500).
+static bool _deferred_resume = false;
 #endif
 
 //******************************** HELPER FUNCTIONS ********************************// 
@@ -568,6 +572,19 @@ void OSMqtt::subscribe(void){
 void OSMqtt::loop(void) {
 	static unsigned long last_reconnect_attempt = 0;
 
+	// Process a deferred resume(): begin() calls _connect() which blocks for up to
+	// setSocketTimeout() seconds — safe here in the main loop but not in HTTP handlers.
+	if (_deferred_resume) {
+		_deferred_resume = false;
+#if defined(ESP8266)
+		// Feed the software watchdog before the blocking TCP connect inside begin().
+		// The previous loop iteration (MCP response write) may have consumed ~1 s of
+		// the 3 s Soft WDT window; without this feed the total can exceed 3 s.
+		yield();
+#endif
+		begin();
+	}
+
 	if (!_enabled || os.status.network_fails > 0) return;
 
 	// Reconnect (or lazily allocate) when not connected
@@ -816,7 +833,11 @@ void OSMqtt::suspend(void) {
 }
 
 void OSMqtt::resume(void) {
-	begin();
+	// Do NOT call begin()/_connect() here: it issues a blocking TCP connect to the
+	// MQTT broker, which fires the Soft WDT when called from inside an HTTP request
+	// handler (e.g. restore_tmp_memory() via MCP RAII guard).
+	// Instead, set a flag that loop() will honour on the next main-loop iteration.
+	_deferred_resume = true;
 }
 
 #else

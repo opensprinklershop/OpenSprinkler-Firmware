@@ -46,6 +46,9 @@
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
 #include "online_update.h"
+#if defined(ESP32)
+#include "custom_cert.h"
+#endif
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -957,6 +960,10 @@ void do_loop()
 			os.set_screen_led(LOW);
 			os.lcd.clear();
 			os.save_wifi_ip();
+			#if defined(ESP32)
+			// Check if auto-generated cert has expired (NTP should be synced by now)
+			auto_cert_check_expiry();
+			#endif
 			// Ethernet is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
 
@@ -1095,6 +1102,10 @@ void do_loop()
 			os.set_screen_led(LOW);
 			os.lcd.clear();
 			os.save_wifi_ip();
+			#if defined(ESP32)
+			// Check if auto-generated cert has expired (NTP should be synced by now)
+			auto_cert_check_expiry();
+			#endif
 			
 		  if (!online_update_in_progress()) {
 			// RainMaker MUST run before sensor_radio_early_init(): on ESP32-C5,
@@ -1595,22 +1606,24 @@ void do_loop()
 			os.apply_all_station_bits(overcurrent_monitor);
 
 			// check through runtime queue, calculate the last stop time of sequential stations
-			memset(pd.last_seq_stop_times, 0, sizeof(ulong)*NUM_SEQ_GROUPS);
+			memset(pd.last_seq_stop_times, 0, sizeof(time_os_t) * NUM_SCHED_GROUPS);
 			time_os_t sst;
 			unsigned char re=os.iopts[IOPT_REMOTE_EXT_MODE];
+			unsigned char invert_group_sched = os.iopts[IOPT_INVERT_GROUP_SCHEDULING];
 			q = pd.queue;
 			for(;q<pd.queue+pd.nqueue;q++) {
 				sid = q->sid;
 				bid = sid>>3;
 				s = sid&0x07;
 				gid = os.get_station_gid(sid);
+				unsigned char sched_gid = (gid < NUM_SEQ_GROUPS) ? gid : NUM_SEQ_GROUPS;
 				// check if any sequential station has a valid stop time
 				// and the stop time must be larger than curr_time
 				sst = q->st + q->dur;
 				if (sst>curr_time) {
 					// only need to update last_seq_stop_time for sequential stations
-					if (os.is_sequential_station(sid) && !re) {
-						pd.last_seq_stop_times[gid] = (sst > pd.last_seq_stop_times[gid]) ? sst : pd.last_seq_stop_times[gid];
+					if (!re && (invert_group_sched || os.is_sequential_station(sid))) {
+						pd.last_seq_stop_times[sched_gid] = (sst > pd.last_seq_stop_times[sched_gid]) ? sst : pd.last_seq_stop_times[sched_gid];
 					}
 				}
 			}
@@ -1946,14 +1959,27 @@ void handle_shift_remaining_stations(RuntimeQueueStruct* q, unsigned char gid, t
 	RuntimeQueueStruct *s = pd.queue;
 	time_os_t q_end_time = q->st + q->dur;
 	ulong remainder = 0;
+	unsigned char invert_group_sched = os.iopts[IOPT_INVERT_GROUP_SCHEDULING];
+	unsigned char sched_gid = (gid < NUM_SEQ_GROUPS) ? gid : NUM_SEQ_GROUPS;
 
 	if (q_end_time > curr_time) { // remainder is non-zero
 		remainder = (q->st < curr_time) ? q_end_time - curr_time : q->dur;
 		for ( ; s < pd.queue + pd.nqueue; s++) {
-
-			// ignore station to be removed and stations in other groups
-			if (s == q || os.get_station_gid(s->sid) != gid || !os.is_sequential_station(s->sid)) {
+			if (s == q || !os.is_sequential_station(s->sid)) {
 				continue;
+			}
+
+			if (!invert_group_sched) {
+				// Default mode: only shift stations in the same sequential group.
+				if (os.get_station_gid(s->sid) != gid) {
+					continue;
+				}
+			} else {
+				unsigned char sid_gid = os.get_station_gid(s->sid);
+				// In inverted mode, same non-P group runs parallel, so don't shift peers.
+				if (gid != PARALLEL_GROUP_ID && sid_gid == gid) {
+					continue;
+				}
 			}
 
 			// only shift stations following current station
@@ -1963,8 +1989,12 @@ void handle_shift_remaining_stations(RuntimeQueueStruct* q, unsigned char gid, t
 			}
 		}
 	}
-	pd.last_seq_stop_times[gid] -= remainder;
-	pd.last_seq_stop_times[gid] += 1;
+	if (pd.last_seq_stop_times[sched_gid] > remainder) {
+		pd.last_seq_stop_times[sched_gid] -= remainder;
+		pd.last_seq_stop_times[sched_gid] += 1;
+	} else {
+		pd.last_seq_stop_times[sched_gid] = 0;
+	}
 }
 
 /** Turn off a running station immediately
@@ -1979,14 +2009,16 @@ void turn_off_running_station_immediate(unsigned char sid, time_os_t curr_time, 
 	unsigned char qid = pd.station_qid[sid];
 	RuntimeQueueStruct *q = pd.queue + qid;
 	unsigned char gid = os.get_station_gid(q->sid);
+	unsigned char sched_gid = (gid < NUM_SEQ_GROUPS) ? gid : NUM_SEQ_GROUPS;
+	unsigned char invert_group_sched = os.iopts[IOPT_INVERT_GROUP_SCHEDULING];
 
-	if (shift && os.is_sequential_station(sid) && !os.iopts[IOPT_REMOTE_EXT_MODE]) {
+	if (shift && !os.iopts[IOPT_REMOTE_EXT_MODE] && (invert_group_sched || os.is_sequential_station(sid))) {
 		handle_shift_remaining_stations(q, gid, curr_time);
 	}
 
 	int16_t station_delay = water_time_decode_signed(os.iopts[IOPT_STATION_DELAY_TIME]);
-	if (q->st + q->dur + station_delay == pd.last_seq_stop_times[gid]) { // if removing last station in group
-		pd.last_seq_stop_times[gid] = 0;
+	if (q->st + q->dur + station_delay == pd.last_seq_stop_times[sched_gid]) { // if removing last station in group
+		pd.last_seq_stop_times[sched_gid] = 0;
 	}
 	pd.dequeue(qid);
 	pd.station_qid[sid] = 0xFF;
@@ -2008,8 +2040,10 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	unsigned char force_dequeue = 0;
 	unsigned char station_bit = os.is_running(sid);
 	unsigned char gid = os.get_station_gid(q->sid);
+	unsigned char sched_gid = (gid < NUM_SEQ_GROUPS) ? gid : NUM_SEQ_GROUPS;
+	unsigned char invert_group_sched = os.iopts[IOPT_INVERT_GROUP_SCHEDULING];
 
-	if (shift && os.is_sequential_station(sid) && !os.iopts[IOPT_REMOTE_EXT_MODE]) {
+	if (shift && !os.iopts[IOPT_REMOTE_EXT_MODE] && (invert_group_sched || os.is_sequential_station(sid))) {
 		handle_shift_remaining_stations(q, gid, curr_time);
 	}
 
@@ -2097,8 +2131,8 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 
 	// make necessary adjustments to sequential time stamps
 	int16_t station_delay = water_time_decode_signed(os.iopts[IOPT_STATION_DELAY_TIME]);
-	if (q->st + q->dur + station_delay == pd.last_seq_stop_times[gid]) { // if removing last station in group
-		pd.last_seq_stop_times[gid] = 0;
+	if (q->st + q->dur + station_delay == pd.last_seq_stop_times[sched_gid]) { // if removing last station in group
+		pd.last_seq_stop_times[sched_gid] = 0;
 	}
 
 	if (force_dequeue) {
@@ -2159,7 +2193,7 @@ void process_dynamic_events(time_os_t curr_time) {
  * this function determines the appropriate start and dequeue times
  * of stations bound to master stations with on and off adjustments
  */
-void handle_master_adjustments(time_os_t curr_time, RuntimeQueueStruct *q, unsigned char gid, ulong *seq_start_times) {
+void handle_master_adjustments(time_os_t curr_time, RuntimeQueueStruct *q, unsigned char gid, ulong *seq_start_times, bool adjust_group_timeline) {
 
 	int16_t start_adj = 0;
 	int16_t dequeue_adj = 0;
@@ -2182,7 +2216,9 @@ void handle_master_adjustments(time_os_t curr_time, RuntimeQueueStruct *q, unsig
 	// push back station's start time to allow sufficient time to turn on master
 	if (q->st - curr_time <= abs(start_adj)) {
 		q->st += abs(start_adj);
-		seq_start_times[gid] += abs(start_adj);
+		if (adjust_group_timeline && gid < NUM_SCHED_GROUPS) {
+			seq_start_times[gid] += abs(start_adj);
+		}
 	}
 
 	q->deque_time = q->st + q->dur + dequeue_adj;
@@ -2201,25 +2237,135 @@ void schedule_all_stations(time_os_t curr_time, unsigned char qo) {
 		con_start_time += os.pause_timer;
 	}
 	int16_t station_delay = water_time_decode_signed(os.iopts[IOPT_STATION_DELAY_TIME]);
+	unsigned char re = os.iopts[IOPT_REMOTE_EXT_MODE];
+	unsigned char invert_group_sched = (os.iopts[IOPT_INVERT_GROUP_SCHEDULING] && !re);
 
 	RuntimeQueueStruct *q = NULL;
 	unsigned char gid;
+
+	if (invert_group_sched) {
+		unsigned char class_present[NUM_SCHED_GROUPS];
+		ulong class_duration[NUM_SCHED_GROUPS];
+		ulong class_start[NUM_SCHED_GROUPS];
+		ulong class_cursor[NUM_SCHED_GROUPS];
+		unsigned char class_order[NUM_SCHED_GROUPS];
+		unsigned char class_order_len = 0;
+		memset(class_present, 0, sizeof(class_present));
+		memset(class_duration, 0, sizeof(class_duration));
+		memset(class_start, 0, sizeof(class_start));
+		memset(class_cursor, 0, sizeof(class_cursor));
+
+		for (q = pd.queue; q < pd.queue + pd.nqueue; q++) {
+			if (q->st || !q->dur) continue;
+			unsigned char raw_gid = os.get_station_gid(q->sid);
+			unsigned char sched_gid = (raw_gid < NUM_SEQ_GROUPS) ? raw_gid : NUM_SEQ_GROUPS;
+
+			if (!class_present[sched_gid]) {
+				class_present[sched_gid] = 1;
+				class_order[class_order_len++] = sched_gid;
+			}
+
+			if (raw_gid == PARALLEL_GROUP_ID) {
+				class_duration[sched_gid] += q->dur + station_delay;
+			} else {
+				class_duration[sched_gid] = max(class_duration[sched_gid], (ulong)q->dur);
+			}
+		}
+
+		ulong base_start = con_start_time;
+		if (qo > 0) {
+			ulong inserted_total = 0;
+			for (unsigned char i = 0; i < class_order_len; i++) {
+				inserted_total += class_duration[class_order[i]] + station_delay;
+			}
+
+			for (q = pd.queue; q < pd.queue + pd.nqueue; q++) {
+				if (!q->st || !q->dur) continue;
+
+				if (curr_time >= q->st && curr_time < q->st + q->dur) {
+					turn_off_station(q->sid, curr_time);
+					ulong remaining = q->dur - (curr_time - q->st);
+					q->st = curr_time + inserted_total;
+					q->dur = remaining;
+					q->deque_time += inserted_total;
+				} else if (curr_time < q->st) {
+					q->st += inserted_total;
+					q->deque_time += inserted_total;
+				}
+			}
+		} else {
+			ulong latest_end = 0;
+			for (q = pd.queue; q < pd.queue + pd.nqueue; q++) {
+				if (!q->st || !q->dur) continue;
+				ulong q_end = q->st + q->dur;
+				if (q_end > latest_end) latest_end = q_end;
+			}
+			if (latest_end > curr_time) {
+				base_start = latest_end + station_delay;
+			}
+		}
+
+		ulong cursor = base_start;
+		for (unsigned char i = 0; i < class_order_len; i++) {
+			unsigned char sched_gid = class_order[i];
+			class_start[sched_gid] = cursor;
+			class_cursor[sched_gid] = cursor;
+			cursor += class_duration[sched_gid] + station_delay;
+		}
+
+		for (q = pd.queue; q < pd.queue + pd.nqueue; q++) {
+			if (q->st || !q->dur) continue;
+			unsigned char raw_gid = os.get_station_gid(q->sid);
+			unsigned char sched_gid = (raw_gid < NUM_SEQ_GROUPS) ? raw_gid : NUM_SEQ_GROUPS;
+
+			if (raw_gid == PARALLEL_GROUP_ID) {
+				q->st = class_cursor[sched_gid];
+				class_cursor[sched_gid] += q->dur + station_delay;
+				handle_master_adjustments(curr_time, q, sched_gid, class_cursor, true);
+			} else {
+				q->st = class_start[sched_gid];
+				handle_master_adjustments(curr_time, q, sched_gid, class_cursor, false);
+			}
+
+			if (!os.status.program_busy) {
+				os.status.program_busy = 1;
+				if(os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_FLOW) {
+					os.flowcount_log_start = flow_count;
+					os.sensor1_active_lasttime = curr_time;
+				}
+			}
+		}
+
+		memset(pd.last_seq_stop_times, 0, sizeof(time_os_t) * NUM_SCHED_GROUPS);
+		for (unsigned char i = 0; i < class_order_len; i++) {
+			unsigned char sched_gid = class_order[i];
+			ulong class_end = class_start[sched_gid] + class_duration[sched_gid];
+			if (class_end > curr_time) {
+				pd.last_seq_stop_times[sched_gid] = class_end;
+			}
+		}
+
+		return;
+	}
+
 	unsigned char stagger[NUM_SEQ_GROUPS]; // different sequential groups will be staggered by 1 second from each other
 	memset(stagger, 0, NUM_SEQ_GROUPS);
 	// go through the queue and see if there is any scheduled zone for each sequential group
 	for(q=pd.queue;q<pd.queue+pd.nqueue;q++) {
 		if(q->st || (!q->dur)) continue; // if this element already has a start time or is marked for reset, skip
 		gid = os.get_station_gid(q->sid);
-		stagger[gid] = 1; // mark this group
+		if (gid < NUM_SEQ_GROUPS) {
+			stagger[gid] = 1; // mark this group
+		}
 	}
 	for(unsigned char i=1;i<NUM_SEQ_GROUPS;i++) {
 		stagger[i] += stagger[i-1]; // accumulate stagger time
 	}
 
-	ulong seq_start_times[NUM_SEQ_GROUPS];  // sequential start times
+	ulong seq_start_times[NUM_SCHED_GROUPS];  // sequential start times
 	ulong seq_adjustments[NUM_SEQ_GROUPS];  // adjustment amounts for insert-to-front
+	memset(seq_start_times, 0, sizeof(seq_start_times));
 	memset(seq_adjustments, 0, sizeof(seq_adjustments));
-	unsigned char re = os.iopts[IOPT_REMOTE_EXT_MODE];
 
 	// If qo>0, new zones will preempt existing, so calculate adjustment amounts first
 	if (qo>0) {
@@ -2231,7 +2377,7 @@ void schedule_all_stations(time_os_t curr_time, unsigned char qo) {
 			gid = os.get_station_gid(q->sid);
 
 			// Only calculate adjustments for sequential stations
-			if (os.is_sequential_station(q->sid) && !re) {
+			if (os.is_sequential_station(q->sid) && !re && gid < NUM_SEQ_GROUPS) {
 				seq_adjustments[gid] += q->dur + station_delay;
 			}
 		}
@@ -2245,6 +2391,7 @@ void schedule_all_stations(time_os_t curr_time, unsigned char qo) {
 			if (!os.is_sequential_station(q->sid) || re) continue;
 
 			gid = os.get_station_gid(q->sid);
+			if (gid >= NUM_SEQ_GROUPS) continue;
 			ulong adjustment = seq_adjustments[gid] + stagger[gid];
 			if (adjustment == 0) continue; // no adjustment needed for this group
 
@@ -2263,8 +2410,9 @@ void schedule_all_stations(time_os_t curr_time, unsigned char qo) {
 				q->deque_time += adjustment;
 			}
 			// Update last_seq_stop_times
-			if (q->st + q->dur > pd.last_seq_stop_times[gid]) {
-				pd.last_seq_stop_times[gid] = q->st + q->dur;
+			unsigned char sched_gid = (gid < NUM_SEQ_GROUPS) ? gid : NUM_SEQ_GROUPS;
+			if (q->st + q->dur > pd.last_seq_stop_times[sched_gid]) {
+				pd.last_seq_stop_times[sched_gid] = q->st + q->dur;
 			}
 		}
 
@@ -2291,21 +2439,22 @@ void schedule_all_stations(time_os_t curr_time, unsigned char qo) {
 		if(q->st) continue; // if this queue element has already been scheduled, skip
 		if(!q->dur) continue; // if the element has been marked to reset, skip
 		gid = os.get_station_gid(q->sid);
+		unsigned char sched_gid = (gid < NUM_SEQ_GROUPS) ? gid : NUM_SEQ_GROUPS;
 
 		// use sequential scheduling per sequential group
 		// apply station delay time
-		if (os.is_sequential_station(q->sid) && !re) {
+		if (os.is_sequential_station(q->sid) && !re && gid < NUM_SEQ_GROUPS) {
 			q->st = seq_start_times[gid];
 			seq_start_times[gid] += q->dur;
 			seq_start_times[gid] += station_delay; // add station delay time
+			handle_master_adjustments(curr_time, q, sched_gid, seq_start_times, true);
 		} else {
 			// otherwise, concurrent scheduling
 			q->st = con_start_time;
 			// stagger concurrent stations by 1 second
 			con_start_time+=1;
+			handle_master_adjustments(curr_time, q, sched_gid, seq_start_times, false);
 		}
-
-		handle_master_adjustments(curr_time, q, gid, seq_start_times);
 
 		if (!os.status.program_busy) {
 			os.status.program_busy = 1;  // set program busy bit

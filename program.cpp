@@ -38,7 +38,7 @@ uint8_t ProgramData::current_mpid = 0;
 PSRAM_ATTR RuntimeQueueStruct ProgramData::queue[RUNTIME_QUEUE_SIZE];
 PSRAM_ATTR unsigned char ProgramData::station_qid[MAX_NUM_STATIONS];
 LogStruct ProgramData::lastrun;
-time_os_t ProgramData::last_seq_stop_times[NUM_SEQ_GROUPS];
+time_os_t ProgramData::last_seq_stop_times[NUM_SCHED_GROUPS];
 
 // tmp_buffer declared in sensors.h
 
@@ -156,6 +156,9 @@ void ProgramData::set_pause() {
 		}
 		q->deque_time += os.pause_timer;
 		unsigned char gid = os.get_station_gid(q->sid);
+		if (gid >= NUM_SEQ_GROUPS) {
+			gid = NUM_SEQ_GROUPS; // map group P (255) to the scheduler-only class index
+		}
 		if (q->st + q->dur > last_seq_stop_times[gid]) {
 			last_seq_stop_times[gid] = q->st + q->dur; // update last_seq_stop_times of the corresponding group
 		}
