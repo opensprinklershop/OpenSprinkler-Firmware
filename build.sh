@@ -60,12 +60,11 @@ fi
 
 if git submodule status | grep --quiet '^-'; then
     echo "A git submodule is not initialized."
-    git submodule update --recursive --init
+    git submodule update --remote --recursive --init
 else
-    echo "Updating submodules."
-    git submodule update --recursive || true
+    echo "Updating submodules to latest remote version."
+    git submodule update --remote --recursive || true
 fi
-# influxdb-cpp: keep local checkout (remote commit may not exist)
 # Apply local patches to external libraries
 # Patch filename convention: <submodule-dir>--<description>.patch
 for patch in patches/*.patch; do
