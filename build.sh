@@ -101,13 +101,18 @@ else
 
 	# Detect OS version to install correct GPIO library
 	source /etc/os-release
-	VERSION_MAJOR=${VERSION_ID%%.*}
-	if [[ ${VERSION_MAJOR} -ge 13 ]]; then
-		echo "Detected Debian ${VERSION_ID} (Trixie or newer) - installing lgpio"
-		GPIO_PKG="liblgpio-dev"
+	if [[ "$ID" == "debian" || "$ID" == "raspbian" || "$ID_LIKE" == *"debian"* ]]; then
+		VERSION_MAJOR=${VERSION_ID%%.*}
+		if [[ ${VERSION_MAJOR} -ge 13 ]]; then
+			echo "Detected Debian ${VERSION_ID} (Trixie or newer) - installing lgpio"
+			GPIO_PKG="liblgpio-dev"
+		else
+			echo "Detected Debian ${VERSION_ID} (Bookworm or older) - installing libgpiod"
+			GPIO_PKG="libgpiod-dev gpiod"
+		fi
 	else
-		echo "Detected Debian ${VERSION_ID} (Bookworm or older) - installing libgpiod"
-		GPIO_PKG="libgpiod-dev gpiod"
+		echo "Non-Debian OS detected (${PRETTY_NAME:-$ID}) - skipping GPIO package selection"
+		GPIO_PKG=""
 	fi
 
 	apt-get install -y \

@@ -572,6 +572,7 @@ void OSMqtt::subscribe(void){
 void OSMqtt::loop(void) {
 	static unsigned long last_reconnect_attempt = 0;
 
+#if defined(ARDUINO)
 	// Process a deferred resume(): begin() calls _connect() which blocks for up to
 	// setSocketTimeout() seconds — safe here in the main loop but not in HTTP handlers.
 	if (_deferred_resume) {
@@ -584,6 +585,7 @@ void OSMqtt::loop(void) {
 #endif
 		begin();
 	}
+#endif
 
 	if (!_enabled || os.status.network_fails > 0) return;
 

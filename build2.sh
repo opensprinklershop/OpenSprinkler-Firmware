@@ -6,16 +6,21 @@
         GPIOLIB=""
 
 	source /etc/os-release
-        VERSION_MAJOR=${VERSION_ID%%.*}
-        # Trixie (Debian 13+) uses lgpio, Bookworm (Debian 12) uses libgpiod, older uses sysfs
-        if [[ ${VERSION_MAJOR} -ge 13 ]]; then
-                echo "Detected Debian ${VERSION_ID} (Trixie or newer) - using lgpio"
-                USEGPIO="-DLIBLGPIO"
-                GPIOLIB="-llgpio"
-        elif [[ ${VERSION_MAJOR} -ge 10 ]]; then
-                echo "Detected Debian ${VERSION_ID} (Bookworm or similar) - using libgpiod"
-                USEGPIO="-DLIBGPIOD"
-                GPIOLIB="-lgpiod"
+        # Only apply Debian-specific GPIO library selection on Debian/Raspbian/Ubuntu systems
+        if [[ "$ID" == "debian" || "$ID" == "raspbian" || "$ID_LIKE" == *"debian"* ]]; then
+                VERSION_MAJOR=${VERSION_ID%%.*}
+                # Trixie (Debian 13+) uses lgpio, Bookworm (Debian 12) uses libgpiod, older uses sysfs
+                if [[ ${VERSION_MAJOR} -ge 13 ]]; then
+                        echo "Detected Debian ${VERSION_ID} (Trixie or newer) - using lgpio"
+                        USEGPIO="-DLIBLGPIO"
+                        GPIOLIB="-llgpio"
+                elif [[ ${VERSION_MAJOR} -ge 10 ]]; then
+                        echo "Detected Debian ${VERSION_ID} (Bookworm or similar) - using libgpiod"
+                        USEGPIO="-DLIBGPIOD"
+                        GPIOLIB="-lgpiod"
+                fi
+        else
+                echo "Non-Debian OS detected (${PRETTY_NAME:-$ID}) - skipping GPIO library detection"
         fi
 
 
