@@ -6,6 +6,23 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (194)] — 2026-04-06
+
+### Added
+- **Inverse group scheduling**: new inverted logic mode for station groups. When enabled, stations in the same group can run in parallel, while different groups run one after another; group `P` always remains sequential
+- **MCP control by name**: the MCP server can now start saved programs and watering zones directly by name, making voice assistants and AI workflows easier to use
+
+### Changed
+- **MCP documentation expanded**: the built-in MCP endpoint and the external MCP server now describe program encoding, sensor configuration, program adjustments, monitor behavior, and inverse logic more clearly
+- **Automatic certificate handling (ESP32)**: self-generated HTTPS certificates are now checked after time sync and regenerated automatically when expired
+
+### Fixed
+- **More stable MCP requests on ESP8266**: improved memory handling reduces fragmentation and avoids failed MCP calls on low-memory devices
+- **Network reliability**: ESP32 and OSPi now use a unified ping implementation, improving network checks and reducing platform-specific issues
+- **Weather updates after transient network errors**: weather requests are no longer blocked by stale generic network-failure counters
+- **HTTPS fallback on low memory**: if there is not enough memory for SSL, requests now fall back to HTTP instead of failing outright
+- **OSPi build compatibility**: Linux build scripts now detect Debian-like and non-Debian systems more robustly
+
 ## [2.4.0 (193)] — 2026-04-03
 
 ### Added
