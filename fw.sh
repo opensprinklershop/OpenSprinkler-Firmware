@@ -8,6 +8,7 @@
 #   deploy  [matter|zigbee|esp8266|all]  – Build + Upload
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
+#   release sync-tags                    – Create missing GitHub releases for existing tags
 #   generate-mfg                         – Generate Matter manufacturing data (DAC, NVS)
 #   flash-mfg                            – Flash matter_kvs partition only
 #   full-flash [matter|zigbee|all]       – Full flash (bootloader + partitions + firmware)
@@ -1081,6 +1082,119 @@ print(json.dumps({
     ok "GitHub release complete: ${release_url}"
 }
 
+github_release_title_from_tag() {
+    local tag="$1"
+
+    if [[ "$tag" =~ ^v([0-9]+)_([0-9]+)$ ]]; then
+        local fw_version="${BASH_REMATCH[1]}"
+        local fw_minor="${BASH_REMATCH[2]}"
+        echo "v$(format_version "$fw_version") (build ${fw_minor})"
+        return 0
+    fi
+
+    echo "$tag"
+}
+
+github_release_exists() {
+    local tag="$1"
+    local token="$2"
+    local status
+
+    status=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "Authorization: token ${token}" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}")
+
+    [[ "$status" == "200" ]]
+}
+
+github_create_release_for_existing_tag() {
+    local tag="$1"
+    local token="$2"
+    local release_name
+    local notes
+    local response
+    local release_url
+
+    release_name="$(github_release_title_from_tag "$tag")"
+    notes="$(git for-each-ref "refs/tags/${tag}" --format='%(contents)')"
+
+    if [[ -z "${notes//[$'\t\r\n ']/}" ]]; then
+        notes="Release created from existing Git tag ${tag}."
+    fi
+
+    response=$(curl -sf -X POST \
+        -H "Authorization: token ${token}" \
+        -H "Accept: application/vnd.github+json" \
+        -H "Content-Type: application/json" \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases" \
+        -d "$(python3 -c "
+import json, sys
+print(json.dumps({
+    'tag_name': sys.argv[1],
+    'name': sys.argv[2],
+    'body': sys.argv[3],
+    'draft': False,
+    'prerelease': False
+}))
+" "$tag" "$release_name" "$notes")") || {
+        error "Failed to create GitHub release for ${tag}."
+        return 1
+    }
+
+    release_url=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['html_url'])")
+    ok "Release created for ${tag}: ${release_url}"
+}
+
+github_sync_tag_releases() {
+    header "GitHub: sync tags to releases"
+
+    local token="${GITHUB_TOKEN:-}"
+    if [[ -z "$token" ]]; then
+        error "GITHUB_TOKEN not set — cannot create GitHub releases from tags."
+        error "Run with: GITHUB_TOKEN=<token> ./fw.sh release sync-tags"
+        return 1
+    fi
+
+    local -a tags
+    mapfile -t tags < <(git tag -l 'v*' --sort=version:refname)
+    if [[ ${#tags[@]} -eq 0 ]]; then
+        warn "No matching tags found (pattern: v*)."
+        return 0
+    fi
+
+    local created=0
+    local skipped=0
+    local failed=0
+    local tag
+
+    for tag in "${tags[@]}"; do
+        if github_release_exists "$tag" "$token"; then
+            info "Release already exists for ${tag} — skipping."
+            ((skipped+=1))
+            continue
+        fi
+
+        info "Creating GitHub release for ${tag} …"
+        if github_create_release_for_existing_tag "$tag" "$token"; then
+            ((created+=1))
+        else
+            ((failed+=1))
+        fi
+    done
+
+    echo ""
+    ok "Created: ${created}"
+    ok "Skipped: ${skipped}"
+
+    if (( failed > 0 )); then
+        error "Failed:  ${failed}"
+        return 1
+    fi
+
+    ok "All matching tags are now represented as GitHub releases."
+}
+
 # ── Main release workflow ────────────────────────────────────────────────────
 # Usage: do_release [rebuild]
 #   rebuild  — build only, no version bump, no git tag/release
@@ -1230,6 +1344,8 @@ ${BOLD}Actions:${NC}
                                             create GitHub release
   release rebuild                           Rebuild all firmwares without version
                                             bump, no git tag/release — build only
+    release sync-tags                         Create missing GitHub releases for
+                                                                                        existing v* tags
   generate-mfg                              Generate Matter manufacturing data
                                             (test PAA → PAI → DAC chain + NVS binary)
   flash-mfg                                 Flash matter_kvs partition to device
@@ -1285,6 +1401,7 @@ ${BOLD}Examples:${NC}
   ./fw.sh switch zigbee
   ./fw.sh release
   ./fw.sh release rebuild
+    GITHUB_TOKEN=<token> ./fw.sh release sync-tags
   ./fw.sh generate-mfg
   ./fw.sh flash-mfg
   ./fw.sh full-flash zigbee
@@ -1397,8 +1514,9 @@ case "$ACTION" in
     release)
         case "$VARIANT" in
             rebuild)  do_release rebuild ;;
+            sync-tags) github_sync_tag_releases ;;
             all|"")   do_release full ;;
-            *) error "Unknown release mode: $VARIANT (rebuild)"; exit 1 ;;
+            *) error "Unknown release mode: $VARIANT (rebuild|sync-tags)"; exit 1 ;;
         esac
         ;;
 

@@ -30,6 +30,14 @@
 extern OpenSprinkler os;
 extern uint16_t get_asb_detected_boards();
 
+#if defined(ESP8266)
+static void reset_asb_read_bus() {
+  Wire.begin(SDA, SCL);
+  Wire.setClock(100000);
+  delay(5);
+}
+#endif
+
 /**
  * Read ESP8266/ESP32 ADS1115 sensors (Analog Sensor Board)
  */
@@ -53,8 +61,7 @@ int AsbSensor::read(unsigned long time) {
   if (!adc.begin()) {
 #if defined(ESP8266)
     // I2C bus lockup recovery: reinitialize the software I2C and retry once
-    Wire.begin();
-    Wire.setClock(100000);
+    reset_asb_read_bus();
     if (!adc.begin()) {
 #endif
       DEBUG_PRINTLN(F("no asb board?!?"));
@@ -67,7 +74,14 @@ int AsbSensor::read(unsigned long time) {
   // DEBUG_PRINTF("t=%lu ms\n", endTime-startTime);
 
   // startTime = millis();
-  this->repeat_native += adc.readADC(id);
+  int16_t raw = adc.readADC(id);
+#if defined(ESP8266)
+  if (raw == ADS1X15_ERROR_I2C || raw == ADS1X15_ERROR_TIMEOUT) {
+    reset_asb_read_bus();
+    raw = adc.readADC(id);
+  }
+#endif
+  this->repeat_native += raw;
   // endTime = millis();
   // DEBUG_PRINTF("t=%lu ms\n", endTime-startTime);
 

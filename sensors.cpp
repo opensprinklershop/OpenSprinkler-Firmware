@@ -203,9 +203,20 @@ static bool ads1115_scratch_test(int addr) {
   Wire.write((uint8_t)(TEST_VAL & 0xFF));
   if (Wire.endTransmission() != 0) return false;
 
+#if defined(ESP8266)
+  // Software I2C on ESP8266 can need a short settle time before the register
+  // pointer can be read back reliably from ADS1115-based boards.
+  delay(3);
+#endif
+
   Wire.beginTransmission(addr);
   Wire.write(0x02);
   Wire.endTransmission(false);
+
+#if defined(ESP8266)
+  delay(1);
+#endif
+
   Wire.requestFrom(addr, 2);
   if (Wire.available() < 2) return false;
   uint16_t val = ((uint16_t)Wire.read() << 8) | Wire.read();
@@ -245,6 +256,35 @@ static bool is_ads1115(int addr) {
   return !sc16is752_scratch_test_at(addr);
 #endif
 }
+
+#if defined(ESP8266)
+static void reset_asb_i2c_bus() {
+  Wire.begin(SDA, SCL);
+  Wire.setClock(100000);
+  delay(10);
+}
+
+static bool detect_asb_pair(int addr_a, int addr_b) {
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    if (attempt > 0) {
+      reset_asb_i2c_bus();
+      delay(5 * attempt);
+    }
+
+    if (detect_i2c(addr_a) && is_ads1115(addr_a) &&
+        detect_i2c(addr_b) && is_ads1115(addr_b)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+#else
+static bool detect_asb_pair(int addr_a, int addr_b) {
+  return detect_i2c(addr_a) && is_ads1115(addr_a) &&
+         detect_i2c(addr_b) && is_ads1115(addr_b);
+}
+#endif
 #endif  // defined(ESP8266) || defined(ESP32)
 
 /**
@@ -254,11 +294,15 @@ static bool is_ads1115(int addr) {
 void detect_asb_board() {
   // detect analog sensor board, 0x48+0x49=Board1, 0x4A+0x4B=Board2
 #if defined(ESP8266) || defined(ESP32)
-  if (detect_i2c(ASB_BOARD_ADDR1a) && is_ads1115(ASB_BOARD_ADDR1a) &&
-      detect_i2c(ASB_BOARD_ADDR1b) && is_ads1115(ASB_BOARD_ADDR1b))
+  asb_detected_boards &= ~(ASB_BOARD1 | ASB_BOARD2);
+
+#if defined(ESP8266)
+  reset_asb_i2c_bus();
+#endif
+
+  if (detect_asb_pair(ASB_BOARD_ADDR1a, ASB_BOARD_ADDR1b))
     asb_detected_boards |= ASB_BOARD1;
-  if (detect_i2c(ASB_BOARD_ADDR2a) && is_ads1115(ASB_BOARD_ADDR2a) &&
-      detect_i2c(ASB_BOARD_ADDR2b) && is_ads1115(ASB_BOARD_ADDR2b))
+  if (detect_asb_pair(ASB_BOARD_ADDR2a, ASB_BOARD_ADDR2b))
     asb_detected_boards |= ASB_BOARD2;
 
   sensor_truebner_rs485_init();

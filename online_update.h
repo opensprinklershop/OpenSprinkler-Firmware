@@ -6,8 +6,8 @@
 #include <Arduino.h>
 
 // Update server base URL (no trailing slash)
-#define OTA_UPDATE_HOST "opensprinklershop.de"
-#define OTA_UPDATE_BASE_URL "https://opensprinklershop.de/upgrade"
+#define OTA_UPDATE_HOST "www.opensprinklershop.de"
+#define OTA_UPDATE_BASE_URL "https://www.opensprinklershop.de/upgrade"
 #define OTA_MANIFEST_URL OTA_UPDATE_BASE_URL "/manifest.json"
 #define OTA_ESP8266_FW_URL OTA_UPDATE_BASE_URL "/firmware_esp8266.bin"
 
