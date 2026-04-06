@@ -1,16 +1,9 @@
-/* Unified Pinger Implementation for ESP32 and Linux/OSPi
- * ESP8266 uses the esp8266-ping library (bluemurder) instead.
+/* Pinger Implementation for ESP32 and Linux/OSPi
+ * ESP8266 uses the esp8266-ping library (bluemurder) instead — see <Pinger.h>.
  */
 
-// ESP8266 uses the esp8266-ping library (bluemurder) which provides its own
-// Pinger class. Forward to the next matching header so this local file does
-// not shadow the library version.
-#if defined(ESP8266)
-  #include_next <Pinger.h>
-#else
-
-#ifndef PINGER_H
-#define PINGER_H
+#ifndef OSPINGER_H
+#define OSPINGER_H
 
 #if defined(ESP32)
   #include <Arduino.h>
@@ -360,5 +353,4 @@ bool Pinger::Ping(const char* hostname, uint32_t count, uint32_t timeout_ms) {
   return Ping(IPAddress(ip_addr), count, timeout_ms);
 }
 
-#endif // PINGER_H
-#endif // !ESP8266
+#endif // OSPINGER_H

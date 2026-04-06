@@ -87,7 +87,7 @@
 		#include <esp_flash.h>
 		#include <hal/spi_types.h>
 		#include <esp_flash_spi_init.h>
-		#include "Pinger.h"
+		#include "OSPinger.h"
 		Pinger *pinger = NULL;
 		WebServer *update_server = NULL;
 
@@ -103,7 +103,7 @@
 	#endif
 	unsigned long getNtpTime();
 #else // header and defs for RPI/Linux
-	#include "Pinger.h"
+	#include "OSPinger.h"
 	Pinger *pinger = NULL;
 	bool useEth = false;
 #endif
@@ -1824,9 +1824,8 @@ static bool process_special_program_command(const char* pname, uint32_t curr_tim
 /** Make weather query */
 void check_weather() {
 	// do not check weather if
-	// - network check has failed, or
 	// - the controller is in remote extension mode
-	if (os.status.network_fails>0 || os.iopts[IOPT_REMOTE_EXT_MODE]) return;
+	if (os.iopts[IOPT_REMOTE_EXT_MODE]) return;
 	if (os.status.program_busy) return;
 
 	if (!os.network_connected()) return;
@@ -2993,7 +2992,118 @@ static void check_network() {
 		}
 	}
 #endif
-#if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
+#if defined(ESP8266)
+	if (os.status.program_busy) {return;}
+
+	if (os.status.req_network) {
+		os.status.req_network = 0;
+		// change LCD icon to indicate it's checking network
+		if (!ui_state) {
+			os.lcd.setCursor(LCD_CURSOR_NETWORK, 1);
+			os.lcd.write('>');
+		}
+
+		if (!pinger) {
+			pinger = new Pinger();
+#if defined(ENABLE_DEBUG)
+			pinger->OnReceive([](const PingerResponse& response) {
+				if (response.ReceivedResponse) {
+					Serial.printf(
+						"Reply from %s: bytes=%d time=%ums TTL=%d\r\n",
+						response.DestIPAddress.toString().c_str(),
+						response.EchoMessageSize - sizeof(struct icmp_echo_hdr),
+						response.ResponseTime,
+						response.TimeToLive);
+				} else {
+					Serial.printf("Request timed out.\r\n");
+				}
+				return true;
+			});
+#endif
+
+			pinger->OnEnd([](const PingerResponse &response) {
+#if defined(ENABLE_DEBUG)
+				float loss = 100;
+				if(response.TotalReceivedResponses > 0) {
+					loss = (response.TotalSentRequests - response.TotalReceivedResponses) * 100 / response.TotalSentRequests;
+				}
+
+				Serial.printf("Ping statistics for %s:\r\n",
+					response.DestIPAddress.toString().c_str());
+				Serial.printf("    Packets: Sent = %u, Received = %u, Lost = %u (%.2f%% loss),\r\n",
+					response.TotalSentRequests,
+					response.TotalReceivedResponses,
+					response.TotalSentRequests - response.TotalReceivedResponses,
+					loss);
+
+				if(response.TotalReceivedResponses > 0) {
+					Serial.printf("Approximate round trip times in milli-seconds:\r\n");
+					Serial.printf("    Minimum = %ums, Maximum = %ums, Average = %.2fms\r\n",
+						response.MinResponseTime,
+						response.MaxResponseTime,
+						response.AvgResponseTime);
+				}
+
+				Serial.printf("Destination host data:\r\n");
+				Serial.printf("    IP address: %s\r\n",
+					response.DestIPAddress.toString().c_str());
+				if(response.DestMacAddress != nullptr) {
+					Serial.printf("    MAC address: " MACSTR "\r\n",
+						MAC2STR(response.DestMacAddress->addr));
+				}
+				if(response.DestHostname != "") {
+					Serial.printf("    DNS name: %s\r\n",
+						response.DestHostname.c_str());
+				}
+#endif
+				boolean failed = response.TotalSentRequests > response.TotalReceivedResponses;
+
+				ping_ok += response.TotalReceivedResponses;
+				if (!ping_ok)
+					return true;
+
+				if (failed) {
+					if(os.status.network_fails<3) os.status.network_fails++;
+				}
+				else os.status.network_fails=0;
+				if (os.status.network_fails==3) {
+					os.nvdata.reboot_cause = REBOOT_CAUSE_NETWORK_FAIL;
+					os.status.safe_reboot = 1;
+				}
+
+				return true;
+			});
+		}
+		if (useEth && (!eth.connected() || !eth.gatewayIP() || !eth.gatewayIP().isSet())) {
+			os.status.network_fails++;
+			return;
+		}
+		if (!useEth && (!WiFi.isConnected() || !WiFi.gatewayIP() || !WiFi.gatewayIP().isSet() || os.get_wifi_mode()==WIFI_MODE_AP)) {
+			os.status.network_fails++;
+			return;
+		}
+
+		boolean ping_ok = false;
+		switch(os.status.network_fails % 3) {
+			case 0:
+				ping_ok = pinger->Ping(useEth?eth.gatewayIP() : WiFi.gatewayIP());
+				break;
+			case 1:
+				ping_ok = pinger->Ping("google.com");
+				break;
+			case 2:
+				ping_ok = pinger->Ping("opensprinkler.com");
+				break;
+		}
+		if(!ping_ok) {
+			os.status.network_fails++;
+#if defined(ENABLE_DEBUG)
+			Serial.println("Error during last ping command.");
+#endif
+		}
+	}
+#endif
+#if defined(ESP32) || defined(OSPI) || defined(OSBO)
 	if (os.status.program_busy) {return;}
 
 	if (os.status.req_network) {
