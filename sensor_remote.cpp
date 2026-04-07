@@ -49,6 +49,7 @@ bool RemoteSensor::extract(char *s, char *buf, int maxlen) {
 int RemoteSensor::read(unsigned long time) {
   unsigned char ip[4];
   IP4_EXTRACT_BYTES(ip, this->ip);
+  ulong prev_last_read = this->last_read;
 
   // DEBUG_PRINTLN(F("RemoteSensor::read"));
 
@@ -70,8 +71,6 @@ int RemoteSensor::read(unsigned long time) {
     p = ether_buffer;
     DEBUG_PRINTLN(p);
 
-    this->last_read = time;
-
     char buf[20];
     char *s = strstr(p, "\"nativedata\":");
     if (s && extract(s, buf, sizeof(buf))) {
@@ -82,12 +81,14 @@ int RemoteSensor::read(unsigned long time) {
       double value = -1;
       int ok = sscanf(buf, "%lf", &value);
       if (ok && (value != this->last_data || !this->flags.data_ok ||
-                 time - this->last_read > 6000)) {
+                 time - prev_last_read > 6000)) {
         this->last_data = value;
-        this->flags.data_ok = true;
-      } else {
+      } else if (!ok) {
         return HTTP_RQT_NOT_RECEIVED;
       }
+      this->flags.data_ok = true;
+    } else {
+      return HTTP_RQT_NOT_RECEIVED;
     }
     s = strstr(p, "\"unitid\":");
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
@@ -101,13 +102,10 @@ int RemoteSensor::read(unsigned long time) {
     }
     s = strstr(p, "\"last\":");
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      ulong last = strtoul(buf, NULL, 0);
-      if (last == 0 || last == this->last_read) {
-        return HTTP_RQT_NOT_RECEIVED;
-      } else {
-        this->last_read = last;
-      }
+      (void)strtoul(buf, NULL, 0);
     }
+
+    this->last_read = time;
 
     return HTTP_RQT_SUCCESS;
   }

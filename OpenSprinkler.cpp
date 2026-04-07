@@ -222,7 +222,7 @@ const char iopt_json_names[] PROGMEM =
 	"ife3\0"
 	"ife4\0"
 	"rken\0" // IOPT_RAINMAKER_ENABLE: 0=off, 1=on
-	"ginv\0" // IOPT_INVERT_GROUP_SCHEDULING: 0=default, 1=inverted
+	"ginv\0" // IOPT_INVERT_GROUP_SCHEDULING: 0=default, 1=invert
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -477,7 +477,7 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // Notif3 enable bit
 	0,  // Notif4 enable bit
 	0,  // RainMaker enable: 1=enabled 0=disabled (default)
-	0,  // Invert group scheduling: 1=same group parallel, different groups sequential
+	0,  // Invert group scheduling: 0=default mode 1=invert mode
 };
 
 /** String option values (stored in RAM) */
@@ -2495,16 +2495,13 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		return HTTP_RQT_CONNECT_ERR;
 	}
 #if defined(ARDUINO)
+	const size_t ssl_tmp_memory_needed = 10000;
 
 	Client *client = NULL;
 	#if defined(ESP8266)
-		// BearSSL/HTTPS can easily OOM on low-heap builds; fall back to HTTP if insufficient
-		if(usessl && !free_tmp_memory(10000)) {
-			DEBUG_PRINTLN(F("[HTTP] Not enough memory for SSL, falling back to HTTP"));
-			usessl = false;
-			port = 80;
-		}
 		if(usessl) {
+			free_tmp_memory(ssl_tmp_memory_needed);
+			// BearSSL/HTTPS can easily OOM on low-heap ESP8266 builds.
 			WiFiClientSecure *_c = new WiFiClientSecure();
 			_c->setInsecure();
 			_c->setBufferSizes(512, 512);
@@ -2513,11 +2510,6 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 			client = new WiFiClient();
 		}
 	#elif defined(ESP32)
-		if(usessl && !free_tmp_memory(10000)) {
-			DEBUG_PRINTLN(F("[HTTP] Not enough memory for SSL, falling back to HTTP"));
-			usessl = false;
-			port = 80;
-		}
 		if(usessl) {
 			WiFiClientSecure *_c = new WiFiClientSecure();
 			_c->setInsecure();
@@ -2533,7 +2525,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	unsigned char tries = 0;
 	int conn_result = 0;
 	(void)conn_result; // Used in DEBUG_PRINT but not in release builds
-	#if defined(ESP8266) || defined(ESP32)
+	#if defined(ESP32)
 	client->setTimeout(2000); // 2s connect timeout (default 5s blocks main loop too long)
 	#endif
 	do {
@@ -2557,7 +2549,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINTLN(F("failed."));
 		client->stop();
 		delete client;
-		restore_tmp_memory(10000);
+		#if defined(ESP8266) 
+		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
+		#endif
 		return HTTP_RQT_CONNECT_ERR;
 	}
 #else
@@ -2625,7 +2619,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	ether_buffer[pos]=0; // properly end buffer with 0
 	client->stop();
 	delete client;
-	restore_tmp_memory(10000);
+	#if defined(ESP8266) || defined(ESP32)
+	if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
+	#endif
 	if(strlen(ether_buffer)==0) return HTTP_RQT_EMPTY_RETURN;
 	if(callback) callback(ether_buffer);
 	return HTTP_RQT_SUCCESS;

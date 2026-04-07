@@ -1105,10 +1105,14 @@ bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog) {
 }
 
 bool sensorlog_add(uint8_t log, SensorBase *sensor, ulong time) {
-  if (sensor->flags.data_ok && sensor->flags.log && time > 1000) {
+  if (sensor->flags.data_ok && time > 1000) {
+    sensor->last = time;
+
+    if (!sensor->flags.log) {
+      return false;
+    }
 
     // Write to log file only if necessary
-    sensor->last = time;
     if (time-sensor->last_logged_time > 86400 || abs(sensor->last_data - sensor->last_logged_data) > 0.00999) {
       SensorLog_t sensorlog;
       memset(&sensorlog, 0, sizeof(SensorLog_t));
