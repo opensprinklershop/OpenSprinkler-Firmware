@@ -2499,7 +2499,7 @@ void add_influx_data(SensorBase *sensor) {
     .field("native_data", (long)sensor->last_native_data)
     .field("data", sensor->last_data, 2)
     .timestamp(millis())
-    .post_http(*client);
+    .post_http(*client, NULL, 5);
 
   if (rc != 0) {
     influx_fail_count++;

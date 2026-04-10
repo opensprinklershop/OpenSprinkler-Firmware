@@ -318,7 +318,7 @@ void OSInfluxDB::influxdb_send_state(const char *name, int state) {
     .tag("name", name)
     .field("state", state)
     .timestamp(millis())
-    .post_http(*client);
+    .post_http(*client, NULL, 5);
 }
 
 void OSInfluxDB::influxdb_send_station(const char *name, uint32_t station, int state) {
@@ -335,7 +335,7 @@ void OSInfluxDB::influxdb_send_station(const char *name, uint32_t station, int s
     .field("station", (int)station)
     .field("state", state)
     .timestamp(millis())
-    .post_http(*client);
+    .post_http(*client, NULL, 5);
 }
 
 void OSInfluxDB::influxdb_send_program(const char *name, uint32_t nr, float level) {
@@ -352,7 +352,7 @@ void OSInfluxDB::influxdb_send_program(const char *name, uint32_t nr, float leve
     .field("program", (int)nr)
     .field("level", level)
     .timestamp(millis())
-    .post_http(*client);
+    .post_http(*client, NULL, 5);
 }
 
 void OSInfluxDB::influxdb_send_flowsensor(const char *name, uint32_t count, float volume) {
@@ -369,7 +369,7 @@ void OSInfluxDB::influxdb_send_flowsensor(const char *name, uint32_t count, floa
     .field("count", (int)count)
     .field("volume", volume)
     .timestamp(millis())
-    .post_http(*client);
+    .post_http(*client, NULL, 5);
 }
 
 void OSInfluxDB::influxdb_send_flowalert(const char *name, uint32_t station, int f1, int f2, int f3, int f4, int f5) {
@@ -388,7 +388,7 @@ void OSInfluxDB::influxdb_send_flowalert(const char *name, uint32_t station, int
 	.field("duration", f3)
 	.field("alert_setpoint", (double)(f4)+(double)(f5)/100)
     .timestamp(millis())
-    .post_http(*client);
+    .post_http(*client, NULL, 5);
 }
 
 void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float value) {
@@ -405,7 +405,7 @@ void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float v
     .field("level", (int)level)
     .field("currentvalue", value)
     .timestamp(millis())
-    .post_http(*client);
+    .post_http(*client, NULL, 5);
 }
 #else
 
