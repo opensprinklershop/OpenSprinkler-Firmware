@@ -927,22 +927,19 @@ int OSMqtt::_connect(void) {
 			return MQTT_ERROR;
 		}
 	}
-	rc = mosquitto_connect(mqtt_client, _host, _port, OS_MQTT_KEEPALIVE);
+	// Use async connect to avoid blocking the main loop for TCP timeout
+	rc = mosquitto_connect_async(mqtt_client, _host, _port, OS_MQTT_KEEPALIVE);
 	if (rc != MOSQ_ERR_SUCCESS) {
 		DEBUG_LOGF("MQTT Connect: Connection Failed (%s)\r\n", mosquitto_strerror(rc));
 		return MQTT_ERROR;
 	}
-
-	// Allow 10ms for the Broker's ack to be received. We need this on start-up so that the
-	// connection is registered before we attempt to send our first NOTIFY_REBOOT notification.
-	usleep(10000);
 	last_reconnect_attempt = millis();
 
 	return MQTT_SUCCESS;
 }
 
 bool OSMqtt::reconnect() {
-	return mosquitto_reconnect(mqtt_client) == MOSQ_ERR_SUCCESS;
+	return mosquitto_reconnect_async(mqtt_client) == MOSQ_ERR_SUCCESS;
 }
 
 void OSMqtt::suspend(void) {
@@ -1011,7 +1008,9 @@ int OSMqtt::_subscribe(void) {
 }
 
 int OSMqtt::_loop(void) {
-	return mosquitto_loop(mqtt_client, 0 , 1);
+	// Skip polling when the client has no valid socket (e.g. connect failed)
+	if (mosquitto_socket(mqtt_client) < 0) return MOSQ_ERR_NO_CONN;
+	return mosquitto_loop(mqtt_client, 1, 1);  // 1ms timeout to avoid busy-polling
 }
 
 bool OSMqtt::subscribe(const char *topic) {
