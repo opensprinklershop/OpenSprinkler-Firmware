@@ -876,6 +876,15 @@ static void _mqtt_log_cb(struct mosquitto *mqtt_client, void *obj, int level, co
 		DEBUG_LOGF("MQTT Log Callback: %s (%d)\r\n", message, level);
 }
 
+typedef struct KEY_CALLBACK {
+	int key;
+	void (*callback)(struct mosquitto *, void *, const struct mosquitto_message *);
+} KEY_CALLBACK_t;
+#define MAX_CALLBACKS 2
+
+static KEY_CALLBACK_t key_callbacks[MAX_CALLBACKS] = {0};
+static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg);
+
 int OSMqtt::_init(void) {
 	int major, minor, revision;
 
@@ -894,6 +903,9 @@ int OSMqtt::_init(void) {
 	mosquitto_connect_callback_set(mqtt_client, _mqtt_connection_cb);
 	mosquitto_disconnect_callback_set(mqtt_client, _mqtt_disconnection_cb);
 	mosquitto_log_callback_set(mqtt_client, _mqtt_log_cb);
+	if (key_callbacks[0].callback || key_callbacks[1].callback) {
+		mosquitto_message_callback_set(mqtt_client, sensor_mqtt_callback);
+	}
 	String avail_topic(_id);
 	avail_topic += "/";
 	avail_topic += MQTT_AVAILABILITY_TOPIC;
@@ -1009,14 +1021,6 @@ bool OSMqtt::unsubscribe(const char *topic) {
 	return mosquitto_unsubscribe(mqtt_client, NULL, topic);
 }
 
-typedef struct KEY_CALLBACK {
-	int key;
-	void (*callback)(struct mosquitto *, void *, const struct mosquitto_message *);
-} KEY_CALLBACK_t;
-#define MAX_CALLBACKS 2
-
-static KEY_CALLBACK_t key_callbacks[MAX_CALLBACKS] = {0};
-
 static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
 	for (int i = 0; i < MAX_CALLBACKS; i++) {
 		if (key_callbacks[i].callback) {
@@ -1048,12 +1052,14 @@ static void registerCallback(int key, void (*callback)(struct mosquitto *, void 
 	}
 	if (!ok)
 		DEBUG_LOGF("MQTT setCallback: failed!");
+	if (mqtt_client) {
+		mosquitto_message_callback_set(mqtt_client, sensor_mqtt_callback);
+	}
 }
 
 
 void OSMqtt::setCallback(int key, void (*callback)(struct mosquitto *, void *, const struct mosquitto_message *)) {
 	registerCallback(key, callback);
-	mosquitto_message_callback_set(mqtt_client, sensor_mqtt_callback);
 }
 
 const char * OSMqtt::_state_string(int error) {

@@ -13,6 +13,7 @@ nav:
   - 'Firmware v2.2.1(4)':
     - 'User Manual': '2.2.1/221_4_manual.md'
     - 'API Reference': '2.2.1/221_4_api.md'
+  - 'FYTA Sensors': 'fyta-sensors.md'
   - 'Troubleshooting': 'troubleshooting.md'
   - 'Archived':
     - 'Previous Manuals and API docs': 'archive.md'
