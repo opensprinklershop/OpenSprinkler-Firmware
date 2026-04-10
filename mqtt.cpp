@@ -851,17 +851,20 @@ static bool _connected = false;
 static void _mqtt_connection_cb(struct mosquitto *mqtt_client, void *obj, int reason) {
 	DEBUG_LOGF("MQTT Connnection Callback: %s (%d)\r\n", mosquitto_strerror(reason), reason);
 
+	if (reason != 0) {
+		::_connected = false;
+		return;
+	}
+
 	::_connected = true;
-	
+
 	String avail_topic(OSMqtt::get_pub_topic());
 	avail_topic += "/";
 	avail_topic += MQTT_AVAILABILITY_TOPIC;
 
-	if (reason == 0) {
-		int rc = mosquitto_publish(mqtt_client, NULL, avail_topic.c_str(), strlen(MQTT_ONLINE_PAYLOAD), MQTT_ONLINE_PAYLOAD, 0, true);
-		if (rc != MOSQ_ERR_SUCCESS) {
-			DEBUG_LOGF("MQTT Publish: Failed (%s)\r\n", mosquitto_strerror(rc));
-		}
+	int rc = mosquitto_publish(mqtt_client, NULL, avail_topic.c_str(), strlen(MQTT_ONLINE_PAYLOAD), MQTT_ONLINE_PAYLOAD, 0, true);
+	if (rc != MOSQ_ERR_SUCCESS) {
+		DEBUG_LOGF("MQTT Publish: Failed (%s)\r\n", mosquitto_strerror(rc));
 	}
 }
 
@@ -939,7 +942,7 @@ int OSMqtt::_connect(void) {
 }
 
 bool OSMqtt::reconnect() {
-	return mosquitto_reconnect(mqtt_client);
+	return mosquitto_reconnect(mqtt_client) == MOSQ_ERR_SUCCESS;
 }
 
 void OSMqtt::suspend(void) {
@@ -1013,12 +1016,12 @@ int OSMqtt::_loop(void) {
 
 bool OSMqtt::subscribe(const char *topic) {
 	if (!mqtt_client || !_enabled || os.status.network_fails > 0) return false;
-	return mosquitto_subscribe(mqtt_client, NULL, topic, 0);
+	return mosquitto_subscribe(mqtt_client, NULL, topic, 0) == MOSQ_ERR_SUCCESS;
 }
 
 bool OSMqtt::unsubscribe(const char *topic) {
 	if (!mqtt_client || !_enabled || os.status.network_fails > 0) return false;
-	return mosquitto_unsubscribe(mqtt_client, NULL, topic);
+	return mosquitto_unsubscribe(mqtt_client, NULL, topic) == MOSQ_ERR_SUCCESS;
 }
 
 static void sensor_mqtt_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
