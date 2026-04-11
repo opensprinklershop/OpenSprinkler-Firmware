@@ -723,6 +723,10 @@ int OSMqtt::_publish(const char *topic, const char *payload) {
 }
 
 void subscribe_callback(const char *topic, unsigned char *payload, unsigned int length) {
+	// Only process messages on the command subscribe topic, not sensor data
+	const char* sub_topic = OSMqtt::get_sub_topic();
+	if (!sub_topic || !sub_topic[0] || strcmp(topic, sub_topic) != 0) return;
+
 	DEBUG_LOGF("Subscribe Callback\r\n");
 	payload[length] = 0; // properly end the message
 	char* message = (char*)payload;
@@ -865,7 +869,7 @@ static void _mqtt_connection_cb(struct mosquitto *mqtt_client, void *obj, int re
 	int rc = mosquitto_publish(mqtt_client, NULL, avail_topic.c_str(), strlen(MQTT_ONLINE_PAYLOAD), MQTT_ONLINE_PAYLOAD, 0, true);
 	if (rc != MOSQ_ERR_SUCCESS) {
 		DEBUG_LOGF("MQTT Publish: Failed (%s)\r\n", mosquitto_strerror(rc));
-	}
+	|}
 }
 
 static void _mqtt_disconnection_cb(struct mosquitto *mqtt_client, void *obj, int reason) {
@@ -973,6 +977,10 @@ int OSMqtt::_publish(const char *topic, const char *payload) {
 }
 
 void subscribe_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message){
+	// Only process messages on the command subscribe topic, not sensor data
+	const char* sub_topic = OSMqtt::get_sub_topic();
+	if (!sub_topic || !sub_topic[0] || !message->topic || strcmp(message->topic, sub_topic) != 0) return;
+
 	DEBUG_LOGF("Callback\r\n");
 	char *topic = message->topic;
 	char *msg = (char*)(message->payload);

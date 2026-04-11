@@ -82,21 +82,15 @@ IEEE802154Mode ieee802154_load_mode() {
         return IEEE802154Mode::IEEE_DISABLED;
     }
 
-    uint8_t boot_val = doc["bootVariant"] | 0;
-    if (boot_val == static_cast<uint8_t>(IEEE802154BootVariant::MATTER)) {
-        current_boot_variant = IEEE802154BootVariant::MATTER;
-    } else if (boot_val == static_cast<uint8_t>(IEEE802154BootVariant::ZIGBEE)) {
-        current_boot_variant = IEEE802154BootVariant::ZIGBEE;
-    } else {
-        current_boot_variant = ieee802154_boot_variant_for_mode(static_cast<IEEE802154Mode>(mode_val));
-    }
+    // Note: bootVariant in the config file is informational only.
+    // The authoritative boot variant comes from detect_running_boot_variant()
+    // in ieee802154_config_init(). Do NOT overwrite current_boot_variant here,
+    // because the config can be stale after direct esptool flashes.
 
     IEEE802154Mode mode = static_cast<IEEE802154Mode>(mode_val);
-    DEBUG_PRINTF("[IEEE802154] Loaded mode: %d (%s), boot=%d (%s)\n",
+    DEBUG_PRINTF("[IEEE802154] Loaded mode: %d (%s)\n",
                  mode_val,
-                 ieee802154_mode_name(mode),
-                 static_cast<uint8_t>(current_boot_variant),
-                 ieee802154_boot_variant_name(current_boot_variant));
+                 ieee802154_mode_name(mode));
     return mode;
 }
 
@@ -213,12 +207,27 @@ void ieee802154_config_init() {
         current_mode = ieee802154_load_mode();
     }
 
+    // Self-heal: if the mode doesn't match the running OTA variant, correct it.
+    // This happens after esptool flashes that bypass the firmware's mode-switch
+    // logic, leaving a stale config on the shared LittleFS partition.
+    IEEE802154BootVariant expected = ieee802154_boot_variant_for_mode(current_mode);
+    if (current_mode != IEEE802154Mode::IEEE_DISABLED && expected != current_boot_variant) {
+        IEEE802154Mode corrected = (current_boot_variant == IEEE802154BootVariant::MATTER)
+            ? IEEE802154Mode::IEEE_MATTER
+            : IEEE802154Mode::IEEE_ZIGBEE_GATEWAY;
+        DEBUG_PRINTF("[IEEE802154] Mode/variant mismatch: mode=%s expects %s, but running %s → correcting to %s\n",
+                     ieee802154_mode_name(current_mode),
+                     ieee802154_boot_variant_name(expected),
+                     ieee802154_boot_variant_name(current_boot_variant),
+                     ieee802154_mode_name(corrected));
+        current_mode = corrected;
+        ieee802154_save_config(current_mode, current_boot_variant);
+    }
+
     config_loaded = true;
-    DEBUG_PRINTF("[IEEE802154] Config initialized: mode=%d (%s), running_boot=%d (%s), configured_boot=%d (%s)\n",
+    DEBUG_PRINTF("[IEEE802154] Config initialized: mode=%d (%s), boot=%d (%s)\n",
                  static_cast<uint8_t>(current_mode),
                  ieee802154_mode_name(current_mode),
-                 static_cast<uint8_t>(detect_running_boot_variant()),
-                 ieee802154_boot_variant_name(detect_running_boot_variant()),
                  static_cast<uint8_t>(current_boot_variant),
                  ieee802154_boot_variant_name(current_boot_variant));
 }

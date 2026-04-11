@@ -1018,7 +1018,7 @@ git_tag_and_push() {
     ok "Pushed to origin."
 }
 
-# Create a GitHub release via REST API
+# Create a GitHub release using gh CLI
 github_create_release() {
     local tag="$1"
     local version_str="$2"
@@ -1026,60 +1026,33 @@ github_create_release() {
 
     header "GitHub: create release"
 
-    local token="${GITHUB_TOKEN:-}"
-    if [[ -z "$token" ]]; then
-        warn "GITHUB_TOKEN not set — skipping GitHub release creation."
-        warn "You can create it manually or re-run with:"
-        warn "  GITHUB_TOKEN=<token> ./fw.sh release"
+    if ! command -v gh &>/dev/null; then
+        warn "gh CLI not installed — skipping GitHub release creation."
+        warn "Install: https://cli.github.com/ then run: gh auth login"
         return 0
     fi
 
-    local zigbee_bin="${UPGRADE_DIR}/firmware_zigbee.bin"
-    local matter_bin="${UPGRADE_DIR}/firmware_matter.bin"
+    if ! gh auth status &>/dev/null; then
+        warn "gh CLI not authenticated — skipping GitHub release creation."
+        warn "Run: gh auth login"
+        return 0
+    fi
+
     local release_name="v${version_str} (build ${OS_FW_MINOR})"
 
-    # Create release
-    local response
-    response=$(curl -sf -X POST \
-        -H "Authorization: token ${token}" \
-        -H "Content-Type: application/json" \
-        "https://api.github.com/repos/${GITHUB_REPO}/releases" \
-        -d "$(python3 -c "
-import json, sys
-print(json.dumps({
-    'tag_name': sys.argv[1],
-    'name': sys.argv[2],
-    'body': sys.argv[3],
-    'draft': False,
-    'prerelease': False
-}))
-" "$tag" "$release_name" "$notes")") || {
+    gh release create "$tag" \
+        --repo "$GITHUB_REPO" \
+        --title "$release_name" \
+        --notes "$notes" \
+        "${UPGRADE_DIR}/firmware_zigbee.bin" \
+        "${UPGRADE_DIR}/firmware_matter.bin" \
+        "${UPGRADE_DIR}/firmware_esp8266.bin" \
+    || {
         error "Failed to create GitHub release."
         return 1
     }
 
-    local upload_url
-    upload_url=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['upload_url'].replace('{?name,label}',''))")
-    local release_url
-    release_url=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['html_url'])")
-    ok "Release created: ${release_url}"
-
-    # Upload assets
-    for bin_name in "firmware_zigbee.bin" "firmware_matter.bin" "firmware_esp8266.bin"; do
-        local bin_path="${UPGRADE_DIR}/${bin_name}"
-        info "Uploading ${bin_name} …"
-        curl -sf -X POST \
-            -H "Authorization: token ${token}" \
-            -H "Content-Type: application/octet-stream" \
-            "${upload_url}?name=${bin_name}" \
-            --data-binary "@${bin_path}" >/dev/null || {
-            error "Failed to upload ${bin_name}"
-            return 1
-        }
-        ok "Uploaded: ${bin_name}"
-    done
-
-    ok "GitHub release complete: ${release_url}"
+    ok "GitHub release created: ${tag}"
 }
 
 github_release_title_from_tag() {
@@ -1097,24 +1070,13 @@ github_release_title_from_tag() {
 
 github_release_exists() {
     local tag="$1"
-    local token="$2"
-    local status
-
-    status=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "Authorization: token ${token}" \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}")
-
-    [[ "$status" == "200" ]]
+    gh release view "$tag" --repo "$GITHUB_REPO" &>/dev/null
 }
 
 github_create_release_for_existing_tag() {
     local tag="$1"
-    local token="$2"
     local release_name
     local notes
-    local response
-    local release_url
 
     release_name="$(github_release_title_from_tag "$tag")"
     notes="$(git for-each-ref "refs/tags/${tag}" --format='%(contents)')"
@@ -1123,36 +1085,30 @@ github_create_release_for_existing_tag() {
         notes="Release created from existing Git tag ${tag}."
     fi
 
-    response=$(curl -sf -X POST \
-        -H "Authorization: token ${token}" \
-        -H "Accept: application/vnd.github+json" \
-        -H "Content-Type: application/json" \
-        "https://api.github.com/repos/${GITHUB_REPO}/releases" \
-        -d "$(python3 -c "
-import json, sys
-print(json.dumps({
-    'tag_name': sys.argv[1],
-    'name': sys.argv[2],
-    'body': sys.argv[3],
-    'draft': False,
-    'prerelease': False
-}))
-" "$tag" "$release_name" "$notes")") || {
+    gh release create "$tag" \
+        --repo "$GITHUB_REPO" \
+        --title "$release_name" \
+        --notes "$notes" \
+    || {
         error "Failed to create GitHub release for ${tag}."
         return 1
     }
 
-    release_url=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['html_url'])")
-    ok "Release created for ${tag}: ${release_url}"
+    ok "Release created for ${tag}"
 }
 
 github_sync_tag_releases() {
     header "GitHub: sync tags to releases"
 
-    local token="${GITHUB_TOKEN:-}"
-    if [[ -z "$token" ]]; then
-        error "GITHUB_TOKEN not set — cannot create GitHub releases from tags."
-        error "Run with: GITHUB_TOKEN=<token> ./fw.sh release sync-tags"
+    if ! command -v gh &>/dev/null; then
+        error "gh CLI not installed — cannot create GitHub releases from tags."
+        error "Install: https://cli.github.com/ then run: gh auth login"
+        return 1
+    fi
+
+    if ! gh auth status &>/dev/null; then
+        error "gh CLI not authenticated — cannot create GitHub releases."
+        error "Run: gh auth login"
         return 1
     fi
 
@@ -1169,14 +1125,14 @@ github_sync_tag_releases() {
     local tag
 
     for tag in "${tags[@]}"; do
-        if github_release_exists "$tag" "$token"; then
+        if github_release_exists "$tag"; then
             info "Release already exists for ${tag} — skipping."
             ((skipped+=1))
             continue
         fi
 
         info "Creating GitHub release for ${tag} …"
-        if github_create_release_for_existing_tag "$tag" "$token"; then
+        if github_create_release_for_existing_tag "$tag"; then
             ((created+=1))
         else
             ((failed+=1))
@@ -1304,7 +1260,7 @@ ${changelog_section}"
         # 8. Git commit, tag, push
         git_tag_and_push "$tag" "$version_str"
 
-        # 9. GitHub release (optional, requires GITHUB_TOKEN)
+        # 9. GitHub release (optional, requires gh CLI authenticated)
         github_create_release "$tag" "$version_str" "$release_notes"
     fi
 
@@ -1401,7 +1357,7 @@ ${BOLD}Examples:${NC}
   ./fw.sh switch zigbee
   ./fw.sh release
   ./fw.sh release rebuild
-    GITHUB_TOKEN=<token> ./fw.sh release sync-tags
+  ./fw.sh release sync-tags
   ./fw.sh generate-mfg
   ./fw.sh flash-mfg
   ./fw.sh full-flash zigbee
@@ -1414,8 +1370,8 @@ ${BOLD}Examples:${NC}
   OSPI_PI_PASS=secret ./fw.sh build ospi
   OSPI_PI_PASS=secret ./fw.sh deploy ospi
 
-${BOLD}Environment variables (release):${NC}
-  GITHUB_TOKEN=<token>    GitHub personal access token (optional, for release upload)
+${BOLD}Prerequisites (release):${NC}
+  gh auth login           Authenticate gh CLI for GitHub release creation (optional)
 EOF
 }
 
