@@ -566,6 +566,28 @@ OpenSprinkler supports **two independent sensors** (`SN1`, `SN2`) with configura
     !!! warning "Avoid Too Many Events"
         Enabling too many events or notification methods may cause significant delays, missed responses, or even skipped short water cycles.
 
+    The following individual events can be enabled independently:
+
+    | Event | Description |
+    | :---- | :---------- |
+    | **Program Start** | Fired when a program is automatically or manually scheduled. Also fires when a program is **skipped** (e.g. due to 0% watering level or an active weather restriction). Useful for tracking scheduling activity and troubleshooting missed runs. |
+    | **Station On** | Fired when a station/zone **starts** running. Includes the station name and scheduled duration. |
+    | **Station Off** | Fired when a station/zone **finishes** running. Includes the station name and actual run duration. |
+    | **Rain Delay** | Fired when rain delay is **activated** or **deactivated**. |
+    | **Sensor 1** | Fired when the state of **Sensor 1** (rain/soil/binary sensor on input 1) **changes** — i.e. activated or deactivated. |
+    | **Sensor 2** | Fired when the state of **Sensor 2** (binary sensor on input 2) **changes** — i.e. activated or deactivated. |
+    | **Flow Sensor** | Fired at the **end of each station run** when a flow sensor is attached. Reports the pulse count and calculated water volume for that run. |
+    | **Flow Alert** | Fired when the measured flow for a station run **deviates from the expected range** (too high or too low based on configured thresholds). Requires a flow sensor and configured per-station flow rate. |
+    | **No Flow** | Fired when a station runs but **no flow is detected** at all during the run. Indicates a possible broken pipe, closed valve, or empty water supply. Requires a flow sensor. |
+    | **Pipe Burst** | Fired when **flow is detected while all stations are closed** — a strong indicator of a pipe burst or leak. Requires a flow sensor. |
+    | **Current Alert** | Fired when an **overcurrent** or **undercurrent** condition is detected on a zone. Overcurrent shuts off the affected station immediately; undercurrent suggests a broken wire or faulty solenoid. Only available on AC/DC-powered OS v2.3 & v3.x. |
+    | **Weather Update** | Fired when the weather service **updates the watering level** percentage. Useful for monitoring how weather-based adjustments affect your schedule. |
+    | **Reboot** | Fired when the controller **restarts**. The notification includes the reboot cause code and the device's current IP address. |
+    | **Monthly Report** | Fired at the **start of each month** with a summary of the previous month's total water usage (pulse count and volume in liters). Requires a flow sensor. |
+    | **Monitor Alert (Low)** | Fired when a sensor **monitor rule with low priority** is triggered (threshold or condition exceeded). Monitor rules are configured in the Sensor/Monitor settings. |
+    | **Monitor Alert (Medium)** | Fired when a sensor **monitor rule with medium priority** is triggered. |
+    | **Monitor Alert (High)** | Fired when a sensor **monitor rule with high priority** is triggered. High-priority alerts typically require immediate attention. |
+
 * **Device Name:** A custom name for this controller, shown on the homepage and included in notifications messages, to help identify the controller.
 
 ---
