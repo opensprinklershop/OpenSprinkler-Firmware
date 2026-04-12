@@ -869,7 +869,7 @@ static void _mqtt_connection_cb(struct mosquitto *mqtt_client, void *obj, int re
 	int rc = mosquitto_publish(mqtt_client, NULL, avail_topic.c_str(), strlen(MQTT_ONLINE_PAYLOAD), MQTT_ONLINE_PAYLOAD, 0, true);
 	if (rc != MOSQ_ERR_SUCCESS) {
 		DEBUG_LOGF("MQTT Publish: Failed (%s)\r\n", mosquitto_strerror(rc));
-	|}
+	}
 }
 
 static void _mqtt_disconnection_cb(struct mosquitto *mqtt_client, void *obj, int reason) {
