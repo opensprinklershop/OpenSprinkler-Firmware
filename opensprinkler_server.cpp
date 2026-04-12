@@ -1553,13 +1553,15 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #endif
 
 #if defined(ARDUINO)
-	String otc_opt = normalize_json_fragment(os.sopt_load(SOPT_OTC_OPTS));
 	String mqtt_opt = normalize_json_fragment(os.sopt_load(SOPT_MQTT_OPTS));
 	String wto_opt = normalize_json_fragment(os.sopt_load(SOPT_WEATHER_OPTS));
 #endif
 
 #if defined(USE_OTF)
-	bfill.emit_p(PSTR("\"otc\":{$O},\"otcs\":$D,"), SOPT_OTC_OPTS, otf->getCloudStatus());
+	char otc_buf[MAX_SOPTS_SIZE + 1];
+	os.sopt_load(SOPT_OTC_OPTS, otc_buf, MAX_SOPTS_SIZE);
+	normalize_json_fragment(otc_buf);
+	bfill.emit_p(PSTR("\"otc\":{$S},\"otcs\":$D,"), otc_buf, otf->getCloudStatus());
 #endif
 
 	unsigned char mac[6] = {0};
@@ -1989,6 +1991,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
 		#endif
+		normalize_json_fragment(tmp_buffer);
 		os.sopt_save(SOPT_OTC_OPTS, tmp_buffer);
 	} else if (keyfound) {
 		tmp_buffer[0]=0;

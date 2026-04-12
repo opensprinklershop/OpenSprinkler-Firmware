@@ -2903,16 +2903,17 @@ void OpenSprinkler::parse_otc_config() {
 	const char *token = NULL;
 	int port = DEFAULT_OTC_PORT_DEV;
 	int en = 0;
+	char config[MAX_SOPTS_SIZE + 3];
 
-	char *config = tmp_buffer + 1;
 	sopt_load(SOPT_OTC_OPTS, config);
-	if (*config != 0) {
-		// Add the wrapping curly braces to the string
-		config = tmp_buffer;
+	normalize_json_fragment(config);
+	if (config[0] != 0) {
+		// Parse both legacy fragment storage ("en":1) and full-object storage ({"en":1}).
+		size_t len = strlen(config);
+		memmove(config + 1, config, len + 1);
 		config[0] = '{';
-		int len = strlen(config);
-		config[len] = '}';
-		config[len+1] = 0;
+		config[len + 1] = '}';
+		config[len + 2] = 0;
 
 		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, config);
 
