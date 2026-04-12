@@ -27,6 +27,38 @@
 #include <ctype.h>
 extern OpenSprinkler os;
 
+// ── Platform-independent helpers ───────────────────────────────────────────
+static void trim_in_place(char *str) {
+	if (!str) return;
+	char *start = str;
+	while (*start && isspace((unsigned char)*start)) start++;
+	char *end = start + strlen(start);
+	while (end > start && isspace((unsigned char)*(end - 1))) end--;
+	*end = 0;
+	if (start != str) memmove(str, start, (size_t)(end - start) + 1);
+}
+
+void normalize_json_fragment(char *fragment) {
+	if (!fragment) return;
+	trim_in_place(fragment);
+	size_t len = strlen(fragment);
+	if (len >= 2 && fragment[0] == '{' && fragment[len - 1] == '}') {
+		memmove(fragment, fragment + 1, len - 2);
+		fragment[len - 2] = 0;
+		trim_in_place(fragment);
+	}
+	len = strlen(fragment);
+	while (len > 0 && fragment[len - 1] == ',') {
+		fragment[--len] = 0;
+		trim_in_place(fragment);
+		len = strlen(fragment);
+	}
+	if (strchr(fragment, ':') == NULL) {
+		fragment[0] = 0;
+	}
+}
+// ── End platform-independent helpers ───────────────────────────────────────
+
 #if defined(ARDUINO)  // Arduino
 
 	#if defined(ESP8266) || defined(ESP32)
@@ -89,48 +121,6 @@ char* get_filename_fullpath(const char *filename) {
 	}
 	strcat(fullpath, filename);
 	return fullpath;
-}
-
-static void trim_in_place(char *str) {
-	if (!str) return;
-
-	char *start = str;
-	while (*start && isspace((unsigned char)*start)) {
-		start++;
-	}
-
-	char *end = start + strlen(start);
-	while (end > start && isspace((unsigned char)*(end - 1))) {
-		end--;
-	}
-	*end = 0;
-
-	if (start != str) {
-		memmove(str, start, (size_t)(end - start) + 1);
-	}
-}
-
-void normalize_json_fragment(char *fragment) {
-	if (!fragment) return;
-
-	trim_in_place(fragment);
-	size_t len = strlen(fragment);
-	if (len >= 2 && fragment[0] == '{' && fragment[len - 1] == '}') {
-		memmove(fragment, fragment + 1, len - 2);
-		fragment[len - 2] = 0;
-		trim_in_place(fragment);
-	}
-
-	len = strlen(fragment);
-	while (len > 0 && fragment[len - 1] == ',') {
-		fragment[--len] = 0;
-		trim_in_place(fragment);
-		len = strlen(fragment);
-	}
-
-	if (strchr(fragment, ':') == NULL) {
-		fragment[0] = 0;
-	}
 }
 
 void delay(ulong howLong)
