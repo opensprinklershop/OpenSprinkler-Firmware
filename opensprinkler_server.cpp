@@ -1966,10 +1966,10 @@ void server_change_options(OTF_PARAMS_DEF)
 		urlDecode(tmp_buffer);
 		#endif
 		DEBUG_PRINTF("/co: wto='%s'\n", tmp_buffer);
+		if (!parse_wto(tmp_buffer)) {
+			tmp_buffer[0] = 0;
+		}
 		if (os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer)) {
-			if (!parse_wto(tmp_buffer)) { // parse wto
-				os.sopt_save(SOPT_WEATHER_OPTS, tmp_buffer); // reset to empty string if parsing failed
-			}
 			apply_monthly_adjustment(os.now_tz());
 			weather_change = true;
 		}

@@ -263,28 +263,40 @@ bool parse_wto(char* wto) {
 	// reset variables to default values before parsing
 	mda = 0;
 	if(wto[0]){
-		// Wrap in curly braces
-		if (wto[0] != '{') {
-			int len = strlen(wto)+2;
-			memmove(wto+1, wto, len);
-			wto[0] = '{';
-			
-			wto[len-1] = '}';
-			wto[len] = 0;
+		normalize_json_fragment(wto);
+		if (!wto[0]) {
+			return true;
 		}
+
+		char json[MAX_SOPTS_SIZE + 3];
+		size_t len = strlen(wto);
+		memmove(json + 1, wto, len + 1);
+		json[0] = '{';
+		json[len + 1] = '}';
+		json[len + 2] = 0;
+
 		DEBUG_PRINT(F("wto: "));
-		DEBUG_PRINTLN(wto);
+		DEBUG_PRINTLN(json);
 
 		ArduinoJson::JsonDocument doc;
-		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, wto);
+		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, json);
 
 		// Test and parse
-		if (error) {
+		if (error || doc.isNull() || !doc.as<ArduinoJson::JsonVariantConst>().is<ArduinoJson::JsonObjectConst>()) {
 			DEBUG_PRINT(F("wto: deserializeJson() failed: "));
-			DEBUG_PRINTLN(error.c_str());
-			strcpy(wto, "");  // reset wto to empty string
+			DEBUG_PRINTLN(error ? error.c_str() : "not an object");
+			wto[0] = 0;  // reset wto to empty string
 			return false;
 		} else {
+			size_t written = ArduinoJson::serializeJson(doc, json, sizeof(json));
+			if (written < 2 || written >= sizeof(json)) {
+				wto[0] = 0;
+				return false;
+			}
+
+			memmove(wto, json + 1, written - 2);
+			wto[written - 2] = 0;
+
 			if(doc.containsKey("scales")){
 				for(unsigned char i=0;i<12;i++){
 					int p=doc["scales"][i];
