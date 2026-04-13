@@ -91,6 +91,7 @@ void urlDecode(char *);
 void urlEncode(char *);
 void strReplaceQuoteBackslash(char *);
 void normalize_json_fragment(char *fragment);
+bool normalize_json_object_fragment(char *fragment, size_t capacity);
 void peel_http_header(char*);
 void strReplace(char *, char c, char r);
 size_t freeMemory();

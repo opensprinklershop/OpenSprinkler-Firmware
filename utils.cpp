@@ -24,6 +24,7 @@
 #include "utils.h"
 #include "types.h"
 #include "OpenSprinkler.h"
+#include "ArduinoJson.hpp"
 #include <ctype.h>
 extern OpenSprinkler os;
 
@@ -56,6 +57,44 @@ void normalize_json_fragment(char *fragment) {
 	if (strchr(fragment, ':') == NULL) {
 		fragment[0] = 0;
 	}
+}
+
+bool normalize_json_object_fragment(char *fragment, size_t capacity) {
+	if (!fragment || capacity == 0) return false;
+
+	normalize_json_fragment(fragment);
+	if (!fragment[0]) {
+		return true;
+	}
+
+	char json[MAX_SOPTS_SIZE + 3];
+	size_t len = strlen(fragment);
+	if (len + 3 > sizeof(json)) {
+		fragment[0] = 0;
+		return false;
+	}
+
+	memmove(json + 1, fragment, len + 1);
+	json[0] = '{';
+	json[len + 1] = '}';
+	json[len + 2] = 0;
+
+	ArduinoJson::JsonDocument doc;
+	ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, json);
+	if (error || doc.isNull() || !doc.as<ArduinoJson::JsonVariantConst>().is<ArduinoJson::JsonObjectConst>()) {
+		fragment[0] = 0;
+		return false;
+	}
+
+	size_t written = ArduinoJson::serializeJson(doc, json, sizeof(json));
+	if (written < 2 || written >= sizeof(json) || written - 1 > capacity) {
+		fragment[0] = 0;
+		return false;
+	}
+
+	memmove(fragment, json + 1, written - 2);
+	fragment[written - 2] = 0;
+	return true;
 }
 // ── End platform-independent helpers ───────────────────────────────────────
 

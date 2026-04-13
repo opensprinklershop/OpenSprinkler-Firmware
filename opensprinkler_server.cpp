@@ -1560,7 +1560,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	char otc_buf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_OTC_OPTS, otc_buf, MAX_SOPTS_SIZE);
-	normalize_json_fragment(otc_buf);
+	normalize_json_object_fragment(otc_buf, sizeof(otc_buf));
 	bfill.emit_p(PSTR("\"otc\":{$S},\"otcs\":$D,"), otc_buf, otf->getCloudStatus());
 #endif
 
@@ -1991,7 +1991,9 @@ void server_change_options(OTF_PARAMS_DEF)
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
 		#endif
-		normalize_json_fragment(tmp_buffer);
+		if (!normalize_json_object_fragment(tmp_buffer, TMP_BUFFER_SIZE)) {
+			tmp_buffer[0] = 0;
+		}
 		os.sopt_save(SOPT_OTC_OPTS, tmp_buffer);
 	} else if (keyfound) {
 		tmp_buffer[0]=0;
