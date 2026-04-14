@@ -1322,8 +1322,9 @@ void OpenSprinkler::begin() {
 		drio = new PCA9555(ACDR_I2CADDR);
 	}
 	mainio = drio;
-	mainio->i2c_write(NXP_CONFIG_REG, IO_CONFIG);
 	mainio->i2c_write(NXP_OUTPUT_REG, IO_OUTPUT);
+	mainio->i2c_write(NXP_CONFIG_REG, IO_CONFIG);
+	
 
 	/* detect expanders */
 	for(unsigned char i=0;i<(MAX_NUM_BOARDS)/2;i++)
@@ -3995,6 +3996,7 @@ void OpenSprinkler::detect_expanders() {
 		if(expanders[i]!=NULL) delete expanders[i];
 		if(type==IOEXP_TYPE_9555) {
 			expanders[i] = new PCA9555(address);
+			expanders[i]->i2c_write(NXP_OUTPUT_REG, 0x0000); // set all channels to output
 			expanders[i]->i2c_write(NXP_CONFIG_REG, 0); // set all channels to output
 		} else if(type==IOEXP_TYPE_8575){
 			expanders[i] = new PCF8575(address);
