@@ -317,6 +317,24 @@ static String normalize_json_fragment(String fragment) {
 }
 #endif
 
+static void emit_json_object_value_or_empty(const char* raw_value, size_t capacity) {
+	if (!raw_value || !raw_value[0]) {
+		bfill.emit_p(PSTR("{}"));
+		return;
+	}
+
+	char json_buf[TMP_BUFFER_SIZE];
+	strncpy(json_buf, raw_value, sizeof(json_buf) - 1);
+	json_buf[sizeof(json_buf) - 1] = 0;
+
+	if (!normalize_json_object_fragment(json_buf, capacity) || !json_buf[0]) {
+		bfill.emit_p(PSTR("{}"));
+		return;
+	}
+
+	bfill.emit_p(PSTR("{$S}"), json_buf);
+}
+
 void send_packet(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	int len = (int)bfill.position();
@@ -1552,11 +1570,6 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("\"apdv\":$D,"), os.actual_pd_voltage);
 #endif
 
-#if defined(ARDUINO)
-	String mqtt_opt = normalize_json_fragment(os.sopt_load(SOPT_MQTT_OPTS));
-	String wto_opt = normalize_json_fragment(os.sopt_load(SOPT_WEATHER_OPTS));
-#endif
-
 #if defined(USE_OTF)
 	char otc_buf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_OTC_OPTS, otc_buf, MAX_SOPTS_SIZE);
@@ -1573,45 +1586,26 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-#if defined(ARDUINO)
-	bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
-						 SOPT_LOCATION,
-						 SOPT_JAVASCRIPTURL,
-						 SOPT_WEATHERURL,
-						 wto_opt.c_str(),
-						 SOPT_IFTTT_KEY,
-						 mqtt_opt.c_str(),
-						 strlen(wt_rawData)==0?"{}":wt_rawData,
-						 wt_errCode,
-						 wt_restricted,
-						 SOPT_DEVICE_NAME);
-#else
-	// Normalize wto and mqtt: strip outer {} if stored with braces to avoid double-wrapping in format
 	{
 		char wto_buf[MAX_SOPTS_SIZE + 1];
 		char mqtt_buf[MAX_SOPTS_SIZE + 1];
 		os.sopt_load(SOPT_WEATHER_OPTS, wto_buf, MAX_SOPTS_SIZE);
 		os.sopt_load(SOPT_MQTT_OPTS, mqtt_buf, MAX_SOPTS_SIZE);
-		for (char *buf : {wto_buf, mqtt_buf}) {
-			int len = (int)strlen(buf);
-			if (len >= 2 && buf[0] == '{' && buf[len-1] == '}') {
-				memmove(buf, buf+1, len-2);
-				buf[len-2] = '\0';
-			}
-		}
-		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":$S,\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
+		normalize_json_object_fragment(wto_buf, sizeof(wto_buf));
+		normalize_json_object_fragment(mqtt_buf, sizeof(mqtt_buf));
+		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":"),
 					 SOPT_LOCATION,
 					 SOPT_JAVASCRIPTURL,
 					 SOPT_WEATHERURL,
 					 wto_buf,
 					 SOPT_IFTTT_KEY,
-					 mqtt_buf,
-					 strlen(wt_rawData)==0?"{}":wt_rawData,
+					 mqtt_buf);
+		emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
+		bfill.emit_p(PSTR(",\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
 					 wt_errCode,
 					 wt_restricted,
 					 SOPT_DEVICE_NAME);
 	}
-#endif
 
 #if defined(SUPPORT_EMAIL)
 	bfill.emit_p(PSTR("\"email\":{$O},"), SOPT_EMAIL_OPTS);
@@ -1980,6 +1974,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
 		#endif
+		strReplaceQuoteBackslash(tmp_buffer);
 		os.sopt_save(SOPT_IFTTT_KEY, tmp_buffer);
 	} else if (keyfound) {
 		tmp_buffer[0]=0;
@@ -2005,6 +2000,9 @@ void server_change_options(OTF_PARAMS_DEF)
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
 		#endif
+		if (!normalize_json_object_fragment(tmp_buffer, TMP_BUFFER_SIZE)) {
+			tmp_buffer[0] = 0;
+		}
 		os.sopt_save(SOPT_MQTT_OPTS, tmp_buffer);
 		os.status.req_mqtt_restart = true;
 	} else if (keyfound) {
@@ -2626,11 +2624,11 @@ void server_json_matter(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR(",\"sn2t\":$D,\"sn2\":$D"), os.iopts[IOPT_SENSOR2_TYPE], os.status.sensor2_active);
 	}
 	// Weather data
-	bfill.emit_p(PSTR(",\"rd\":$D,\"wl\":$D,\"wtdata\":$S,\"wterr\":$D"),
+	bfill.emit_p(PSTR(",\"rd\":$D,\"wl\":$D,\"wtdata\":"),
 	             os.status.rain_delayed,
-	             os.iopts[IOPT_WATER_PERCENTAGE],
-	             strlen(wt_rawData)==0 ? "{}" : wt_rawData,
-	             wt_errCode);
+	             os.iopts[IOPT_WATER_PERCENTAGE]);
+	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
+	bfill.emit_p(PSTR(",\"wterr\":$D"), wt_errCode);
 
 	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);
@@ -5546,11 +5544,11 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR(",\"sn2t\":$D,\"sn2\":$D"), os.iopts[IOPT_SENSOR2_TYPE], os.status.sensor2_active);
 	}
 	// Weather data
-	bfill.emit_p(PSTR(",\"rd\":$D,\"wl\":$D,\"wtdata\":$S,\"wterr\":$D"),
+	bfill.emit_p(PSTR(",\"rd\":$D,\"wl\":$D,\"wtdata\":"),
 	             os.status.rain_delayed,
-	             os.iopts[IOPT_WATER_PERCENTAGE],
-	             strlen(wt_rawData)==0 ? "{}" : wt_rawData,
-	             wt_errCode);
+	             os.iopts[IOPT_WATER_PERCENTAGE]);
+	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
+	bfill.emit_p(PSTR(",\"wterr\":$D"), wt_errCode);
 
 	bfill.emit_p(PSTR("}"));
 	send_packet(OTF_PARAMS);

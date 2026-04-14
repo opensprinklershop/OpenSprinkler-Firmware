@@ -476,19 +476,27 @@ void OSMqtt::begin(void) {
 	_sub_topic[0] = 0;
 
 	// JSON configuration settings in the form of {"en":0|1,"host":"server_name|IP address","port":1883,"user:"","pass":"","pubt":"","subt":""}
-	char *config = tmp_buffer + 1;
-	os.sopt_load(SOPT_MQTT_OPTS, config);
+	char saved_config[MAX_SOPTS_SIZE + 1];
+	char config[MAX_SOPTS_SIZE + 1];
+	char json[MAX_SOPTS_SIZE + 3];
+	os.sopt_load(SOPT_MQTT_OPTS, saved_config);
+	strcpy(config, saved_config);
+	if (!normalize_json_object_fragment(config, sizeof(config))) {
+		config[0] = 0;
+	}
+	if (strcmp(saved_config, config) != 0) {
+		os.sopt_save(SOPT_MQTT_OPTS, config);
+	}
 
-	if(*config != 0) {
-		// Add the wrapping curly braces to the string
-		config = tmp_buffer;
-		config[0] = '{';
-		int len = strlen(config);
-		config[len] = '}';
-		config[len+1] = 0;
+	if(config[0] != 0) {
+		size_t len = strlen(config);
+		memmove(json + 1, config, len + 1);
+		json[0] = '{';
+		json[len + 1] = '}';
+		json[len + 2] = 0;
 
 		ArduinoJson::JsonDocument doc;
-		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, config);
+		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, json);
 
 		// Test the parsing otherwise parse
 		if (error) {

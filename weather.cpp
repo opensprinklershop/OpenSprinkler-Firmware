@@ -139,6 +139,9 @@ static void getweather_callback(char* buffer) {
 
 	if (findKeyVal(p, wt_rawData, TMP_BUFFER_SIZE, PSTR("rawData"), true)) {
 		wt_rawData[TMP_BUFFER_SIZE-1]=0;  // make sure the buffer ends properly
+		if (!normalize_json_object_fragment(wt_rawData, TMP_BUFFER_SIZE)) {
+			wt_rawData[0] = 0;
+		}
 	}
 
 	#define _STR_SCALES_SIZE (MAX_N_MD_SCALES*4+4)
