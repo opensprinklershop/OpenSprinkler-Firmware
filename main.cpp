@@ -924,6 +924,10 @@ void do_loop()
 		ulong tn = millis();
 		if((long)(tn-currpoll_timeout) > 0) { // overflow proof timeout
 			int16_t curr = (int16_t)os.read_current();
+			// update baseline when no stations are running
+			if(!os.status.program_busy) {
+				os.update_baseline();
+			}
 			int16_t imax = os.get_imax();
 			if((imax > 0) && (curr > imax)) {
 				reset_all_stations_immediate(true);

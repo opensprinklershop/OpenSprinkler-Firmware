@@ -420,7 +420,9 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void sensor_resetall();
 
 	static uint16_t read_current(bool use_ema=false); // read current sensing value. use_ema uses exponential moving average for filtering
-	static uint16_t baseline_current; // resting state current
+	static uint16_t baseline_current; // resting state current (dynamically measured)
+	static void update_baseline();    // update baseline when no stations are running
+	static uint16_t get_valve_current(); // return current minus baseline (valve-only current)
 
 	static int detect_exp();      // detect the number of expansion boards
 	static unsigned char weekday_today();  // returns index of today's weekday (Monday is 0)

@@ -1608,7 +1608,13 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	}
 
 #if defined(SUPPORT_EMAIL)
-	bfill.emit_p(PSTR("\"email\":{$O},"), SOPT_EMAIL_OPTS);
+	{
+		char email_buf[MAX_SOPTS_SIZE + 1];
+		os.sopt_load(SOPT_EMAIL_OPTS, email_buf, MAX_SOPTS_SIZE);
+		bfill.emit_p(PSTR("\"email\":"));
+		emit_json_object_value_or_empty(email_buf, sizeof(email_buf));
+		bfill.emit_p(PSTR(","));
+	}
 #endif
 
 	bfill.emit_p(PSTR("\"wls\":["));
@@ -1622,8 +1628,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 #if defined(ARDUINO)
 	uint16_t current = os.read_current(true);
-		if((!os.status.program_busy) && (current<os.baseline_current)) current=0;
-		bfill.emit_p(PSTR("\"curr\":$D,"), current);
+		if(!os.status.program_busy) current=0; // show 0 at idle; baseline noise can be significant
+		uint16_t valve_current = os.get_valve_current();
+		bfill.emit_p(PSTR("\"curr\":$D,\"vcurr\":$D,\"blcurr\":$D,"), current, valve_current, os.baseline_current);
 #endif
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
 		bfill.emit_p(PSTR("\"flcrt\":$L,\"flwrt\":$D,\"flcto\":$L,"), os.flowcount_rt, FLOWCOUNT_RT_WINDOW, flow_count);
@@ -2040,6 +2047,9 @@ void server_change_options(OTF_PARAMS_DEF)
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
 		#endif
+		if (!normalize_json_object_fragment(tmp_buffer, TMP_BUFFER_SIZE)) {
+			tmp_buffer[0] = 0;
+		}
 		os.sopt_save(SOPT_EMAIL_OPTS, tmp_buffer);
 	} else if (keyfound) {
 		tmp_buffer[0]=0;

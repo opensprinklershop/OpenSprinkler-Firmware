@@ -148,20 +148,30 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	const char *email_recipient = NULL;
 	int  email_port = DEFAULT_EMAIL_PORT;
 	int  email_en = 0;
+	char saved_email_config[MAX_SOPTS_SIZE + 1];
+	char email_config[MAX_SOPTS_SIZE + 1];
+	char email_json[MAX_SOPTS_SIZE + 3];
 
-	os.sopt_load(SOPT_EMAIL_OPTS, postval);
-	if (*postval != 0) {
-		// Add the wrapping curly braces to the string
-		postval = tmp_buffer;
-		postval[0] = '{';
-		int len = strlen(postval);
-		postval[len] = '}';
-		postval[len+1] = 0;
+	os.sopt_load(SOPT_EMAIL_OPTS, saved_email_config);
+	strcpy(email_config, saved_email_config);
+	if (!normalize_json_object_fragment(email_config, sizeof(email_config))) {
+		email_config[0] = 0;
+	}
+	if (strcmp(saved_email_config, email_config) != 0) {
+		os.sopt_save(SOPT_EMAIL_OPTS, email_config);
+	}
 
-		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, postval);
+	if (email_config[0] != 0) {
+		size_t len = strlen(email_config);
+		memmove(email_json + 1, email_config, len + 1);
+		email_json[0] = '{';
+		email_json[len + 1] = '}';
+		email_json[len + 2] = 0;
+
+		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, email_json);
 		// Test the parsing otherwise parse
 		if (error) {
-			DEBUG_PRINT(F("mqtt: deserializeJson() failed: "));
+			DEBUG_PRINT(F("email: deserializeJson() failed: "));
 			DEBUG_PRINTLN(error.c_str());
 		} else {
 			email_en = doc["en"];

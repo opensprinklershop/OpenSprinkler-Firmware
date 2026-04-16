@@ -63,6 +63,8 @@ unsigned char OpenSprinkler::nstations;
 unsigned char OpenSprinkler::station_bits[MAX_NUM_BOARDS];
 unsigned char OpenSprinkler::engage_booster;
 uint16_t OpenSprinkler::baseline_current;
+static uint16_t baseline_ema = 0;       // EMA for dynamic baseline tracking
+static bool baseline_initialized = false; // whether baseline has been measured
 
 time_os_t OpenSprinkler::sensor1_on_timer;
 time_os_t OpenSprinkler::sensor1_off_timer;
@@ -1418,8 +1420,10 @@ void OpenSprinkler::begin() {
 	#if defined(ESP8266) || defined(ESP32)  // OS3.0 specific detections
 
 		status.has_curr_sense = 1;  // OS3.0 has current sensing capacility
-		// measure baseline current
-		baseline_current = 80;
+		// baseline_current is dynamically measured when idle
+		baseline_current = 0;
+		baseline_ema = 0;
+		baseline_initialized = false;
 
 	#else // OS 2.3 specific detections
 
@@ -2038,6 +2042,9 @@ void OpenSprinkler::sensor_resetall() {
  * the peak AC current. Therefore the actual current is discounted by 0.707
  * ESP8266: Vref=1.0, ADCmax=1024  => DC 4.88, AC 3.45 (mA/count)
  * ESP32:   Vref=3.3, ADCmax=4096  => DC 4.03, AC 2.85 (mA/count)
+ * ESP32-C5: different current sense circuit => DC 11.3, AC 8.0 (mA/count)
+ *           Uses multi-sample averaging over one full 50Hz cycle (20ms)
+ *           to reduce noise from asynchronous AC waveform sampling.
  */
 #if defined(ARDUINO)
 uint16_t OpenSprinkler::read_current(bool use_ema) {
@@ -2047,6 +2054,8 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 		if (hw_type == HW_TYPE_DC) {
 			#if defined(ESP8266)
 			scale = 4.88;
+			#elif defined(ESP32C5)
+			scale = 21.2;
 			#elif defined(ESP32)
 			scale = 4.03;
 			#else
@@ -2055,6 +2064,8 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 		} else if (hw_type == HW_TYPE_AC) {
 			#if defined(ESP8266)
 			scale = 3.45;
+			#elif defined(ESP32C5)
+			scale = 15.0;
 			#elif defined(ESP32)
 			scale = 2.85;
 			#else
@@ -2064,9 +2075,47 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 			scale = 0.0;  // for other controllers, current is 0
 		}
 	}
+#if defined(ESP32C5)
+	// Average ADC over one full 50Hz cycle (20ms) for stable AC readings.
+	// Single samples are too noisy because they hit random points on the sine wave.
+	uint32_t sum = 0;
+	const int n_samples = 20;
+	for(int i = 0; i < n_samples; i++) {
+		sum += analogRead(PIN_CURR_SENSE);
+		delay(1); // 1ms intervals, yields to RTOS
+	}
+	uint16_t curr = (uint16_t)(sum * scale / n_samples);
+#else
 	uint16_t curr = analogRead(PIN_CURR_SENSE)*scale;
+#endif
 	ema = curr / 5 + ema * 4 / 5; // using alpha=0.2 for exponential moving average
 	return use_ema ? ema : curr;
+}
+
+/** Update baseline current when no stations are running.
+ *  Call this periodically from the main loop when program_busy is false.
+ *  Uses a slow EMA (alpha=0.05) to get a stable idle current reading.
+ */
+void OpenSprinkler::update_baseline() {
+	uint16_t curr = read_current(false); // instantaneous reading
+	if(!baseline_initialized) {
+		baseline_ema = curr;
+		baseline_initialized = true;
+	} else {
+		// slow EMA: alpha=0.05 approximated as 1/20
+		baseline_ema = (uint16_t)(curr / 20 + baseline_ema * 19 / 20);
+	}
+	baseline_current = baseline_ema;
+}
+
+/** Get valve-only current (total measured minus idle baseline).
+ *  Returns 0 if no stations are running or if total < baseline.
+ */
+uint16_t OpenSprinkler::get_valve_current() {
+	uint16_t total = read_current(true); // EMA-smoothed total
+	if(!status.program_busy) return 0;
+	if(total <= baseline_current) return 0;
+	return total - baseline_current;
 }
 #endif
 
@@ -3558,7 +3607,7 @@ void OpenSprinkler::lcd_print_screen(char c) {
 		lcd.setCursor(2, 2);
 		if(status.program_busy && !status.pause_state) {
 			//lcd.print(F("Curr: "));
-			lcd.print(read_current(true));
+			lcd.print(get_valve_current());
 			lcd.print(F(" mA      "));
 		} else {
     #else
