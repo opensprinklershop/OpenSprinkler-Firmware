@@ -166,6 +166,7 @@ void remote_http_callback(char*);
 #define DHCP_CHECKLEASE_INTERVAL  3600L // DHCP check lease interval (in seconds)
 #define FLOWPOLL_INTERVAL         5     // flow poll interval (in milli-seconds)
 #define CURRPOLL_INTERVAL         20    // current poll interval (in milli-seconds)
+#define OVERCURRENT_CONSEC_COUNT   3    // consecutive above-threshold readings before triggering system overcurrent
 
 // ====== PSRAM-aware buffer allocation (8MB PSRAM available) ======
 OpenSprinkler os; // OpenSprinkler object
@@ -781,16 +782,25 @@ void overcurrent_monitor() {
 			imax += OVERCURRENT_INRUSH_EXTRA; // extra margin for inrush current
 			time_os_t tn = os.now_tz();
 			unsigned char sid = curr_alert_sid - 1;
+			uint8_t consec = 0;
+			uint16_t peak = 0;
 			for(unsigned char i = 0; i < 10; i++) {
 				uint16_t curr = os.read_current();
 				if(curr > (uint16_t)imax) {
-					turn_off_running_station_immediate(sid, tn);
-					notif.add(NOTIFY_CURR_ALERT, sid, curr, CURR_ALERT_TYPE_OVER_STATION);
-					os.status.overcurrent_sid = curr_alert_sid;
-					os.status.overcurrent_ma = curr;
-					currpoll_timeout += 1000; // delay currpoll_timeout by 1 second to give time for solenoid to reset
-					break;
+					if(curr > peak) peak = curr;
+					consec++;
+					if(consec >= 2) { // require 2 consecutive readings to avoid ADC spikes
+						turn_off_running_station_immediate(sid, tn);
+						notif.add(NOTIFY_CURR_ALERT, sid, peak, CURR_ALERT_TYPE_OVER_STATION);
+						os.status.overcurrent_sid = curr_alert_sid;
+						os.status.overcurrent_ma = peak;
+						currpoll_timeout += 1000; // delay currpoll_timeout by 1 second to give time for solenoid to reset
+						break;
+					}
+					delay(5);
 				} else {
+					consec = 0;
+					peak = 0;
 					delay(5);
 				}
 			}
@@ -921,23 +931,37 @@ void do_loop()
 
 #if defined(ARDUINO)
 	{
+		static uint8_t oc_consec = 0;   // consecutive above-threshold readings
+		static uint16_t oc_peak = 0;    // peak current during consecutive readings
 		ulong tn = millis();
 		if((long)(tn-currpoll_timeout) > 0) { // overflow proof timeout
 			int16_t curr = (int16_t)os.read_current();
 			// update baseline when no stations are running
 			if(!os.status.program_busy) {
 				os.update_baseline();
+				oc_consec = 0;
+				oc_peak = 0;
 			} else {
 				os.get_valve_current(); // tick the display EMA while stations run
 			}
 			int16_t imax = os.get_imax();
-			if((imax > 0) && (curr > imax)) {
-				reset_all_stations_immediate(true);
-				notif.add(NOTIFY_CURR_ALERT, 0, curr, CURR_ALERT_TYPE_OVER_SYSTEM);
-				os.status.overcurrent_sid = 255; // 255 indicates system overcurrent
-				os.status.overcurrent_ma = curr;
-				currpoll_timeout = tn+1000; // pause currpoll for a second to give time for solenoids to reset
+			if((imax > 0) && os.status.program_busy && (curr > imax)) {
+				oc_consec++;
+				if((uint16_t)curr > oc_peak) oc_peak = (uint16_t)curr;
+				if(oc_consec >= OVERCURRENT_CONSEC_COUNT) {
+					reset_all_stations_immediate(true);
+					notif.add(NOTIFY_CURR_ALERT, 0, oc_peak, CURR_ALERT_TYPE_OVER_SYSTEM);
+					os.status.overcurrent_sid = 255; // 255 indicates system overcurrent
+					os.status.overcurrent_ma = oc_peak;
+					currpoll_timeout = tn+1000; // pause currpoll for a second to give time for solenoids to reset
+					oc_consec = 0;
+					oc_peak = 0;
+				} else {
+					currpoll_timeout = tn+CURRPOLL_INTERVAL;
+				}
 			} else {
+				oc_consec = 0;
+				oc_peak = 0;
 				currpoll_timeout = tn+CURRPOLL_INTERVAL;
 			}
 		}

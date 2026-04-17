@@ -376,7 +376,7 @@ const unsigned char iopt_max[] PROGMEM = {
 	24,              // IOPT_LATCH_OFF_VOLTAGE
 	255,             // IOPT_NOTIF2_ENABLE (bitmask byte 2)
 	255,             // IOPT_I_MIN_THRESHOLD
-	100,             // IOPT_I_MAX_LIMIT
+	255,             // IOPT_I_MAX_LIMIT
 	255,             // IOPT_TARGET_PD_VOLTAGE
 	210,             // IOPT_RESERVED_TEMPCON
 	2,               // IOPT_RESERVED_COMBCHART
@@ -2042,7 +2042,7 @@ void OpenSprinkler::sensor_resetall() {
  * the peak AC current. Therefore the actual current is discounted by 0.707
  * ESP8266: Vref=1.0, ADCmax=1024  => DC 4.88, AC 3.45 (mA/count)
  * ESP32:   Vref=3.3, ADCmax=4096  => DC 4.03, AC 2.85 (mA/count)
- * ESP32-C5: different current sense circuit => DC 11.3, AC 8.0 (mA/count)
+ * ESP32-C5: different current sense circuit => DC 22.7, AC 16.0 (mA/count)
  *           Uses multi-sample averaging over one full 50Hz cycle (20ms)
  *           to reduce noise from asynchronous AC waveform sampling.
  */
@@ -2055,7 +2055,7 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 			#if defined(ESP8266)
 			scale = 4.88;
 			#elif defined(ESP32C5)
-			scale = 21.2;
+			scale = 22.7;
 			#elif defined(ESP32)
 			scale = 4.03;
 			#else
@@ -2065,7 +2065,7 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 			#if defined(ESP8266)
 			scale = 3.45;
 			#elif defined(ESP32C5)
-			scale = 15.0;
+			scale = 16.0;
 			#elif defined(ESP32)
 			scale = 2.85;
 			#else
