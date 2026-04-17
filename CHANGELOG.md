@@ -6,6 +6,22 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (196)] — 2026-04-17
+
+### Added
+- **Valve current measurement (ESP32-C5)**: new dynamic baseline tracking and valve-only current calculation — the firmware continuously measures idle system current and subtracts it from the total when a valve is running, displaying only the solenoid current draw
+- **API fields `vcurr` and `blcurr`**: the `/jc` endpoint now returns `vcurr` (valve-only current in mA) and `blcurr` (baseline idle current in mA) alongside the existing `curr` (total current)
+- **UI: valve current display**: the status bar shows "Valve Current: X mA (Total: Y mA)" when the firmware supports it; falls back to the classic "Current: X mA" for older firmware versions
+- **German locale**: added translations for "Valve Current" → "Ventilstrom" and "Total" → "Gesamt"
+
+### Changed
+- **ESP32-C5 current sense scale factor**: calibrated to 15.0 (AC) / 21.2 (DC) for the ESP32-C5 board's current sense circuit (was using the ESP32 OS 3.0 scale of 2.85)
+- **Multi-sample ADC averaging (ESP32-C5)**: `read_current()` now averages 20 ADC samples over one full 50 Hz AC cycle (20 ms) for phase-independent readings — eliminates the large noise swings from single random-phase samples
+- **Two-stage EMA smoothing (ESP32-C5)**: first-stage EMA in `read_current()` uses α=0.05 (was α=0.2); a second-stage display EMA (α=0.2) in `get_valve_current()` provides stable UI output with ±7% variance (was ±22%)
+
+### Fixed
+- **Baseline current no longer hardcoded**: replaced the fixed `baseline_current = 80` with a dynamic EMA-based measurement that adapts to the actual idle current of each individual board
+
 ## [2.4.0 (194)] — 2026-04-06
 
 ### Added

@@ -2088,7 +2088,11 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 #else
 	uint16_t curr = analogRead(PIN_CURR_SENSE)*scale;
 #endif
-	ema = curr / 5 + ema * 4 / 5; // using alpha=0.2 for exponential moving average
+	#if defined(ESP32C5)
+	ema = curr / 20 + ema * 19 / 20; // alpha=0.05: slow EMA for ESP32-C5 (multi-sampled input already pre-filtered)
+	#else
+	ema = curr / 5 + ema * 4 / 5; // alpha=0.2 for exponential moving average
+	#endif
 	return use_ema ? ema : curr;
 }
 
@@ -2110,12 +2114,26 @@ void OpenSprinkler::update_baseline() {
 
 /** Get valve-only current (total measured minus idle baseline).
  *  Returns 0 if no stations are running or if total < baseline.
+ *  Applies an additional display-EMA for smooth UI output.
  */
 uint16_t OpenSprinkler::get_valve_current() {
+	static uint16_t valve_ema = 0;
 	uint16_t total = read_current(true); // EMA-smoothed total
-	if(!status.program_busy) return 0;
-	if(total <= baseline_current) return 0;
-	return total - baseline_current;
+	if(!status.program_busy) {
+		valve_ema = 0;
+		return 0;
+	}
+	if(total <= baseline_current) {
+		valve_ema = 0;
+		return 0;
+	}
+	uint16_t vcurr = total - baseline_current;
+	if(valve_ema == 0) {
+		valve_ema = vcurr; // seed on first reading
+	} else {
+		valve_ema = vcurr / 5 + valve_ema * 4 / 5; // second-stage EMA alpha=0.2
+	}
+	return valve_ema;
 }
 #endif
 
