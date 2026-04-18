@@ -786,8 +786,11 @@ void overcurrent_monitor() {
 			uint16_t peak = 0;
 			for(unsigned char i = 0; i < 10; i++) {
 				uint16_t curr = os.read_current();
-				if(curr > (uint16_t)imax) {
-					if(curr > peak) peak = curr;
+				// subtract baseline to get valve-only current
+				int16_t vcurr = (os.baseline_current > 0) ? ((int16_t)curr - (int16_t)os.baseline_current) : (int16_t)curr;
+				if(vcurr < 0) vcurr = 0;
+				if(vcurr > (int16_t)imax) {
+					if((uint16_t)vcurr > peak) peak = (uint16_t)vcurr;
 					consec++;
 					if(consec >= 2) { // require 2 consecutive readings to avoid ADC spikes
 						turn_off_running_station_immediate(sid, tn);
@@ -932,7 +935,7 @@ void do_loop()
 #if defined(ARDUINO)
 	{
 		static uint8_t oc_consec = 0;   // consecutive above-threshold readings
-		static uint16_t oc_peak = 0;    // peak current during consecutive readings
+		static uint16_t oc_peak = 0;    // peak valve current during consecutive readings
 		ulong tn = millis();
 		if((long)(tn-currpoll_timeout) > 0) { // overflow proof timeout
 			int16_t curr = (int16_t)os.read_current();
@@ -944,10 +947,13 @@ void do_loop()
 			} else {
 				os.get_valve_current(); // tick the display EMA while stations run
 			}
+			// subtract baseline to get valve-only current for overcurrent comparison
+			int16_t vcurr = (os.baseline_current > 0) ? (curr - (int16_t)os.baseline_current) : curr;
+			if(vcurr < 0) vcurr = 0;
 			int16_t imax = os.get_imax();
-			if((imax > 0) && os.status.program_busy && (curr > imax)) {
+			if((imax > 0) && os.status.program_busy && (vcurr > imax)) {
 				oc_consec++;
-				if((uint16_t)curr > oc_peak) oc_peak = (uint16_t)curr;
+				if((uint16_t)vcurr > oc_peak) oc_peak = (uint16_t)vcurr;
 				if(oc_consec >= OVERCURRENT_CONSEC_COUNT) {
 					reset_all_stations_immediate(true);
 					notif.add(NOTIFY_CURR_ALERT, 0, oc_peak, CURR_ALERT_TYPE_OVER_SYSTEM);
