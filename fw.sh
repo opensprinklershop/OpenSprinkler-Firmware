@@ -273,8 +273,9 @@ build_env() {
 
 upload_env() {
     local env="$1"
-    header "Uploading firmware: ${env}"
-    if "$PIO_BIN" run --environment "$env" --target upload; then
+    _find_usb_port "$(_env_to_chip "$env")"
+    header "Uploading firmware: ${env} → ${USB_PORT}"
+    if "$PIO_BIN" run --environment "$env" --target upload --upload-port "$USB_PORT"; then
         ok "Upload successful: ${env}"
     else
         error "Upload failed: ${env}"
@@ -391,6 +392,128 @@ except:
 " 2>/dev/null || true
     fi
     echo ""
+}
+
+# ── USB port auto-detection ──────────────────────────────────────────────────
+# Map PlatformIO environment name → expected chip string (as reported by esptool).
+_env_to_chip() {
+    case "$1" in
+        "$ENV_C5_MATTER"|"$ENV_C5_ZIGBEE") echo "esp32c5" ;;
+        "$ENV_ESP8266")                     echo "esp8266" ;;
+        *)                                  echo "" ;;
+    esac
+}
+
+# Probe the chip type on a serial port via esptool.
+# Returns the lowercase chip description (e.g. "esp32c5", "esp8266") or empty.
+_probe_chip() {
+    local port="$1"
+    # Use chip_id which is fast and prints the chip type.  Capture stderr+stdout.
+    local out
+    out=$("${ESPTOOL_CMD[@]}" --port "$port" --before default_reset --after no_reset \
+        chip_id 2>&1) || true
+    # esptool v5+ prints "Chip type:          ESP32-C5 (revision …)" or "ESP8266EX"
+    # older versions print "Chip is ESP32-C5 …"
+    local chip
+    chip=$(echo "$out" | grep -ioP '(?:Chip is|Chip type:\s*|Connected to )\K[A-Za-z0-9-]+' | head -1)
+    # Normalise: lowercase, strip hyphens, strip suffixes like "EX" → "esp32c5", "esp8266"
+    chip="${chip,,}"
+    chip="${chip//-/}"
+    chip="${chip%ex}"
+    echo "$chip"
+}
+
+# Auto-detect the USB serial port for flashing/monitoring.
+# Usage: _find_usb_port [expected_chip]
+#   expected_chip – e.g. "esp32c5" or "esp8266".  When set and multiple ports
+#                   exist, probes each port and picks the matching one.
+# Prefers UPLOAD_PORT if already set.  Sets global USB_PORT.
+# When expected_chip is given, verifies the chip even on an explicit UPLOAD_PORT.
+_find_usb_port() {
+    local expected_chip="${1:-}"
+
+    if [[ -n "${UPLOAD_PORT:-}" ]]; then
+        USB_PORT="$UPLOAD_PORT"
+        # Verify chip type if expected_chip was requested
+        if [[ -n "$expected_chip" ]]; then
+            if [[ -z "${ESPTOOL_CMD+x}" ]]; then
+                _find_esptool
+            fi
+            local detected
+            detected=$(_probe_chip "$USB_PORT")
+            if [[ -n "$detected" && "$detected" != "$expected_chip" ]]; then
+                error "UPLOAD_PORT=${USB_PORT} has chip '${detected}', expected '${expected_chip}'."
+                error "Hint: unset UPLOAD_PORT to auto-detect, or point it to the correct device."
+                exit 1
+            fi
+        fi
+        info "Using UPLOAD_PORT=${USB_PORT}"
+        return 0
+    fi
+
+    local -a candidates=()
+    for dev in /dev/ttyUSB* /dev/ttyACM*; do
+        [[ -e "$dev" ]] && candidates+=("$dev")
+    done
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        error "No USB serial device found (/dev/ttyUSB* or /dev/ttyACM*)."
+        error "Hint: connect the device or set UPLOAD_PORT=/dev/…"
+        exit 1
+    fi
+
+    # Single device — verify chip if expected
+    if [[ ${#candidates[@]} -eq 1 ]]; then
+        USB_PORT="${candidates[0]}"
+        if [[ -n "$expected_chip" ]]; then
+            if [[ -z "${ESPTOOL_CMD+x}" ]]; then
+                _find_esptool
+            fi
+            local detected
+            detected=$(_probe_chip "$USB_PORT")
+            if [[ -n "$detected" && "$detected" != "$expected_chip" ]]; then
+                error "${USB_PORT} has chip '${detected}', expected '${expected_chip}'."
+                error "Hint: connect the right device or set UPLOAD_PORT=/dev/…"
+                exit 1
+            fi
+        fi
+        info "Auto-detected USB port: ${USB_PORT}"
+        return 0
+    fi
+
+    # Multiple devices — probe chip type to find the right one
+    if [[ -n "$expected_chip" ]]; then
+        # Ensure esptool is available for probing
+        if [[ -z "${ESPTOOL_CMD+x}" ]]; then
+            _find_esptool
+        fi
+        info "Multiple USB ports found — probing for ${expected_chip} …"
+        for dev in "${candidates[@]}"; do
+            local detected
+            detected=$(_probe_chip "$dev")
+            if [[ -n "$detected" ]]; then
+                info "  ${dev} → ${detected}"
+                if [[ "$detected" == "$expected_chip" ]]; then
+                    USB_PORT="$dev"
+                    ok "Matched ${expected_chip} on ${USB_PORT}"
+                    return 0
+                fi
+            else
+                info "  ${dev} → (no response)"
+            fi
+        done
+        error "No port with chip '${expected_chip}' found among: ${candidates[*]}"
+        error "Hint: set UPLOAD_PORT=/dev/… to override"
+        exit 1
+    fi
+
+    # Multiple devices, no expected chip — pick first with a warning
+    warn "Multiple USB serial devices found:"
+    for dev in "${candidates[@]}"; do
+        echo "    $dev"
+    done
+    USB_PORT="${candidates[0]}"
+    warn "Using first: ${USB_PORT}  (override with UPLOAD_PORT=…)"
 }
 
 # ── esptool resolver ────────────────────────────────────────────────────────
@@ -538,8 +661,9 @@ flash_matter_kvs() {
     fi
 
     _find_esptool
+    _find_usb_port "esp32c5"
 
-    local port="${UPLOAD_PORT:-/dev/ttyACM0}"
+    local port="$USB_PORT"
     local baud="${UPLOAD_SPEED:-460800}"
 
     info "Flashing ${MATTER_KVS_BIN} → ${MATTER_KVS_ADDR}"
@@ -583,8 +707,9 @@ full_flash_env() {
     done
 
     _find_esptool
+    _find_usb_port "esp32c5"
 
-    local port="${UPLOAD_PORT:-/dev/ttyUSB2}"
+    local port="$USB_PORT"
     local baud="${UPLOAD_SPEED:-460800}"
 
     # Build flash arguments: bootloader + partitions + firmware
@@ -644,8 +769,9 @@ full_flash_env() {
 do_reset() {
     header "USB Reset"
     _find_esptool
+    _find_usb_port "esp32c5"
 
-    local port="${UPLOAD_PORT:-/dev/ttyUSB2}"
+    local port="$USB_PORT"
     info "Resetting device on ${port} …"
     "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" \
         --before default_reset --after hard_reset \
@@ -1335,7 +1461,7 @@ ${BOLD}Environment variables:${NC}
   OS_IP=<IP>              Device IP        (default: 192.168.0.151)
   OS_PASSWORD=<password>  Admin password   (will be MD5 hashed)
   OS_HASH=<md5>           MD5 hash direct  (overrides OS_PASSWORD)
-  UPLOAD_PORT=<port>      Serial port      (default: /dev/ttyUSB2)
+  UPLOAD_PORT=<port>      Serial port      (auto-detected if not set)
   UPLOAD_SPEED=<baud>     Upload baud rate  (default: 460800)
   ERASE_FLASH=1           Erase entire flash before full-flash
 
