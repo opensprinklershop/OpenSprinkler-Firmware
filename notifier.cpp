@@ -818,9 +818,14 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 		#if defined(ARDUINO)
 			#if defined(ESP8266) || defined(ESP32)
 				if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
-					if (!free_tmp_memory(12000)) {
+					// BearSSL (with setBufferSizes 4096+512) needs ~8-10KB plus fragmentation
+					// headroom. Require 16000 so the 75% maxblock check demands >=12000;
+					// the previous threshold of 12000 allowed maxblock=9464 to pass, which
+					// caused BearSSL _connectSSL() to crash with an OOM exception.
+					const size_t email_mem_needed = 16000;
+					if (!free_tmp_memory(email_mem_needed)) {
 						DEBUG_PRINTLN(F("Not enough memory to send email"));
-						restore_tmp_memory(12000);
+						restore_tmp_memory(email_mem_needed);
 						return;
 					}
 					DEBUG_PRINTLN(F("Sending email..."));
@@ -832,7 +837,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					DEBUG_PRINTLN(resp.status);
 					DEBUG_PRINTLN(resp.code);
 					DEBUG_PRINTLN(resp.desc);
-					restore_tmp_memory(12000);
+					restore_tmp_memory(email_mem_needed);
 				}
 			#endif
 		#else

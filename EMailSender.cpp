@@ -145,6 +145,7 @@ EMailSender::EMailSender(const char* email_login, const char* email_password, co
 	this->setEMailLogin(email_login);
 	this->setEMailFrom(email_from);
 	this->setEMailPassword(email_password);
+	this->setSMTPServer("smtp.gmail.com");
 	this->setNameFrom(name_from);
 	this->setNameFrom(name_from);
 
@@ -154,6 +155,7 @@ EMailSender::EMailSender(const char* email_login, const char* email_password, co
 	this->setEMailLogin(email_login);
 	this->setEMailFrom(email_from);
 	this->setEMailPassword(email_password);
+	this->setSMTPServer("smtp.gmail.com");
 
 //	this->isSecure = isSecure;
 }
@@ -162,8 +164,17 @@ EMailSender::EMailSender(const char* email_login, const char* email_password){
 	this->setEMailLogin(email_login);
 	this->setEMailFrom(email_login);
 	this->setEMailPassword(email_password);
+	this->setSMTPServer("smtp.gmail.com");
 
 //	this->isSecure = isSecure;
+}
+
+EMailSender::~EMailSender() {
+	delete [] this->smtp_server;
+	delete [] this->email_login;
+	delete [] this->email_from;
+	delete [] this->name_from;
+	delete [] this->email_password;
 }
 
 void EMailSender::setSMTPPort(uint16_t smtp_port){
@@ -418,13 +429,22 @@ const char** toCharArray(char* arr[], int num) {
 }
 
 EMailSender::Response EMailSender::send(char* tos[], byte sizeOfTo, EMailMessage &email, Attachments attachments) {
-	return send(toCharArray(tos, sizeOfTo), sizeOfTo, 0, 0, email, attachments);
+	const char** recipients = toCharArray(tos, sizeOfTo);
+	EMailSender::Response response = send(recipients, sizeOfTo, 0, 0, email, attachments);
+	delete[] recipients;
+	return response;
 }
 EMailSender::Response EMailSender::send(char* tos[], byte sizeOfTo,  byte sizeOfCc,  EMailMessage &email, Attachments attachments) {
-	return send(toCharArray(tos, sizeOfTo+sizeOfCc), sizeOfTo, sizeOfCc, 0, email, attachments);
+	const char** recipients = toCharArray(tos, sizeOfTo+sizeOfCc);
+	EMailSender::Response response = send(recipients, sizeOfTo, sizeOfCc, 0, email, attachments);
+	delete[] recipients;
+	return response;
 }
 EMailSender::Response EMailSender::send(char* tos[], byte sizeOfTo,  byte sizeOfCc,byte sizeOfCCn, EMailMessage &email, Attachments attachments){
-	return send(toCharArray(tos, sizeOfTo+sizeOfCc+sizeOfCCn), sizeOfTo, sizeOfCc, sizeOfCCn, email, attachments);
+	const char** recipients = toCharArray(tos, sizeOfTo+sizeOfCc+sizeOfCCn);
+	EMailSender::Response response = send(recipients, sizeOfTo, sizeOfCc, sizeOfCCn, email, attachments);
+	delete[] recipients;
+	return response;
 }
 
 
@@ -436,15 +456,24 @@ EMailSender::Response EMailSender::send(String to, EMailMessage &email, Attachme
 }
 
 EMailSender::Response EMailSender::send(String tos[], byte sizeOfTo, EMailMessage &email, Attachments attachments) {
-	return send(toCharArray(tos, sizeOfTo), sizeOfTo, 0, 0, email, attachments);
+	const char** recipients = toCharArray(tos, sizeOfTo);
+	EMailSender::Response response = send(recipients, sizeOfTo, 0, 0, email, attachments);
+	delete[] recipients;
+	return response;
 }
 
 EMailSender::Response EMailSender::send(String tos[], byte sizeOfTo,  byte sizeOfCc,  EMailMessage &email, Attachments attachments) {
-	return send(toCharArray(tos, sizeOfTo+sizeOfCc), sizeOfTo, sizeOfCc, 0, email, attachments);
+	const char** recipients = toCharArray(tos, sizeOfTo+sizeOfCc);
+	EMailSender::Response response = send(recipients, sizeOfTo, sizeOfCc, 0, email, attachments);
+	delete[] recipients;
+	return response;
 }
 
 EMailSender::Response EMailSender::send(String tos[], byte sizeOfTo,  byte sizeOfCc,byte sizeOfCCn, EMailMessage &email, Attachments attachments){
-	return send(toCharArray(tos, sizeOfTo+sizeOfCc+sizeOfCCn), sizeOfTo, sizeOfCc, sizeOfCCn, email, attachments);
+	const char** recipients = toCharArray(tos, sizeOfTo+sizeOfCc+sizeOfCCn);
+	EMailSender::Response response = send(recipients, sizeOfTo, sizeOfCc, sizeOfCCn, email, attachments);
+	delete[] recipients;
+	return response;
 }
 
 EMailSender::Response EMailSender::send(const char* to, EMailMessage &email, Attachments attachments){

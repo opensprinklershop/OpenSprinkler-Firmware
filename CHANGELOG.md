@@ -6,6 +6,13 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (197)] — 2026-04-24
+
+### Fixed
+- **Memory leak in e-mail sender**: fixed heap corruption caused by an allocator mismatch (`strdup`/`delete[]`) in `EMailSender::setSMTPServer()` and a missing `delete[]` for temporary recipient arrays in the `send()` overloads — improves long-term stability on ESP8266
+
+---
+
 ## [2.4.0 (196)] — 2026-04-17
 
 ### Added

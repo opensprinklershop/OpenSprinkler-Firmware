@@ -451,6 +451,7 @@ public:
 	EMailSender(const char* email_login, const char* email_password, const char* email_from, const char* name_from );
 	EMailSender(const char* email_login, const char* email_password, const char* email_from);
 	EMailSender(const char* email_login, const char* email_password);
+	~EMailSender();
 
 #define STORAGE_SPIFFS (1)
 #define STORAGE_LITTLEFS (2)
@@ -562,7 +563,7 @@ public:
 
 private:
 	uint16_t smtp_port = 465;
-	char* smtp_server = strdup("smtp.gmail.com");
+	char* smtp_server = 0;
 	char* email_login = 0;
 	char* email_from  = 0;
 	char* name_from  = 0;
