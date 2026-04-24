@@ -580,7 +580,20 @@ uint8_t pcf8591_read(pcf8591_handle_t *handle, int16_t *raw, float *adc)
             return 1;                                                         /* return error */
         }
     }
-    res = handle->iic_read_cmd(handle->iic_addr, (uint8_t *)buf, 1);          /* read data */
+    /* PCF8591 pipeline: writing the control byte selects the channel and
+     * triggers a new A/D conversion.  The byte returned by the subsequent
+     * read is the result of the *previous* conversion (one sample behind).
+     * Without this write the chip never starts a new conversion for the
+     * requested channel, so the output register stays frozen. */
+    uint8_t ctrl_byte = handle->conf;                                         /* control byte with channel/mode */
+    res = handle->iic_write_cmd(handle->iic_addr, &ctrl_byte, 1);             /* write control byte – triggers conversion */
+    if (res != 0)                                                             /* check error */
+    {
+        handle->debug_print("pcf8591: write control failed.\n");              /* write failed */
+
+        return 1;                                                             /* return error */
+    }
+    res = handle->iic_read_cmd(handle->iic_addr, (uint8_t *)buf, 1);          /* read data (stale – previous conversion) */
     if (res != 0)                                                             /* check error */
     {
         handle->debug_print("pcf8591: read command failed.\n");               /* read failed */
