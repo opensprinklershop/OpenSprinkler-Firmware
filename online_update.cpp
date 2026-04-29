@@ -1295,9 +1295,9 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	manifest.valid = false;
 	ota_set_state(OTA_STATUS_CHECKING, 0, "Checking for updates...");
 
-	BearSSL::WiFiClientSecure client;
-	client.setInsecure();
-	client.setBufferSizes(512, 512);
+	// ESP8266 uses plain HTTP — BearSSL cannot negotiate TLS with Ionos
+	// (server ignores max_fragment_length; returned record overflows the 512-byte buffer).
+	WiFiClient client;
 
 	HTTPClient http;
 	http.setTimeout(15000);
@@ -1332,8 +1332,19 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 
 	manifest.fw_version = doc["fw_version"] | 0;
 	manifest.fw_minor = doc["fw_minor"] | 0;
-	strncpy(manifest.zigbee_url, doc["esp8266_url"] | OTA_ESP8266_FW_URL, sizeof(manifest.zigbee_url) - 1);
-	manifest.zigbee_url[sizeof(manifest.zigbee_url) - 1] = '\0';
+	{
+		// Downgrade https:// → http:// for the firmware URL.  The server ignores the
+		// TLS max_fragment_length extension, so BearSSL cannot connect.  The SHA-256
+		// field still provides integrity verification over the plain-HTTP download.
+		const char* fw_url = doc["esp8266_url"] | OTA_ESP8266_FW_URL;
+		char fw_url_http[sizeof(manifest.zigbee_url)];
+		if (strncmp(fw_url, "https://", 8) == 0) {
+			snprintf(fw_url_http, sizeof(fw_url_http), "http://%s", fw_url + 8);
+			fw_url = fw_url_http;
+		}
+		strncpy(manifest.zigbee_url, fw_url, sizeof(manifest.zigbee_url) - 1);
+		manifest.zigbee_url[sizeof(manifest.zigbee_url) - 1] = '\0';
+	}
 	strncpy(manifest.esp8266_sha256, doc["esp8266_sha256"] | "", sizeof(manifest.esp8266_sha256) - 1);
 	manifest.esp8266_sha256[sizeof(manifest.esp8266_sha256) - 1] = '\0';
 	strncpy(manifest.changelog, doc["changelog"] | "", sizeof(manifest.changelog) - 1);
@@ -1412,7 +1423,7 @@ void online_update_loop() {
 
 	const char* ota_urls[2] = {
 		manifest->zigbee_url,
-		"https://www.opensprinklershop.de/upgrade/firmware_esp8266.bin"
+		OTA_ESP8266_FW_URL   // plain HTTP fallback defined in online_update.h
 	};
 	int last_http_code = 0;
 	for (uint8_t i = 0; i < 2 && !ok; i++) {

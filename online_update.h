@@ -6,8 +6,18 @@
 #include <Arduino.h>
 
 // Update server base URL (no trailing slash)
-#define OTA_UPDATE_HOST "www.opensprinklershop.de"
-#define OTA_UPDATE_BASE_URL "https://www.opensprinklershop.de/upgrade"
+#if defined(ESP32)
+// ESP32 supports full TLS; use HTTPS.
+#  define OTA_UPDATE_HOST    "www.opensprinklershop.de"
+#  define OTA_UPDATE_BASE_URL "https://www.opensprinklershop.de/upgrade"
+#else
+// ESP8266 BearSSL cannot complete a TLS handshake with the Ionos hosting server
+// (server ignores the max_fragment_length extension, returning a >512-byte record
+// that overflows the BearSSL RX buffer).  Use plain HTTP instead; the SHA-256
+// field in the manifest still provides integrity verification.
+#  define OTA_UPDATE_HOST    "opensprinklershop.de"
+#  define OTA_UPDATE_BASE_URL "http://opensprinklershop.de/upgrade"
+#endif
 #define OTA_MANIFEST_URL OTA_UPDATE_BASE_URL "/manifest.json"
 #define OTA_ESP8266_FW_URL OTA_UPDATE_BASE_URL "/firmware_esp8266.bin"
 

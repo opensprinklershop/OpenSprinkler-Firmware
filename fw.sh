@@ -11,7 +11,8 @@
 #   release sync-tags                    – Create missing GitHub releases for existing tags
 #   generate-mfg                         – Generate Matter manufacturing data (DAC, NVS)
 #   flash-mfg                            – Flash matter_kvs partition only
-#   full-flash [matter|zigbee|all]       – Full flash (bootloader + partitions + firmware)
+#   full-flash [matter|zigbee|all]       – Full flash new device using pre-built binaries
+#                                          (no compilation – always uses current release)
 #   switch  [matter|zigbee|mode]         – Switch firmware variant via REST API
 #                                          (automatically reboots the device)
 #   reset                                 – Reset/reboot device via USB (RTS/DTR)
@@ -32,8 +33,8 @@
 #   ./fw.sh release rebuild
 #   ./fw.sh generate-mfg
 #   ./fw.sh flash-mfg
-#   ./fw.sh full-flash zigbee     -> flash bootloader + partitions + firmware
-#   ./fw.sh full-flash matter     -> flash bootloader + partitions + firmware + matter_kvs
+#   ./fw.sh full-flash zigbee     -> flash pre-built bootloader + partitions + firmware (no compile)
+#   ./fw.sh full-flash matter     -> flash pre-built bootloader + partitions + firmware + matter_kvs
 #   ERASE_FLASH=1 ./fw.sh full-flash zigbee  -> erase flash first, then full flash
 #   ./fw.sh switch matter        -> switch to Matter firmware
 #   ./fw.sh switch zigbee        -> switch to ZigBee Gateway firmware
@@ -97,6 +98,10 @@ CHANGELOG="${SCRIPT_DIR}/CHANGELOG.md"
 PLATFORMIO_INI="${SCRIPT_DIR}/platformio.ini"
 GITHUB_REPO="opensprinklershop/OpenSprinkler-Firmware"
 
+# Path to the UI fw.sh script that handles the IONOS online deploy.
+# Credentials (IONOS_SSH_*) live in ui/.env, so we delegate to that script.
+UI_FW_SH="${UI_FW_SH:-/srv/www/htdocs/ui/fw.sh}"
+
 # Matter manufacturing data
 MATTER_MFG_DIR="${SCRIPT_DIR}/matter_mfg"
 MATTER_KVS_BIN="${MATTER_MFG_DIR}/matter_kvs.bin"
@@ -143,13 +148,23 @@ check_device() {
 
 copy_to_dist() {
     local env="$1"
-    local src="${SCRIPT_DIR}/.pio/build/${env}/firmware.bin"
+    local build_dir="${SCRIPT_DIR}/.pio/build/${env}"
     local dist="${SCRIPT_DIR}/.pio/dist"
+    local src="${build_dir}/firmware.bin"
     if [[ -f "$src" ]]; then
         mkdir -p "$dist"
         cp "$src" "${dist}/firmware_${env}.bin"
         ok "Dist copy → .pio/dist/firmware_${env}.bin"
     fi
+    # Preserve bootloader and partitions for full-flash (new-device provisioning).
+    # These are stored in .pio/dist/ so they survive subsequent per-env build cleans.
+    for artifact in bootloader partitions; do
+        local art_src="${build_dir}/${artifact}.bin"
+        if [[ -f "$art_src" ]]; then
+            mkdir -p "$dist"
+            cp "$art_src" "${dist}/${artifact}_${env}.bin"
+        fi
+    done
 }
 
 # ── OsPi (Raspberry Pi) remote build helpers ────────────────────────────────
@@ -685,26 +700,53 @@ FW_ADDR_MATTER="0x3A0000"
 full_flash_env() {
     local env="$1"
     local fw_addr="$2"
-    header "Full Flash: ${env}"
+    header "Full Flash: ${env} (pre-built binaries)"
 
+    # Determine the variant name used in the upgrade directory.
+    local variant
+    case "$env" in
+        "$ENV_C5_MATTER") variant="matter" ;;
+        "$ENV_C5_ZIGBEE") variant="zigbee" ;;
+        *) error "Unknown env for full-flash: ${env}"; exit 1 ;;
+    esac
+
+    # Firmware: always taken from the upgrade directory (current released version).
+    local firmware="${UPGRADE_DIR}/firmware_${variant}.bin"
+
+    # Bootloader / partitions: prefer upgrade dir; fall back to last local build
+    # (they rarely change and are stable across source builds).
     local build_dir="${SCRIPT_DIR}/.pio/build/${env}"
-    local bootloader="${build_dir}/bootloader.bin"
-    local partitions="${build_dir}/partitions.bin"
-    local firmware="${build_dir}/firmware.bin"
+    local bootloader="${UPGRADE_DIR}/bootloader_${variant}.bin"
+    local partitions="${UPGRADE_DIR}/partitions_${variant}.bin"
+    [[ ! -f "$bootloader" && -f "${build_dir}/bootloader.bin" ]] && bootloader="${build_dir}/bootloader.bin"
+    [[ ! -f "$partitions" && -f "${build_dir}/partitions.bin" ]] && partitions="${build_dir}/partitions.bin"
 
-    # Build if artifacts are missing
-    if [[ ! -f "$bootloader" ]] || [[ ! -f "$partitions" ]] || [[ ! -f "$firmware" ]]; then
-        warn "Build artifacts missing — building first …"
-        build_env "$env"
-    fi
-
-    # Validate all artifacts exist
+    # Validate — never compile automatically.
+    local missing=false
     for f in "$bootloader" "$partitions" "$firmware"; do
         if [[ ! -f "$f" ]]; then
             error "Missing: $f"
-            exit 1
+            missing=true
         fi
     done
+    if $missing; then
+        echo ""
+        error "full-flash requires pre-built binaries. Prepare them with one of:"
+        error "  ./fw.sh release rebuild       # rebuild all variants"
+        error "  ./fw.sh build ${variant}      # build single variant"
+        error "  ./fw.sh release               # full release build"
+        echo ""
+        error "Bootloader/partitions are stored in ${UPGRADE_DIR}/ after a release."
+        error "If missing, copy them manually once after a build:"
+        error "  cp .pio/build/${env}/bootloader.bin ${UPGRADE_DIR}/bootloader_${variant}.bin"
+        error "  cp .pio/build/${env}/partitions.bin ${UPGRADE_DIR}/partitions_${variant}.bin"
+        exit 1
+    fi
+
+    info "Using pre-built binaries:"
+    info "  Firmware:   ${firmware}"
+    info "  Bootloader: ${bootloader}"
+    info "  Partitions: ${partitions}"
 
     _find_esptool
     _find_usb_port "esp32c5"
@@ -882,6 +924,16 @@ copy_to_upgrade() {
     cp "$matter_bin" "${UPGRADE_DIR}/firmware_matter.bin"
     cp "$esp8266_bin" "${UPGRADE_DIR}/firmware_esp8266.bin"
     ok "Binaries copied to ${UPGRADE_DIR}/"
+
+    # Copy bootloader/partitions for full-flash (new-device provisioning)
+    local dist="${SCRIPT_DIR}/.pio/dist"
+    for artifact in bootloader partitions; do
+        [[ -f "${dist}/${artifact}_${ENV_C5_ZIGBEE}.bin" ]] && \
+            cp "${dist}/${artifact}_${ENV_C5_ZIGBEE}.bin" "${UPGRADE_DIR}/${artifact}_zigbee.bin"
+        [[ -f "${dist}/${artifact}_${ENV_C5_MATTER}.bin" ]] && \
+            cp "${dist}/${artifact}_${ENV_C5_MATTER}.bin" "${UPGRADE_DIR}/${artifact}_matter.bin"
+    done
+
     sync_manifest_sha256
 }
 
@@ -1277,6 +1329,34 @@ github_sync_tag_releases() {
     ok "All matching tags are now represented as GitHub releases."
 }
 
+# ── Online (IONOS) deploy ───────────────────────────────────────────────────
+# Delegates to ui/fw.sh which reads IONOS credentials from its own .env and
+# rsyncs the entire local upgrade/ tree to the IONOS server.
+online_deploy() {
+    header "Online deploy → IONOS"
+
+    if [[ ! -f "$UI_FW_SH" ]]; then
+        warn "Online deploy skipped — ${UI_FW_SH} not found."
+        warn "Set UI_FW_SH=<path> in .env to configure."
+        return 0
+    fi
+    if [[ ! -x "$UI_FW_SH" ]]; then
+        warn "Online deploy skipped — ${UI_FW_SH} is not executable (chmod +x it)."
+        return 0
+    fi
+
+    if ! command -v sshpass &>/dev/null; then
+        warn "Online deploy skipped — sshpass not found."
+        warn "Install: sudo apt install sshpass"
+        return 0
+    fi
+
+    info "Syncing ${UPGRADE_DIR}/ → IONOS via ${UI_FW_SH} …"
+    "$UI_FW_SH" \
+    || { error "Online deploy failed."; exit 1; }
+    ok "Online deploy complete."
+}
+
 # ── Main release workflow ────────────────────────────────────────────────────
 # Usage: do_release [rebuild]
 #   rebuild  — build only, no version bump, no git tag/release
@@ -1390,7 +1470,10 @@ ${changelog_section}"
         github_create_release "$tag" "$version_str" "$release_notes"
     fi
 
-    # 10. Summary
+    # 10. Online deploy to IONOS (upgrade/ → remote server)
+    online_deploy
+
+    # 11. Summary
     if $is_rebuild; then
         header "Rebuild complete!"
     else
@@ -1423,17 +1506,20 @@ ${BOLD}Actions:${NC}
   sync-back                                 Pull OsPi changes back to local workspace
   release                                   Bump version, build all firmwares,
                                             copy to upgrade dir, git tag & push,
-                                            create GitHub release
+                                            create GitHub release, deploy to IONOS
   release rebuild                           Rebuild all firmwares without version
-                                            bump, no git tag/release — build only
+                                            bump, no git tag/release — build only,
+                                            then deploy to IONOS
     release sync-tags                         Create missing GitHub releases for
                                                                                         existing v* tags
   generate-mfg                              Generate Matter manufacturing data
                                             (test PAA → PAI → DAC chain + NVS binary)
   flash-mfg                                 Flash matter_kvs partition to device
                                             (standalone, without firmware)
-  full-flash [matter|zigbee|all]            Full flash: bootloader + partition table
-                                            + firmware via esptool (ESP32-C5 only)
+  full-flash [matter|zigbee|all]            Full flash for new devices: bootloader +
+                                            partition table + firmware using pre-built
+                                            binaries (no compilation — uses current
+                                            release from upgrade/ directory)
   reset                                     Reset/reboot device via USB (RTS/DTR)
   switch <matter|zigbee|zigbee-client|disabled>
                                             Switch firmware via REST API + reboot
@@ -1611,7 +1697,6 @@ case "$ACTION" in
         ;;
 
     full-flash)
-        check_pio
         case "$VARIANT" in
             matter)
                 full_flash_env "$ENV_C5_MATTER" "$FW_ADDR_MATTER"
