@@ -76,30 +76,22 @@ bool MqttSensor::filterMatches(const char* mtopic, const char* pattern) {
     const char *mp = mtopic;
     const char *pp = pattern;
     while (*pp && *mp) {
-        char ch1 = *mp++;
-        char ch2 = *pp++;
-        if (ch2 == '+') { //level ok up to "/"
-            while (*mp) {
-                if (ch1 == '/')
-                    break;
-                ch1 = *mp++;
+        if (*pp == '#') {
+            return true; // matches rest of topic at any level
+        } else if (*pp == '+') {
+            // skip one topic level (up to next '/' or end)
+            while (*mp && *mp != '/') {
+                mp++;
             }
-        } else if (ch2 == '#') { //multilevel
-            const char *p = strpbrk(pp, "#+");
-            if (!p) return true;
-            if (strncmp(pp, mp, p-pp) == 0) {
-                mp = mp + (p-pp);
-                pp = p;
-            }
+            pp++; // advance past '+'
+        } else {
+            if (*mp != *pp)
+                return false;
+            mp++;
+            pp++;
         }
-        if (ch1 != ch2)
-            return false;
-        else if (ch1 == 0 && ch2 == 0)
-            return true;
-        else if (ch1 == 0 || ch2 == 0)
-            return false;
     }
-    return true;
+    return *mp == 0 && *pp == 0;
 }
 
 /**
@@ -119,6 +111,9 @@ void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosqui
     // DEBUG_PRINTLN("sensor_mqtt_callback1");
 
 	if (!mtopic || !payload) return;
+	// Null-terminate payload so strstr() in findValue() works correctly.
+	// PubSubClient's buffer is always larger than length, so this is safe.
+	payload[length] = '\0';
 	time_t now = os.now_tz();
 	SensorIterator it = sensors_iterate_begin();
 	SensorBase *sensor = sensors_iterate_next(it);

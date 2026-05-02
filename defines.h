@@ -80,11 +80,7 @@ typedef unsigned long ulong;
 #define TMP_BUFFER_SIZE      320   // scratch buffer size
 #define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
-#if defined(ESP8266)
-// ESP8266 memory tuning: keep MQTT/TLS allocations conservative so MQTT + HTTPS can coexist.
-#define ESP8266_MQTT_BUFFER_SIZE      4096
-#define ESP8266_TLS_BUFFER_FALLBACK   1024
-#endif
+#define MQTT_BUFFER_SIZE      4096
 
 /** Firmware version, hardware version, and maximal values */
 #define OS_FW_VERSION  240  // Firmware version: 240 means 2.4.0

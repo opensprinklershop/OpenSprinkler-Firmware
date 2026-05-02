@@ -678,11 +678,15 @@ int OSMqtt::_connect(void) {
 		mqtt_client->setCallback(key_callback);
 		mqtt_client->setSocketTimeout(2);
 		mqtt_client->setKeepAlive(OS_MQTT_KEEPALIVE);
-		#if defined(ESP32)
-		mqtt_client->setBufferSize(8192);
-		#else
-		mqtt_client->setBufferSize(ESP8266_MQTT_BUFFER_SIZE);
-		#endif
+		// Try preferred size first, fall back to smaller sizes if heap is tight.
+		// ChirpStack payloads can easily exceed 1024 bytes – keep the minimum at 2048.
+		if (!mqtt_client->setBufferSize(MQTT_BUFFER_SIZE)) {
+			DEBUG_LOGF("MQTT: setBufferSize(%d) failed, trying %d\r\n", MQTT_BUFFER_SIZE, MQTT_BUFFER_SIZE/2);
+			if (!mqtt_client->setBufferSize(MQTT_BUFFER_SIZE/2)) {
+				DEBUG_LOGF("MQTT: setBufferSize(%d) failed, large packets (>%d bytes) may be dropped\r\n", MQTT_BUFFER_SIZE/2, (int)mqtt_client->getBufferSize());
+			}
+		}
+		DEBUG_LOGF("MQTT: rx buffer = %d bytes\r\n", (int)mqtt_client->getBufferSize());
 	}
 	mqtt_client->setServer(_host, _port);
 	boolean state;

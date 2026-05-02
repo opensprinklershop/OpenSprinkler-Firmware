@@ -3025,6 +3025,11 @@ void OpenSprinkler::options_setup() {
 
 	} else	{
 		iopts_load();
+		// Always sync version constants from compiled-in values so that a
+		// firmware update is immediately reflected in /jo even if iopts.dat
+		// was written by an older build (fwv match skips factory_reset above).
+		iopts[IOPT_FW_VERSION] = OS_FW_VERSION;
+		iopts[IOPT_FW_MINOR]   = OS_FW_MINOR;
 		nvdata_load();
 
 		last_reboot_cause = nvdata.reboot_cause;

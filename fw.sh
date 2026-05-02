@@ -710,18 +710,12 @@ full_flash_env() {
         *) error "Unknown env for full-flash: ${env}"; exit 1 ;;
     esac
 
-    # Firmware: always taken from the upgrade directory (current released version).
+    # All binaries are taken from the upgrade directory (current released version).
     local firmware="${UPGRADE_DIR}/firmware_${variant}.bin"
-
-    # Bootloader / partitions: prefer upgrade dir; fall back to last local build
-    # (they rarely change and are stable across source builds).
-    local build_dir="${SCRIPT_DIR}/.pio/build/${env}"
     local bootloader="${UPGRADE_DIR}/bootloader_${variant}.bin"
     local partitions="${UPGRADE_DIR}/partitions_${variant}.bin"
-    [[ ! -f "$bootloader" && -f "${build_dir}/bootloader.bin" ]] && bootloader="${build_dir}/bootloader.bin"
-    [[ ! -f "$partitions" && -f "${build_dir}/partitions.bin" ]] && partitions="${build_dir}/partitions.bin"
 
-    # Validate — never compile automatically.
+    # Validate — never compile automatically, never fall back to local build.
     local missing=false
     for f in "$bootloader" "$partitions" "$firmware"; do
         if [[ ! -f "$f" ]]; then
@@ -731,15 +725,15 @@ full_flash_env() {
     done
     if $missing; then
         echo ""
-        error "full-flash requires pre-built binaries. Prepare them with one of:"
+        error "full-flash requires release binaries in ${UPGRADE_DIR}/."
+        error "Populate them by running a release build:"
         error "  ./fw.sh release rebuild       # rebuild all variants"
-        error "  ./fw.sh build ${variant}      # build single variant"
-        error "  ./fw.sh release               # full release build"
+        error "  ./fw.sh release               # full release build (with version bump)"
         echo ""
-        error "Bootloader/partitions are stored in ${UPGRADE_DIR}/ after a release."
-        error "If missing, copy them manually once after a build:"
-        error "  cp .pio/build/${env}/bootloader.bin ${UPGRADE_DIR}/bootloader_${variant}.bin"
-        error "  cp .pio/build/${env}/partitions.bin ${UPGRADE_DIR}/partitions_${variant}.bin"
+        error "Or copy from the last local build manually:"
+        local dist="${SCRIPT_DIR}/.pio/dist"
+        error "  cp ${dist}/bootloader_${env}.bin ${UPGRADE_DIR}/bootloader_${variant}.bin"
+        error "  cp ${dist}/partitions_${env}.bin ${UPGRADE_DIR}/partitions_${variant}.bin"
         exit 1
     fi
 
@@ -786,20 +780,23 @@ full_flash_env() {
         write_flash "${flash_args[@]}" \
     || { error "Full flash failed"; exit 1; }
 
-    # Erase RainMaker factory credentials and NVS to ensure clean state.
+    # Erase RainMaker factory credentials and NVS only when explicitly requested.
+    # Use FACTORY_RESET=1 to wipe WiFi credentials + RainMaker certs (new device provisioning).
     # fctry partition (0x7EA000, 0x6000): RainMaker node_id, certs, claiming data
     # nvs   partition (0x9000,   0x5000): user mapping, WiFi creds, runtime state
-    info "Erasing RainMaker fctry partition (0x7EA000, 24K) …"
-    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
-        --before default_reset --after no_reset \
-        erase_region 0x7EA000 0x6000 \
-    || warn "fctry erase failed (non-fatal)"
+    if [[ "${FACTORY_RESET:-0}" == "1" ]]; then
+        info "FACTORY_RESET=1: Erasing RainMaker fctry partition (0x7EA000, 24K) …"
+        "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
+            --before default_reset --after no_reset \
+            erase_region 0x7EA000 0x6000 \
+        || warn "fctry erase failed (non-fatal)"
 
-    info "Erasing NVS partition (0x9000, 20K) …"
-    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
-        --before default_reset --after hard_reset \
-        erase_region 0x9000 0x5000 \
-    || warn "NVS erase failed (non-fatal)"
+        info "FACTORY_RESET=1: Erasing NVS partition (0x9000, 20K) …"
+        "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
+            --before default_reset --after hard_reset \
+            erase_region 0x9000 0x5000 \
+        || warn "NVS erase failed (non-fatal)"
+    fi
 
     ok "Full flash successful: ${env}"
 }
@@ -953,20 +950,28 @@ copy_one_to_upgrade() {
 }
 
 # Recompute SHA-256 of whichever firmware binaries are present in upgrade/ and
-# patch only the *_sha256 fields in manifest.json — all other fields are unchanged.
-# Safe to call after every deploy so manifest always matches the served files.
+# patch the *_sha256 fields AND fw_version/fw_minor in manifest.json.
+# fw_version and fw_minor are read from defines.h so deploy always keeps
+# the manifest in sync with what was actually compiled and served.
 sync_manifest_sha256() {
     if [[ ! -f "$MANIFEST" ]]; then
         return 0  # nothing to update
     fi
+    # Re-read version from defines.h in case read_version() was not yet called
+    local fwv fwm
+    fwv=$(grep -oP '^\s*#define\s+OS_FW_VERSION\s+\K[0-9]+' "$DEFINES_H")
+    fwm=$(grep -oP '^\s*#define\s+OS_FW_MINOR\s+\K[0-9]+'   "$DEFINES_H")
     python3 - "$MANIFEST" \
         "${UPGRADE_DIR}/firmware_zigbee.bin" \
         "${UPGRADE_DIR}/firmware_matter.bin" \
-        "${UPGRADE_DIR}/firmware_esp8266.bin" <<'PYEOF'
+        "${UPGRADE_DIR}/firmware_esp8266.bin" \
+        "$fwv" "$fwm" <<'PYEOF'
 import json, hashlib, sys, os
 
 manifest_path = sys.argv[1]
 bins = {"zigbee": sys.argv[2], "matter": sys.argv[3], "esp8266": sys.argv[4]}
+fw_version = int(sys.argv[5])
+fw_minor   = int(sys.argv[6])
 
 def sha256file(path):
     h = hashlib.sha256()
@@ -984,10 +989,16 @@ for variant, path in bins.items():
         if d.get(key) != new_hash:
             d[key] = new_hash
             changed.append(f"{key}={new_hash[:16]}…")
+if d.get("fw_version") != fw_version:
+    d["fw_version"] = fw_version
+    changed.append(f"fw_version={fw_version}")
+if d.get("fw_minor") != fw_minor:
+    d["fw_minor"] = fw_minor
+    changed.append(f"fw_minor={fw_minor}")
 if changed:
     with open(manifest_path, "w") as f:
         json.dump(d, f, indent=4, ensure_ascii=False)
-    print("  manifest.json SHA-256 updated:", ", ".join(changed))
+    print("  manifest.json updated:", ", ".join(changed))
 PYEOF
     # Reload Squid config (cache bypass for /upgrade/ is enforced server-side via ACL + .htaccess no-cache)
     if command -v squid &>/dev/null; then
@@ -1550,6 +1561,8 @@ ${BOLD}Environment variables:${NC}
   UPLOAD_PORT=<port>      Serial port      (auto-detected if not set)
   UPLOAD_SPEED=<baud>     Upload baud rate  (default: 460800)
   ERASE_FLASH=1           Erase entire flash before full-flash
+  FACTORY_RESET=1         Also erase NVS + fctry after full-flash (wipes WiFi credentials
+                          and RainMaker certs — only for new-device provisioning)
 
 ${BOLD}OsPi environment variables:${NC}
   OSPI_PI_HOST=<IP>       OsPi host        (default: 192.168.0.167)
@@ -1575,6 +1588,7 @@ ${BOLD}Examples:${NC}
   ./fw.sh full-flash zigbee
   ./fw.sh full-flash matter
   ERASE_FLASH=1 ./fw.sh full-flash zigbee
+  FACTORY_RESET=1 ./fw.sh full-flash zigbee   # new device: also wipe WiFi credentials
   ./fw.sh reset
   UPLOAD_PORT=/dev/ttyACM0 ./fw.sh reset
   OS_IP=192.168.0.151 OS_PASSWORD=opendoor ./fw.sh switch zigbee
@@ -1665,6 +1679,16 @@ case "$ACTION" in
                     upload_env "$ENV_C5_MATTER"
                     upload_env "$ENV_C5_ZIGBEE"
                     upload_env "$ENV_ESP8266"
+                    # Erase otadata so bootloader always selects OTA0 (zigbee) on next boot.
+                    # Without this, if otadata previously pointed to OTA1 (matter), the device
+                    # would continue booting matter even after zigbee was written to OTA0.
+                    info "Erasing otadata partition to guarantee OTA0 (zigbee) boot …"
+                    _find_usb_port "esp32c5"
+                    _find_esptool
+                    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud 460800 \
+                        erase-region 0xe000 0x2000 \
+                        && ok "otadata erased — device will boot zigbee (OTA0) on next reset" \
+                        || warn "otadata erase failed — device may boot matter instead of zigbee"
                     header "Deploy complete"
                     ok "Matter:   flashed to ota_1 (0x3A0000)"
                     ok "ZigBee:   flashed to ota_0 (0x10000)"
