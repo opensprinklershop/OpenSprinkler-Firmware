@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (199)] — 2026-05-03
+## [2.4.0 (198)] — 2026-05-03
 
 ### Added
 - **UI: Sensor name heading in Analog Sensor Chart**: when opening the chart from a specific sensor (e.g. via a dashboard click), the sensor's name is now shown as a heading above the charts
