@@ -1192,9 +1192,24 @@ git_tag_and_push() {
 
     cd "$SCRIPT_DIR"
 
-    git add "$DEFINES_H" "$MANIFEST" "$VERSIONS_JSON" "$CHANGELOG" \
-        "${UPGRADE_DIR}/firmware_zigbee.bin" "${UPGRADE_DIR}/firmware_matter.bin" \
-        "${UPGRADE_DIR}/firmware_esp8266.bin" "${UPGRADE_DIR}/archive/"
+    # Only add files that are tracked within this repository.
+    # MANIFEST, VERSIONS_JSON and binary files in UPGRADE_DIR may live outside
+    # the repo root (e.g. /srv/www/htdocs/upgrade/) — git add on those paths
+    # would produce a fatal error.  We only commit defines.h and CHANGELOG.md
+    # which are always inside the repo.
+    local files_to_add=("$DEFINES_H" "$CHANGELOG")
+    # Add upgrade files only if they are inside the repo tree
+    for f in "$MANIFEST" "$VERSIONS_JSON" \
+              "${UPGRADE_DIR}/firmware_zigbee.bin" \
+              "${UPGRADE_DIR}/firmware_matter.bin" \
+              "${UPGRADE_DIR}/firmware_esp8266.bin" \
+              "${UPGRADE_DIR}/archive/"; do
+        if [[ "$f" == "${SCRIPT_DIR}/"* ]]; then
+            files_to_add+=("$f")
+        fi
+    done
+
+    git add "${files_to_add[@]}"
 
     git commit -m "Release ${version_str} (build ${OS_FW_MINOR})"
     ok "Committed."
