@@ -6,6 +6,20 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (199)] — 2026-05-03
+
+### Added
+- **UI: Sensor name heading in Analog Sensor Chart**: when opening the chart from a specific sensor (e.g. via a dashboard click), the sensor's name is now shown as a heading above the charts
+
+### Fixed
+- **PCF8591 A/D conversion (OSPi)**: the read function now issues a correct conversion-trigger write before reading, fixing stale/incorrect ADC values on the PCF8591 chip
+- **ESP8266 online update HTTP fallback**: the firmware now falls back from HTTPS to plain HTTP when the TLS handshake fails during OTA download, improving update reliability on ESP8266 devices with limited TLS support
+- **Firmware version sync on boot**: `OS_FW_VERSION` and `OS_FW_MINOR` constants are now written to NV options on every startup, preventing stale version numbers being reported after OTA updates
+- **MQTT buffer handling**: improved buffer size management in the MQTT client reduces the risk of truncated messages on constrained devices
+- **`fw.sh deploy all` OTA boot order**: after flashing all variants, `otadata` is now erased so the bootloader always selects OTA0 (zigbee) — previously the device could boot into the Matter firmware after a full deploy
+
+---
+
 ## [2.4.0 (197)] — 2026-04-24
 
 ### Fixed
