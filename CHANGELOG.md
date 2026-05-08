@@ -6,6 +6,15 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (199)] — 2026-05-07
+
+### Fixed
+- **W5500 MAC address display**: the MAC shown on the OLED display (button B2) and reported via API now uses `esp_read_mac(ESP_MAC_ETH)` — identical to the MAC assigned by the W5500 Ethernet driver — instead of the previously wrong eFuse base MAC with an inverted last byte (ESP32)
+- **NTP sync no longer freezes the display**: removed the blocking `delay(1000) × 3` polling loop in `getNtpTime()` (ESP32); ESP32 SNTP is asynchronous and syncs in the background — the function now checks `time()` once and returns 0 if not yet synced, letting the scheduler retry without stalling the main loop
+- **UI: Irrigation Database 404**: the in-app irrigation database lookup was calling `/irrigationdb/api.php` as a device-relative URL (not implemented in firmware); corrected to `https://opensprinklershop.de/irrigationdb/api.php`
+
+---
+
 ## [2.4.0 (198)] — 2026-05-03
 
 ### Added

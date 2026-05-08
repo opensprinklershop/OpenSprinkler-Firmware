@@ -6540,15 +6540,11 @@ ulong getNtpTime() {
 #endif
 		configured = true;
 	}
-	unsigned char tries = 0;
-	ulong gt = 0;
-	while(tries<NTP_NTRIES) {
-		gt = time(NULL);
-		if(gt>1577836800UL)	break;
-		else gt = 0;
-		delay(1000);
-		tries++;
-	}
+	// SNTP is asynchronous on ESP32 — the sync happens in the background via FreeRTOS tasks.
+	// Do NOT use delay() here: it blocks the main loop and freezes the display.
+	// Simply check if the system clock has been set; if not, return 0 so the caller retries.
+	ulong gt = time(NULL);
+	if (gt <= 1577836800UL) gt = 0;
 	return gt;
 }
 #else	// AVR

@@ -553,17 +553,10 @@ bool OpenSprinkler::load_hardware_mac(unsigned char* buffer, bool wired) {
 	if(wired) buffer[5] = ~buffer[5];
 	return true;
 #elif defined(ESP32)
-	// WiFi.macAddress() can be 00:00:00:00:00:00 before WiFi is initialized (seen on ESP32-C5).
-	// Use the eFuse MAC which is always available.
-	uint64_t efuse_mac = ESP.getEfuseMac();
-	buffer[0] = (efuse_mac >> 40) & 0xFF;
-	buffer[1] = (efuse_mac >> 32) & 0xFF;
-	buffer[2] = (efuse_mac >> 24) & 0xFF;
-	buffer[3] = (efuse_mac >> 16) & 0xFF;
-	buffer[4] = (efuse_mac >> 8) & 0xFF;
-	buffer[5] = (efuse_mac >> 0) & 0xFF;
-	// if requesting wired Ethernet MAC, flip the last byte to create a modified MAC
-	if(wired) buffer[5] = ~buffer[5];
+	// Use esp_read_mac() to get the same MAC that the network driver uses.
+	// ESP_MAC_ETH gives the Ethernet MAC (used by W5500 driver via arduino-esp32).
+	// ESP_MAC_WIFI_STA gives the WiFi STA MAC.
+	esp_read_mac(buffer, wired ? ESP_MAC_ETH : ESP_MAC_WIFI_STA);
 	return true;
 #else
 	// initialize the buffer by assigning software mac

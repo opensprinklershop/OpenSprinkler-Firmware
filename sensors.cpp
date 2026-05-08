@@ -1645,9 +1645,15 @@ void read_all_sensors(boolean online) {
           // and uses (time >= last_read + poll_interval) to decide the next
           // active read. Overwriting last_read here would reset that timer
           // every second, making should_read inside ZigbeeSensor::read()
-          // permanently false. For other sensors (BLE etc.), update last_read
-          // to avoid tight spin loops.
-          if (current_sensor->type != SENSOR_ZIGBEE) {
+          // permanently false.
+          // Sensors that use sample-averaging (PCF8591, ADS1115, ASB etc.) store
+          // the read-start timestamp in last_read and compare it to
+          // (last_read + read_interval) each call to decide when to finish
+          // averaging. Overwriting last_read while repeat_read > 0 resets that
+          // window every second, so the averaging interval can never expire and
+          // no averaged value is ever published.
+          // Fix: only advance last_read when the sensor is not mid-averaging.
+          if (current_sensor->type != SENSOR_ZIGBEE && current_sensor->repeat_read == 0) {
             if (current_sensor->last_read < time) {
               current_sensor->last_read = time;
             }
@@ -1883,57 +1889,10 @@ int read_sensor(SensorBase *sensor, ulong time) {
  *
  */
 void sensor_update_groups() {
-  ulong time = os.now_tz();
-
-  for (auto &kv : sensorsMap) {
-    SensorBase *sensor = kv.second;
-    if (time >= sensor->last_read + sensor->read_interval) {
-      switch (sensor->type) {
-        case SENSOR_GROUP_MIN:
-        case SENSOR_GROUP_MAX:
-        case SENSOR_GROUP_AVG:
-        case SENSOR_GROUP_SUM: {
-          uint nr = sensor->nr;
-          double value = 0;
-          int n = 0;
-          for (auto &kv2 : sensorsMap) {
-            SensorBase *group = kv2.second;
-            if (group->nr != nr && group->group == nr &&
-                group->flags.enable) {  // && group->flags.data_ok) {
-              switch (sensor->type) {
-                case SENSOR_GROUP_MIN:
-                  if (n++ == 0)
-                    value = group->last_data;
-                  else if (group->last_data < value)
-                    value = group->last_data;
-                  break;
-                case SENSOR_GROUP_MAX:
-                  if (n++ == 0)
-                    value = group->last_data;
-                  else if (group->last_data > value)
-                    value = group->last_data;
-                  break;
-                case SENSOR_GROUP_AVG:
-                case SENSOR_GROUP_SUM:
-                  n++;
-                  value += group->last_data;
-                  break;
-              }
-            }
-          }
-          if (sensor->type == SENSOR_GROUP_AVG && n > 0) {
-            value = value / (double)n;
-          }
-          sensor->last_data = value;
-          sensor->last_native_data = 0;
-          sensor->last_read = time;
-          sensor->flags.data_ok = n > 0;
-          sensorlog_add(LOG_STD, sensor, time);
-          break;
-        }
-      }
-    }
-  }
+  // Group sensor computation has been moved into GroupSensor::read().
+  // read_all_sensors() calls GroupSensor::read() at the configured interval
+  // (via should_read) and handles sensorlog_add + push_message on SUCCESS.
+  // Keeping this function as a no-op for backwards compatibility.
 }
 
 /**

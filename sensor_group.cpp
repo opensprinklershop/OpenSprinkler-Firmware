@@ -23,13 +23,39 @@
 
 #include "sensor_group.h"
 
-// Group sensor read is handled by sensor_update_groups() in sensors.cpp
-// This method is called during the normal sensor reading cycle
 int GroupSensor::read(unsigned long time) {
-  // Group sensors are updated via sensor_update_groups()
-  // which is called after all regular sensors have been read
   (void)time;
-  return HTTP_RQT_SUCCESS;
+  double value = 0;
+  int n = 0;
+
+  for (auto it = sensors_iterate_begin(); ; ) {
+    SensorBase *member = sensors_iterate_next(it);
+    if (!member) break;
+    if (member->nr == nr || member->group != nr || !member->flags.enable)
+      continue;
+    switch (type) {
+      case SENSOR_GROUP_MIN:
+        if (n++ == 0) value = member->last_data;
+        else if (member->last_data < value) value = member->last_data;
+        break;
+      case SENSOR_GROUP_MAX:
+        if (n++ == 0) value = member->last_data;
+        else if (member->last_data > value) value = member->last_data;
+        break;
+      case SENSOR_GROUP_AVG:
+      case SENSOR_GROUP_SUM:
+        n++;
+        value += member->last_data;
+        break;
+    }
+  }
+  if (type == SENSOR_GROUP_AVG && n > 0)
+    value = value / (double)n;
+
+  last_data = value;
+  last_native_data = 0;
+  flags.data_ok = n > 0;
+  return (n > 0) ? HTTP_RQT_SUCCESS : HTTP_RQT_NOT_RECEIVED;
 }
 
 // Group sensors inherit unit from their first non-group member

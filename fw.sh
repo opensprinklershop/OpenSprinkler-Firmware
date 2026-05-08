@@ -9,6 +9,7 @@
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
 #   release sync-tags                    – Create missing GitHub releases for existing tags
+#   online-deploy                        – Upload current upgrade/ tree to IONOS only
 #   generate-mfg                         – Generate Matter manufacturing data (DAC, NVS)
 #   flash-mfg                            – Flash matter_kvs partition only
 #   full-flash [matter|zigbee|all]       – Full flash new device using pre-built binaries
@@ -167,6 +168,97 @@ copy_to_dist() {
     done
 }
 
+# Keep the locally rebuilt ESP32-C5 framework-libs package in the state required
+# by the Wi-Fi/Ethernet-only Matter build. PlatformIO/ComponentManager may
+# rewrite the installed package metadata during a build, so validate the live
+# package before every C5 build.
+ensure_c5_framework_libs() {
+    local env_name="${1:-}"
+    case "$env_name" in
+        "$ENV_C5_MATTER"|"$ENV_C5_ZIGBEE") ;;
+        *) return 0 ;;
+    esac
+
+    local pkg_dir="${SCRIPT_DIR}/.pio/packages/framework-arduinoespressif32-libs/esp32c5"
+    local src_dir="/data/Workspace/framework-arduinoespressif32-libs/esp32c5"
+    local build_py="${pkg_dir}/pioarduino-build.py"
+
+    if [[ ! -d "${src_dir}/lib" ]]; then
+        error "Local ESP32-C5 framework-libs source missing: ${src_dir}/lib"
+        exit 1
+    fi
+
+    # The OpenThread-free Matter rebuild kept the full IDF libs but can leave
+    # the closed ZBOSS archives out of the live lib/ directory. Restore them
+    # from the newest package backup so `deploy all` can still build ZigBee.
+    local -a zigbee_libs=(
+        libesp_zb_api.ed.a
+        libesp_zb_api.gpd.a
+        libesp_zb_api.zczr.a
+        libzboss_port.native.a
+        libzboss_port.remote.a
+        libzboss_stack.ed.a
+        libzboss_stack.gpd.a
+        libzboss_stack.zczr.a
+    )
+    local zigbee_backup=""
+    if [[ ! -f "${src_dir}/lib/libesp_zb_api.zczr.a" || ! -f "${src_dir}/lib/libzboss_stack.zczr.a" ]]; then
+        zigbee_backup=$(find "$src_dir" -path '*/libesp_zb_api.zczr.a' -printf '%h\n' | sort -r | head -1)
+        if [[ -z "$zigbee_backup" ]]; then
+            error "Missing ZBOSS ZigBee archives in ${src_dir}/lib and no backup was found."
+            exit 1
+        fi
+        for lib in "${zigbee_libs[@]}"; do
+            [[ -f "${zigbee_backup}/${lib}" ]] && cp -f "${zigbee_backup}/${lib}" "${src_dir}/lib/"
+        done
+    fi
+
+    # If PlatformIO has not installed the local file package yet, there is
+    # nothing to patch. The next build will install it from the source package.
+    [[ -d "$pkg_dir" ]] || return 0
+
+    if [[ ! -f "${pkg_dir}/lib/libespressif__esp_daylight.a" ]]; then
+        if [[ -f "${src_dir}/lib/libespressif__esp_daylight.a" ]]; then
+            cp -f "${src_dir}/lib/libespressif__esp_daylight.a" "${pkg_dir}/lib/"
+        else
+            error "Missing ESP daylight library: ${pkg_dir}/lib/libespressif__esp_daylight.a"
+            error "Rebuild/install the local framework-libs package first."
+            exit 1
+        fi
+    fi
+
+    for lib in "${zigbee_libs[@]}"; do
+        if [[ ! -f "${pkg_dir}/lib/${lib}" && -f "${src_dir}/lib/${lib}" ]]; then
+            cp -f "${src_dir}/lib/${lib}" "${pkg_dir}/lib/"
+        fi
+    done
+
+    if [[ -f "${src_dir}/include/esp_matter/esp_matter_endpoint.h" ]]; then
+        mkdir -p "${pkg_dir}/include/esp_matter"
+        cp -f "${src_dir}/include/esp_matter/esp_matter_endpoint.h" \
+              "${pkg_dir}/include/esp_matter/esp_matter_endpoint.h"
+    fi
+
+    if [[ -f "${src_dir}/bin/bootloader_qio_80m.elf" ]]; then
+        mkdir -p "${pkg_dir}/bin"
+        cp -f "${src_dir}/bin/bootloader_qio_80m.elf" \
+              "${pkg_dir}/bin/bootloader_qio_80m.elf"
+    fi
+
+    if [[ -f "$build_py" ]]; then
+        perl -0pi -e '
+            s/"-lopenthread",\s*//g;
+            s/"-lespressif__esp_schedule", "-lespressif__network_provisioning"/"-lespressif__esp_schedule", "-lespressif__esp_daylight", "-lespressif__network_provisioning"/g;
+            s/"-lespressif__esp_schedule", "-lespressif__rmaker_common"/"-lespressif__esp_schedule", "-lespressif__esp_daylight", "-lespressif__rmaker_common"/g;
+        ' "$build_py"
+
+        if ! grep -q '"-lespressif__esp_daylight"' "$build_py"; then
+            error "Framework link list still misses -lespressif__esp_daylight: ${build_py}"
+            exit 1
+        fi
+    fi
+}
+
 # ── OsPi (Raspberry Pi) remote build helpers ────────────────────────────────
 
 # Verify sshpass is available when a password is configured.
@@ -277,6 +369,7 @@ deploy_ospi() {
 build_env() {
     local env="$1"
     header "Building firmware: ${env}"
+    ensure_c5_framework_libs "$env"
     if "$PIO_BIN" run --environment "$env"; then
         ok "Build successful → .pio/build/${env}/firmware.bin"
         copy_to_dist "$env"
@@ -1360,6 +1453,8 @@ github_sync_tag_releases() {
 # rsyncs the entire local upgrade/ tree to the IONOS server.
 online_deploy() {
     header "Online deploy → IONOS"
+    local ui_env="$(dirname "$UI_FW_SH")/.env"
+    local -a deploy_cmd=("$UI_FW_SH")
 
     if [[ ! -f "$UI_FW_SH" ]]; then
         warn "Online deploy skipped — ${UI_FW_SH} not found."
@@ -1377,8 +1472,18 @@ online_deploy() {
         return 0
     fi
 
+    if [[ -f "$ui_env" && ! -r "$ui_env" ]]; then
+        if ! command -v sudo &>/dev/null; then
+            error "Online deploy credentials are not readable: ${ui_env}"
+            error "Run as root, fix file permissions, or install sudo."
+            exit 1
+        fi
+        warn "${ui_env} is not readable by $(id -un); running UI deploy via sudo."
+        deploy_cmd=(sudo --preserve-env=LOCAL_UPGRADE_SRC "$UI_FW_SH")
+    fi
+
     info "Syncing ${UPGRADE_DIR}/ → IONOS via ${UI_FW_SH} …"
-    "$UI_FW_SH" \
+    LOCAL_UPGRADE_SRC="${UPGRADE_DIR%/}/" "${deploy_cmd[@]}" \
     || { error "Online deploy failed."; exit 1; }
     ok "Online deploy complete."
 }
@@ -1530,6 +1635,7 @@ ${BOLD}Actions:${NC}
   upload  [matter|zigbee|esp8266|all]       Upload firmware via USB (default: all)
   deploy  [matter|zigbee|esp8266|ospi|all]  Build + Upload/Deploy (default: all)
   sync-back                                 Pull OsPi changes back to local workspace
+    online-deploy                            Upload current upgrade/ tree to IONOS only
   release                                   Bump version, build all firmwares,
                                             copy to upgrade dir, git tag & push,
                                             create GitHub release, deploy to IONOS
@@ -1597,6 +1703,7 @@ ${BOLD}Examples:${NC}
   ./fw.sh switch zigbee
   ./fw.sh release
   ./fw.sh release rebuild
+    ./fw.sh online-deploy
   ./fw.sh release sync-tags
   ./fw.sh generate-mfg
   ./fw.sh flash-mfg
@@ -1725,6 +1832,10 @@ case "$ACTION" in
             all|"")   do_release full ;;
             *) error "Unknown release mode: $VARIANT (rebuild|sync-tags)"; exit 1 ;;
         esac
+        ;;
+
+    online-deploy|upload-online)
+        online_deploy
         ;;
 
     generate-mfg)

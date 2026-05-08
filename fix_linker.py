@@ -243,13 +243,56 @@ def fix_zigbee_lib_names(env):
             print("Normalized Zigbee linker flag for zboss_port.remote")
 
 
+def ensure_schedule_daylight_lib(env):
+    """Ensure esp_daylight is linked after esp_schedule.
+
+    The rebuilt ESP32-C5 framework contains esp_schedule built against the
+    esp_daylight component. PlatformIO's ComponentManager can rewrite the
+    package build file during a build, so fix the effective SCons LIBS list
+    right before linking as well.
+    """
+
+    libs = list(env.get("LIBS", []))
+    if not libs:
+        return
+
+    def lib_name(value):
+        value_str = str(value)
+        if value_str.startswith("-l"):
+            value_str = value_str[2:]
+        base = os.path.basename(value_str)
+        if base.startswith("lib") and base.endswith(".a"):
+            base = base[3:-2]
+        return base
+
+    fixed_libs = []
+    changed = False
+    for index, lib in enumerate(libs):
+        fixed_libs.append(lib)
+        if lib_name(lib) != "espressif__esp_schedule":
+            continue
+
+        next_lib = libs[index + 1] if index + 1 < len(libs) else None
+        if next_lib is not None and lib_name(next_lib) == "espressif__esp_daylight":
+            continue
+
+        fixed_libs.append("espressif__esp_daylight")
+        changed = True
+
+    if changed:
+        env.Replace(LIBS=fixed_libs)
+        print("Added esp_daylight after esp_schedule for framework schedule support")
+
+
 def _register_pre_link_fixes(outer_env):
     """Ensure late-added libs/flags get normalized right before link."""
 
     def _pre_link_action(target, source, env=None, **kwargs):
         # SCons calls actions as execfunction(target=..., source=..., env=...)
         # so accept the keyword name exactly.
-        fix_zigbee_lib_names(env or outer_env)
+        active_env = env or outer_env
+        ensure_schedule_daylight_lib(active_env)
+        fix_zigbee_lib_names(active_env)
 
     # Link target for PlatformIO firmware image.
     outer_env.AddPreAction("$BUILD_DIR/${PROGNAME}.elf", _pre_link_action)
@@ -258,5 +301,6 @@ def _register_pre_link_fixes(outer_env):
 ensure_riscv_toolchain_on_path(env)
 fix_linker_command(env)
 configure_zigbee_libs(env)
+ensure_schedule_daylight_lib(env)
 fix_zigbee_lib_names(env)
 _register_pre_link_fixes(env)
