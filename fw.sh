@@ -183,9 +183,50 @@ ensure_c5_framework_libs() {
     local src_dir="/data/Workspace/framework-arduinoespressif32-libs/esp32c5"
     local build_py="${pkg_dir}/pioarduino-build.py"
 
+    _matter_archive_has_openthread() {
+        local archive="$1"
+        [[ -f "$archive" ]] || return 1
+        strings "$archive" | grep -Eq 'esp_openthread_init|otInstanceInitSingle|OpenthreadLauncher'
+    }
+
+    _restore_openthread_free_matter_archive() {
+        local target_archive="$1"
+        local clean_archive=""
+        local candidate=""
+
+        if [[ -f "${src_dir}/lib.bootloop.1778288323/libespressif__esp_matter.a" ]] && \
+           ! _matter_archive_has_openthread "${src_dir}/lib.bootloop.1778288323/libespressif__esp_matter.a"; then
+            clean_archive="${src_dir}/lib.bootloop.1778288323/libespressif__esp_matter.a"
+        else
+            while IFS= read -r candidate; do
+                if ! _matter_archive_has_openthread "$candidate"; then
+                    clean_archive="$candidate"
+                    break
+                fi
+            done < <(find "$src_dir" -path '*/libespressif__esp_matter.a' -type f | sort -r)
+        fi
+
+        if [[ -z "$clean_archive" ]]; then
+            error "No OpenThread-free ESP Matter archive found under ${src_dir}."
+            error "Rebuild the local ESP32-C5 framework-libs package without Matter-over-Thread first."
+            exit 1
+        fi
+
+        mkdir -p "$(dirname "$target_archive")"
+        cp -f "$clean_archive" "$target_archive"
+        ok "Restored OpenThread-free Matter archive → ${target_archive}"
+    }
+
     if [[ ! -d "${src_dir}/lib" ]]; then
         error "Local ESP32-C5 framework-libs source missing: ${src_dir}/lib"
         exit 1
+    fi
+
+    if [[ "$env_name" == "$ENV_C5_MATTER" ]]; then
+        local src_matter_archive="${src_dir}/lib/libespressif__esp_matter.a"
+        if _matter_archive_has_openthread "$src_matter_archive"; then
+            _restore_openthread_free_matter_archive "$src_matter_archive"
+        fi
     fi
 
     # The OpenThread-free Matter rebuild kept the full IDF libs but can leave
@@ -232,6 +273,13 @@ ensure_c5_framework_libs() {
             cp -f "${src_dir}/lib/${lib}" "${pkg_dir}/lib/"
         fi
     done
+
+    if [[ "$env_name" == "$ENV_C5_MATTER" ]]; then
+        local pkg_matter_archive="${pkg_dir}/lib/libespressif__esp_matter.a"
+        if _matter_archive_has_openthread "$pkg_matter_archive"; then
+            _restore_openthread_free_matter_archive "$pkg_matter_archive"
+        fi
+    fi
 
     if [[ -f "${src_dir}/include/esp_matter/esp_matter_endpoint.h" ]]; then
         mkdir -p "${pkg_dir}/include/esp_matter"

@@ -7,6 +7,8 @@
 """
 
 import os
+import re
+import shutil
 
 Import("env")
 
@@ -284,6 +286,167 @@ def ensure_schedule_daylight_lib(env):
         print("Added esp_daylight after esp_schedule for framework schedule support")
 
 
+def restore_c5_matter_archive(env):
+    """Restore the OpenThread-free ESP32-C5 Matter archive after package rewrites."""
+
+    build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
+    is_matter = any("ENABLE_MATTER" in flag for flag in build_flags)
+    is_esp32c5 = any("ESP32C5" in flag for flag in build_flags)
+    if not (is_matter and is_esp32c5):
+        return
+
+    try:
+        framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    except Exception:
+        framework_dir = None
+    if not framework_dir:
+        return
+
+    target_archive = os.path.join(framework_dir, "esp32c5", "lib", "libespressif__esp_matter.a")
+    clean_candidates = [
+        os.path.join(framework_dir, "esp32c5", "lib.bootloop.1778288323", "libespressif__esp_matter.a"),
+        "/data/Workspace/framework-arduinoespressif32-libs/esp32c5/lib.bootloop.1778288323/libespressif__esp_matter.a",
+    ]
+
+    def has_openthread(archive):
+        if not archive or not os.path.exists(archive):
+            return False
+        with open(archive, "rb") as archive_file:
+            content = archive_file.read()
+        return any(symbol in content for symbol in (
+            b"esp_openthread_init",
+            b"otInstanceInitSingle",
+            b"OpenthreadLauncher",
+        ))
+
+    if not has_openthread(target_archive):
+        return
+
+    clean_archive = next((candidate for candidate in clean_candidates
+                          if os.path.exists(candidate) and not has_openthread(candidate)), None)
+    if not clean_archive:
+        print("Warning: ESP32-C5 Matter archive still contains OpenThread symbols; no clean backup found")
+        return
+
+    shutil.copyfile(clean_archive, target_archive)
+    print(f"Restored OpenThread-free ESP32-C5 Matter archive from: {clean_archive}")
+
+
+def patch_c5_matter_sdkconfig_headers(env):
+    """Patch ESP32-C5 Matter sdkconfig.h macros before Arduino Matter compiles."""
+
+    build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
+    is_matter = any("ENABLE_MATTER" in flag for flag in build_flags)
+    is_esp32c5 = any("ESP32C5" in flag for flag in build_flags)
+    if not (is_matter and is_esp32c5):
+        return
+
+    try:
+        framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    except Exception:
+        framework_dir = None
+    if not framework_dir:
+        return
+
+    disabled_keys = [
+        "CONFIG_OPENTHREAD_ENABLED",
+        "CONFIG_ENABLE_MATTER_OVER_THREAD",
+        "CONFIG_ESP_MATTER_ENABLE_OPENTHREAD",
+    ]
+    forced_values = {
+        "CONFIG_CHIP_TASK_STACK_SIZE": "12288",
+    }
+    patched = 0
+    for variant in ("qio_qspi", "dio_qspi", "qio_opi", "dio_opi"):
+        sdkconfig_header = os.path.join(framework_dir, "esp32c5", variant, "include", "sdkconfig.h")
+        if not os.path.exists(sdkconfig_header):
+            continue
+        with open(sdkconfig_header, "r") as config_file:
+            content = config_file.read()
+        new_content = content
+        for key in disabled_keys:
+            new_content = re.sub(
+                rf"^#define\s+{key}\s+1$",
+                f"/* {key} is not set */",
+                new_content,
+                flags=re.MULTILINE,
+            )
+        for key, value in forced_values.items():
+            replacement = f"#define {key} {value}"
+            if re.search(rf"^#define\s+{key}\s+\S+$", new_content, flags=re.MULTILINE):
+                new_content = re.sub(
+                    rf"^#define\s+{key}\s+\S+$",
+                    replacement,
+                    new_content,
+                    flags=re.MULTILINE,
+                )
+            elif re.search(rf"^/\*\s*{key}\s+is not set\s*\*/$", new_content, flags=re.MULTILINE):
+                new_content = re.sub(
+                    rf"^/\*\s*{key}\s+is not set\s*\*/$",
+                    replacement,
+                    new_content,
+                    flags=re.MULTILINE,
+                )
+            else:
+                new_content += f"\n{replacement}\n"
+        if new_content == content:
+            continue
+        with open(sdkconfig_header, "w") as config_file:
+            config_file.write(new_content)
+        patched += 1
+
+    if patched:
+        print(f"Patched ESP32-C5 Matter sdkconfig.h macros in {patched} variant(s)")
+
+
+def disable_c5_matter_over_thread_config(env):
+    """Compatibility wrapper for older build hooks."""
+
+    patch_c5_matter_sdkconfig_headers(env)
+
+
+def ensure_c5_matter_radio_libs(env):
+    """Ensure ESP32-C5 Matter builds link late radio/Matter archives.
+
+    The local C5 framework can still pull libieee802154.a for Matter even when
+    OpenThread is disabled. That archive needs esp_hal_ieee802154 for the
+    ieee802154_periph definition. With RISC-V LTO, endpoint references may also
+    appear after the first esp_matter archive scan, so repeat esp_matter late.
+    """
+
+    build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
+    is_matter = any("ENABLE_MATTER" in flag for flag in build_flags)
+    is_esp32c5 = any("ESP32C5" in flag for flag in build_flags)
+    if not (is_matter and is_esp32c5):
+        return
+
+    libs = list(env.get("LIBS", []))
+
+    def lib_name(value):
+        value_str = str(value)
+        if value_str.startswith("-l"):
+            value_str = value_str[2:]
+        base = os.path.basename(value_str)
+        if base.startswith("lib") and base.endswith(".a"):
+            base = base[3:-2]
+        return base
+
+    names = [lib_name(lib) for lib in libs]
+    changed = False
+
+    if "esp_hal_ieee802154" not in names:
+        libs.append("esp_hal_ieee802154")
+        changed = True
+
+    if "espressif__esp_matter" in names:
+        libs.append("espressif__esp_matter")
+        changed = True
+
+    if changed:
+        env.Replace(LIBS=libs)
+        print("Added late ESP32-C5 Matter radio/link libraries")
+
+
 def _register_pre_link_fixes(outer_env):
     """Ensure late-added libs/flags get normalized right before link."""
 
@@ -292,6 +455,9 @@ def _register_pre_link_fixes(outer_env):
         # so accept the keyword name exactly.
         active_env = env or outer_env
         ensure_schedule_daylight_lib(active_env)
+        patch_c5_matter_sdkconfig_headers(active_env)
+        restore_c5_matter_archive(active_env)
+        ensure_c5_matter_radio_libs(active_env)
         fix_zigbee_lib_names(active_env)
 
     # Link target for PlatformIO firmware image.
@@ -302,5 +468,8 @@ ensure_riscv_toolchain_on_path(env)
 fix_linker_command(env)
 configure_zigbee_libs(env)
 ensure_schedule_daylight_lib(env)
+patch_c5_matter_sdkconfig_headers(env)
+restore_c5_matter_archive(env)
+ensure_c5_matter_radio_libs(env)
 fix_zigbee_lib_names(env)
 _register_pre_link_fixes(env)

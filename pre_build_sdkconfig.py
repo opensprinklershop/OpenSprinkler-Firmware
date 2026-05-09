@@ -76,6 +76,14 @@ SDKCONFIG_OVERRIDES = {
     "CONFIG_ARDUINO_LOOP_STACK_SIZE": "16384",
 
     # =====================================================================
+    # Matter / CHIP Task Stack Size
+    # =====================================================================
+    # ESP32-C5 Matter creates controller, station, program, and sensor
+    # endpoints before Matter.begin(). The framework default 4 KB CHIP task
+    # stack can overflow immediately when the CHIP task starts.
+    "CONFIG_CHIP_TASK_STACK_SIZE": "12288",
+
+    # =====================================================================
     # SPIRAM DMA Reserve — keep enough internal RAM for PSRAM re-timing
     # after WiFi start (ESP32-C5 resets MSPI timing when RF calibrates).
     # v190 added RainMaker self-claiming which allocates DMA-capable internal
@@ -178,6 +186,13 @@ SDKCONFIG_OVERRIDES = {
     # sensors + LED devices) which exhausts the budget in ~1-2 hours.
     # For a single irrigation controller there is no cloud cost concern.
     "CONFIG_ESP_RMAKER_MQTT_ENABLE_BUDGETING": None,
+
+    # =====================================================================
+    # Matter over Wi-Fi/Ethernet only — no OpenThread stack in C5 Matter OTA
+    # =====================================================================
+    "CONFIG_OPENTHREAD_ENABLED": None,
+    "CONFIG_ENABLE_MATTER_OVER_THREAD": None,
+    "CONFIG_ESP_MATTER_ENABLE_OPENTHREAD": None,
 }
 
 # Path to the workspace-local custom-compiled framework.
@@ -187,11 +202,141 @@ SDKCONFIG_OVERRIDES = {
 # which prevents proper self-claiming at boot.
 _WORKSPACE_RMAKER_FRAMEWORK = "/data/Workspace/framework-arduinoespressif32-libs"
 
+# ABI-matched Matter endpoint header from the local framework rebuild. The
+# rebuilt C5 libespressif__esp_matter.a uses nested endpoint config structs;
+# stale package headers may still typedef these configs to older aliases.
+_MATTER_ENDPOINT_HEADER_SOURCE = "/data/Workspace/esp32-arduino-lib-builder/managed_components/espressif__esp_matter/components/esp_matter/data_model/esp_matter_endpoint.h"
+
 # RainMaker prebuilt libraries whose claim-mode is baked in at compile time.
 _RMAKER_LIBS_TO_SYNC = [
     "libespressif__esp_rainmaker.a",
     "libespressif__rmaker_common.a",
 ]
+
+
+def sync_c5_matter_endpoint_header(env):
+    """Keep ESP32-C5 Matter headers ABI-matched with rebuilt archives."""
+
+    board_mcu = env.BoardConfig().get("build.mcu", "esp32")
+    build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
+    if board_mcu != "esp32c5" or not any("ENABLE_MATTER" in flag for flag in build_flags):
+        return
+
+    if not os.path.exists(_MATTER_ENDPOINT_HEADER_SOURCE):
+        print(f"[MATTER SYNC] Source header not found: {_MATTER_ENDPOINT_HEADER_SOURCE}")
+        return
+
+    framework_dirs = []
+    installed_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    if installed_dir and os.path.isdir(installed_dir):
+        framework_dirs.append(installed_dir)
+    if os.path.isdir(_WORKSPACE_RMAKER_FRAMEWORK):
+        framework_dirs.append(_WORKSPACE_RMAKER_FRAMEWORK)
+
+    patched = 0
+    skipped = 0
+    with open(_MATTER_ENDPOINT_HEADER_SOURCE, "rb") as source_file:
+        source_content = source_file.read()
+
+    for fdir in framework_dirs:
+        target = os.path.join(fdir, board_mcu, "include", "esp_matter", "esp_matter_endpoint.h")
+        if not os.path.exists(target):
+            continue
+
+        try:
+            with open(target, "rb") as target_file:
+                if target_file.read() == source_content:
+                    skipped += 1
+                    continue
+            shutil.copyfile(_MATTER_ENDPOINT_HEADER_SOURCE, target)
+            print(f"[MATTER SYNC] Patched endpoint header: {target}")
+            patched += 1
+        except OSError as e:
+            print(f"[MATTER SYNC] Failed to patch {target}: {e}")
+
+    if patched:
+        print(f"[MATTER SYNC] {patched} endpoint header file(s) patched. Full rebuild may be needed.")
+    elif skipped:
+        print(f"[MATTER SYNC] All {skipped} endpoint header file(s) already match rebuilt Matter archives.")
+
+
+def sync_c5_matter_sdkconfig_headers(env):
+    """Patch ESP32-C5 Matter sdkconfig.h variants used by Arduino sources."""
+
+    board_mcu = env.BoardConfig().get("build.mcu", "esp32")
+    build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
+    if board_mcu != "esp32c5" or not any("ENABLE_MATTER" in flag for flag in build_flags):
+        return
+
+    framework_dirs = []
+    installed_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    if installed_dir and os.path.isdir(installed_dir):
+        framework_dirs.append(installed_dir)
+    if os.path.isdir(_WORKSPACE_RMAKER_FRAMEWORK):
+        framework_dirs.append(_WORKSPACE_RMAKER_FRAMEWORK)
+
+    disabled_keys = [
+        "CONFIG_OPENTHREAD_ENABLED",
+        "CONFIG_ENABLE_MATTER_OVER_THREAD",
+        "CONFIG_ESP_MATTER_ENABLE_OPENTHREAD",
+    ]
+    forced_values = {
+        "CONFIG_CHIP_TASK_STACK_SIZE": "12288",
+    }
+    known_variants = ["qio_qspi", "dio_qspi", "qio_opi", "dio_opi"]
+    patched = 0
+
+    for fdir in framework_dirs:
+        for variant in known_variants:
+            cfg = os.path.join(fdir, board_mcu, variant, "include", "sdkconfig.h")
+            if not os.path.exists(cfg):
+                continue
+            try:
+                with open(cfg, "r") as fh:
+                    content = fh.read()
+                new_content = content
+                for key in disabled_keys:
+                    new_content = re.sub(
+                        rf"^#define\s+{key}\s+1$",
+                        f"/* {key} is not set */",
+                        new_content,
+                        flags=re.MULTILINE,
+                    )
+                for key, value in forced_values.items():
+                    replacement = f"#define {key} {value}"
+                    if re.search(rf"^#define\s+{key}\s+\S+$", new_content, flags=re.MULTILINE):
+                        new_content = re.sub(
+                            rf"^#define\s+{key}\s+\S+$",
+                            replacement,
+                            new_content,
+                            flags=re.MULTILINE,
+                        )
+                    elif re.search(rf"^/\*\s*{key}\s+is not set\s*\*/$", new_content, flags=re.MULTILINE):
+                        new_content = re.sub(
+                            rf"^/\*\s*{key}\s+is not set\s*\*/$",
+                            replacement,
+                            new_content,
+                            flags=re.MULTILINE,
+                        )
+                    else:
+                        new_content += f"\n{replacement}\n"
+                if new_content == content:
+                    continue
+                with open(cfg, "w") as fh:
+                    fh.write(new_content)
+                print(f"[MATTER SYNC] Disabled Matter-over-Thread config: {cfg}")
+                patched += 1
+            except OSError as e:
+                print(f"[MATTER SYNC] Failed to patch {cfg}: {e}")
+
+    if patched:
+        print(f"[MATTER SYNC] {patched} sdkconfig.h file(s) patched for Wi-Fi/Ethernet Matter.")
+
+
+def sync_c5_matter_thread_config(env):
+    """Compatibility wrapper for older build hooks."""
+
+    sync_c5_matter_sdkconfig_headers(env)
 
 
 def sync_rmaker_framework(env):
@@ -288,6 +433,8 @@ def update_sdkconfig(source, target, env):
     # Sync prebuilt RainMaker libs from workspace if the installed framework
     # has the wrong SELF_CLAIM mode (prevents auto account-creation at boot).
     sync_rmaker_framework(env)
+    sync_c5_matter_endpoint_header(env)
+    sync_c5_matter_sdkconfig_headers(env)
 
     # The built sdkconfig lives inside the Arduino ESP32 framework-libs package,
     # under a chip-specific subdirectory (e.g. esp32c5/sdkconfig).

@@ -3052,11 +3052,81 @@ void OpenSprinkler::options_setup() {
 	}
 
 #if defined(ARDUINO)	// handle AVR buttons
+		#if defined(ESP32C5)
+		auto bootmenu_select_firmware_type = [&]() -> bool {
+			IEEE802154BootVariant selection = ieee802154_get_boot_variant();
+
+			auto render = [&](IEEE802154BootVariant v) {
+				lcd_print_line_clear_pgm(PSTR("FW Type Select"), 0);
+				if (v == IEEE802154BootVariant::ZIGBEE) {
+					lcd_print_line_clear_pgm(PSTR("B1:ZB B2:MAT *"), 1);
+				} else {
+					lcd_print_line_clear_pgm(PSTR("B1:ZB*B2:MAT "), 1);
+				}
+			};
+
+			render(selection);
+			ulong start = millis();
+			while (millis() - start < 10000) {
+				unsigned char btn = button_read(BUTTON_WAIT_NONE);
+				if (!(btn & BUTTON_FLAG_DOWN)) {
+					delay(10);
+					continue;
+				}
+
+				switch (btn & BUTTON_MASK) {
+					case BUTTON_1:
+						selection = IEEE802154BootVariant::ZIGBEE;
+						render(selection);
+						break;
+					case BUTTON_2:
+						selection = IEEE802154BootVariant::MATTER;
+						render(selection);
+						break;
+					case BUTTON_3: {
+						IEEE802154Mode mode =
+							(selection == IEEE802154BootVariant::ZIGBEE)
+								? IEEE802154Mode::IEEE_ZIGBEE_GATEWAY
+								: IEEE802154Mode::IEEE_MATTER;
+
+						if (!ieee802154_select_otf_boot_variant(selection) ||
+							!ieee802154_save_config(mode, selection)) {
+							lcd_print_line_clear_pgm(PSTR("Switch failed"), 0);
+							lcd_print_line_clear_pgm(PSTR("No changes"), 1);
+							delay(1200);
+							return false;
+						}
+
+						lcd_print_line_clear_pgm(PSTR("Switch saved"), 0);
+						lcd_print_line_clear_pgm(PSTR("Rebooting..."), 1);
+						delay(600);
+						reboot_dev(REBOOT_CAUSE_BUTTON);
+						return true;
+					}
+					default:
+						break;
+				}
+			}
+
+			lcd_print_line_clear_pgm(PSTR("Timeout"), 0);
+			lcd_print_line_clear_pgm(PSTR("No changes"), 1);
+			delay(800);
+			return false;
+		};
+		#endif
+
 	unsigned char button = button_read(BUTTON_WAIT_NONE);
 
 	switch(button & BUTTON_MASK) {
 
 	case BUTTON_1:
+		#if defined(ESP32C5)
+		// ESP32-C5 boot menu option 1: select firmware type (ZigBee / Matter)
+		if (bootmenu_select_firmware_type()) {
+			return;
+		}
+		break;
+		#else
 		// if BUTTON_1 is pressed during startup, go to 'reset all options'
 		ui_set_options(IOPT_RESET);
 		if (iopts[IOPT_RESET]) {
@@ -3064,8 +3134,18 @@ void OpenSprinkler::options_setup() {
 			reboot_dev(REBOOT_CAUSE_RESET);
 		}
 		break;
+		#endif
 
 	case BUTTON_2:
+	#if defined(ESP32C5)
+		// ESP32-C5 boot menu option 2: reset options
+		ui_set_options(IOPT_RESET);
+		if (iopts[IOPT_RESET]) {
+			pre_factory_reset();
+			reboot_dev(REBOOT_CAUSE_RESET);
+		}
+		break;
+	#else
 	#if defined(ESP8266) || defined(ESP32)
 		// if BUTTON_2 is pressed during startup, go to Test OS mode
 		// only available for OS 3.0
@@ -3089,6 +3169,7 @@ void OpenSprinkler::options_setup() {
 	#endif
 
 		break;
+	#endif
 
 	case BUTTON_3:
 		// if BUTTON_3 is pressed during startup, enter Setup option mode

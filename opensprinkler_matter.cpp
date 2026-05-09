@@ -618,9 +618,9 @@ void OSMatter::loop() {
     config_signature = current_sig;
   }
   
-  // Update sensors every 10s
+  // Update sensors every 10s (only when commissioned)
   static ulong last_update = 0;
-  if(millis() - last_update > 10000) {
+  if(commissioned && millis() - last_update > 10000) {
     update_sensor_values();
     last_update = millis();
   }

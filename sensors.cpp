@@ -1889,10 +1889,52 @@ int read_sensor(SensorBase *sensor, ulong time) {
  *
  */
 void sensor_update_groups() {
-  // Group sensor computation has been moved into GroupSensor::read().
-  // read_all_sensors() calls GroupSensor::read() at the configured interval
-  // (via should_read) and handles sensorlog_add + push_message on SUCCESS.
-  // Keeping this function as a no-op for backwards compatibility.
+  ulong time = os.now_tz();
+
+  for (auto &kv : sensorsMap) {
+    SensorBase *sensor = kv.second;
+    if (time >= sensor->last_read + sensor->read_interval) {
+      switch (sensor->type) {
+        case SENSOR_GROUP_MIN:
+        case SENSOR_GROUP_MAX:
+        case SENSOR_GROUP_AVG:
+        case SENSOR_GROUP_SUM: {
+          uint nr = sensor->nr;
+          double value = 0;
+          int n = 0;
+          for (auto &kv2 : sensorsMap) {
+            SensorBase *member = kv2.second;
+            if (member->nr != nr && member->group == nr && member->flags.enable) {
+              switch (sensor->type) {
+                case SENSOR_GROUP_MIN:
+                  if (n++ == 0) value = member->last_data;
+                  else if (member->last_data < value) value = member->last_data;
+                  break;
+                case SENSOR_GROUP_MAX:
+                  if (n++ == 0) value = member->last_data;
+                  else if (member->last_data > value) value = member->last_data;
+                  break;
+                case SENSOR_GROUP_AVG:
+                case SENSOR_GROUP_SUM:
+                  n++;
+                  value += member->last_data;
+                  break;
+              }
+            }
+          }
+          if (sensor->type == SENSOR_GROUP_AVG && n > 0) {
+            value = value / (double)n;
+          }
+          sensor->last_data = value;
+          sensor->last_native_data = 0;
+          sensor->last_read = time;
+          sensor->flags.data_ok = n > 0;
+          sensorlog_add(LOG_STD, sensor, time);
+          break;
+        }
+      }
+    }
+  }
 }
 
 /**
