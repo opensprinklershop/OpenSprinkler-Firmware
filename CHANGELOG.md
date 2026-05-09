@@ -6,9 +6,12 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (199)] — 2026-05-07
+## [2.4.0 (199)] — 2026-05-09
 
 ### Fixed
+- **Group sensors restored**: fixed regression where `SENSOR_GROUP_MIN/MAX/AVG/SUM` stopped producing values after `sensor_update_groups()` had been turned into a no-op; aggregation + `data_ok` + sensor logging are active again
+- **ESP32-C5 startup boot menu**: added firmware-type selection as first boot option (ZigBee/Matter), including OTF boot-slot selection, persisted IEEE 802.15.4 mode, and reboot into selected variant
+- **Matter sensor update spam before commissioning**: sensor attribute updates are now gated by commissioning state to avoid repeated failed updates while device is still in pairing mode
 - **W5500 MAC address display**: the MAC shown on the OLED display (button B2) and reported via API now uses `esp_read_mac(ESP_MAC_ETH)` — identical to the MAC assigned by the W5500 Ethernet driver — instead of the previously wrong eFuse base MAC with an inverted last byte (ESP32)
 - **NTP sync no longer freezes the display**: removed the blocking `delay(1000) × 3` polling loop in `getNtpTime()` (ESP32); ESP32 SNTP is asynchronous and syncs in the background — the function now checks `time()` once and returns 0 if not yet synced, letting the scheduler retry without stalling the main loop
 - **UI: Irrigation Database 404**: the in-app irrigation database lookup was calling `/irrigationdb/api.php` as a device-relative URL (not implemented in firmware); corrected to `https://opensprinklershop.de/irrigationdb/api.php`
