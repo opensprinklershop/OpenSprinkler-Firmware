@@ -6145,7 +6145,16 @@ void on_firmware_update(OTF_PARAMS_DEF) {
 
 // Selected OTA partition label for current upload ("matter" | "zigbee" | "").
 // Stored here so on_firmware_upload_fin can access it after the multipart is done.
+// Accepted slot args from UI/client: ota0|ota1 (preferred), zigbee|matter (legacy).
 static String s_ota_slot;
+
+static String normalize_ota_slot_arg(const String& slotArgRaw) {
+	String slotArg = slotArgRaw;
+	slotArg.toLowerCase();
+	if (slotArg == "ota0" || slotArg == "zigbee") return "zigbee";
+	if (slotArg == "ota1" || slotArg == "matter") return "matter";
+	return "";
+}
 
 void on_firmware_upload_fin() {
 	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
@@ -6194,15 +6203,26 @@ void on_firmware_upload() {
 		}
 		DEBUG_PRINT(F("upload: "));
 		DEBUG_PRINTLN(upload.filename);
-		// Read target OTA slot ("matter" or "zigbee") sent by the UI slot selector.
-		// Fall back to empty string on non-dual-OTA devices.
-		s_ota_slot = update_server->hasArg("slot") ? update_server->arg("slot") : "";
+		// Read target OTA slot from UI/client and normalize it.
+		// Preferred values: ota0|ota1. Legacy values: zigbee|matter.
+		String slotArg = update_server->hasArg("slot") ? update_server->arg("slot") : "";
+		s_ota_slot = normalize_ota_slot_arg(slotArg);
 #if defined(ESP32C5)
-		// On the dual-OTA ESP32-C5 board, target the explicit partition label so
-		// matter firmware always goes to the 'matter' partition and vice-versa.
+		// On the dual-OTA ESP32-C5 board, target explicit OTA slots:
+		// ota0 -> zigbee partition @ 0x10000
+		// ota1 -> matter partition @ 0x3A0000
 		const char* partLabel = (s_ota_slot == "zigbee") ? "zigbee" : "matter";
+		esp_partition_subtype_t subtype = (s_ota_slot == "zigbee")
+			? ESP_PARTITION_SUBTYPE_APP_OTA_0
+			: ESP_PARTITION_SUBTYPE_APP_OTA_1;
+		const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, subtype, nullptr);
 		DEBUG_PRINT(F("OTA target partition: "));
 		DEBUG_PRINTLN(partLabel);
+		if (part) {
+			DEBUG_PRINTF("OTA target address: 0x%06x\n", (unsigned)part->address);
+		} else {
+			DEBUG_PRINTLN(F("OTA target partition lookup failed"));
+		}
 		if(!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH, -1, LOW, partLabel)) {
 			DEBUG_PRINT(F("begin failed for partition: "));
 			DEBUG_PRINTLN(partLabel);

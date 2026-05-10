@@ -110,11 +110,11 @@
         <div class="form-group" id="slot_group" style="display:none">
             <label for="slot">Target Partition</label>
             <select name="slot" id="slot" style="width:100%;padding:10px;font-size:16px;border:1px solid var(--border);border-radius:5px;box-sizing:border-box;background:transparent;color:inherit;">
-                <option value="zigbee">ZigBee  — Firmware 1 (OTA ota_1 @ 0x3A0000)</option>
-                <option value="matter">Matter  — Firmware 2 (OTA ota_0 @ 0x10000)</option>
+                <option value="ota0">OTA0 — ZigBee (0x10000)</option>
+                <option value="ota1">OTA1 — Matter (0x3A0000)</option>
             </select>
             <small style="color:var(--muted);display:block;margin-top:5px;">
-                Select the firmware variant that matches the .bin file you are uploading.
+                Select the OTA slot that matches the .bin file you are uploading.
             </small>
         </div>
         <div class="form-group">
@@ -127,7 +127,7 @@
         </div>
 
         <div class="warning-box">
-            <b>IMPORTANT:</b> Select the correct partition matching your .bin file (Matter or ZigBee). Uploading the wrong variant to the wrong slot will render that slot unbootable. Firmware updates across major revisions will trigger a factory reset — save your configuration first.
+            <b>IMPORTANT:</b> Select the correct target slot for your .bin file: OTA0 = ZigBee, OTA1 = Matter. Uploading the wrong variant to the wrong slot will render that slot unbootable. Firmware updates across major revisions will trigger a factory reset — save your configuration first.
         </div>
 
         <p id='msg'></p>
@@ -350,7 +350,7 @@
 
             // Show slot selector and default to current slot (user can change)
             id('slot_group').style.display = 'block';
-            id('slot').value = isZigbee ? 'zigbee' : 'matter';
+            id('slot').value = isZigbee ? 'ota0' : 'ota1';
         }).catch(function(){
             // Not an ESP32-C5 or endpoint unavailable – hide selector, harmless
         });

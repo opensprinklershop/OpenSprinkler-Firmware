@@ -36,6 +36,19 @@ static char s_ota_requested_variant[8] = {0};
 // (Matter, RainMaker, BLE, Zigbee, sensor radios) must not start.
 static bool s_ota_boot = false;
 
+#if defined(ESP32C5)
+static IEEE802154BootVariant ota_compiled_variant() {
+#if defined(ENABLE_MATTER)
+	return IEEE802154BootVariant::MATTER;
+#elif defined(OS_ENABLE_ZIGBEE)
+	return IEEE802154BootVariant::ZIGBEE;
+#else
+	// Safe default for unexpected builds without an explicit 802.15.4 role.
+	return IEEE802154BootVariant::MATTER;
+#endif
+}
+#endif
+
 void online_update_set_variant(const char* variant) {
 	if (variant && (strcmp(variant, "zigbee") == 0 || strcmp(variant, "matter") == 0)) {
 		strncpy(s_ota_requested_variant, variant, sizeof(s_ota_requested_variant) - 1);
@@ -667,9 +680,32 @@ static void ota_update_task(void* param) {
 	// Phase 1 (5-48%): flash the NON-running partition, save state, reboot into it.
 	// Phase 2 (52-98%, after reboot): flash the remaining partition, set boot to target, reboot.
 	const esp_partition_t *running = esp_ota_get_running_partition();
-	DEBUG_PRINTF("[OTA] Running partition: %s\n", running ? running->label : "unknown");
+	DEBUG_PRINTF("[OTA] Running partition: %s (subtype=%d)\n",
+	             running ? running->label : "unknown",
+	             running ? (int)running->subtype : -1);
+	if (!running) {
+		ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Running partition unknown");
+		s_ota_task = NULL;
+		delay(5000);
+		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
+		vTaskDelete(NULL);
+		return;
+	}
 
-	IEEE802154BootVariant target_variant = ieee802154_get_boot_variant();
+	// Default target must follow the currently running firmware image type
+	// (compile-time), not only the current OTA slot. This keeps behavior stable
+	// even if slots were previously swapped.
+	IEEE802154BootVariant target_variant = ota_compiled_variant();
+	esp_partition_subtype_t expected_running_subtype =
+		(target_variant == IEEE802154BootVariant::MATTER)
+			? ESP_PARTITION_SUBTYPE_APP_OTA_1
+			: ESP_PARTITION_SUBTYPE_APP_OTA_0;
+	if (running->subtype != expected_running_subtype) {
+		DEBUG_PRINTF("[OTA] Detected swapped slot layout: compiled=%s expects subtype=%d, running subtype=%d\n",
+			(target_variant == IEEE802154BootVariant::MATTER) ? "matter" : "zigbee",
+			(int)expected_running_subtype,
+			(int)running->subtype);
+	}
 	// Consume requested variant override (set by server_update_upgrade via online_update_set_variant)
 	char requested_variant_buf[8] = {0};
 	strncpy(requested_variant_buf, s_ota_requested_variant, sizeof(requested_variant_buf) - 1);
@@ -680,7 +716,7 @@ static void ota_update_task(void* param) {
 	}
 	const char* target_variant_name = (target_variant == IEEE802154BootVariant::MATTER) ? "matter" : "zigbee";
 
-	if (running && strcmp(running->label, "matter") == 0) {
+	if (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1) {
 		// Running from matter (ota_1) → flash zigbee (ota_0) first
 		if (!ota_download_verify_flash(manifest.zigbee_url, manifest.zigbee_sha256, "zigbee",
 		                               OTA_STATUS_DOWNLOADING_ZIGBEE, OTA_STATUS_ERROR_FLASH_ZIGBEE, 5, 48)) {
@@ -694,8 +730,8 @@ static void ota_update_task(void* param) {
 		ota_save_continuation(manifest.matter_url, manifest.matter_sha256, "matter", target_variant_name);
 		// Set boot to zigbee (the partition we just flashed) so phase 2 can write matter
 		esp_ota_set_boot_partition(esp_partition_find_first(
-			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, "zigbee"));
-	} else {
+			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr));
+	} else if (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) {
 		// Running from zigbee (ota_0) → flash matter (ota_1) first
 		if (!ota_download_verify_flash(manifest.matter_url, manifest.matter_sha256, "matter",
 		                               OTA_STATUS_DOWNLOADING_MATTER, OTA_STATUS_ERROR_FLASH_MATTER, 5, 48)) {
@@ -709,7 +745,14 @@ static void ota_update_task(void* param) {
 		ota_save_continuation(manifest.zigbee_url, manifest.zigbee_sha256, "zigbee", target_variant_name);
 		// Set boot to matter (the partition we just flashed) so phase 2 can write zigbee
 		esp_ota_set_boot_partition(esp_partition_find_first(
-			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, "matter"));
+			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, nullptr));
+	} else {
+		ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Unsupported running partition subtype");
+		s_ota_task = NULL;
+		delay(5000);
+		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
+		vTaskDelete(NULL);
+		return;
 	}
 
 	// Reboot into the newly flashed partition for phase 2

@@ -3107,14 +3107,18 @@ void OpenSprinkler::options_setup() {
 				}
 
 				switch (btn & BUTTON_MASK) {
-					case BUTTON_1:
-						selection = IEEE802154BootVariant::ZIGBEE;
+					case BUTTON_1: 
+						if (selection != IEEE802154BootVariant::ZIGBEE) {	
+							selection = IEEE802154BootVariant::ZIGBEE;
 							selection_changed = true;
+						}	
 						render(selection);
 						break;
 					case BUTTON_2:
-						selection = IEEE802154BootVariant::MATTER;
+						if (selection != IEEE802154BootVariant::MATTER) {
+							selection = IEEE802154BootVariant::MATTER;
 							selection_changed = true;
+						}
 						render(selection);
 						break;
 					case BUTTON_3: {
@@ -3215,7 +3219,11 @@ void OpenSprinkler::options_setup() {
 
 	if (!button) {
 		// flash screen
+		#if defined(ESP32)
+		lcd_print_line_clear_pgm(PSTR("OpenSprinklerPro"),0);
+		#else
 		lcd_print_line_clear_pgm(PSTR(" OpenSprinkler"),0);
+		#endif
 		lcd.setCursor((hw_type==HW_TYPE_LATCH)?2:4, 1);
 		lcd_print_pgm(PSTR("v"));
 		unsigned char hwv = iopts[IOPT_HW_VERSION];
@@ -3249,6 +3257,13 @@ void OpenSprinkler::options_setup() {
 		lcd.print(OS_FW_MINOR);
 		lcd.print(')');
 		delay(1000);
+		#if defined(ENABLE_MATTER)
+		lcd_print_line_clear_pgm(PSTR("    [Matter]"), 1);
+		delay(1000);
+		#elif defined(OS_ENABLE_ZIGBEE)
+		lcd_print_line_clear_pgm(PSTR("    [ZigBee]"), 1);
+		delay(1000);
+		#endif
 		#endif
 	}
 #endif
