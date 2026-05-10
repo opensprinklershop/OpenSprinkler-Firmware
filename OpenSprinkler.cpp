@@ -3052,11 +3052,41 @@ void OpenSprinkler::options_setup() {
 	}
 
 #if defined(ARDUINO)	// handle AVR buttons
+		#if defined(ESP8266) || defined(ESP32)
+		auto bootmenu_enter_test_mode = [&]() {
+			lcd_print_line_clear_pgm(PSTR("===Test Mode==="), 0);
+			lcd_print_line_clear_pgm(PSTR("  B3:proceed"), 1);
+			unsigned char b;
+			do {
+				b = button_read(BUTTON_WAIT_NONE);
+			} while(!((b&BUTTON_MASK)==BUTTON_3 && (b&BUTTON_FLAG_DOWN)));
+
+			//iopts[IOPT_WIFI_MODE] = WIFI_MODE_STA;
+			wifi_testmode = 1;
+			#if defined(TESTMODE_SSID)
+			wifi_ssid = TESTMODE_SSID;
+			wifi_pass = TESTMODE_PASS;
+			#else
+			wifi_ssid = "ostest";
+			wifi_pass = "opendoor";
+			#endif
+		};
+		#endif
+
 		#if defined(ESP32C5)
 		auto bootmenu_select_firmware_type = [&]() -> int {
 			IEEE802154BootVariant selection = ieee802154_get_boot_variant();
 			bool selection_changed = false;
 			// return codes: 0=cancel/timeout, 1=applied+reboot, 2=next menu item
+
+			// Ignore the startup button that entered this menu item.
+			// Otherwise a still-held B1 is interpreted as a real selection.
+			ulong release_wait_start = millis();
+			while (millis() - release_wait_start < 1500) {
+				unsigned char held = button_read(BUTTON_WAIT_NONE);
+				if ((held & BUTTON_MASK) == BUTTON_NONE) break;
+				delay(10);
+			}
 
 			auto render = [&](IEEE802154BootVariant v) {
 				lcd_print_line_clear_pgm(PSTR("FW Type Select"), 0);
@@ -3136,11 +3166,8 @@ void OpenSprinkler::options_setup() {
 			return;
 		}
 		if (fw_menu_result == 2) {
-			ui_set_options(IOPT_RESET);
-			if (iopts[IOPT_RESET]) {
-				pre_factory_reset();
-				reboot_dev(REBOOT_CAUSE_RESET);
-			}
+			bootmenu_enter_test_mode();
+			button = 0;
 		}
 		break;
 		#else
@@ -3158,22 +3185,7 @@ void OpenSprinkler::options_setup() {
 	#if defined(ESP8266) || defined(ESP32)
 		// if BUTTON_2 is pressed during startup, go to Test OS mode
 		// only available for OS 3.0
-		lcd_print_line_clear_pgm(PSTR("===Test Mode==="), 0);
-		lcd_print_line_clear_pgm(PSTR("  B3:proceed"), 1);
-		do {
-			button = button_read(BUTTON_WAIT_NONE);
-		} while(!((button&BUTTON_MASK)==BUTTON_3 && (button&BUTTON_FLAG_DOWN)));
-		// set test mode parameters
-
-		//iopts[IOPT_WIFI_MODE] = WIFI_MODE_STA;
-		wifi_testmode = 1;
-		#if defined(TESTMODE_SSID)
-		wifi_ssid = TESTMODE_SSID;
-		wifi_pass = TESTMODE_PASS;
-		#else
-		wifi_ssid = "ostest";
-		wifi_pass = "opendoor";
-		#endif
+		bootmenu_enter_test_mode();
 		button = 0;
 	#endif
 
