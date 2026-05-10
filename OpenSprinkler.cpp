@@ -3164,14 +3164,18 @@ void OpenSprinkler::options_setup() {
 	{
 		#if defined(ESP32C5)
 		// ESP32-C5 boot menu extension: first item is firmware type selection.
-		// If B3 is pressed without B1/B2 selection, continue to next existing item.
+		// If B3 is pressed without B1/B2 selection, continue to the legacy
+		// BUTTON_1 startup path (reset/options menu), not test mode.
 		int fw_menu_result = bootmenu_select_firmware_type();
 		if (fw_menu_result == 1) {
 			return;
 		}
 		if (fw_menu_result == 2) {
-			bootmenu_enter_test_mode();
-			button = 0;
+			ui_set_options(IOPT_RESET);
+			if (iopts[IOPT_RESET]) {
+				pre_factory_reset();
+				reboot_dev(REBOOT_CAUSE_RESET);
+			}
 		}
 		break;
 		#else
