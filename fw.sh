@@ -92,7 +92,13 @@ OSPI_PI_USER="${OSPI_PI_USER:-pi}"
 OSPI_PI_PASS="${OSPI_PI_PASS:-}"
 OSPI_PI_DIR="${OSPI_PI_DIR:-/home/pi/OpenSprinkler-Firmware}"
 DEFINES_H="${SCRIPT_DIR}/defines.h"
-UPGRADE_DIR="${OS_UPGRADE_DIR:-/srv/www/htdocs/upgrade}"
+# Auto-migrate legacy upgrade path to the new location.
+# This keeps old .env files working after moving upgrade/ to /data/upgrade.
+if [[ "${OS_UPGRADE_DIR:-}" == "/srv/www/htdocs/upgrade" ]]; then
+    warn "OS_UPGRADE_DIR uses legacy path (/srv/www/htdocs/upgrade) — switching to /data/upgrade"
+    OS_UPGRADE_DIR="/data/upgrade"
+fi
+UPGRADE_DIR="${OS_UPGRADE_DIR:-/data/upgrade}"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
 VERSIONS_JSON="${UPGRADE_DIR}/versions.json"
 CHANGELOG="${SCRIPT_DIR}/CHANGELOG.md"
@@ -1335,7 +1341,7 @@ git_tag_and_push() {
 
     # Only add files that are tracked within this repository.
     # MANIFEST, VERSIONS_JSON and binary files in UPGRADE_DIR may live outside
-    # the repo root (e.g. /srv/www/htdocs/upgrade/) — git add on those paths
+    # the repo root (e.g. /data/upgrade/) — git add on those paths
     # would produce a fatal error.  We only commit defines.h and CHANGELOG.md
     # which are always inside the repo.
     local files_to_add=("$DEFINES_H" "$CHANGELOG")
