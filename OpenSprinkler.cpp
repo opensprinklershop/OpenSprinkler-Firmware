@@ -3071,6 +3071,25 @@ void OpenSprinkler::options_setup() {
 			wifi_pass = "opendoor";
 			#endif
 		};
+
+		auto bootmenu_enter_setup_options = [&]() {
+			lcd_print_line_clear_pgm(PSTR("==Set Options=="), 0);
+			delay(DISPLAY_MSG_MS);
+			lcd_print_line_clear_pgm(PSTR("B1/B2:+/-, B3:->"), 0);
+			lcd_print_line_clear_pgm(PSTR("Hold B3 to save"), 1);
+
+			unsigned char setup_button;
+			do {
+				setup_button = button_read(BUTTON_WAIT_HOLD);
+			} while (!(setup_button & BUTTON_FLAG_DOWN));
+
+			lcd.clear();
+			ui_set_options(0);
+			if (iopts[IOPT_RESET]) {
+				pre_factory_reset();
+				reboot_dev(REBOOT_CAUSE_RESET);
+			}
+		};
 		#endif
 
 		#if defined(ESP32C5)
@@ -3164,8 +3183,8 @@ void OpenSprinkler::options_setup() {
 	{
 		#if defined(ESP32C5)
 		// ESP32-C5 boot menu extension: first item is firmware type selection.
-		// If B3 is pressed without B1/B2 selection, continue to the legacy
-		// BUTTON_1 startup path (reset/options menu), not test mode.
+		// If B3 is pressed without B1/B2 selection, continue to the standard
+		// setup-options menu (same behavior as startup BUTTON_3).
 		int fw_menu_result = bootmenu_select_firmware_type();
 		if (fw_menu_result == 1) {
 			return;
@@ -3201,19 +3220,7 @@ void OpenSprinkler::options_setup() {
 
 	case BUTTON_3:
 		// if BUTTON_3 is pressed during startup, enter Setup option mode
-		lcd_print_line_clear_pgm(PSTR("==Set Options=="), 0);
-		delay(DISPLAY_MSG_MS);
-		lcd_print_line_clear_pgm(PSTR("B1/B2:+/-, B3:->"), 0);
-		lcd_print_line_clear_pgm(PSTR("Hold B3 to save"), 1);
-		do {
-			button = button_read(BUTTON_WAIT_HOLD);
-		} while (!(button & BUTTON_FLAG_DOWN));
-		lcd.clear();
-		ui_set_options(0);
-		if (iopts[IOPT_RESET]) {
-			pre_factory_reset();
-			reboot_dev(REBOOT_CAUSE_RESET);
-		}
+		bootmenu_enter_setup_options();
 		break;
 	}
 
