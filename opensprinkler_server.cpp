@@ -2673,6 +2673,31 @@ void server_matter_commission(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
+/** Remove all Matter fabrics so the device can be paired again.
+ * GET /md?pw=xxx
+ * Response: {"result":1,"commissioned":0} on success.
+ */
+void server_matter_decommission(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	if (!ieee802154_is_matter()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"Matter is not active\"}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	bool ok = OSMatter::instance().remove_commissioning();
+	bfill.emit_p(PSTR("{\"result\":$D,\"commissioned\":$D}"), ok ? 1 : 0,
+	             OSMatter::instance().is_commissioned() ? 1 : 0);
+	handle_return(HTML_OK);
+}
+
 /** Download and write Matter KVS partition.
  * GET /mk?pw=xxx[&u=<url>]
  *   u  – optional URL of matter_kvs.bin; defaults to OpenSprinkler upgrade URL.
@@ -6144,6 +6169,7 @@ const char _url_keys[] PROGMEM =
 #if defined(ESP32) && defined(ENABLE_MATTER)
 	"jm"  // Matter: get pairing information
 	"mm"  // Matter: open commissioning window
+	"md"  // Matter: remove commissioning/fabrics
 	"mk"  // Matter: write matter_kvs partition
 #endif
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)
@@ -6241,6 +6267,7 @@ URLHandler urls[] = {
 #if defined(ESP32) && defined(ENABLE_MATTER)
 	server_json_matter, // jm
 	server_matter_commission, // mm
+	server_matter_decommission, // md
 	server_matter_write_kvs, // mk
 #endif
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)

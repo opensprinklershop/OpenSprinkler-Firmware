@@ -106,8 +106,8 @@
     </div>
 
     <form method='POST' action='/update' id='fm' enctype='multipart/form-data'>
-        <!-- Slot selector – only shown on dual-OTA devices (ESP32-C5) -->
-        <div class="form-group" id="slot_group" style="display:none">
+        <!-- Slot selector for dual-OTA ESP32-C5 devices. Non-C5 firmware ignores this field. -->
+        <div class="form-group" id="slot_group">
             <label for="slot">Target Partition</label>
             <select name="slot" id="slot" style="width:100%;padding:10px;font-size:16px;border:1px solid var(--border);border-radius:5px;box-sizing:border-box;background:transparent;color:inherit;">
                 <option value="ota0">OTA0 — ZigBee (0x10000)</option>
@@ -330,13 +330,24 @@
         msgEl.innerHTML = `<font color=${c}>${s}</font>`;
     }
 
-    // Auto-detect dual-OTA device and pre-fill slot selector
+    function setSlotFromName(name) {
+        const lower = (name || '').toLowerCase();
+        if (lower.indexOf('matter') !== -1) id('slot').value = 'ota1';
+        else if (lower.indexOf('zigbee') !== -1) id('slot').value = 'ota0';
+    }
+
+    id('file').addEventListener('change', function() {
+        if (this.files && this.files[0]) setSlotFromName(this.files[0].name);
+    });
+
+    // Auto-detect dual-OTA device and pre-fill slot selector when /ir is available.
+    // The selector stays visible even if /ir requires a password or is unavailable.
     (function detectVariant() {
         fetch('/ir').then(function(r){ return r.ok ? r.json() : null; }).then(function(d) {
             if (!d || d.bootVariant === undefined) return;
-            // bootVariant: 1 = Matter, 2 = ZigBee
-            const isZigbee = d.bootVariant === 2;
-            const isMatter = d.bootVariant === 1;
+            // bootVariant: 1 = ZigBee, 2 = Matter
+            const isZigbee = d.bootVariant === 1;
+            const isMatter = d.bootVariant === 2;
             const name     = d.bootVariantName || (isZigbee ? 'ZigBee' : 'Matter');
             const colors   = { bg: isZigbee ? '#ecfdf5' : '#eff6ff',
                                 fg: isZigbee ? '#065f46' : '#1e40af',
@@ -348,11 +359,10 @@
             banner.style.borderColor = colors.border;
             id('variant_text').textContent = '▶ Currently running: ' + name + ' firmware';
 
-            // Show slot selector and default to current slot (user can change)
-            id('slot_group').style.display = 'block';
+            // Default to current slot (user can change)
             id('slot').value = isZigbee ? 'ota0' : 'ota1';
         }).catch(function(){
-            // Not an ESP32-C5 or endpoint unavailable – hide selector, harmless
+            // Not an ESP32-C5, password required, or endpoint unavailable: keep selector usable.
         });
     })();
 
@@ -373,14 +383,15 @@
 
         const fd = new FormData();
         const file = files[0];
+        // Include target OTA slot. Non-C5 firmware ignores this field.
+        const slotSel = id('slot');
+        const slot = slotSel ? slotSel.value : '';
+        if (slotSel) {
+            fd.append('slot', slot);
+        }
         fd.append('file', file, file.name);
         // Hash the password if it's not empty, otherwise send empty string
         fd.append('pw', password ? md5(password) : '');
-        // Include target OTA slot if the selector is visible (ESP32-C5 dual-OTA)
-        const slotSel = id('slot');
-        if (slotSel && id('slot_group').style.display !== 'none') {
-            fd.append('slot', slotSel.value);
-        }
 
         const xhr = new XMLHttpRequest();
         xhr.onreadystatechange = function() {
@@ -411,7 +422,7 @@
             }
         };
 
-        const uploadUrl = '//' + window.location.hostname + ':8080/update';
+        const uploadUrl = '//' + window.location.hostname + ':8080/update' + (slot ? '?slot=' + encodeURIComponent(slot) : '');
         xhr.open('POST', uploadUrl, true);
         xhr.timeout = 300000; // 5 minutes timeout
         xhr.ontimeout = function(){ show_msg('Upload timed out. Please check the device connection and try again.', 'red'); };

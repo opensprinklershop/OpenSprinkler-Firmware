@@ -878,6 +878,34 @@ bool OSMatter::open_commissioning_window(uint16_t timeout_seconds) {
   return true;
 }
 
+bool OSMatter::remove_commissioning() {
+  if (!matter_started) {
+    DEBUG_PRINTLN("[Matter] Cannot remove commissioning: Matter not started");
+    return false;
+  }
+
+  esp_matter::lock::status_t lock_status =
+    esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
+  if (lock_status == esp_matter::lock::FAILED) {
+    DEBUG_PRINTLN("[Matter] Cannot remove commissioning: CHIP lock timeout");
+    return false;
+  }
+
+  chip::FabricTable &fabrics = chip::Server::GetInstance().GetFabricTable();
+  size_t fabric_count = fabrics.FabricCount();
+  if (fabric_count > 0) {
+    fabrics.DeleteAllFabrics();
+  }
+  commissioned = (fabrics.FabricCount() > 0);
+
+  if (lock_status == esp_matter::lock::SUCCESS) {
+    esp_matter::lock::chip_stack_unlock();
+  }
+
+  DEBUG_PRINTF("[Matter] Removed %u fabric(s)\n", (unsigned)fabric_count);
+  return true;
+}
+
 void OSMatter::station_on(unsigned char sid) {
   if(sid >= os.nstations) return;
   MatterCmd cmd{};

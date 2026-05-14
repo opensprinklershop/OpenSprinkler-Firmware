@@ -28,6 +28,7 @@ public:
 
   // Open commissioning window (re-registration)
   bool open_commissioning_window(uint16_t timeout_seconds = 300);
+  bool remove_commissioning();
   
   // Internal callbacks
   void station_on(unsigned char sid);
