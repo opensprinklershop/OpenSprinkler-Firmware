@@ -191,7 +191,7 @@ If your controller is OSPi, see [OSPi-specific instructions](#ospi-specific).
 !!! info
     Regular exports make it easy to restore programs and settings later. They’re also helpful to attach when opening a support ticket so we can reproduce software-related issues.
 
-At the controller's homepage, swipe left to right (or tap the upper-left menu icon) to open the side menu, then tap **Export Configurations** to a file.
+At the controller's homepage, swipe left to right (or tap the upper-left menu icon) to open the side menu, then tap **Export Configuration** to a file.
 
 --- 
 
@@ -252,7 +252,7 @@ Remote access requires using an **OpenThings Cloud (OTC) token**. To check OTC s
 
 **Blank page when opening the controller's homepage**
 
-1. **Firmware too old:** If your controller's firmware is **older than `2.2.0`**, update to the latest. Older firmwares can't parse newer weather data format, causing corruption and blank homepage. See [firmware update instructions](index.md#firmware-update).
+1. **Firmware too old:** If your controller's firmware is **older than `2.2.0`**, update to the latest. Older firmwares can't parse newer weather data format, causing corruption and blank homepage. See [firmware update instructions](2.2.1/221_4_manual.md#firmware-update).
 2. **Check for errors:** On a desktop/laptop, open a browser window, turn on **Developer Console** (e.g. in Chrome, go to **Settings** → **More Tools** → **Developer Tools** → click the **Console** tab). Open the controller's homepage and note any errors in the console window.
 3. **Reset UI Source:** If you used a custom UI, reset it to the default: visit `http://os-ip/su` where `os-ip` is your controller's IP address. Reset the `UI Source` to the default.
 4. **Diagnose with API test script:** [Download the API test script](assets/scripts/TestOSAPI220.html){: download="TestOSAPI220.html" }. Open it in a browser, test your controller with the `/ja` (JSON All) endpoint. If you see an **INVALID JSON** error, the stored data is corrupted, which is why the homepage hangs.

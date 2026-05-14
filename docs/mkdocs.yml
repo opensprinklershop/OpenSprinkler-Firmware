@@ -1,24 +1,32 @@
-site_name: OpenSprinkler Documentation
-site_url: https://OpenSprinkler.github.io/OpenSprinkler-Firmware/
-repo_url: https://github.com/OpenSprinkler/OpenSprinkler-Firmware
+site_name: OpenSprinkler Shop Documentation
+site_url: https://opensprinklershop.github.io/
+repo_url: https://github.com/opensprinklershop/OpenSprinkler-Firmware
 
 theme: readthedocs
 
 nav:
   - 'Home': 'index.md'
-  - 'FAQ': 'faq.md'
-  - 'MCP Server (EN)': 'mcp-server.md'
-  - 'MCP Server (DE)': 'mcp-server-de.md'
-  - 'RainMaker Provisioning': 'rainmaker-provisioning.md'
-  - 'Firmware v2.2.1(4)':
+  - 'Base Manual v2.2.1(4)':
     - 'User Manual': '2.2.1/221_4_manual.md'
     - 'API Reference': '2.2.1/221_4_api.md'
+  - 'OpenSprinklerPro Extensions':
+    - 'Overview': 'opensprinklerpro.md'
+    - 'Analog Sensor Config': 'analog-sensor-config.md'
+    - 'API and platform addendum': 'pro-api-endpoints.md'
+  - 'MCP and AI':
+    - 'MCP Server': 'mcp-server.md'
+    - 'AI Program Creation': 'ai-programming.md'
+    - 'Sensor Automation': 'sensor-automation.md'
+  - 'RainMaker Provisioning': 'rainmaker-provisioning.md'
   - 'FYTA Sensors': 'fyta-sensors.md'
   - 'Troubleshooting': 'troubleshooting.md'
   - 'Archived':
     - 'Previous Manuals and API docs': 'archive.md'
+  - 'FAQ': 'faq.md'
 extra_css:
   - custom.css
+extra_javascript:
+  - custom.js
 markdown_extensions:
   - attr_list
   - admonition

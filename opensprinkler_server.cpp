@@ -115,6 +115,8 @@ extern "C" {
 		#include <FS.h>
 		#include <LittleFS.h>
 		#include "espconnect.h"
+		#include <HTTPClient.h>
+		#include <WiFiClientSecure.h>
 		#include <Update.h>
 		#include <ETH.h>
 		extern WebServer *update_server;
@@ -629,7 +631,7 @@ boolean check_password(char *p)
 	/*if(req.isCloudRequest()){ // password is not required if this is coming from cloud connection
 		return true;
 	}*/
-	
+
 	// Check password parameter
 	const char *pw = req.getQueryParameter("pw");
 	if(pw != NULL && os.password_verify(pw)) {
@@ -1291,7 +1293,7 @@ void server_change_program(OTF_PARAMS_DEF) {
 	*(char*)(&prog) = parse_listdata(&pv);
 	prog.days[0]= parse_listdata(&pv);
 	prog.days[1]= parse_listdata(&pv);
-	
+
 	if (prog.type == PROGRAM_TYPE_INTERVAL) {
 		if (prog.days[1] == 0) handle_return(HTML_DATA_OUTOFBOUND)
 		else if (prog.days[1] >= 1) {
@@ -1415,10 +1417,10 @@ void server_json_options_main() {
 	//feature flag Analog Sensor API
 	bfill.emit_p(PSTR(",\"feature\":\"ASB"));
 	#if defined(ESP32)
-	bfill.emit_p(PSTR(",ESP32"));	
+	bfill.emit_p(PSTR(",ESP32"));
 	#endif
 	#if defined(OS_ENABLE_BLE)
-	bfill.emit_p(PSTR(",BLE"));	
+	bfill.emit_p(PSTR(",BLE"));
 	#endif
 	#if defined(OS_ENABLE_ZIGBEE)
 	bfill.emit_p(PSTR(",ZIGBEE"));
@@ -2093,7 +2095,7 @@ void server_change_options(OTF_PARAMS_DEF)
 	os.iopts_save();
 	os.populate_master();
 
-#if defined(ESP8266) 
+#if defined(ESP8266)
 	if (tpdv_change) {
 		os.setup_pd_voltage();
 	}
@@ -2140,7 +2142,7 @@ void server_change_password(OTF_PARAMS_DEF) {
 #endif
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("npw"), true)) {
 		const int pwBufferSize = TMP_BUFFER_SIZE/2;
-		char *tbuf2 = tmp_buffer + pwBufferSize;	// use the second half of tmp_buffer 
+		char *tbuf2 = tmp_buffer + pwBufferSize;	// use the second half of tmp_buffer
 		if (findKeyVal(FKV_SOURCE, tbuf2, pwBufferSize, PSTR("cpw"), true) && strncmp(tmp_buffer, tbuf2, pwBufferSize) == 0) {
 			os.sopt_save(SOPT_PASSWORD, tmp_buffer);
 			handle_return(HTML_SUCCESS);
@@ -2466,7 +2468,7 @@ void server_pause_queue(OTF_PARAMS_DEF) {
 			pd.set_pause();
 			os.status.pause_state = 1;
 		}
-		
+
 		handle_return(HTML_SUCCESS);
 	}
 
@@ -2668,6 +2670,138 @@ void server_matter_commission(OTF_PARAMS_DEF) {
 
 	bool ok = OSMatter::instance().open_commissioning_window(timeout);
 	bfill.emit_p(PSTR("{\"result\":$D}"), ok ? 1 : 0);
+	handle_return(HTML_OK);
+}
+
+/** Download and write Matter KVS partition.
+ * GET /mk?pw=xxx[&u=<url>]
+ *   u  – optional URL of matter_kvs.bin; defaults to OpenSprinkler upgrade URL.
+ * Response: {"result":1,"written":N} on success, {"result":0,"error":"..."} on failure.
+ */
+void server_matter_write_kvs(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	const char *default_url = "https://opensprinklershop.de/upgrade/matter_kvs.bin";
+	String url(default_url);
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("u"), true) && tmp_buffer[0]) {
+		url = String(tmp_buffer);
+	}
+
+	const esp_partition_t *part = esp_partition_find_first(
+		ESP_PARTITION_TYPE_DATA,
+		ESP_PARTITION_SUBTYPE_DATA_NVS,
+		"matter_kvs"
+	);
+	if (!part) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"matter_kvs partition not found\"}"));
+		handle_return(HTML_OK);
+	}
+
+	if (part->size == 0) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"matter_kvs partition size is zero\"}"));
+		handle_return(HTML_OK);
+	}
+
+	HTTPClient http;
+	int httpCode = 0;
+	bool opened = false;
+
+	if (url.startsWith("https://")) {
+		WiFiClientSecure client;
+		client.setInsecure();
+		if (http.begin(client, url)) {
+			httpCode = http.GET();
+			opened = true;
+		}
+	} else {
+		WiFiClient client;
+		if (http.begin(client, url)) {
+			httpCode = http.GET();
+			opened = true;
+		}
+	}
+
+	if (!opened || httpCode != HTTP_CODE_OK) {
+		if (opened) http.end();
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"download failed\",\"http\":$D}"), opened ? httpCode : -1);
+		handle_return(HTML_OK);
+	}
+
+	int contentLen = http.getSize();
+	if (contentLen > 0 && (size_t)contentLen > part->size) {
+		http.end();
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"binary too large\",\"size\":$D,\"max\":$D}"), contentLen, (int)part->size);
+		handle_return(HTML_OK);
+	}
+
+	WiFiClient *stream = http.getStreamPtr();
+	if (!stream) {
+		http.end();
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"no response stream\"}"));
+		handle_return(HTML_OK);
+	}
+
+	esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+	if (err != ESP_OK) {
+		http.end();
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"erase failed\",\"esp\":$D}"), (int)err);
+		handle_return(HTML_OK);
+	}
+
+	uint8_t buf[1024];
+	size_t written = 0;
+	unsigned long deadline = millis() + 60000UL;
+
+	while (http.connected() || stream->available()) {
+		int avail = stream->available();
+		if (avail <= 0) {
+			if ((long)(millis() - deadline) > 0) {
+				http.end();
+				bfill.emit_p(PSTR("{\"result\":0,\"error\":\"download timeout\"}"));
+				handle_return(HTML_OK);
+			}
+			delay(5);
+			continue;
+		}
+
+		int toRead = avail;
+		if (toRead > (int)sizeof(buf)) toRead = sizeof(buf);
+		if (written + (size_t)toRead > part->size) {
+			http.end();
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"partition overflow\"}"));
+			handle_return(HTML_OK);
+		}
+
+		int n = stream->readBytes((char*)buf, toRead);
+		if (n <= 0) continue;
+
+		err = esp_partition_write(part, written, buf, (size_t)n);
+		if (err != ESP_OK) {
+			http.end();
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"write failed\",\"esp\":$D}"), (int)err);
+			handle_return(HTML_OK);
+		}
+
+		written += (size_t)n;
+		deadline = millis() + 60000UL;
+
+		if (contentLen > 0 && written >= (size_t)contentLen) break;
+	}
+
+	http.end();
+
+	if (written == 0) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"empty download\"}"));
+		handle_return(HTML_OK);
+	}
+
+	bfill.emit_p(PSTR("{\"result\":1,\"written\":$D}"), (int)written);
 	handle_return(HTML_OK);
 }
 #endif
@@ -3440,7 +3574,7 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	// Build JSON configuration
 	JsonDocument doc;
 	JsonObject config = doc.to<JsonObject>();
-	
+
 	const OTF::LinkedMapNode<char *> * qp = FKV_SOURCE.getQueryParameters();
 	while (qp) {
 		const char* key = qp->key;
@@ -3459,7 +3593,7 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	// when rapid-fire requests arrive — schedule deferred save instead)
 	int ret = sensor_define(config, false);
 	if (ret == HTTP_RQT_SUCCESS) sensor_request_save();
-	
+
 	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
 
@@ -3523,11 +3657,11 @@ void server_sensor_get(OTF_PARAMS_DEF) {
 
 	bfill.emit_p(PSTR("{\"datas\":["));
 	bool first = true;
-	
+
 	for (auto it = sensors_iterate_begin(); ; ) {
 		SensorBase *sensor = sensors_iterate_next(it);
 		if (!sensor) break;
-		
+
 		if (nr != 0 && nr != sensor->nr)
 			continue;
 
@@ -3580,7 +3714,7 @@ void server_sensor_readnow(OTF_PARAMS_DEF) {
 	for (auto it = sensors_iterate_begin(); ; ) {
 		SensorBase *sensor = sensors_iterate_next(it);
 		if (!sensor) break;
-		
+
 		if (nr != 0 && nr != sensor->nr)
 			continue;
 
@@ -3608,7 +3742,7 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
 	for (auto it = sensors_iterate_begin(); ; ) {
 		SensorBase *sensor = sensors_iterate_next(it);
 		if (!sensor) break;
-		
+
 		if (first) first = false; else bfill.emit_p(PSTR(","));
 
 		ArduinoJson::JsonDocument doc;
@@ -4005,13 +4139,13 @@ void server_sensorlog_clear(OTF_PARAMS_DEF) {
 		log = atoi(tmp_buffer);
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true)) // Filter log for sensor-nr
 		nr = strtoul(tmp_buffer, NULL, 0);
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("under"), true)) // values lower than 
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("under"), true)) // values lower than
 		use_under = sscanf(tmp_buffer, "%lf", &under) == 1;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("over"), true)) // values higher than 
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("over"), true)) // values higher than
 		use_over = sscanf(tmp_buffer, "%lf", &over) == 1;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("before"), true)) // values higher than 
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("before"), true)) // values higher than
 		sscanf(tmp_buffer, "%lu", &before);
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("after"), true)) // values higher than 
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("after"), true)) // values higher than
 		sscanf(tmp_buffer, "%lu", &after);
 
 	DEBUG_PRINTLN(F("server_sensorlog_clear"));
@@ -4084,7 +4218,7 @@ void server_fyta_get_credentials(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("{"));
         bfill.emit_p(PSTR("\"fyta\":$O"), SOPT_FYTA_OPTS);
         bfill.emit_p(PSTR("}"));
-        
+
         handle_return(HTML_OK);
         DEBUG_PRINTLN(F("server_fyta_get_credentials done"));
 }
@@ -4108,7 +4242,7 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 #endif
 
     FytaApi fytaapi(os.sopt_load(SOPT_FYTA_OPTS));
-    
+
     JsonDocument doc;
     if (!fytaapi.getPlantList(doc)) {
       DEBUG_PRINTLN(F("No fyta plants found!"));
@@ -4126,8 +4260,8 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 		if (plant.containsKey("sensor") && plant["sensor"]["has_sensor"].as<bool>()) {
 			if (first) first = false; else bfill.emit_p(PSTR(","));
 			ulong id = plant["id"];
-			
-		#if defined(ESP8266) || defined(ESP32) 
+
+		#if defined(ESP8266) || defined(ESP32)
 			String nickname = plant["nickname"];
 			String scientific_name = plant["scientific_name"];
 			String thumb = plant["thumb_path"];
@@ -4143,7 +4277,7 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("]}"));
 
 	handle_return(HTML_OK);
-	DEBUG_PRINTLN(F("server_fyta_query_plants done"));	
+	DEBUG_PRINTLN(F("server_fyta_query_plants done"));
 }
 #endif
 
@@ -4249,70 +4383,70 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	//type = SENSOR12
 	uint16_t sensor12 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("sensor12"), true))
-		sensor12 = strtoul(tmp_buffer, NULL, 0); 
+		sensor12 = strtoul(tmp_buffer, NULL, 0);
 	bool invers = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("invers"), true))
-		invers = strtoul(tmp_buffer, NULL, 0) > 0; 
+		invers = strtoul(tmp_buffer, NULL, 0) > 0;
 
 	//type = AND/OR/XOR:
 	uint16_t monitor1 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("monitor1"), true))
-		monitor1 = strtoul(tmp_buffer, NULL, 0); 
+		monitor1 = strtoul(tmp_buffer, NULL, 0);
 	uint16_t monitor2 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("monitor2"), true))
-		monitor2 = strtoul(tmp_buffer, NULL, 0); 
+		monitor2 = strtoul(tmp_buffer, NULL, 0);
 	uint16_t monitor3 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("monitor3"), true))
-		monitor3 = strtoul(tmp_buffer, NULL, 0); 
+		monitor3 = strtoul(tmp_buffer, NULL, 0);
 	uint16_t monitor4 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("monitor4"), true))
-		monitor4 = strtoul(tmp_buffer, NULL, 0); 
+		monitor4 = strtoul(tmp_buffer, NULL, 0);
 
 	bool invers1 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("invers1"), true))
-		invers1 = strtoul(tmp_buffer, NULL, 0) > 0; 
+		invers1 = strtoul(tmp_buffer, NULL, 0) > 0;
 	bool invers2 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("invers2"), true))
-		invers2 = strtoul(tmp_buffer, NULL, 0) > 0; 
+		invers2 = strtoul(tmp_buffer, NULL, 0) > 0;
 	bool invers3 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("invers3"), true))
-		invers3 = strtoul(tmp_buffer, NULL, 0) > 0; 
+		invers3 = strtoul(tmp_buffer, NULL, 0) > 0;
 	bool invers4 = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("invers4"), true))
-		invers4 = strtoul(tmp_buffer, NULL, 0) > 0; 
+		invers4 = strtoul(tmp_buffer, NULL, 0) > 0;
 
-	//type = NOT 
+	//type = NOT
 	uint16_t monitor = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("monitor"), true))
-		monitor = strtoul(tmp_buffer, NULL, 0); 
+		monitor = strtoul(tmp_buffer, NULL, 0);
 
 	//type = TIME
 	uint16_t time_from = 0000;
 	uint16_t time_to = 2400;
 	uint8_t wdays = 0xFF;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("from"), true)) //Format: HHMM
-		time_from = strtoul(tmp_buffer, NULL, 0); 
+		time_from = strtoul(tmp_buffer, NULL, 0);
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("to"), true)) //Format: HHMM
-		time_to = strtoul(tmp_buffer, NULL, 0); 
+		time_to = strtoul(tmp_buffer, NULL, 0);
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wdays"), true)) //0=Monday
-		wdays = strtoul(tmp_buffer, NULL, 0); 
+		wdays = strtoul(tmp_buffer, NULL, 0);
 
 	//type = REMOTE ip
 	uint16_t rmonitor = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rmonitor"), true))
-		rmonitor = strtoul(tmp_buffer, NULL, 0); 
+		rmonitor = strtoul(tmp_buffer, NULL, 0);
 	uint32_t ip = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ip"), true))
-		ip = strtoul(tmp_buffer, NULL, 0); 
+		ip = strtoul(tmp_buffer, NULL, 0);
 	uint16_t port = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("port"), true))
-		port = strtoul(tmp_buffer, NULL, 0); 
+		port = strtoul(tmp_buffer, NULL, 0);
 
 	ulong reset_seconds = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs"), true))
-		reset_seconds = strtoul(tmp_buffer, NULL, 0); 
+		reset_seconds = strtoul(tmp_buffer, NULL, 0);
 
-	Monitor_Union_t m; 
+	Monitor_Union_t m;
 	switch (type) {
 		case MONITOR_MIN:
 		case MONITOR_MAX:
@@ -4383,7 +4517,7 @@ void monitorconfig_json(Monitor_t *mon) {
 		case MONITOR_XOR:
 			bfill.emit_p(PSTR("\"monitor1\":$D,\"monitor2\":$D,\"monitor3\":$D,\"monitor4\":$D,\"invers1\":$D,\"invers2\":$D,\"invers3\":$D,\"invers4\":$D}"),
 				mon->m.andorxor.monitor1, mon->m.andorxor.monitor2, mon->m.andorxor.monitor3, mon->m.andorxor.monitor4,
-				mon->m.andorxor.invers1, mon->m.andorxor.invers2,  mon->m.andorxor.invers3,  mon->m.andorxor.invers4); 
+				mon->m.andorxor.invers1, mon->m.andorxor.invers2,  mon->m.andorxor.invers3,  mon->m.andorxor.invers4);
 			break;
 		case MONITOR_NOT:
 			bfill.emit_p(PSTR("\"monitor\":$D}"),
@@ -4407,7 +4541,7 @@ void monitorconfig_json() {
 	for (auto it = monitor_iterate_begin(); ; ) {
 		Monitor_t *mon = monitor_iterate_next(it);
 		if (!mon) break;
-		
+
 		if (!first) bfill.emit_p(PSTR(","));
 		first = false;
 		monitorconfig_json(mon);
@@ -4455,7 +4589,7 @@ void server_monitor_list(OTF_PARAMS_DEF) {
 	for (auto it = monitor_iterate_begin(); ; ) {
 		Monitor_t *mon = monitor_iterate_next(it);
 		if (!mon) break;
-		
+
 		if (nr > 0 && mon->nr != nr)
 			continue;
 		if (prog >= 0 && mon->prog != (uint)prog)
@@ -4487,7 +4621,7 @@ void server_sensorprog_config(OTF_PARAMS_DEF) {
 #endif
 
 	//DEBUG_PRINTLN(F("server_sensorprog_config"));
-	
+
 	// Build JSON object from request parameters
 	ArduinoJson::JsonDocument doc;
 	ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
@@ -4545,13 +4679,13 @@ void server_sensorprog_config(OTF_PARAMS_DEF) {
 void progconfig_json(ProgSensorAdjust *p, double current) {
 	ArduinoJson::JsonDocument doc;
 	ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
-	
+
 	// Use toJson() method to serialize all fields
 	p->toJson(obj);
-	
+
 	// Add calculated current value
 	obj["current"] = current;
-	
+
 	// Serialize to string and emit
 	String jsonStr;
 	ArduinoJson::serializeJson(doc, jsonStr);
@@ -4563,7 +4697,7 @@ void progconfig_json() {
 	for (auto it = prog_adjust_iterate_begin(); ; ) {
 		ProgSensorAdjust *p = prog_adjust_iterate_next(it);
 		if (!p) break;
-		
+
 		double current = calc_sensor_watering_by_nr(p->nr);
 
 		if (!first) bfill.emit_p(PSTR(","));
@@ -4589,7 +4723,7 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 	uint nr = 0;
 	int prog = -1;
 	uint sensor_nr = 0;
-	
+
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
 		nr = strtoul(tmp_buffer, NULL, 0);
 
@@ -4612,7 +4746,7 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 	for (auto it = prog_adjust_iterate_begin(); ; ) {
 		ProgSensorAdjust *p = prog_adjust_iterate_next(it);
 		if (!p) break;
-		
+
 		if (nr > 0 && p->nr != nr)
 			continue;
 		if (prog >= 0 && p->prog != (uint)prog)
@@ -4630,7 +4764,7 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 	for (auto it = prog_adjust_iterate_begin(); ; ) {
 		ProgSensorAdjust *p = prog_adjust_iterate_next(it);
 		if (!p) break;
-		
+
 		if (nr > 0 && p->nr != nr)
 			continue;
 		if (prog >= 0 && p->prog != (uint)prog)
@@ -4657,7 +4791,7 @@ static const int sensor_types[] = {
 	SENSOR_TH100_MOIS,
 	SENSOR_TH100_TEMP,
 	SENSOR_MODBUS_RTU,
-#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)	
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	SENSOR_ZIGBEE,
 #endif
 #if defined(ESP32)
@@ -4704,7 +4838,7 @@ static const int sensor_types[] = {
 	SENSOR_GROUP_MAX,
 	SENSOR_GROUP_AVG,
 	SENSOR_GROUP_SUM,
-#if defined(ESP8266) || defined(ESP32)	
+#if defined(ESP8266) || defined(ESP32)
 	SENSOR_FREE_MEMORY,
 	SENSOR_FREE_STORE,
 #endif
@@ -4717,7 +4851,7 @@ static const char* sensor_names[] = {
 	"Truebner TH100 RS485 Modbus, humidity mode",
 	"Truebner TH100 RS485 Modbus, temperature mode",
 	"RS485/MODBUS RTU generic sensor",
-#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)	
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	"Zigbee sensor",
 #endif
 #if defined(ESP32)
@@ -4880,8 +5014,8 @@ void server_sensor_types(OTF_PARAMS_DEF) {
 	{
 		int type = sensor_types[i];
 		if (sensor_type_supported(type))
-			count++;	
-	}	
+			count++;
+	}
 
 	bfill.emit_p(PSTR("{\"count\":$D,\"detected\":$D,\"sensorTypes\":["), count, get_asb_detected_boards());
 
@@ -4956,7 +5090,7 @@ void server_usage(OTF_PARAMS_DEF) {
 
 extern uint32_t ping_ok;
 
-#if defined(ESP8266) 
+#if defined(ESP8266)
 
 	struct FSInfo fsinfo;
 
@@ -4990,7 +5124,7 @@ extern uint32_t ping_ok;
 
 #endif
 
-	bfill.emit_p(PSTR(",\"logfiles\":{\"l01\":$D,\"l02\":$D,\"l11\":$D,\"l12\":$D,\"l21\":$D,\"l22\":$D}"), 
+	bfill.emit_p(PSTR(",\"logfiles\":{\"l01\":$D,\"l02\":$D,\"l11\":$D,\"l12\":$D,\"l21\":$D,\"l22\":$D}"),
 		file_size(SENSORLOG_FILENAME1) / sizeof(SensorLog_t),
 		file_size(SENSORLOG_FILENAME2) / sizeof(SensorLog_t),
 		file_size(SENSORLOG_FILENAME_WEEK1) / sizeof(SensorLog_t),
@@ -5041,15 +5175,15 @@ void server_sensorprog_calc(OTF_PARAMS_DEF) {
 
 	//methods for visual calculation:
 	ProgSensorAdjust progAdj;
-	progAdj.type = type;	
-	
+	progAdj.type = type;
+
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("sensor"), true))
 		handle_return(HTML_DATA_MISSING);
 	progAdj.sensor = strtoul(tmp_buffer, NULL, 0);
 	SensorBase *sensor = sensor_by_nr(progAdj.sensor); // Sensor nr
 	if (!sensor)
 		handle_return(HTML_DATA_MISSING);
-	
+
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("factor1"), true))
 		handle_return(HTML_DATA_MISSING);
 	progAdj.factor1 = atof(tmp_buffer); // Factor 1
@@ -5083,7 +5217,7 @@ void server_sensorprog_calc(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	bfill.emit_p(PSTR("{\"adjustment\":{\"min\":$D,\"max\":$D,\"current\":$E,\"adjust\":$E,\"unit\":\"$S\","), minEx, maxEx, 
+	bfill.emit_p(PSTR("{\"adjustment\":{\"min\":$D,\"max\":$D,\"current\":$E,\"adjust\":$E,\"unit\":\"$S\","), minEx, maxEx,
 		sensor->last_data, calc_sensor_watering_int(&progAdj, sensor->last_data), getSensorUnit(sensor));
 
 	int nvalues = max(11, maxEx-minEx+1);
@@ -5105,7 +5239,7 @@ void server_sensorprog_calc(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("$E"), outVal[i]);
 	}
 	bfill.emit_p(PSTR("]}}"));
-	
+
 	handle_return(HTML_OK);
 }
 
@@ -5182,7 +5316,7 @@ void server_sensorconfig_backup(OTF_PARAMS_DEF) {
 	//Backup type: 0=no backup 1=Sensors 2=Adjustments 3=Sensors+Adjustments
 	int backup = BACKUP_SENSORS|BACKUP_ADJUSTMENTS|BACKUP_MONITORS;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("backup"), true)) {
-		backup = strtol(tmp_buffer, NULL, 0); 
+		backup = strtol(tmp_buffer, NULL, 0);
 	}
 
 
@@ -5235,7 +5369,7 @@ void server_influx_set(OTF_PARAMS_DEF) {
 
 	int enabled = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("en"), true)) {
-		enabled = strtol(tmp_buffer, NULL, 0); 
+		enabled = strtol(tmp_buffer, NULL, 0);
 	}
 
 	char *url = NULL;
@@ -5248,7 +5382,7 @@ void server_influx_set(OTF_PARAMS_DEF) {
 	int port = 8086;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("port"), true)) {
 		DEBUG_PRINTLN(tmp_buffer);
-		port = strtol(tmp_buffer, NULL, 0); 
+		port = strtol(tmp_buffer, NULL, 0);
 	}
 
 	char *org = NULL;
@@ -5793,9 +5927,9 @@ void server_zigbee_open_network(OTF_PARAMS_DEF) {
 	}
 
 	sensor_zigbee_open_network(duration);
-	
+
 	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D}"), duration);
-	
+
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
@@ -5814,9 +5948,9 @@ void server_zigbee_clear_flags(OTF_PARAMS_DEF) {
 #endif
 
 	sensor_zigbee_clear_new_device_flags();
-	
+
 	bfill.emit_p(PSTR("{\"result\":1}"));
-	
+
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
@@ -5845,17 +5979,17 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 	             sensor_ble_is_scanning() ? 1 : 0,
 	             sensor_ble_onresult_total(),
 	             sensor_ble_discovered_count());
-	
+
 	bfill.emit_p(PSTR("{\"devices\":["));
-	
+
 	for (int i = 0; i < count; i++) {
 		if (i > 0) bfill.emit_p(PSTR(","));
-		
+
 		char addr_str[18];
 		snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X",
 		         devices[i].address[0], devices[i].address[1], devices[i].address[2],
 		         devices[i].address[3], devices[i].address[4], devices[i].address[5]);
-		
+
 		const char* svc_uuid = devices[i].service_uuid;
 		if (!svc_uuid) svc_uuid = "";
 		const char* svc_name = "";
@@ -5879,9 +6013,9 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 		             mdl,
 		             devices[i].has_adv_data ? devices[i].adv_battery : 0);
 	}
-	
+
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);
-	
+
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
@@ -5907,11 +6041,11 @@ void server_ble_start_scan(OTF_PARAMS_DEF) {
 		if (duration < 1) duration = 1;
 		if (duration > 300) duration = 300; // Max 5 minutes
 	}
-	
+
 	sensor_ble_start_scan(duration);
-	
+
 	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D}"), duration);
-	
+
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
@@ -5930,9 +6064,9 @@ void server_ble_clear_flags(OTF_PARAMS_DEF) {
 #endif
 
 	sensor_ble_clear_new_device_flags();
-	
+
 	bfill.emit_p(PSTR("{\"result\":1}"));
-	
+
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
 }
@@ -6010,6 +6144,7 @@ const char _url_keys[] PROGMEM =
 #if defined(ESP32) && defined(ENABLE_MATTER)
 	"jm"  // Matter: get pairing information
 	"mm"  // Matter: open commissioning window
+	"mk"  // Matter: write matter_kvs partition
 #endif
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)
 	"rk"  // RainMaker: get status
@@ -6106,6 +6241,7 @@ URLHandler urls[] = {
 #if defined(ESP32) && defined(ENABLE_MATTER)
 	server_json_matter, // jm
 	server_matter_commission, // mm
+	server_matter_write_kvs, // mk
 #endif
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)
 	server_json_rainmaker, // rk
@@ -6289,7 +6425,7 @@ void start_server_client() {
 			otf->on(uri, urls[i]);
 		}
 		callback_initialized = true;
-		
+
 		// Start HTTP/HTTPS server (WICHTIG: nach Callbacks registrieren!)
 		DEBUG_PRINTLN(F("[SERVER] Calling otf->getServer()->begin()..."));
 		if(otf->getServer()) {
@@ -6524,7 +6660,7 @@ ulong getNtpTime() {
 		os.iopts[IOPT_NTP_IP2],
 		os.iopts[IOPT_NTP_IP3],
 		os.iopts[IOPT_NTP_IP4]};	// todo: handle changes to ntpip dynamically
-		
+
 #if defined(ESP32) && !defined(ESP8266)
 		// Stop any existing SNTP client (e.g. started by RainMaker via legacy esp_sntp_init)
 		// before reconfiguring with our preferred servers

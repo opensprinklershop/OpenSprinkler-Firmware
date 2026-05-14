@@ -17,6 +17,7 @@
 #if defined(ESP32)
 #include <Matter.h>
 #include <app/server/Server.h>
+#include <app-common/zap-generated/attributes/Accessors.h>
 #include <new>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -24,7 +25,7 @@
 #include "sensor_ble.h"
 #endif
 #include <unordered_map>
-#include <MatterEndpoints/MatterOnOffPlugin.h>
+#include <MatterEndpoints/MatterOnOffLight.h>
 #include <MatterEndpoints/MatterTemperatureSensor.h>
 #include <MatterEndpoints/MatterHumiditySensor.h>
 #include <MatterEndpoints/MatterPressureSensor.h>
@@ -64,14 +65,22 @@ extern ProgramData pd;
 
 // ====== State Storage (Module-level with PSRAM) ======
 namespace {
+#if !defined(CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT)
+#define CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT 16
+#endif
+
+  // The esp-matter dynamic endpoint limit is reached one endpoint earlier in this
+  // composition because the framework also consumes internal endpoint capacity.
+  constexpr int kMaxDynamicEndpoints = CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT - 1;
+
   // Type aliases for PSRAM-backed maps
-  using StationMap = std::unordered_map<uint8_t, std::unique_ptr<MatterOnOffPlugin>,
+  using StationMap = std::unordered_map<uint8_t, std::unique_ptr<MatterOnOffLight>,
     std::hash<uint8_t>, std::equal_to<uint8_t>,
-    PSRAMAllocator<std::pair<const uint8_t, std::unique_ptr<MatterOnOffPlugin>>>>;
+    PSRAMAllocator<std::pair<const uint8_t, std::unique_ptr<MatterOnOffLight>>>>;
   
-  using ProgramMap = std::unordered_map<uint8_t, std::unique_ptr<MatterOnOffPlugin>,
+  using ProgramMap = std::unordered_map<uint8_t, std::unique_ptr<MatterOnOffLight>,
     std::hash<uint8_t>, std::equal_to<uint8_t>,
-    PSRAMAllocator<std::pair<const uint8_t, std::unique_ptr<MatterOnOffPlugin>>>>;
+    PSRAMAllocator<std::pair<const uint8_t, std::unique_ptr<MatterOnOffLight>>>>;
 
   using TempSensorMap = std::unordered_map<uint16_t, std::unique_ptr<MatterTemperatureSensor>,
     std::hash<uint16_t>, std::equal_to<uint16_t>,
@@ -171,6 +180,53 @@ namespace {
   String qr_code_url = "";
   String manual_pairing_code = "";
   uint32_t config_signature = 0;
+  String last_node_label = "";
+  bool node_label_writable = true;
+
+  bool matter_sync_node_label(bool force = false) {
+    if (!matter_started || !node_label_writable) {
+      return false;
+    }
+
+    String desired = os.sopt_load(SOPT_DEVICE_NAME);
+    if (desired.length() == 0) {
+      desired = DEFAULT_DEVICE_NAME;
+    }
+
+    // Keep within Matter Basic Information NodeLabel max length.
+    if (desired.length() > 32) {
+      desired = desired.substring(0, 32);
+    }
+
+    if (!force && desired == last_node_label) {
+      return true;
+    }
+
+    esp_matter::lock::status_t lock_status =
+      esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
+    if (lock_status == esp_matter::lock::FAILED) {
+      DEBUG_PRINTLN("[Matter] NodeLabel update skipped: CHIP lock timeout");
+      return false;
+    }
+
+    chip::Protocols::InteractionModel::Status status =
+      chip::app::Clusters::BasicInformation::Attributes::NodeLabel::Set(
+        0, chip::CharSpan::fromCharString(desired.c_str()));
+
+    if (lock_status == esp_matter::lock::SUCCESS) {
+      esp_matter::lock::chip_stack_unlock();
+    }
+
+    if (status == chip::Protocols::InteractionModel::Status::Success) {
+      last_node_label = desired;
+      DEBUG_PRINTLN("[Matter] NodeLabel set to: " + desired);
+      return true;
+    }
+
+    node_label_writable = false;
+    DEBUG_PRINTF("[Matter] NodeLabel is not writable on this endpoint (status=%d)\n", (int)status);
+    return false;
+  }
 }
 
 uint32_t matter_get_init_time_ms() {
@@ -280,7 +336,7 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
 }
 
 // ====== Station Management ======
-void create_station_endpoints() {
+void create_station_endpoints(int &budget) {
   DEBUG_PRINTF("[Matter] Creating endpoints for %d stations\n", os.nstations);
   
   for(uint8_t sid = 0; sid < os.nstations; sid++) {
@@ -288,16 +344,22 @@ void create_station_endpoints() {
     bool disabled = (os.attrib_dis[bid] & (1 << sbit)) != 0;
     if(disabled) continue;
     
+    if (budget <= 0) {
+      DEBUG_PRINTLN("[Matter] Dynamic endpoint budget exhausted (stations)");
+      break;
+    }
+
     // Allocate endpoint in PSRAM
-    void* mem = heap_caps_malloc(sizeof(MatterOnOffPlugin), MALLOC_CAP_SPIRAM);
+    void* mem = heap_caps_malloc(sizeof(MatterOnOffLight), MALLOC_CAP_SPIRAM);
     if(!mem) {
       DEBUG_PRINTLN("[Matter] PSRAM allocation failed for station");
       continue;
     }
-    stations[sid] = std::unique_ptr<MatterOnOffPlugin>(new(mem) MatterOnOffPlugin());
+    stations[sid] = std::unique_ptr<MatterOnOffLight>(new(mem) MatterOnOffLight());
     bool is_on = (os.station_bits[bid] >> sbit) & 1;
     
     if(stations[sid]->begin(is_on)) {
+      budget--;
       stations[sid]->onChange([sid](bool value) {
         DEBUG_PRINTF("[Matter] Station %d -> %s\n", sid, value ? "ON" : "OFF");
         if(value) OSMatter::instance().station_on(sid);
@@ -310,17 +372,23 @@ void create_station_endpoints() {
 }
 
 // ====== Program Management ======
-void create_program_endpoints() {
+void create_program_endpoints(int &budget) {
   DEBUG_PRINTF("[Matter] Creating program endpoints for %d programs\n", pd.nprograms);
 
   for (uint8_t pid = 0; pid < pd.nprograms; pid++) {
-    void *mem = heap_caps_malloc(sizeof(MatterOnOffPlugin), MALLOC_CAP_SPIRAM);
+    if (budget <= 0) {
+      DEBUG_PRINTLN("[Matter] Dynamic endpoint budget exhausted (programs)");
+      break;
+    }
+
+    void *mem = heap_caps_malloc(sizeof(MatterOnOffLight), MALLOC_CAP_SPIRAM);
     if (!mem) {
       DEBUG_PRINTLN("[Matter] PSRAM allocation failed for program");
       continue;
     }
-    programs[pid] = std::unique_ptr<MatterOnOffPlugin>(new(mem) MatterOnOffPlugin());
+    programs[pid] = std::unique_ptr<MatterOnOffLight>(new(mem) MatterOnOffLight());
     if (programs[pid]->begin(false)) {
+      budget--;
       programs[pid]->onChange([pid](bool value) {
         DEBUG_PRINTF("[Matter] Program %d -> %s (queued)\n", pid, value ? "START" : "STOP");
         MatterCmd cmd{};
@@ -335,7 +403,7 @@ void create_program_endpoints() {
 }
 
 // ====== Sensor Management ======
-void create_sensor_endpoints() {
+void create_sensor_endpoints(int &budget) {
   size_t sensor_total = sensor_count();
   DEBUG_PRINTF("[Matter] Discovering %zu sensors\n", sensor_total);
 
@@ -348,6 +416,13 @@ void create_sensor_endpoints() {
     }
     uint16_t key = sensor_key(sensor->type, sensor->nr);
     
+    uint8_t unit = sensor->getUnitId();
+
+    if (budget <= 0) {
+      DEBUG_PRINTLN("[Matter] Dynamic endpoint budget exhausted (sensors)");
+      break;
+    }
+
     switch(sensor->type) {
       // Temperature sensors
       case SENSOR_SMT100_TEMP:
@@ -365,12 +440,18 @@ void create_sensor_endpoints() {
         temp_sensors[key] = std::unique_ptr<MatterTemperatureSensor>(
           new(mem) MatterTemperatureSensor());
         if(temp_sensors[key]->begin()) {
+          budget--;
           DEBUG_PRINTF("[Matter] Temp sensor %d.%d\n", sensor->type, sensor->nr);
         }
         break;
       }
       
       // Humidity sensors
+      case SENSOR_SMT100_MOIS:
+      case SENSOR_SMT50_MOIS:
+      case SENSOR_SMT100_ANALOG_MOIS:
+      case SENSOR_VH400:
+      case SENSOR_FYTA_MOISTURE:
       case SENSOR_TH100_MOIS:
       case SENSOR_WEATHER_HUM: {
         void* mem = heap_caps_malloc(sizeof(MatterHumiditySensor), MALLOC_CAP_SPIRAM);
@@ -378,6 +459,7 @@ void create_sensor_endpoints() {
         humidity_sensors[key] = std::unique_ptr<MatterHumiditySensor>(
           new(mem) MatterHumiditySensor());
         if(humidity_sensors[key]->begin()) {
+          budget--;
           DEBUG_PRINTF("[Matter] Humidity sensor %d.%d\n", sensor->type, sensor->nr);
         }
         break;
@@ -391,7 +473,48 @@ void create_sensor_endpoints() {
         pressure_sensors[key] = std::unique_ptr<MatterPressureSensor>(
           new(mem) MatterPressureSensor());
         if(pressure_sensors[key]->begin()) {
+          budget--;
           DEBUG_PRINTF("[Matter] Precip sensor %d.%d\n", sensor->type, sensor->nr);
+        }
+        break;
+      }
+
+      // Generic sensors (MQTT/Zigbee/BLE/Remote/Groups): map by unit where possible.
+      case SENSOR_MQTT:
+      case SENSOR_ZIGBEE:
+      case SENSOR_BLE:
+      case SENSOR_REMOTE:
+      case SENSOR_GROUP_MIN:
+      case SENSOR_GROUP_MAX:
+      case SENSOR_GROUP_AVG:
+      case SENSOR_GROUP_SUM: {
+        if (unit == UNIT_DEGREE || unit == UNIT_FAHRENHEIT) {
+          void* mem = heap_caps_malloc(sizeof(MatterTemperatureSensor), MALLOC_CAP_SPIRAM);
+          if(!mem) break;
+          temp_sensors[key] = std::unique_ptr<MatterTemperatureSensor>(
+            new(mem) MatterTemperatureSensor());
+          if(temp_sensors[key]->begin()) {
+            budget--;
+            DEBUG_PRINTF("[Matter] Generic temp sensor %d.%d\n", sensor->type, sensor->nr);
+          }
+        } else if (unit == UNIT_HUM_PERCENT || unit == UNIT_PERCENT) {
+          void* mem = heap_caps_malloc(sizeof(MatterHumiditySensor), MALLOC_CAP_SPIRAM);
+          if(!mem) break;
+          humidity_sensors[key] = std::unique_ptr<MatterHumiditySensor>(
+            new(mem) MatterHumiditySensor());
+          if(humidity_sensors[key]->begin()) {
+            budget--;
+            DEBUG_PRINTF("[Matter] Generic humidity sensor %d.%d\n", sensor->type, sensor->nr);
+          }
+        } else if (unit == UNIT_MM || unit == UNIT_INCH) {
+          void* mem = heap_caps_malloc(sizeof(MatterPressureSensor), MALLOC_CAP_SPIRAM);
+          if(!mem) break;
+          pressure_sensors[key] = std::unique_ptr<MatterPressureSensor>(
+            new(mem) MatterPressureSensor());
+          if(pressure_sensors[key]->begin()) {
+            budget--;
+            DEBUG_PRINTF("[Matter] Generic precip sensor %d.%d\n", sensor->type, sensor->nr);
+          }
         }
         break;
       }
@@ -404,6 +527,13 @@ void create_sensor_endpoints() {
 }
 
 void update_sensor_values() {
+  esp_matter::lock::status_t lock_status =
+    esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
+  if (lock_status == esp_matter::lock::FAILED) {
+    DEBUG_PRINTLN("[Matter] Sensor update skipped: CHIP lock timeout");
+    return;
+  }
+
   SensorIterator it = sensors_iterate_begin();
   SensorBase* sensor = sensors_iterate_next(it);
   while (sensor) {
@@ -413,6 +543,32 @@ void update_sensor_values() {
     }
     uint16_t key = sensor_key(sensor->type, sensor->nr);
     double value = sensor->last_data;
+
+    // Generic sensors are routed by engineering unit.
+    if (sensor->type == SENSOR_MQTT || sensor->type == SENSOR_ZIGBEE ||
+        sensor->type == SENSOR_BLE || sensor->type == SENSOR_REMOTE ||
+        sensor->type == SENSOR_GROUP_MIN || sensor->type == SENSOR_GROUP_MAX ||
+        sensor->type == SENSOR_GROUP_AVG || sensor->type == SENSOR_GROUP_SUM) {
+      uint8_t unit = sensor->getUnitId();
+      if (unit == UNIT_DEGREE || unit == UNIT_FAHRENHEIT) {
+        auto ts = temp_sensors.find(key);
+        if (ts != temp_sensors.end() && ts->second) {
+          ts->second->setTemperature(value);
+        }
+      } else if (unit == UNIT_HUM_PERCENT || unit == UNIT_PERCENT) {
+        auto hs = humidity_sensors.find(key);
+        if (hs != humidity_sensors.end() && hs->second) {
+          hs->second->setHumidity(value);
+        }
+      } else if (unit == UNIT_MM || unit == UNIT_INCH) {
+        auto ps = pressure_sensors.find(key);
+        if (ps != pressure_sensors.end() && ps->second) {
+          ps->second->setPressure(value);
+        }
+      }
+      sensor = sensors_iterate_next(it);
+      continue;
+    }
 
     switch(sensor->type) {
       case SENSOR_SMT100_TEMP:
@@ -432,6 +588,11 @@ void update_sensor_values() {
         break;
       }
       
+      case SENSOR_SMT100_MOIS:
+      case SENSOR_SMT50_MOIS:
+      case SENSOR_SMT100_ANALOG_MOIS:
+      case SENSOR_VH400:
+      case SENSOR_FYTA_MOISTURE:
       case SENSOR_TH100_MOIS:
       case SENSOR_WEATHER_HUM: {
         auto it = humidity_sensors.find(key);
@@ -451,6 +612,10 @@ void update_sensor_values() {
       }
     }
     sensor = sensors_iterate_next(it);
+  }
+
+  if (lock_status == esp_matter::lock::SUCCESS) {
+    esp_matter::lock::chip_stack_unlock();
   }
 }
 
@@ -496,9 +661,11 @@ void OSMatter::init() {
   }
   #endif
   
-  create_station_endpoints();
-  create_program_endpoints();
-  create_sensor_endpoints();
+  int endpoint_budget = kMaxDynamicEndpoints;
+  create_station_endpoints(endpoint_budget);
+  create_program_endpoints(endpoint_budget);
+  create_sensor_endpoints(endpoint_budget);
+  DEBUG_PRINTF("[Matter] Endpoint budget remaining: %d\n", endpoint_budget);
   Matter.onEvent(matter_event_handler);
   
   DEBUG_PRINTLN("[Matter] Starting Matter.begin()...");
@@ -547,9 +714,10 @@ void OSMatter::init() {
   // Do NOT init here - Matter may still be using BLE controller
   DEBUG_PRINTLN("[Matter] BLE managed via event system");
   #endif
-  
+
   config_signature = compute_config_signature();
   matter_started = true;
+  matter_sync_node_label(true);
   DEBUG_PRINTLN("[Matter] Init complete");
 }
 
@@ -612,16 +780,21 @@ void OSMatter::loop() {
     temp_sensors.clear();
     humidity_sensors.clear();
     pressure_sensors.clear();
-    create_station_endpoints();
-    create_program_endpoints();
-    create_sensor_endpoints();
+    int endpoint_budget = kMaxDynamicEndpoints;
+    create_station_endpoints(endpoint_budget);
+    create_program_endpoints(endpoint_budget);
+    create_sensor_endpoints(endpoint_budget);
+    DEBUG_PRINTF("[Matter] Endpoint budget remaining: %d\n", endpoint_budget);
     config_signature = current_sig;
   }
   
-  // Update sensors every 10s (only when commissioned)
+  // Periodic sync/update every 10s
   static ulong last_update = 0;
-  if(commissioned && millis() - last_update > 10000) {
-    update_sensor_values();
+  if(millis() - last_update > 10000) {
+    matter_sync_node_label();
+    if (commissioned) {
+      update_sensor_values();
+    }
     last_update = millis();
   }
 }
@@ -629,14 +802,32 @@ void OSMatter::loop() {
 void OSMatter::update_station(uint8_t sid, bool is_on) {
   auto it = stations.find(sid);
   if(it != stations.end() && it->second) {
+    esp_matter::lock::status_t lock_status =
+      esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
+    if (lock_status == esp_matter::lock::FAILED) {
+      DEBUG_PRINTLN("[Matter] Station update skipped: CHIP lock timeout");
+      return;
+    }
     it->second->setOnOff(is_on);
+    if (lock_status == esp_matter::lock::SUCCESS) {
+      esp_matter::lock::chip_stack_unlock();
+    }
   }
 }
 
 void OSMatter::update_program(uint8_t pid, bool running) {
   auto it = programs.find(pid);
   if(it != programs.end() && it->second) {
+    esp_matter::lock::status_t lock_status =
+      esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
+    if (lock_status == esp_matter::lock::FAILED) {
+      DEBUG_PRINTLN("[Matter] Program update skipped: CHIP lock timeout");
+      return;
+    }
     it->second->setOnOff(running);
+    if (lock_status == esp_matter::lock::SUCCESS) {
+      esp_matter::lock::chip_stack_unlock();
+    }
   }
 }
 
@@ -657,14 +848,28 @@ bool OSMatter::open_commissioning_window(uint16_t timeout_seconds) {
     DEBUG_PRINTLN("[Matter] Cannot open commissioning window: Matter not started");
     return false;
   }
+
+  esp_matter::lock::status_t lock_status =
+    esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
+  if (lock_status == esp_matter::lock::FAILED) {
+    DEBUG_PRINTLN("[Matter] Cannot open commissioning window: CHIP lock timeout");
+    return false;
+  }
+
   chip::CommissioningWindowManager &mgr = chip::Server::GetInstance().GetCommissioningWindowManager();
   if (mgr.IsCommissioningWindowOpen()) {
     DEBUG_PRINTLN("[Matter] Commissioning window already open");
+    if (lock_status == esp_matter::lock::SUCCESS) {
+      esp_matter::lock::chip_stack_unlock();
+    }
     return true;
   }
   constexpr auto kAdv = chip::CommissioningWindowAdvertisement::kDnssdOnly;
   CHIP_ERROR err = mgr.OpenBasicCommissioningWindow(
       chip::System::Clock::Seconds16(timeout_seconds), kAdv);
+  if (lock_status == esp_matter::lock::SUCCESS) {
+    esp_matter::lock::chip_stack_unlock();
+  }
   if (err != CHIP_NO_ERROR) {
     DEBUG_PRINTF("[Matter] OpenBasicCommissioningWindow failed: %s\n", err.AsString());
     return false;

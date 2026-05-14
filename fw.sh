@@ -36,6 +36,7 @@
 #   ./fw.sh flash-mfg
 #   ./fw.sh full-flash zigbee     -> flash pre-built bootloader + partitions + firmware (no compile)
 #   ./fw.sh full-flash matter     -> flash pre-built bootloader + partitions + firmware + matter_kvs
+#                                      (auto-generates matter_kvs if missing)
 #   ERASE_FLASH=1 ./fw.sh full-flash zigbee  -> erase flash first, then full flash
 #   ./fw.sh switch matter        -> switch to Matter firmware
 #   ./fw.sh switch zigbee        -> switch to ZigBee Gateway firmware
@@ -112,6 +113,7 @@ UI_FW_SH="${UI_FW_SH:-/srv/www/htdocs/ui/fw.sh}"
 # Matter manufacturing data
 MATTER_MFG_DIR="${SCRIPT_DIR}/matter_mfg"
 MATTER_KVS_BIN="${MATTER_MFG_DIR}/matter_kvs.bin"
+UPGRADE_MATTER_KVS_BIN="${UPGRADE_DIR}/matter_kvs.bin"
 MATTER_PAA_CERT="${MATTER_MFG_DIR}/paa/paa_cert.pem"
 MATTER_PAA_KEY="${MATTER_MFG_DIR}/paa/paa_key.pem"
 MATTER_KVS_ADDR="0x730000"
@@ -796,6 +798,11 @@ with open('${MATTER_PAA_KEY}', 'wb') as f:
     cp "$gen_bin" "$MATTER_KVS_BIN"
     ok "Matter KVS binary: ${MATTER_KVS_BIN} ($(stat -c%s "$MATTER_KVS_BIN") bytes)"
 
+    # Keep upgrade directory in sync so full-flash/release artifacts are complete.
+    mkdir -p "$UPGRADE_DIR"
+    cp "$MATTER_KVS_BIN" "$UPGRADE_MATTER_KVS_BIN"
+    ok "Matter KVS copied to ${UPGRADE_MATTER_KVS_BIN}"
+
     # Show onboarding codes
     local onb_csv
     onb_csv=$(find "${MATTER_MFG_DIR}/fff1_8000" -name "*-onb_codes.csv" -type f | head -1)
@@ -848,6 +855,14 @@ full_flash_env() {
     local env="$1"
     local fw_addr="$2"
     header "Full Flash: ${env} (pre-built binaries)"
+
+    # Matter full-flash always needs manufacturing KVS at 0x730000.
+    # If it is missing, generate it automatically.
+    if [[ "$env" == "$ENV_C5_MATTER" ]] && [[ ! -f "$MATTER_KVS_BIN" ]]; then
+        warn "Matter KVS binary missing: ${MATTER_KVS_BIN}"
+        info "Generating Matter manufacturing data automatically …"
+        generate_matter_mfg
+    fi
 
     # Determine the variant name used in the upgrade directory.
     local variant
@@ -902,10 +917,14 @@ full_flash_env() {
         "$fw_addr"               "$firmware"
     )
 
-    # For matter, also flash matter_kvs if available
-    if [[ "$env" == "$ENV_C5_MATTER" ]] && [[ -f "$MATTER_KVS_BIN" ]]; then
+    # For matter, always include matter_kvs.
+    if [[ "$env" == "$ENV_C5_MATTER" ]]; then
+        if [[ ! -f "$MATTER_KVS_BIN" ]]; then
+            error "Matter KVS binary still missing after auto-generation: ${MATTER_KVS_BIN}"
+            exit 1
+        fi
         flash_args+=("$MATTER_KVS_ADDR" "$MATTER_KVS_BIN")
-        info "Including Matter KVS partition"
+        info "Including Matter KVS partition (${MATTER_KVS_ADDR})"
     fi
 
     info "Port: ${port}  Baud: ${baud}"
@@ -1067,6 +1086,12 @@ copy_to_upgrade() {
     cp "$zigbee_bin" "${UPGRADE_DIR}/firmware_zigbee.bin"
     cp "$matter_bin" "${UPGRADE_DIR}/firmware_matter.bin"
     cp "$esp8266_bin" "${UPGRADE_DIR}/firmware_esp8266.bin"
+
+    # Sync Matter manufacturing partition binary if present.
+    if [[ -f "$MATTER_KVS_BIN" ]]; then
+        cp "$MATTER_KVS_BIN" "$UPGRADE_MATTER_KVS_BIN"
+    fi
+
     ok "Binaries copied to ${UPGRADE_DIR}/"
 
     # Copy bootloader/partitions for full-flash (new-device provisioning)
@@ -1705,7 +1730,8 @@ ${BOLD}Actions:${NC}
   full-flash [matter|zigbee|all]            Full flash for new devices: bootloader +
                                             partition table + firmware using pre-built
                                             binaries (no compilation — uses current
-                                            release from upgrade/ directory)
+                                            release from upgrade/ directory);
+                                            matter auto-generates matter_kvs if missing
   reset                                     Reset/reboot device via USB (RTS/DTR)
   switch <matter|zigbee|zigbee-client|disabled>
                                             Switch firmware via REST API + reboot
