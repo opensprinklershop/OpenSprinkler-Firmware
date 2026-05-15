@@ -1,0 +1,47 @@
+--- opensprinkler_matter.cpp
++++ opensprinkler_matter.cpp
+@@ -198,34 +198,17 @@
+-    bool any_success = false;
+-    if (node_label_writable) {
+-      chip::Protocols::InteractionModel::Status status =
+-        chip::app::Clusters::BasicInformation::Attributes::NodeLabel::Set(
+-          0, chip::CharSpan::fromCharString(desired.c_str()));
+-      if (status == chip::Protocols::InteractionModel::Status::Success) {
+-        any_success = true;
+-      } else {
+-        node_label_writable = false;
+-        DEBUG_PRINTF("[Matter] NodeLabel is not writable on this endpoint (status=%d)\n", (int)status);
+-      }
+-    }
+-
+-    any_success |= matter_update_basic_string(
+-      chip::app::Clusters::BasicInformation::Attributes::ProductName::Id,
+-      desired);
+-    any_success |= matter_update_basic_string(
+-      chip::app::Clusters::BasicInformation::Attributes::ProductLabel::Id,
+-      desired);
++    chip::Protocols::InteractionModel::Status status =
++      chip::app::Clusters::BasicInformation::Attributes::NodeLabel::Set(
++        0, chip::CharSpan::fromCharString(desired.c_str()));
+ 
+     if (lock_status == esp_matter::lock::SUCCESS) {
+       esp_matter::lock::chip_stack_unlock();
+     }
+ 
+-    if (any_success) {
+-      last_device_name = desired;
+-      DEBUG_PRINTLN("[Matter] Device name set to: " + desired);
+-      return true;
+-    }
+-
+-    DEBUG_PRINTLN("[Matter] Device name update failed");
+-    return false;
++    if (status == chip::Protocols::InteractionModel::Status::Success) {
++      last_device_name = desired;
++      DEBUG_PRINTLN("[Matter] NodeLabel set to: " + desired);
++      return true;
++    }
++
++    node_label_writable = false;
++    DEBUG_PRINTF("[Matter] NodeLabel is not writable on this endpoint (status=%d)\n", (int)status);
++    return false;

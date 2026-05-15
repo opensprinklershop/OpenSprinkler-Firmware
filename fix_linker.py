@@ -352,9 +352,15 @@ def patch_c5_matter_sdkconfig_headers(env):
         "CONFIG_OPENTHREAD_ENABLED",
         "CONFIG_ENABLE_MATTER_OVER_THREAD",
         "CONFIG_ESP_MATTER_ENABLE_OPENTHREAD",
+        "CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER",
+        "CONFIG_THREAD_NETWORK_ENDPOINT_ID",
+        "CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER",
     ]
     forced_values = {
         "CONFIG_CHIP_TASK_STACK_SIZE": "12288",
+        "CONFIG_ENABLE_ETHERNET_TELEMETRY": "1",
+        "CONFIG_ETHERNET_NETWORK_COMMISSIONING_DRIVER": "1",
+        "CONFIG_ETHERNET_NETWORK_ENDPOINT_ID": "0",
     }
     patched = 0
     for variant in ("qio_qspi", "dio_qspi", "qio_opi", "dio_opi"):
@@ -366,7 +372,7 @@ def patch_c5_matter_sdkconfig_headers(env):
         new_content = content
         for key in disabled_keys:
             new_content = re.sub(
-                rf"^#define\s+{key}\s+1$",
+                rf"^#define\s+{key}\s+\S+$",
                 f"/* {key} is not set */",
                 new_content,
                 flags=re.MULTILINE,
@@ -441,6 +447,13 @@ def ensure_c5_matter_radio_libs(env):
     if "espressif__esp_matter" in names:
         libs.append("espressif__esp_matter")
         changed = True
+
+        dnssd_compat = os.path.join(
+            env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs"),
+            "esp32c5", "lib", "libmatter_dnssd_compat.a")
+        if os.path.exists(dnssd_compat):
+            libs.append(env.File(dnssd_compat))
+            changed = True
 
     if changed:
         env.Replace(LIBS=libs)

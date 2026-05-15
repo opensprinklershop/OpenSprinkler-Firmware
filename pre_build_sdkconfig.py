@@ -190,6 +190,12 @@ SDKCONFIG_OVERRIDES = {
     # =====================================================================
     # Matter over Wi-Fi/Ethernet only — no OpenThread stack in C5 Matter OTA
     # =====================================================================
+    "CONFIG_ENABLE_ETHERNET_TELEMETRY": "y",
+    "CONFIG_ETHERNET_NETWORK_COMMISSIONING_DRIVER": "y",
+    "CONFIG_ETHERNET_NETWORK_ENDPOINT_ID": "0",
+    "CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER": None,
+    "CONFIG_THREAD_NETWORK_ENDPOINT_ID": None,
+    "CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER": None,
     "CONFIG_OPENTHREAD_ENABLED": None,
     "CONFIG_ENABLE_MATTER_OVER_THREAD": None,
     "CONFIG_ESP_MATTER_ENABLE_OPENTHREAD": None,
@@ -279,9 +285,15 @@ def sync_c5_matter_sdkconfig_headers(env):
         "CONFIG_OPENTHREAD_ENABLED",
         "CONFIG_ENABLE_MATTER_OVER_THREAD",
         "CONFIG_ESP_MATTER_ENABLE_OPENTHREAD",
+        "CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER",
+        "CONFIG_THREAD_NETWORK_ENDPOINT_ID",
+        "CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER",
     ]
     forced_values = {
         "CONFIG_CHIP_TASK_STACK_SIZE": "12288",
+        "CONFIG_ENABLE_ETHERNET_TELEMETRY": "1",
+        "CONFIG_ETHERNET_NETWORK_COMMISSIONING_DRIVER": "1",
+        "CONFIG_ETHERNET_NETWORK_ENDPOINT_ID": "0",
     }
     known_variants = ["qio_qspi", "dio_qspi", "qio_opi", "dio_opi"]
     patched = 0
@@ -297,7 +309,7 @@ def sync_c5_matter_sdkconfig_headers(env):
                 new_content = content
                 for key in disabled_keys:
                     new_content = re.sub(
-                        rf"^#define\s+{key}\s+1$",
+                        rf"^#define\s+{key}\s+\S+$",
                         f"/* {key} is not set */",
                         new_content,
                         flags=re.MULTILINE,
@@ -470,7 +482,7 @@ def update_sdkconfig(source, target, env):
                 parts = line.split()
                 if len(parts) >= 2 and parts[1].startswith("CONFIG_"):
                     key = parts[1]
-                    if key in SDKCONFIG_OVERRIDES and SDKCONFIG_OVERRIDES[key] is not None:
+                    if key in SDKCONFIG_OVERRIDES:
                          continue
             
             key = line.split("=")[0]
