@@ -3494,14 +3494,14 @@ void init_external_flash() // initialize external flash
 
 	DEBUG_PRINTLN(F("Initializing external flash..."));
 	DEBUG_PRINTF(F("SPI2_HOST=%d\n"), SPI2_HOST);
-	DEBUG_PRINTF(F("MOSI=%d, MISO=%d, SCK=%d, CS=%d\n"), MOSI, MISO, SCK, PIN_EXT_FLASH_CS);
+	DEBUG_PRINTF(F("MOSI=%d, MISO=%d, SCK=%d, CS=%d\n"), OS_SPI_MOSI, OS_SPI_MISO, OS_SPI_SCK, PIN_EXT_FLASH_CS);
 
 #if defined(ESP32C5)
-    bus_config.mosi_io_num = MOSI;
-    bus_config.miso_io_num = MISO;
-    bus_config.sclk_io_num = SCK;
-    bus_config.quadwp_io_num = MIO2;
-    bus_config.quadhd_io_num = MIO3;
+	bus_config.mosi_io_num = OS_SPI_MOSI;
+	bus_config.miso_io_num = OS_SPI_MISO;
+	bus_config.sclk_io_num = OS_SPI_SCK;
+	bus_config.quadwp_io_num = MIO2;
+	bus_config.quadhd_io_num = MIO3;
 	bus_config.flags = SPICOMMON_BUSFLAG_QUAD;
 #else
     bus_config.mosi_io_num = MOSI;
@@ -3518,9 +3518,8 @@ void init_external_flash() // initialize external flash
 	}
 
   if (!register_partition()) {
-	DEBUG_PRINTLN(F("register partition failed, restarting..."));
-	sleep(5);
-	ESP.restart();
+		DEBUG_PRINTLN(F("register partition failed, continuing without external flash"));
+		return;
   }
 
   list_partitions();

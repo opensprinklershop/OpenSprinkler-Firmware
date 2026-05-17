@@ -93,6 +93,17 @@ bool sensor_zigbee_ensure_started();
 void sensor_zigbee_factory_reset();
 
 /**
+ * @brief Leave the current Zigbee network in client/end-device mode
+ * @return true if a leave/reset action was requested or persisted state was cleared
+ */
+bool sensor_zigbee_leave_network();
+
+/**
+ * @brief True when Zigbee Client is factory-new and not yet joined.
+ */
+bool sensor_zigbee_client_factory_new();
+
+/**
  * @brief Configure sensor to receive reports from a Zigbee device
  * @param nr Sensor number
  * @param device_ieee IEEE address of Zigbee device (e.g., "0x00124b001f8e5678")
@@ -111,12 +122,13 @@ void sensor_zigbee_bind_device(uint nr, const char *device_ieee);
 void sensor_zigbee_unbind_device(uint nr, const char *device_ieee);
 
 /**
- * @brief Open Zigbee network for device pairing (legacy, does nothing in End Device mode)
+ * @brief Open Zigbee network for device pairing / start client network steering
  * @param duration Duration in seconds (ignored)
+ * @return true if the operation was accepted by the active Zigbee mode
  * @note In End Device mode, pairing is controlled by the Zigbee coordinator
  * @note Use Zigbee2MQTT to pair new devices
  */
-void sensor_zigbee_open_network(uint16_t duration = 60);
+bool sensor_zigbee_open_network(uint16_t duration = 60);
 
 /**
  * @brief Zigbee maintenance loop (call periodically from main loop)

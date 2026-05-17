@@ -605,6 +605,10 @@ enum {
 	#define PIN_FREE2         26
 	#define PIN_FREE3         7
 
+	#define OS_SPI_SCK        6
+	#define OS_SPI_MISO       14
+	#define OS_SPI_MOSI       13
+
 	// W5500 Ethernet: SCK=6, MISO=14, MOSI=13, CS=3, RST=EN(hardwired HIGH)
 	#define PIN_ETHER_CS       3  // Ethernet CS (chip select pin)
 	#define PIN_EXT_FLASH_CS   5  // external flash CS pin

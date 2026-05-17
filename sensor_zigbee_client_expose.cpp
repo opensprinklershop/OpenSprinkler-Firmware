@@ -27,6 +27,7 @@
 
 #include "Zigbee.h"
 #include "ZigbeeEP.h"
+#include "esp_zigbee_cluster.h"
 #include "ep/ZigbeeTempSensor.h"
 #include "ep/ZigbeeAnalog.h"
 #include "ep/ZigbeePowerOutlet.h"
@@ -70,6 +71,61 @@ static constexpr unsigned long UPDATE_INTERVAL_MS = 30000;  // sensor value upda
 static constexpr unsigned long ZONE_SYNC_INTERVAL_MS = 5000;  // zone state sync every 5s
 static constexpr uint16_t     ZONE_DEFAULT_DURATION = 3600; // 1h default for ZigBee-triggered zone
 
+static void build_fw_version_string(char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    snprintf(out, out_size, "%u.%u.%u-%u",
+             OS_FW_VERSION / 100,
+             (OS_FW_VERSION / 10) % 10,
+             OS_FW_VERSION % 10,
+             OS_FW_MINOR);
+}
+
+template <typename Base>
+class OSZigbeeEndpoint : public Base {
+public:
+    explicit OSZigbeeEndpoint(uint8_t endpoint) : Base(endpoint) {}
+
+    bool setOpenSprinklerIdentity(const char *model) {
+        bool ok = this->setManufacturerAndModel("OpenSprinkler", model ? model : "OpenSprinkler");
+        this->setVersion((uint8_t)(OS_FW_MINOR & 0xFF));
+        this->setHardwareVersion((uint8_t)(OS_HW_VERSION & 0xFF));
+        this->setPowerSource(ZB_POWER_SOURCE_MAINS);
+
+        char fw_version[16];
+        build_fw_version_string(fw_version, sizeof(fw_version));
+        ok = setBasicStringAttr(ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, fw_version) && ok;
+
+        char version_details[ZigbeeEP::ZB_MAX_NAME_LENGTH + 1];
+        snprintf(version_details, sizeof(version_details), "OpenSprinkler %s", fw_version);
+        ok = setBasicStringAttr(ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_VERSION_DETAILS_ID, version_details) && ok;
+        return ok;
+    }
+
+private:
+    bool setBasicStringAttr(uint16_t attr_id, const char *value) {
+        if (!value) value = "";
+        size_t len = strlen(value);
+        if (len > ZigbeeEP::ZB_MAX_NAME_LENGTH) len = ZigbeeEP::ZB_MAX_NAME_LENGTH;
+
+        char zb_value[ZigbeeEP::ZB_MAX_NAME_LENGTH + 2] = {0};
+        zb_value[0] = (char)len;
+        memcpy(zb_value + 1, value, len);
+
+        esp_zb_attribute_list_t *basic_cluster = esp_zb_cluster_list_get_cluster(
+            this->_cluster_list, ESP_ZB_ZCL_CLUSTER_ID_BASIC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+        if (!basic_cluster) {
+            DEBUG_PRINTLN(F("[ZB-EXPOSE] Basic cluster missing for version attributes"));
+            return false;
+        }
+        esp_err_t ret = esp_zb_basic_cluster_add_attr(basic_cluster, attr_id, (void *)zb_value);
+        if (ret != ESP_OK) {
+            DEBUG_PRINTF(F("[ZB-EXPOSE] Failed to add Basic attr 0x%04X: %s\n"), attr_id, esp_err_to_name(ret));
+            return false;
+        }
+        return true;
+    }
+};
+
 // =========================================================================
 // Endpoint types for sensors (determines ZCL cluster)
 // =========================================================================
@@ -91,10 +147,10 @@ struct SensorEndpoint {
 static std::vector<SensorEndpoint> s_sensor_eps;
 
 // Zone endpoint: receives On/Off from hub → controls OS station
-class OSZoneEndpoint : public ZigbeePowerOutlet {
+class OSZoneEndpoint : public OSZigbeeEndpoint<ZigbeePowerOutlet> {
 public:
     OSZoneEndpoint(uint8_t ep_num, uint8_t sid)
-        : ZigbeePowerOutlet(ep_num), _sid(sid) {}
+        : OSZigbeeEndpoint<ZigbeePowerOutlet>(ep_num), _sid(sid) {}
     uint8_t stationId() const { return _sid; }
 private:
     void zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t *message) override;
@@ -108,10 +164,10 @@ struct ZoneEndpoint {
 static std::vector<ZoneEndpoint> s_zone_eps;
 
 // Program endpoint: On → start program, Off → no-op (programs run to completion)
-class OSProgramEndpoint : public ZigbeePowerOutlet {
+class OSProgramEndpoint : public OSZigbeeEndpoint<ZigbeePowerOutlet> {
 public:
     OSProgramEndpoint(uint8_t ep_num, uint8_t pid)
-        : ZigbeePowerOutlet(ep_num), _pid(pid) {}
+        : OSZigbeeEndpoint<ZigbeePowerOutlet>(ep_num), _pid(pid) {}
     uint8_t programId() const { return _pid; }
 private:
     void zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t *message) override;
@@ -221,32 +277,32 @@ void client_expose_create_endpoints() {
 
             switch (etype) {
                 case SENSOR_EP_TEMPERATURE: {
-                    auto* ts = new ZigbeeTempSensor(ep_num);
+                    auto* ts = new OSZigbeeEndpoint<ZigbeeTempSensor>(ep_num);
                     ts->setMinMaxValue(-40.0f, 125.0f);
-                    ts->setManufacturerAndModel("OpenSprinkler", sensor->name);
+                    ts->setOpenSprinklerIdentity(sensor->name);
                     ep = ts;
                     break;
                 }
                 case SENSOR_EP_HUMIDITY: {
                     // Use TempSensor with humidity cluster added
-                    auto* ts = new ZigbeeTempSensor(ep_num);
+                    auto* ts = new OSZigbeeEndpoint<ZigbeeTempSensor>(ep_num);
                     ts->addHumiditySensor();
-                    ts->setManufacturerAndModel("OpenSprinkler", sensor->name);
+                    ts->setOpenSprinklerIdentity(sensor->name);
                     ep = ts;
                     break;
                 }
                 case SENSOR_EP_FLOW: {
-                    auto* fs = new ZigbeeFlowSensor(ep_num);
-                    fs->setManufacturerAndModel("OpenSprinkler", sensor->name);
+                    auto* fs = new OSZigbeeEndpoint<ZigbeeFlowSensor>(ep_num);
+                    fs->setOpenSprinklerIdentity(sensor->name);
                     ep = fs;
                     break;
                 }
                 case SENSOR_EP_ANALOG:
                 default: {
-                    auto* as = new ZigbeeAnalog(ep_num);
+                    auto* as = new OSZigbeeEndpoint<ZigbeeAnalog>(ep_num);
                     as->addAnalogInput();
                     as->setAnalogInputDescription(sensor->name);
-                    as->setManufacturerAndModel("OpenSprinkler", sensor->name);
+                    as->setOpenSprinklerIdentity(sensor->name);
                     ep = as;
                     break;
                 }
@@ -272,7 +328,7 @@ void client_expose_create_endpoints() {
             os.get_station_name(sid, sname);
 
             auto* zep = new OSZoneEndpoint(ep_num, sid);
-            zep->setManufacturerAndModel("OpenSprinkler", sname);
+            zep->setOpenSprinklerIdentity(sname);
             Zigbee.addEndpoint(zep);
             s_zone_eps.push_back({zep, sid});
             DEBUG_PRINTF(F("[ZB-EXPOSE] Zone ep=%d sid=%d name='%s'\n"),
@@ -292,7 +348,7 @@ void client_expose_create_endpoints() {
             pd.read(pid, &prog);
 
             auto* pep = new OSProgramEndpoint(ep_num, pid);
-            pep->setManufacturerAndModel("OpenSprinkler", prog.name);
+            pep->setOpenSprinklerIdentity(prog.name);
             Zigbee.addEndpoint(pep);
             s_prog_eps.push_back({pep, pid});
             DEBUG_PRINTF(F("[ZB-EXPOSE] Program ep=%d pid=%d name='%s'\n"),
@@ -306,10 +362,10 @@ void client_expose_create_endpoints() {
         // Sensor 1
         if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN ||
             os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
-            auto* rb = new ZigbeeBinary(ep_num);
+            auto* rb = new OSZigbeeEndpoint<ZigbeeBinary>(ep_num);
             rb->addBinaryInput();
             rb->setBinaryInputDescription("Rain Sensor 1");
-            rb->setManufacturerAndModel("OpenSprinkler", "RainSensor1");
+            rb->setOpenSprinklerIdentity("RainSensor1");
             Zigbee.addEndpoint(rb);
             s_rain_eps.push_back({rb, 0});
             DEBUG_PRINTF(F("[ZB-EXPOSE] Rain sensor 1 ep=%d\n"), ep_num);
@@ -318,10 +374,10 @@ void client_expose_create_endpoints() {
         // Sensor 2
         if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN ||
             os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL) {
-            auto* rb = new ZigbeeBinary(ep_num);
+            auto* rb = new OSZigbeeEndpoint<ZigbeeBinary>(ep_num);
             rb->addBinaryInput();
             rb->setBinaryInputDescription("Rain Sensor 2");
-            rb->setManufacturerAndModel("OpenSprinkler", "RainSensor2");
+            rb->setOpenSprinklerIdentity("RainSensor2");
             Zigbee.addEndpoint(rb);
             s_rain_eps.push_back({rb, 1});
             DEBUG_PRINTF(F("[ZB-EXPOSE] Rain sensor 2 ep=%d\n"), ep_num);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readFileSync, existsSync } from "fs";
 const NAME_ALIASES = {
     rosen: ["rose"],
     rasenzone: ["rasen zone", "rasen-zone", "lawn", "lawn zone"],
@@ -149,7 +150,14 @@ export function registerTools(server, getClient) {
     });
     server.tool("get_debug", "Get debug/diagnostics info (firmware build, heap, RAM). No authentication required. Equivalent to /db.", {}, async () => {
         const data = await getClient().get("/db");
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        const obj = data;
+        const debugBuild = obj["debug_build"];
+        let note = null;
+        if (debugBuild === 0 || debugBuild === "0" || debugBuild === false) {
+            note = "Firmware was built without ENABLE_DEBUG. Diagnostic payload may be limited.";
+        }
+        const result = note ? { ...obj, _note: note } : obj;
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     });
     // ─── Controller actions ─────────────────────────────────────────────
     server.tool("change_controller_variables", "Change controller variables: enable/disable operation, set rain delay, reset stations, reboot. Equivalent to /cv.", {
@@ -513,6 +521,73 @@ export function registerTools(server, getClient) {
     server.tool("get_system_resources", "Get system resource usage (memory, storage). Equivalent to /du.", {}, async () => {
         const data = await getClient().get("/du");
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    // ─── Monitor logs & debug ────────────────────────────────────────
+    server.tool("get_monitor_log", "Get live serial monitor logs from device debug output (zigbee, matter variants). Updated when running 'fw.sh deploy [variant] monitor'.", {
+        variant: z.enum(["zigbee", "matter", "esp8266"]).optional().describe("Firmware variant (zigbee, matter, esp8266). If not specified, lists available logs."),
+        tail: z.number().optional().describe("Return last N lines (default: 100). Use 0 for all lines."),
+    }, async (args) => {
+        const variant = args.variant || "";
+        const lines_to_show = args.tail ?? 100;
+        if (!variant) {
+            // List available log files
+            const variants = ["zigbee", "matter", "esp8266"];
+            const available = {};
+            for (const v of variants) {
+                const logPath = `/tmp/zigbee_monitor_${v}.log`;
+                available[v] = {
+                    exists: existsSync(logPath),
+                    size: existsSync(logPath) ? require("fs").statSync(logPath).size : 0,
+                };
+            }
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: "Available monitor logs:\n" + JSON.stringify(available, null, 2) + "\n\nUsage: get_monitor_log variant=zigbee tail=50",
+                    },
+                ],
+            };
+        }
+        const logPath = `/tmp/zigbee_monitor_${variant}.log`;
+        if (!existsSync(logPath)) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `No log file found: ${logPath}\nRun: ./fw.sh deploy ${variant} monitor`,
+                    },
+                ],
+            };
+        }
+        try {
+            const content = readFileSync(logPath, "utf-8");
+            const allLines = content.split("\n");
+            // Return last N lines or all lines
+            const linesToReturn = lines_to_show === 0
+                ? allLines
+                : allLines.slice(Math.max(0, allLines.length - lines_to_show));
+            const output = linesToReturn.join("\n");
+            const summary = `[Monitor log: ${variant} (${allLines.length} total lines, showing last ${Math.min(lines_to_show, allLines.length)} lines)]\n\n`;
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: summary + output,
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Error reading log file: ${error instanceof Error ? error.message : String(error)}`,
+                    },
+                ],
+            };
+        }
     });
 }
 //# sourceMappingURL=tools.js.map

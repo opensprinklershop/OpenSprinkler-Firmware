@@ -56,6 +56,7 @@ extern "C" {
 }
 #include <esp_ieee802154.h>
 #include "esp_zigbee_core.h"
+#include "esp_zigbee_secur.h"
 #include "Zigbee.h"
 #include "ZigbeeEP.h"
 #include <esp_attr.h>
@@ -72,10 +73,32 @@ extern "C" {
 // Client state
 static bool client_zigbee_initialized = false;
 static bool client_zigbee_connected = false;
+static bool client_zigbee_start_failed = false;
 static int client_active_zigbee_sensor = 0;
 static std::vector<ZigbeeDeviceInfo> client_discovered_devices;
 static constexpr size_t CLIENT_DISCOVERED_MAX = 128;
 static unsigned long client_join_window_end = 0;
+static constexpr bool ZIGBEE_CLIENT_MINIMAL_PAIRING = true;
+static const char* ZIGBEE_CLIENT_INIT_FLAG = "/zb_client_init.flag";
+static const char* ZIGBEE_CLIENT_RESET_FLAG = "/zb_client_reset.flag";
+static bool client_zigbee_leave_in_progress = false;  // Flag to prevent snapshot access during leave operations
+
+struct ClientZigbeeNetworkSnapshot {
+    bool started;
+    bool raw_connected;
+    bool valid_join;
+    bool factory_new;
+    uint8_t channel;
+    uint16_t pan_id;
+    uint16_t short_addr;
+    esp_zb_nwk_device_type_t role;
+    uint32_t primary_mask;
+    uint32_t secondary_mask;
+    uint32_t active_mask;
+    int8_t tx_power;
+    uint64_t ext_pan;
+    uint64_t own_ieee;
+};
 
 
 // Zigbee Cluster IDs (ZCL Specification 07-5123-06)
@@ -123,6 +146,8 @@ static uint64_t client_resolve_ieee(uint16_t short_addr);
 
 // Flag to track if we need to reset NVRAM
 static bool client_zigbee_needs_nvram_reset = false;
+static const uint8_t ZIGBEE_CLIENT_ENDPOINT_SCHEMA_VERSION = 2;
+static const char* ZIGBEE_CLIENT_SCHEMA_FLAG = "/zb_client_schema.ver";
 
 // Static storage for active attribute read requests.
 // attr_field in esp_zb_zcl_read_attr_cmd_t is a pointer that ZBOSS
@@ -294,44 +319,46 @@ public:
         esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(NULL);
         esp_zb_cluster_list_add_basic_cluster(_cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
         
-        // Basic cluster CLIENT - needed to receive Read Attributes Responses
-        // when we query remote devices' Basic Cluster (ManufacturerName, ModelIdentifier)
-        esp_zb_attribute_list_t *basic_client_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_BASIC);
-        esp_zb_cluster_list_add_custom_cluster(_cluster_list, basic_client_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-        
         // Identify cluster (mandatory)
         esp_zb_attribute_list_t *identify_cluster = esp_zb_identify_cluster_create(NULL);
         esp_zb_cluster_list_add_identify_cluster(_cluster_list, identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-        
-        // CLIENT-side clusters to receive reports from sensors
-        esp_zb_attribute_list_t *temp_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
-        esp_zb_cluster_list_add_temperature_meas_cluster(_cluster_list, temp_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-        
-        esp_zb_attribute_list_t *humidity_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
-        esp_zb_cluster_list_add_humidity_meas_cluster(_cluster_list, humidity_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-        
-        esp_zb_attribute_list_t *soil_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE);
-        esp_zb_cluster_list_add_custom_cluster(_cluster_list, soil_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-        
-        esp_zb_attribute_list_t *light_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT);
-        esp_zb_cluster_list_add_illuminance_meas_cluster(_cluster_list, light_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-        
-        esp_zb_attribute_list_t *pressure_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT);
-        esp_zb_cluster_list_add_pressure_meas_cluster(_cluster_list, pressure_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-        
-        esp_zb_attribute_list_t *power_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
-        esp_zb_cluster_list_add_power_config_cluster(_cluster_list, power_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-        
-        // Tuya-specific cluster 0xEF00 (CLIENT to receive Tuya DP reports)
-        esp_zb_attribute_list_t *tuya_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC);
-        if (tuya_cluster) {
-            esp_zb_cluster_list_add_custom_cluster(_cluster_list, tuya_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
-            // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Tuya cluster 0xEF00 added (CLIENT)"));
+
+        if (!ZIGBEE_CLIENT_MINIMAL_PAIRING) {
+            // Basic cluster CLIENT - needed to receive Read Attributes Responses
+            // when we query remote devices' Basic Cluster (ManufacturerName, ModelIdentifier)
+            esp_zb_attribute_list_t *basic_client_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_BASIC);
+            esp_zb_cluster_list_add_custom_cluster(_cluster_list, basic_client_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+            // CLIENT-side clusters to receive reports from sensors
+            esp_zb_attribute_list_t *temp_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
+            esp_zb_cluster_list_add_temperature_meas_cluster(_cluster_list, temp_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+            esp_zb_attribute_list_t *humidity_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
+            esp_zb_cluster_list_add_humidity_meas_cluster(_cluster_list, humidity_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+            esp_zb_attribute_list_t *soil_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE);
+            esp_zb_cluster_list_add_custom_cluster(_cluster_list, soil_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+            esp_zb_attribute_list_t *light_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT);
+            esp_zb_cluster_list_add_illuminance_meas_cluster(_cluster_list, light_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+            esp_zb_attribute_list_t *pressure_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT);
+            esp_zb_cluster_list_add_pressure_meas_cluster(_cluster_list, pressure_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+            esp_zb_attribute_list_t *power_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
+            esp_zb_cluster_list_add_power_config_cluster(_cluster_list, power_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+            // Tuya-specific cluster 0xEF00 (CLIENT to receive Tuya DP reports)
+            esp_zb_attribute_list_t *tuya_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC);
+            if (tuya_cluster) {
+                esp_zb_cluster_list_add_custom_cluster(_cluster_list, tuya_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+                // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Tuya cluster 0xEF00 added (CLIENT)"));
+            }
         }
         
         _ep_config.endpoint = endpoint;
         _ep_config.app_profile_id = ESP_ZB_AF_HA_PROFILE_ID;
-        _ep_config.app_device_id = ESP_ZB_HA_CONFIGURATION_TOOL_DEVICE_ID;
+        _ep_config.app_device_id = ZIGBEE_CLIENT_MINIMAL_PAIRING ? ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID : ESP_ZB_HA_CONFIGURATION_TOOL_DEVICE_ID;
         _ep_config.app_device_version = 0;
         
         // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Report receiver endpoint created"));
@@ -568,13 +595,36 @@ static bool client_erase_zigbee_nvram() {
     }
 
     // Remove persistent init flag so the next reboot treats this as a clean install
-    static const char* ZIGBEE_CLIENT_INIT_FLAG = "/zb_client_init.flag";
     if (file_exists(ZIGBEE_CLIENT_INIT_FLAG)) {
         remove_file(ZIGBEE_CLIENT_INIT_FLAG);
+    }
+    if (file_exists(ZIGBEE_CLIENT_SCHEMA_FLAG)) {
+        remove_file(ZIGBEE_CLIENT_SCHEMA_FLAG);
     }
 
     // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] NVRAM erased successfully"));
     return true;
+}
+
+static bool client_zigbee_schema_matches() {
+    uint8_t stored_schema = 0;
+    if (!file_exists(ZIGBEE_CLIENT_SCHEMA_FLAG)) {
+        return false;
+    }
+    file_read_block(ZIGBEE_CLIENT_SCHEMA_FLAG, &stored_schema, 0, sizeof(stored_schema));
+    return stored_schema == ZIGBEE_CLIENT_ENDPOINT_SCHEMA_VERSION;
+}
+
+static void client_write_zigbee_schema_flags() {
+    const char oneByte = '1';
+    file_write_block(ZIGBEE_CLIENT_INIT_FLAG, &oneByte, 0, 1);
+    file_write_block(ZIGBEE_CLIENT_SCHEMA_FLAG, &ZIGBEE_CLIENT_ENDPOINT_SCHEMA_VERSION, 0,
+                     sizeof(ZIGBEE_CLIENT_ENDPOINT_SCHEMA_VERSION));
+}
+
+static void client_mark_zigbee_nvram_reset() {
+    const char oneByte = '1';
+    file_write_block(ZIGBEE_CLIENT_RESET_FLAG, &oneByte, 0, 1);
 }
 
 // ========== Client-specific start/stop ==========
@@ -589,9 +639,9 @@ static void client_zigbee_start_internal() {
         return;
     }
 
-    if (client_zigbee_initialized) return;
+    if (client_zigbee_initialized || client_zigbee_start_failed) return;
 
-    // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Starting Zigbee END DEVICE..."));
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Starting Zigbee End Device (join external coordinator)..."));
     
     const esp_partition_t* zb_partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, 
@@ -607,18 +657,26 @@ static void client_zigbee_start_internal() {
     // First-install NVRAM reset: erase only once (persistent flag survives reboots/OTA updates).
     // Do NOT use a static bool — it resets to false after every reboot/firmware update,
     // which would wipe ZigBee network join credentials on every restart.
-    static const char* ZIGBEE_CLIENT_INIT_FLAG = "/zb_client_init.flag";
-    if (!file_exists(ZIGBEE_CLIENT_INIT_FLAG)) {
-        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] First install detected — erasing NVRAM for clean End Device state"));
-        client_erase_zigbee_nvram();
-        // Create the flag file so subsequent reboots skip the erase
-        const char oneByte = '1';
-        file_write_block(ZIGBEE_CLIENT_INIT_FLAG, &oneByte, 0, 1);
-    }
-
-    if (client_zigbee_needs_nvram_reset) {
+    bool first_install = !file_exists(ZIGBEE_CLIENT_INIT_FLAG);
+    bool reset_requested = file_exists(ZIGBEE_CLIENT_RESET_FLAG) || client_zigbee_needs_nvram_reset;
+    bool schema_mismatch = !client_zigbee_schema_matches();
+    bool reset_zigbee_nvram = first_install || reset_requested || schema_mismatch;
+    if (reset_zigbee_nvram) {
+        if (first_install) {
+            DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] First install detected — erasing NVRAM for clean End Device state"));
+        } else if (reset_requested) {
+            DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Reset request detected — erasing NVRAM for fresh End Device pairing"));
+        } else {
+            DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Endpoint schema changed — erasing stale Zigbee NVRAM"));
+        }
         client_zigbee_needs_nvram_reset = false;
         client_erase_zigbee_nvram();
+        if (file_exists(ZIGBEE_CLIENT_RESET_FLAG)) {
+            remove_file(ZIGBEE_CLIENT_RESET_FLAG);
+        }
+        // Create the flag file so subsequent reboots skip the erase.
+        // client_erase_zigbee_nvram() removes it, so recreate it after every intentional reset.
+        client_write_zigbee_schema_flags();
     }
    
     esp_zb_radio_config_t radio_config = { .radio_mode = ZB_RADIO_MODE_NATIVE };
@@ -628,51 +686,64 @@ static void client_zigbee_start_internal() {
     Zigbee.setRadioConfig(radio_config);    
 
     if (WiFi.getMode() != WIFI_MODE_NULL) {
-        // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] WiFi active - coexistence base already configured"));
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] WiFi active - coexistence base already configured"));
         // NOTE: Per-packet PTI must be set AFTER Zigbee.begin() — ieee802154_mac_init()
         // inside esp_zb_start() resets all PTI values to defaults.
     } else {
-        // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] No WiFi - Zigbee has full radio access (Ethernet mode)"));
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] No WiFi - Zigbee has full radio access (Ethernet mode)"));
     }
     
     client_reportReceiver = new ClientZigbeeReportReceiver(10);
     Zigbee.addEndpoint(client_reportReceiver);
     client_reportReceiver->setManufacturerAndModel("OpenSprinkler", "ZigbeeReceiver");
 
-    // Create ZCL endpoints that expose OS sensor values, zone control,
-    // program control, and rain sensor state to the ZigBee hub.
-    client_expose_create_endpoints();
+    if (ZIGBEE_CLIENT_MINIMAL_PAIRING) {
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Minimal pairing mode: only endpoint 10 (Basic + Identify) is exposed"));
+    } else {
+        // Create ZCL endpoints that expose OS sensor values, zone control,
+        // program control, and rain sensor state to the ZigBee hub.
+        client_expose_create_endpoints();
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Created exposed OS ZCL endpoints"));
+    }
 
     // Optionally restrict Zigbee to a specific channel.
 #ifdef ZIGBEE_COEX_CHANNEL_MASK
     Zigbee.setPrimaryChannelMask(ZIGBEE_COEX_CHANNEL_MASK);
-    // DEBUG_PRINTF("[ZIGBEE-CLIENT] Primary channel mask set to 0x%08X\n",
-                 // (unsigned)ZIGBEE_COEX_CHANNEL_MASK);
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Primary channel mask set to 0x%08X\n"),
+                 (unsigned)ZIGBEE_COEX_CHANNEL_MASK);
 #else
-    // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Using default channel mask (all channels 11-26)"));
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Using default channel mask (all channels 11-26)"));
 #endif
     
     // Configure ZBOSS memory before esp_zb_init() (called inside Zigbee.begin()).
-    // End Devices need smaller tables than the default (64).
+    // End Device sizing — matches the values that worked in v240.196.
+    // Coordinator-sized buffers (64/80/80) prevent the ZCZR stack from
+    // completing network-steering on the ED path on ESP32-C5.
     esp_zb_overall_network_size_set(16);
     esp_zb_io_buffer_size_set(32);
     esp_zb_scheduler_queue_size_set(40);
+
+    Zigbee.setTimeout(8000);
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Starting as END_DEVICE (ZCZR stack, joining external coordinator)"));
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] ZBOSS config: network_size=16, io_buffer=32, scheduler_queue=40\n"));
+    esp_zb_secur_link_key_exchange_required_set(false);
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Install code disabled; using normal Zigbee commissioning"));
     
-    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Starting as END DEVICE (WiFi coexistence supported)"));
-    
-    if (!Zigbee.begin(ZIGBEE_END_DEVICE)) {
+    if (!Zigbee.begin(ZIGBEE_END_DEVICE, reset_zigbee_nvram)) {
         DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] ERROR: Failed to start Zigbee End Device!"));
-        delete client_reportReceiver;
-        client_reportReceiver = nullptr;
+        client_zigbee_start_failed = true;
+        // ZigbeeCore has already received endpoint pointers. The Arduino Zigbee
+        // wrapper does not support removing endpoints after a failed begin(), so
+        // keep the objects alive and block retries until reboot.
         return;
     }
 
-    // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Zigbee End Device started, searching for network..."));
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Zigbee End Device started, awaiting network steering / join..."));
     client_zigbee_initialized = true;
 
     // Register APS handler for Tuya DP protocol (cluster 0xEF00)
     esp_zb_aps_data_indication_handler_register(client_tuya_aps_indication_handler);
-    // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Tuya APS indication handler registered"));
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Tuya APS indication handler registered"));
 }
 
 static void client_zigbee_stop_internal() {
@@ -685,6 +756,11 @@ static void client_zigbee_stop_internal() {
 static bool client_zigbee_ensure_started_internal() {
     if (client_zigbee_initialized) {
         return true;
+    }
+
+    if (client_zigbee_start_failed) {
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Previous start failed - retry blocked until reboot"));
+        return false;
     }
     
     // Never start Zigbee in SOFTAP mode (RF conflict)
@@ -705,21 +781,162 @@ static bool client_zigbee_ensure_started_internal() {
     return client_zigbee_initialized;
 }
 
+static ClientZigbeeNetworkSnapshot client_zigbee_get_network_snapshot();
+static void client_zigbee_log_network_info();
+
+static bool client_zigbee_start_network_steering(uint16_t duration) {
+    if (!client_zigbee_ensure_started_internal()) {
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] network steering: Zigbee not started"));
+        return false;
+    }
+
+    uint16_t dur = duration;
+    if (dur < 1) dur = 1;
+    if (dur > 120) dur = 120;
+
+    client_join_window_end = millis() + (unsigned long)dur * 1000UL;
+
+    ClientZigbeeNetworkSnapshot snapshot = client_zigbee_get_network_snapshot();
+    if (snapshot.raw_connected) {
+        client_zigbee_log_network_info();
+        if (!snapshot.valid_join) {
+            DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Network steering blocked: stale/self network state must be cleared first"));
+            return false;
+        }
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Already connected to a valid Zigbee network"));
+        return true;
+    }
+
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Starting network steering for %u seconds (join search)\n"), dur);
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Waiting for coordinator signal... (check Fritzbox/hub logs)"));
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_err_t err = esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+    bool factory_new = esp_zb_bdb_is_factory_new();
+    esp_zb_lock_release();
+
+    if (err != ESP_OK) {
+        if (factory_new) {
+            DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Network steering already active in factory-new state, keeping join window: %u seconds\n"), dur);
+            return true;
+        }
+        DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Network steering failed to start: %s\n"), esp_err_to_name(err));
+        return false;
+    }
+
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Network steering initiated, join window: %u seconds\n"), dur);
+    return true;
+}
+
+static uint64_t client_zigbee_ieee_to_u64(const esp_zb_ieee_addr_t addr) {
+    uint64_t value = 0;
+    for (int i = 7; i >= 0; i--) {
+        value = (value << 8) | addr[i];
+    }
+    return value;
+}
+
+static ClientZigbeeNetworkSnapshot client_zigbee_get_network_snapshot() {
+    ClientZigbeeNetworkSnapshot snapshot = {};
+    snapshot.started = Zigbee.started();
+    snapshot.raw_connected = snapshot.started && Zigbee.connected();
+    snapshot.valid_join = false;
+    snapshot.factory_new = false;
+    snapshot.role = ESP_ZB_DEVICE_TYPE_NONE;
+    snapshot.pan_id = 0xFFFF;
+    snapshot.short_addr = 0xFFFF;
+
+    if (!snapshot.started) {
+        return snapshot;
+    }
+
+    // Prevent snapshot access during leave operations to avoid ZBOSS assertion crashes
+    if (client_zigbee_leave_in_progress) {
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Snapshot blocked: leave operation in progress"));
+        return snapshot;
+    }
+
+    esp_zb_ieee_addr_t ext_pan_raw;
+    esp_zb_ieee_addr_t own_ieee_raw;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    snapshot.channel = esp_zb_get_current_channel();
+    snapshot.pan_id = esp_zb_get_pan_id();
+    snapshot.short_addr = esp_zb_get_short_address();
+    snapshot.role = esp_zb_get_network_device_role();
+    snapshot.primary_mask = esp_zb_get_primary_network_channel_set();
+    snapshot.secondary_mask = esp_zb_get_secondary_network_channel_set();
+    snapshot.active_mask = esp_zb_get_channel_mask();
+    snapshot.factory_new = esp_zb_bdb_is_factory_new();
+    esp_zb_get_extended_pan_id(ext_pan_raw);
+    esp_zb_get_long_address(own_ieee_raw);
+    esp_zb_get_tx_power(&snapshot.tx_power);
+    esp_zb_lock_release();
+
+    snapshot.ext_pan = client_zigbee_ieee_to_u64(ext_pan_raw);
+    snapshot.own_ieee = client_zigbee_ieee_to_u64(own_ieee_raw);
+    snapshot.valid_join = snapshot.raw_connected &&
+        snapshot.role == ESP_ZB_DEVICE_TYPE_ED &&
+        snapshot.short_addr != 0x0000 &&
+        snapshot.short_addr != 0xFFFE &&
+        snapshot.short_addr != 0xFFFF &&
+        snapshot.pan_id != 0xFFFF &&
+        snapshot.channel >= 11 && snapshot.channel <= 26 &&
+        snapshot.ext_pan != 0 &&
+        snapshot.ext_pan != 0xFFFFFFFFFFFFFFFFULL &&
+        snapshot.ext_pan != snapshot.own_ieee;
+
+    return snapshot;
+}
+
+static void client_zigbee_log_network_info() {
+    ClientZigbeeNetworkSnapshot snapshot = client_zigbee_get_network_snapshot();
+
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Network: rawConnected=%d validJoin=%d factoryNew=%d channel=%u PAN=0x%04X extPAN=0x%08lX%08lX short=0x%04X role=%d ownIEEE=0x%08lX%08lX\n"),
+                 snapshot.raw_connected ? 1 : 0,
+                 snapshot.valid_join ? 1 : 0,
+                 snapshot.factory_new ? 1 : 0,
+                 snapshot.channel,
+                 snapshot.pan_id,
+                 (unsigned long)(snapshot.ext_pan >> 32), (unsigned long)(snapshot.ext_pan & 0xFFFFFFFF),
+                 snapshot.short_addr,
+                 (int)snapshot.role,
+                 (unsigned long)(snapshot.own_ieee >> 32), (unsigned long)(snapshot.own_ieee & 0xFFFFFFFF));
+    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Radio: primaryMask=0x%08lX secondaryMask=0x%08lX activeMask=0x%08lX txPower=%d dBm ZBOSS=%s\n"),
+                 (unsigned long)snapshot.primary_mask, (unsigned long)snapshot.secondary_mask,
+                 (unsigned long)snapshot.active_mask, (int)snapshot.tx_power,
+                 esp_zb_get_version_string());
+
+    if (snapshot.raw_connected && !snapshot.valid_join) {
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] WARNING: ZBOSS reports connected, but network state is not a valid End Device join. Use /zl or /zj?reset=1 before retrying pairing."));
+    }
+}
+
+bool sensor_zigbee_client_factory_new() {
+    if (ieee802154_get_mode() != IEEE802154Mode::IEEE_ZIGBEE_CLIENT || !Zigbee.started()) {
+        return false;
+    }
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    bool factory_new = esp_zb_bdb_is_factory_new();
+    esp_zb_lock_release();
+    return factory_new;
+}
+
 static void client_zigbee_loop_internal() {
     if (!client_zigbee_initialized) return;
 
     static unsigned long last_list_log = 0;
     if (millis() - last_list_log > 60000) {
         last_list_log = millis();
-        // DEBUG_PRINTF("[ZIGBEE-CLIENT] Lists: discovered=%u basic_queue=%u\n",
-                     // (unsigned)client_discovered_devices.size(),
-                     // (unsigned)client_basic_query_queue.size());
+        DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Status: connected=%d, discovered=%u devices\n"),
+                     client_zigbee_connected ? 1 : 0,
+                     (unsigned)client_discovered_devices.size());
     }
 
     // End temporary join/scan window.
     if (client_join_window_end != 0 && millis() > client_join_window_end) {
         client_join_window_end = 0;
-        // DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Join/scan window closed"));
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Join window closed"));
     }
 
     // NOTE: No idle timeout - Arduino Zigbee library does NOT support
@@ -734,50 +951,67 @@ static void client_zigbee_loop_internal() {
     }
 
     static bool last_connected = false;
-    bool connected = Zigbee.started() && Zigbee.connected();
-    
+    ClientZigbeeNetworkSnapshot snapshot = client_zigbee_get_network_snapshot();
+    bool connected = snapshot.valid_join;
+    static bool stale_connected_logged = false;
+    if (snapshot.raw_connected && !snapshot.valid_join && !stale_connected_logged) {
+        stale_connected_logged = true;
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Detected invalid/stale Zigbee connected state"));
+        client_zigbee_log_network_info();
+    } else if (!snapshot.raw_connected) {
+        stale_connected_logged = false;
+    }
+
     if (connected != last_connected) {
         if (connected) {
             DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Connected to Zigbee network!"));
+            client_zigbee_log_network_info();
             // On connect: immediately queue Basic Cluster queries for all paired sensors
             // that are still missing manufacturer/model info (e.g. after reboot before
             // the device has re-announced itself).
-            SensorIterator it_boot = sensors_iterate_begin();
-            SensorBase* sb;
-            while ((sb = sensors_iterate_next(it_boot)) != NULL) {
-                if (!sb || sb->type != SENSOR_ZIGBEE) continue;
-                ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sb);
-                if (zb->device_ieee == 0 || zb->basic_cluster_queried) continue;
-                // Already has info — just mark queried
-                if (zb->zb_manufacturer[0] != '\0' || zb->zb_model[0] != '\0') {
-                    zb->basic_cluster_queried = true;
-                    continue;
-                }
-                bool already_queued = false;
-                for (const auto& q : client_basic_query_queue) {
-                    if (q.ieee_addr == zb->device_ieee) { already_queued = true; break; }
-                }
-                if (!already_queued) {
-                    ClientBasicQueryItem item = {};
-                    item.ieee_addr = zb->device_ieee;
-                    item.short_addr = 0;
-                    item.endpoint = zb->endpoint;
-                    // Use a short delay (2s) so the stack has time to settle
-                    item.discovered_time = millis() - CLIENT_BASIC_QUERY_DELAY_MS + 2000UL;
-                    client_basic_query_queue.push_back(item);
-                    DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Boot: queued Basic Cluster query for sensor '%s' (0x%016llX)\n"),
-                                 zb->name, (unsigned long long)zb->device_ieee);
+            if (!ZIGBEE_CLIENT_MINIMAL_PAIRING) {
+                SensorIterator it_boot = sensors_iterate_begin();
+                SensorBase* sb;
+                while ((sb = sensors_iterate_next(it_boot)) != NULL) {
+                    if (!sb || sb->type != SENSOR_ZIGBEE) continue;
+                    ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sb);
+                    if (zb->device_ieee == 0 || zb->basic_cluster_queried) continue;
+                    // Already has info — just mark queried
+                    if (zb->zb_manufacturer[0] != '\0' || zb->zb_model[0] != '\0') {
+                        zb->basic_cluster_queried = true;
+                        continue;
+                    }
+                    bool already_queued = false;
+                    for (const auto& q : client_basic_query_queue) {
+                        if (q.ieee_addr == zb->device_ieee) { already_queued = true; break; }
+                    }
+                    if (!already_queued) {
+                        ClientBasicQueryItem item = {};
+                        item.ieee_addr = zb->device_ieee;
+                        item.short_addr = 0;
+                        item.endpoint = zb->endpoint;
+                        // Use a short delay (2s) so the stack has time to settle
+                        item.discovered_time = millis() - CLIENT_BASIC_QUERY_DELAY_MS + 2000UL;
+                        client_basic_query_queue.push_back(item);
+                        DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Boot: queued Basic Cluster query for sensor '%s' (0x%016llX)\n"),
+                                     zb->name, (unsigned long long)zb->device_ieee);
+                    }
                 }
             }
         } else {
-            DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Disconnected from Zigbee network"));
+            if (snapshot.raw_connected) {
+                DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Ignoring invalid/stale Zigbee connected state"));
+                client_zigbee_log_network_info();
+            } else {
+                DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Disconnected from Zigbee network"));
+            }
         }
         last_connected = connected;
         client_zigbee_connected = connected;
     }
     
     // Process pending Basic Cluster queries for newly discovered devices
-    if (connected && !client_basic_query_queue.empty()) {
+    if (connected && !ZIGBEE_CLIENT_MINIMAL_PAIRING && !client_basic_query_queue.empty()) {
         // Timeout stale queries
         if (s_basic_query_pending && millis() - s_basic_query_time > CLIENT_BASIC_QUERY_TIMEOUT_MS) {
             s_basic_query_pending = false;
@@ -801,7 +1035,7 @@ static void client_zigbee_loop_internal() {
     // Auto-discover: scan configured sensors for devices needing Basic Cluster query
     // Start at millis()-25000 so first check fires ~5s after boot rather than 30s.
     static unsigned long last_basic_scan = (unsigned long)-25000UL;
-    if (connected && millis() - last_basic_scan > 30000) {  // Check every 30s
+    if (connected && !ZIGBEE_CLIENT_MINIMAL_PAIRING && millis() - last_basic_scan > 30000) {  // Check every 30s
         last_basic_scan = millis();
         SensorIterator it = sensors_iterate_begin();
         SensorBase* sensor;
@@ -832,7 +1066,7 @@ static void client_zigbee_loop_internal() {
     }
 
     // Update exposed ZCL endpoints (sensor values, zone states, rain sensor)
-    if (connected) {
+    if (connected && !ZIGBEE_CLIENT_MINIMAL_PAIRING) {
         client_expose_update_loop();
     }
 }
@@ -947,9 +1181,36 @@ void sensor_zigbee_factory_reset() {
         sensor_zigbee_gw_factory_reset();
     } else if (mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
         client_zigbee_needs_nvram_reset = true;
-        // DEBUG_PRINTLN(F("[ZIGBEE] Factory reset scheduled for next start"));
+        client_mark_zigbee_nvram_reset();
+        DEBUG_PRINTLN(F("[ZIGBEE] Client factory reset scheduled for next start"));
     }
     // DISABLED or MATTER: no-op
+}
+
+bool sensor_zigbee_leave_network() {
+    if (ieee802154_get_mode() != IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
+        return false;
+    }
+
+    client_join_window_end = 0;
+    client_zigbee_connected = false;
+    client_basic_query_queue.clear();
+    s_basic_query_pending = false;
+    s_read_pending = false;
+
+    if (client_zigbee_initialized && Zigbee.started()) {
+        DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Leaving Zigbee network via local reset"));
+        client_zigbee_leave_in_progress = true;
+        esp_zb_lock_acquire(portMAX_DELAY);
+        esp_zb_bdb_reset_via_local_action();
+        vTaskDelay(100 / portTICK_PERIOD_MS);  // Give ZBOSS time to process reset
+        esp_zb_lock_release();
+        client_zigbee_leave_in_progress = false;
+        return true;
+    }
+
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Zigbee not running; erasing client NVRAM now"));
+    return client_erase_zigbee_nvram();
 }
 
 
@@ -1016,9 +1277,10 @@ bool sensor_zigbee_is_active() {
 
 bool sensor_zigbee_is_connected() {
     IEEE802154Mode mode = ieee802154_get_mode();
-    if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY ||
-        mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
+    if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
         return Zigbee.started() && Zigbee.connected();
+    } else if (mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
+        return client_zigbee_get_network_snapshot().valid_join;
     }
     return false;
 }
@@ -1066,28 +1328,16 @@ bool sensor_zigbee_ensure_started() {
     return false;
 }
 
-void sensor_zigbee_open_network(uint16_t duration) {
+bool sensor_zigbee_open_network(uint16_t duration) {
     IEEE802154Mode mode = ieee802154_get_mode();
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
         sensor_zigbee_gw_open_network(duration);
+        return true;
     } else if (mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
-        // Client mode: no permit-join command exists. We instead grant Zigbee
-        // a temporary local join/scan window for a bounded period.
-        uint16_t dur = duration;
-        if (dur < 1) dur = 1;
-        if (dur > 10) dur = 10;
-
-        if (!client_zigbee_ensure_started_internal()) {
-            DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] open_network: Zigbee not started"));
-            return;
-        }
-
-        unsigned long window_ms = (unsigned long)dur * 1000UL;
-        client_join_window_end = millis() + window_ms;
-        // DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Join/scan window started for %u seconds\n"), dur);
-    } else {
-        // DEBUG_PRINTLN(F("[ZIGBEE] open_network only available in ZIGBEE_GATEWAY mode"));
+        return client_zigbee_start_network_steering(duration);
     }
+    // DEBUG_PRINTLN(F("[ZIGBEE] open_network only available in ZIGBEE mode"));
+    return false;
 }
 
 // ---------------------------------------------------------------------------

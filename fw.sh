@@ -5,7 +5,7 @@
 # Actions:
 #   build   [matter|zigbee|esp8266|all]  – Build firmware
 #   upload  [matter|zigbee|esp8266|all]  – Upload firmware (via USB/Serial)
-#   deploy  [matter|zigbee|esp8266|all]  – Build + Upload
+#   deploy  [matter|zigbee|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
 #   release sync-tags                    – Create missing GitHub releases for existing tags
@@ -30,6 +30,11 @@
 #   ./fw.sh upload esp8266
 #   ./fw.sh deploy
 #   ./fw.sh deploy matter
+#   ./fw.sh deploy debug
+#   ./fw.sh deploy zigbee debug
+#   ./fw.sh deploy zigbee monitor   -> Build + Upload + Show live serial monitor + save logs to /tmp/zigbee_monitor_zigbee.log
+#   ./fw.sh deploy matter monitor   -> Build + Upload + Show live serial monitor + save logs to /tmp/zigbee_monitor_matter.log
+#                                      (View logs via MCP: get_monitor_log variant=zigbee)
 #   ./fw.sh release
 #   ./fw.sh release rebuild
 #   ./fw.sh generate-mfg
@@ -47,6 +52,8 @@
 #   OS_IP           Device IP  (default: 192.168.0.151)
 #   OS_PASSWORD     Admin password in plain text (will be MD5 hashed)
 #   OS_HASH         Admin password already as MD5 hash
+#   MONITOR_SPEED   Serial monitor baud rate (default: 115200)
+#   MONITOR_LOGS    Enable saving monitor logs to /tmp/ (automatic with 'monitor' flag)
 # =============================================================================
 
 set -euo pipefail
@@ -444,6 +451,184 @@ upload_env() {
     else
         error "Upload failed: ${env}"
         exit 1
+    fi
+}
+
+ensure_zigbee_boot_partition() {
+    info "Erasing otadata partition to guarantee OTA0 (zigbee) boot …"
+    _find_usb_port "esp32c5"
+    _find_esptool
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud 460800 \
+        --before default_reset --after hard_reset \
+        erase-region 0xe000 0x2000 \
+        && ok "otadata erased — device will boot zigbee (OTA0) on next reset" \
+        || warn "otadata erase failed — device may boot matter instead of zigbee"
+}
+
+# Monitor only: Start serial monitor on the specified port
+monitor_only() {
+    local port="${1:-}"
+    if [[ -z "$port" ]]; then
+        error "Usage: ./fw.sh monitor <port>"
+        error "Example: ./fw.sh monitor /dev/ttyUSB1"
+        exit 1
+    fi
+
+    if [[ ! -e "$port" ]]; then
+        error "Port not found: ${port}"
+        exit 1
+    fi
+
+    local baud="${MONITOR_SPEED:-115200}"
+    local log_file="/tmp/monitor_$(basename "$port").log"
+
+    # Clear old log file
+    > "$log_file"
+
+    header "Serial Monitor: ${port} @ ${baud} bps"
+    info "Log file: ${log_file}"
+    info "Press Ctrl+C to exit monitor"
+
+    # Open the serial port with reset awareness
+    if ! python3 - "$port" "$baud" 2>&1 <<'PY' | tee -a "$log_file"; then
+import signal
+import sys
+import time
+
+try:
+    import serial
+except ImportError:
+    print("pyserial is required for reset-aware monitor (install: pip install pyserial)", file=sys.stderr)
+    sys.exit(1)
+
+port = sys.argv[1]
+baud = int(sys.argv[2])
+running = True
+
+def stop(_signum, _frame):
+    global running
+    running = False
+
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGTERM, stop)
+
+ser = serial.Serial(port, baud, timeout=0.2)
+print(f"--- Reset-aware monitor on {port} | {baud} 8-N-1")
+print("--- Resetting target now to capture boot logs")
+sys.stdout.flush()
+
+ser.dtr = False
+ser.rts = True
+time.sleep(0.1)
+ser.rts = False
+
+try:
+    while running:
+        data = ser.read(4096)
+        if data:
+            sys.stdout.write(data.decode("utf-8", errors="replace"))
+            sys.stdout.flush()
+finally:
+    ser.close()
+PY
+        warn "Monitor exited"
+    fi
+
+    info "Monitor logs saved to: ${log_file}"
+}
+
+# Deploy + monitor: Build, upload, and start serial monitor
+deploy_monitor_env() {
+    local env="$1"
+    local debug_mode="$2"
+    
+    header "Deploy & Monitor: ${env}"
+    
+    # Debug mode handling: if debug_mode is "debug", keep debug flags ENABLED
+    local restore_debug=false
+    if [[ "$debug_mode" != "debug" ]]; then
+        disable_release_debug
+        restore_debug=true
+    else
+        info "Debug mode enabled (ENABLE_DEBUG flags active)."
+    fi
+    
+    # Build with debug flags
+    info "Building firmware with debug output enabled..."
+    build_env "$env"
+    copy_one_to_upgrade "$env" "firmware_${env##*-}.bin" 2>/dev/null || true
+    
+    # Upload
+    info "Uploading to device..."
+    upload_env "$env"
+    if [[ "$env" == "$ENV_C5_ZIGBEE" ]]; then
+        ensure_zigbee_boot_partition
+    fi
+    
+    # Find port and start monitor
+    _find_usb_port "$(_env_to_chip "$env")"
+    local baud="${MONITOR_SPEED:-115200}"
+    local variant="${env##*-}"
+    local log_file="/tmp/zigbee_monitor_${variant}.log"
+    
+    # Clear old log file
+    > "$log_file"
+    
+    header "Starting serial monitor: ${USB_PORT} @ ${baud} bps"
+    info "Log file: ${log_file}"
+    info "View logs via MCP: get_monitor_log variant=${variant}"
+    info "Press Ctrl+C to exit monitor"
+
+    # Open the serial port first, then reset the ESP32-C5 so early boot logs are not missed.
+    if ! python3 - "$USB_PORT" "$baud" 2>&1 <<'PY' | tee -a "$log_file"; then
+import signal
+import sys
+import time
+
+try:
+    import serial
+except ImportError:
+    print("pyserial is required for reset-aware monitor (install: pip install pyserial)", file=sys.stderr)
+    sys.exit(1)
+
+port = sys.argv[1]
+baud = int(sys.argv[2])
+running = True
+
+def stop(_signum, _frame):
+    global running
+    running = False
+
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGTERM, stop)
+
+ser = serial.Serial(port, baud, timeout=0.2)
+print(f"--- Reset-aware monitor on {port} | {baud} 8-N-1")
+print("--- Resetting target now to capture boot logs")
+sys.stdout.flush()
+
+ser.dtr = False
+ser.rts = True
+time.sleep(0.1)
+ser.rts = False
+
+try:
+    while running:
+        data = ser.read(4096)
+        if data:
+            sys.stdout.write(data.decode("utf-8", errors="replace"))
+            sys.stdout.flush()
+finally:
+    ser.close()
+PY
+        warn "Monitor exited"
+    fi
+    
+    info "Monitor logs saved to: ${log_file}"
+    
+    # Restore debug flags if needed
+    if $restore_debug; then
+        restore_release_debug
     fi
 }
 
@@ -1712,9 +1897,24 @@ ${BOLD}Usage:${NC}
 ${BOLD}Actions:${NC}
   build   [matter|zigbee|esp8266|ospi|all]  Build firmware (default: all)
   upload  [matter|zigbee|esp8266|all]       Upload firmware via USB (default: all)
-  deploy  [matter|zigbee|esp8266|ospi|all]  Build + Upload/Deploy (default: all)
+  deploy  [matter|zigbee|esp8266|ospi|all] [debug]
+                                            Build + Upload/Deploy (default: all)
+                                            Optional 'debug' keeps ENABLE_DEBUG
+                                            flags enabled for all variants
+                                            Examples:
+                                              ./fw.sh deploy
+                                              ./fw.sh deploy zigbee
+                                              ./fw.sh deploy debug (all platforms)
+                                              ./fw.sh deploy zigbee debug
+  deploy  [matter|zigbee|esp8266] monitor   Build + Upload + Monitor with debug
+                                            No monitor with "all" (use one platform)
+                                            Recommended for device debugging
+                                            Example: ./fw.sh deploy zigbee monitor
+  monitor <port>                            Start serial monitor on specified port
+                                            No build or upload — just monitor
+                                            Example: ./fw.sh monitor /dev/ttyUSB1
   sync-back                                 Pull OsPi changes back to local workspace
-    online-deploy                            Upload current upgrade/ tree to IONOS only
+  online-deploy                            Upload current upgrade/ tree to IONOS only
   release                                   Bump version, build all firmwares,
                                             copy to upgrade dir, git tag & push,
                                             create GitHub release, deploy to IONOS
@@ -1777,7 +1977,11 @@ ${BOLD}Examples:${NC}
   ./fw.sh build esp8266
   ./fw.sh build ospi
   ./fw.sh deploy zigbee
+  ./fw.sh deploy debug
+  ./fw.sh deploy zigbee debug
   ./fw.sh deploy ospi
+  ./fw.sh deploy zigbee monitor      # Deploy + Monitor with debug (Zigbee Client debug)
+  ./fw.sh deploy matter monitor      # Deploy + Monitor with debug (Matter debug)
   ./fw.sh sync-back
   ./fw.sh switch matter
   ./fw.sh switch zigbee
@@ -1806,6 +2010,7 @@ EOF
 # ── Main logic ───────────────────────────────────────────────────────────────
 ACTION="${1:-help}"
 VARIANT="${2:-all}"
+MODE_ARG="${3:-}"
 
 case "$ACTION" in
     build)
@@ -1855,54 +2060,119 @@ case "$ACTION" in
                 ;;
             *)
                 check_pio
-                disable_release_debug
-                trap 'restore_release_debug' EXIT
-                case "$VARIANT" in
-                matter)
-                    build_env "$ENV_C5_MATTER"
-                    copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
-                    upload_env "$ENV_C5_MATTER"
-                    ;;
-                zigbee)
-                    build_env "$ENV_C5_ZIGBEE"
-                    copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
-                    upload_env "$ENV_C5_ZIGBEE"
-                    ;;
-                esp8266)
-                    build_env "$ENV_ESP8266"
-                    copy_one_to_upgrade "$ENV_ESP8266" "firmware_esp8266.bin"
-                    upload_env "$ENV_ESP8266"
-                    ;;
-                all|"")
-                    build_env "$ENV_C5_MATTER"
-                    build_env "$ENV_C5_ZIGBEE"
-                    build_env "$ENV_ESP8266"
-                    copy_to_upgrade
-                    upload_env "$ENV_C5_MATTER"
-                    upload_env "$ENV_C5_ZIGBEE"
-                    upload_env "$ENV_ESP8266"
-                    # Erase otadata so bootloader always selects OTA0 (zigbee) on next boot.
-                    # Without this, if otadata previously pointed to OTA1 (matter), the device
-                    # would continue booting matter even after zigbee was written to OTA0.
-                    info "Erasing otadata partition to guarantee OTA0 (zigbee) boot …"
-                    _find_usb_port "esp32c5"
-                    _find_esptool
-                    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud 460800 \
-                        erase-region 0xe000 0x2000 \
-                        && ok "otadata erased — device will boot zigbee (OTA0) on next reset" \
-                        || warn "otadata erase failed — device may boot matter instead of zigbee"
-                    header "Deploy complete"
-                    ok "Matter:   flashed to ota_1 (0x3A0000)"
-                    ok "ZigBee:   flashed to ota_0 (0x10000)"
-                    ok "ESP8266:  flashed"
-                    ok "upgrade/  synced with current build"
-                    ;;
-                *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|ospi|all)"; exit 1 ;;
-                esac
-                restore_release_debug
-                trap - EXIT
+                deploy_variant="$VARIANT"
+                deploy_debug=false
+                deploy_with_monitor=false
+
+                # Parse variants and flags
+                if [[ "$deploy_variant" == "debug" ]]; then
+                    # "deploy debug" → debug all platforms, no monitor
+                    deploy_debug=true
+                    deploy_variant="all"
+                elif [[ "$deploy_variant" == "monitor" ]]; then
+                    # "deploy monitor" → monitor mode (implies debug)
+                    deploy_with_monitor=true
+                    deploy_debug=true
+                    deploy_variant="all"
+                fi
+
+                # Check for additional modes in MODE_ARG
+                if [[ "$MODE_ARG" == "debug" ]]; then
+                    deploy_debug=true
+                elif [[ "$MODE_ARG" == "monitor" ]]; then
+                    # "deploy [variant] monitor" or "deploy debug monitor"
+                    deploy_with_monitor=true
+                    deploy_debug=true
+                fi
+
+                if $deploy_with_monitor; then
+                    # Monitor mode: deploy + monitor (with debug enabled)
+                    info "Deploy + Monitor mode enabled (debug + serial monitor)"
+                    case "$deploy_variant" in
+                    zigbee|matter)
+                        deploy_monitor_env "esp32-c5-${deploy_variant}" "debug"
+                        ;;
+                    all)
+                        warn "Monitor mode only supports: zigbee, matter (single platform at a time)"
+                        info "Using default: zigbee"
+                        deploy_monitor_env "esp32-c5-zigbee" "debug"
+                        ;;
+                    *)
+                        error "Monitor mode only supports: zigbee, matter"
+                        exit 1
+                        ;;
+                    esac
+                else
+                    # Standard deploy mode (with or without debug)
+                    if ! $deploy_debug; then
+                        disable_release_debug
+                        trap 'restore_release_debug' EXIT
+                    else
+                        info "Deploy debug mode enabled (keeping ENABLE_DEBUG flags active)."
+                    fi
+
+                    case "$deploy_variant" in
+                    matter)
+                        build_env "$ENV_C5_MATTER"
+                        copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
+                        upload_env "$ENV_C5_MATTER"
+                        ;;
+                    zigbee)
+                        build_env "$ENV_C5_ZIGBEE"
+                        copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
+                        upload_env "$ENV_C5_ZIGBEE"
+                        ensure_zigbee_boot_partition
+                        ;;
+                    esp8266)
+                        build_env "$ENV_ESP8266"
+                        copy_one_to_upgrade "$ENV_ESP8266" "firmware_esp8266.bin"
+                        upload_env "$ENV_ESP8266"
+                        ;;
+                    ospi)
+                        if $deploy_debug; then
+                            info "Debug build for OSPI (OsPi does not support ENABLE_DEBUG flags)"
+                        fi
+                        build_ospi
+                        ;;
+                    all|"")
+                        build_env "$ENV_C5_MATTER"
+                        build_env "$ENV_C5_ZIGBEE"
+                        build_env "$ENV_ESP8266"
+                        if [[ "$deploy_variant" == "all" ]]; then
+                            build_ospi
+                        fi
+                        copy_to_upgrade
+                        upload_env "$ENV_C5_MATTER"
+                        upload_env "$ENV_C5_ZIGBEE"
+                        upload_env "$ENV_ESP8266"
+                        ensure_zigbee_boot_partition
+                        header "Deploy complete"
+                        ok "Matter:   flashed to ota_1 (0x3A0000)"
+                        ok "ZigBee:   flashed to ota_0 (0x10000)"
+                        ok "ESP8266:  flashed"
+                        ok "upgrade/  synced with current build"
+                        ;;
+                    *) error "Unknown variant: $deploy_variant (matter|zigbee|esp8266|ospi|all|debug|monitor)"; exit 1 ;;
+                    esac
+
+                    if ! $deploy_debug; then
+                        restore_release_debug
+                        trap - EXIT
+                    fi
+                fi
                 ;;
         esac
+        ;;
+
+    monitor)
+        # For monitor, VARIANT is the port (not a firmware variant)
+        # Detect if the user forgot to provide a port
+        if [[ "$VARIANT" == "all" ]]; then
+            error "Usage: ./fw.sh monitor <port>"
+            error "Example: ./fw.sh monitor /dev/ttyUSB1"
+            exit 1
+        fi
+        monitor_only "$VARIANT"
         ;;
 
     release)

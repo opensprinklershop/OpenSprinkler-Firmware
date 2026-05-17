@@ -303,10 +303,15 @@ def restore_c5_matter_archive(env):
         return
 
     target_archive = os.path.join(framework_dir, "esp32c5", "lib", "libespressif__esp_matter.a")
-    clean_candidates = [
-        os.path.join(framework_dir, "esp32c5", "lib.bootloop.1778288323", "libespressif__esp_matter.a"),
-        "/data/Workspace/framework-arduinoespressif32-libs/esp32c5/lib.bootloop.1778288323/libespressif__esp_matter.a",
-    ]
+    clean_candidates = []
+    c5_root = os.path.join(framework_dir, "esp32c5")
+    if os.path.isdir(c5_root):
+        for entry in sorted(os.listdir(c5_root), reverse=True):
+            if not entry.startswith("lib.bootloop"):
+                continue
+            candidate = os.path.join(c5_root, entry, "libespressif__esp_matter.a")
+            if os.path.exists(candidate):
+                clean_candidates.append(candidate)
 
     def has_openthread(archive):
         if not archive or not os.path.exists(archive):
@@ -460,6 +465,37 @@ def ensure_c5_matter_radio_libs(env):
         print("Added late ESP32-C5 Matter radio/link libraries")
 
 
+def remove_c5_openthread_libs(env):
+    """Remove OpenThread libraries for ESP32-C5 Matter builds.
+
+    The local OpenSprinkler ESP32-C5 framework-libs package is rebuilt for
+    Wi-Fi/Ethernet Matter without OpenThread. Newer pioarduino platform files
+    can still inject -lopenthread late in LIBS/LINKFLAGS, so strip it from the
+    effective SCons environment right before linking.
+    """
+
+    build_flags = env.Flatten(env.get("BUILD_FLAGS", []))
+    is_matter = any("ENABLE_MATTER" in flag for flag in build_flags)
+    is_esp32c5 = any("ESP32C5" in flag for flag in build_flags)
+    if not (is_matter and is_esp32c5):
+        return
+
+    def keep(value):
+        return "openthread" not in str(value).lower()
+
+    libs = list(env.get("LIBS", []))
+    filtered_libs = [lib for lib in libs if keep(lib)]
+    if len(filtered_libs) != len(libs):
+        env.Replace(LIBS=filtered_libs)
+        print("Removed OpenThread libs for ESP32-C5 WiFi/Ethernet Matter build")
+
+    linkflags = list(env.get("LINKFLAGS", []))
+    filtered_flags = [flag for flag in linkflags if keep(flag)]
+    if len(filtered_flags) != len(linkflags):
+        env.Replace(LINKFLAGS=filtered_flags)
+        print("Removed OpenThread linker flags for ESP32-C5 WiFi/Ethernet Matter build")
+
+
 def _register_pre_link_fixes(outer_env):
     """Ensure late-added libs/flags get normalized right before link."""
 
@@ -471,6 +507,7 @@ def _register_pre_link_fixes(outer_env):
         patch_c5_matter_sdkconfig_headers(active_env)
         restore_c5_matter_archive(active_env)
         ensure_c5_matter_radio_libs(active_env)
+        remove_c5_openthread_libs(active_env)
         fix_zigbee_lib_names(active_env)
 
     # Link target for PlatformIO firmware image.
@@ -484,5 +521,6 @@ ensure_schedule_daylight_lib(env)
 patch_c5_matter_sdkconfig_headers(env)
 restore_c5_matter_archive(env)
 ensure_c5_matter_radio_libs(env)
+remove_c5_openthread_libs(env)
 fix_zigbee_lib_names(env)
 _register_pre_link_fixes(env)

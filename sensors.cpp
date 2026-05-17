@@ -475,8 +475,6 @@ void sensor_radio_early_init() {
 
   // DEBUG_PRINTLN(F("[RADIO] Early radio init: BLE + Zigbee"));
 
-  // BLE MUST be initialized BEFORE Zigbee — NimBLE controller needs
-  // DMA-capable internal SRAM that Zigbee would otherwise consume.
 #if defined(ESP32) && defined(OS_ENABLE_BLE)
   DEBUG_PRINTLN(F("[RADIO] Initializing BLE..."));
   if (sensor_ble_init()) {
@@ -1605,6 +1603,8 @@ void read_all_sensors(boolean online) {
     current_sensor = current_sensor_it->second;
   }
 
+  uint8_t sensors_read_this_pass = 0;
+  unsigned long pass_start_ms = millis();
   while (current_sensor && current_sensor_it != sensorsMap.end()) {
     //ulong time_since_last = (current_sensor->last_read == 0) ? 99999 : (time - current_sensor->last_read);
     boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval || current_sensor->repeat_read);
@@ -1612,23 +1612,30 @@ void read_all_sensors(boolean online) {
     if (should_read) {
       if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
         //boolean was_repeat = current_sensor->repeat_read;
-        // DEBUG_PRINTF(F("[SENSOR] Reading #%d (type=%d, ri=%u, last=%lu, now=%lu, since=%lu, repeat=%d)\n"),
-                    // current_sensor->nr, current_sensor->type, current_sensor->read_interval, 
-                    // current_sensor->last_read, time, time_since_last, was_repeat);
+        DEBUG_PRINTF(F("[SENSOR] read begin #%d type=%d name='%s' repeat=%d\n"),
+                     current_sensor->nr, current_sensor->type, current_sensor->name, current_sensor->repeat_read);
         
+        unsigned long read_start_ms = millis();
         int result = read_sensor(current_sensor, time);
+        unsigned long read_ms = millis() - read_start_ms;
         if (!current_sensor) {
           // Reset iterator if sensor was deleted during save
           current_sensor = NULL;
           return;
         }
+        DEBUG_PRINTF(F("[SENSOR] read end #%d result=%d duration=%lums\n"),
+                     current_sensor->nr, result, read_ms);
         if (result == HTTP_RQT_SUCCESS) {
           current_sensor->last_read = time;
 #if !defined(ESP8266)
           current_sensor->trend_add_sample(current_sensor->last_data, time);
 #endif
+          unsigned long log_start_ms = millis();
           sensorlog_add(LOG_STD, current_sensor, time);
+          DEBUG_PRINTF(F("[SENSOR] log done #%d duration=%lums\n"), current_sensor->nr, millis() - log_start_ms);
+          unsigned long push_start_ms = millis();
           push_message(current_sensor);
+          DEBUG_PRINTF(F("[SENSOR] push done #%d duration=%lums\n"), current_sensor->nr, millis() - push_start_ms);
         } else if (result == HTTP_RQT_TIMEOUT) {
           // delay next read on timeout:
           current_sensor->last_read = time + max((uint)60, current_sensor->read_interval);
@@ -1669,6 +1676,16 @@ void read_all_sensors(boolean online) {
             current_sensor = NULL;
           }
           break;
+        }
+        sensors_read_this_pass++;
+        if (sensors_read_this_pass >= 3 || (millis() - pass_start_ms) > 500UL) {
+          ++current_sensor_it;
+          if (current_sensor_it != sensorsMap.end()) {
+            current_sensor = current_sensor_it->second;
+          } else {
+            current_sensor = NULL;
+          }
+          return;
         }
       }
     }
@@ -2920,6 +2937,9 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
 void check_monitors() {
   //DEBUG_PRINTLN(F("check_monitors"));
   time_os_t timeNow = os.now_tz();
+
+  os.status.forced_sensor1 = 0;
+  os.status.forced_sensor2 = 0;
 
   int monidx = 0;
   for (auto &kv : monitorsMap) {

@@ -515,85 +515,6 @@ inline int16_t celsius_to_matter(float c) { return (int16_t)(c * 100.0f); }
 inline uint16_t percent_to_matter(float p) { return (uint16_t)(p * 100.0f); }
 inline int16_t pressure_to_matter(float hPa) { return (int16_t)(hPa * 10.0f); }
 
-void matter_copy_label(char *dst, size_t dst_size, const char *label, const char *fallback) {
-  if (!dst || dst_size == 0) return;
-  const char *source = (label && label[0]) ? label : fallback;
-  if (!source || !source[0]) source = "OpenSprinkler";
-  strlcpy(dst, source, dst_size);
-}
-
-bool matter_set_string_attribute(uint16_t endpoint_id, esp_matter::cluster_t *cluster,
-                                 uint32_t cluster_id, uint32_t attribute_id,
-                                 esp_matter_attr_val_t *val) {
-  esp_matter::attribute_t *attr = esp_matter::attribute::get(cluster, attribute_id);
-  if (!attr) {
-    return false;
-  }
-
-  if (esp_matter::is_started()) {
-    return esp_matter::attribute::update(endpoint_id, cluster_id, attribute_id, val) == ESP_OK;
-  }
-  return esp_matter::attribute::set_val(attr, val) == ESP_OK;
-}
-
-void matter_label_endpoint(uint16_t endpoint_id, const char *label, const char *product_name) {
-  esp_matter::endpoint_t *endpoint = esp_matter::endpoint::get(endpoint_id);
-  if (!endpoint) {
-    return;
-  }
-
-  namespace BDBI = chip::app::Clusters::BridgedDeviceBasicInformation;
-  esp_matter::cluster_t *cluster = esp_matter::cluster::get(endpoint, BDBI::Id);
-  if (!cluster) {
-    esp_matter::cluster::bridged_device_basic_information::config_t config;
-    cluster = esp_matter::cluster::bridged_device_basic_information::create(endpoint, &config, CLUSTER_FLAG_SERVER);
-  }
-  if (!cluster) {
-    DEBUG_PRINTF("[Matter] Could not add label cluster to endpoint %u\n", endpoint_id);
-    return;
-  }
-
-  char node_label[esp_matter::cluster::bridged_device_basic_information::k_max_node_label_length + 1];
-  char product[esp_matter::cluster::bridged_device_basic_information::k_max_product_name_length + 1];
-  char product_label[esp_matter::cluster::bridged_device_basic_information::k_max_product_label_length + 1];
-  char vendor[esp_matter::cluster::bridged_device_basic_information::k_max_vendor_name_length + 1];
-  char unique_id[esp_matter::cluster::bridged_device_basic_information::k_max_unique_id_length + 1];
-
-  matter_copy_label(node_label, sizeof(node_label), label, "OpenSprinkler Endpoint");
-  matter_copy_label(product, sizeof(product), product_name, "OpenSprinkler");
-  matter_copy_label(product_label, sizeof(product_label), label, "OpenSprinkler Endpoint");
-  strlcpy(vendor, "OpenSprinkler", sizeof(vendor));
-  snprintf(unique_id, sizeof(unique_id), "os-matter-%u", endpoint_id);
-
-  if (!esp_matter::attribute::get(cluster, BDBI::Attributes::NodeLabel::Id)) {
-    esp_matter::cluster::bridged_device_basic_information::attribute::create_node_label(cluster, node_label, strlen(node_label));
-  }
-  if (!esp_matter::attribute::get(cluster, BDBI::Attributes::ProductName::Id)) {
-    esp_matter::cluster::bridged_device_basic_information::attribute::create_product_name(cluster, product, strlen(product));
-  }
-  if (!esp_matter::attribute::get(cluster, BDBI::Attributes::ProductLabel::Id)) {
-    esp_matter::cluster::bridged_device_basic_information::attribute::create_product_label(cluster, product_label, strlen(product_label));
-  }
-  if (!esp_matter::attribute::get(cluster, BDBI::Attributes::VendorName::Id)) {
-    esp_matter::cluster::bridged_device_basic_information::attribute::create_vendor_name(cluster, vendor, strlen(vendor));
-  }
-  if (!esp_matter::attribute::get(cluster, BDBI::Attributes::UniqueID::Id)) {
-    esp_matter::cluster::bridged_device_basic_information::attribute::create_unique_id(cluster, unique_id, strlen(unique_id));
-  }
-
-  esp_matter_attr_val_t node_val = esp_matter_char_str(node_label, strlen(node_label));
-  esp_matter_attr_val_t product_val = esp_matter_char_str(product, strlen(product));
-  esp_matter_attr_val_t product_label_val = esp_matter_char_str(product_label, strlen(product_label));
-  esp_matter_attr_val_t vendor_val = esp_matter_char_str(vendor, strlen(vendor));
-  esp_matter_attr_val_t unique_val = esp_matter_char_str(unique_id, strlen(unique_id));
-
-  matter_set_string_attribute(endpoint_id, cluster, BDBI::Id, BDBI::Attributes::NodeLabel::Id, &node_val);
-  matter_set_string_attribute(endpoint_id, cluster, BDBI::Id, BDBI::Attributes::ProductName::Id, &product_val);
-  matter_set_string_attribute(endpoint_id, cluster, BDBI::Id, BDBI::Attributes::ProductLabel::Id, &product_label_val);
-  matter_set_string_attribute(endpoint_id, cluster, BDBI::Id, BDBI::Attributes::VendorName::Id, &vendor_val);
-  matter_set_string_attribute(endpoint_id, cluster, BDBI::Id, BDBI::Attributes::UniqueID::Id, &unique_val);
-}
-
 double matter_sensor_value_for_endpoint(const SensorBase *sensor, MatterSensorEndpoint endpoint) {
   if (!sensor) {
     return 0.0;
@@ -747,9 +668,6 @@ void create_station_endpoints(int &budget) {
     
     if(stations[sid]->begin(is_on)) {
       budget--;
-      char station_name[STATION_NAME_SIZE + 1];
-      os.get_station_name(sid, station_name);
-      matter_label_endpoint(stations[sid]->getEndPointId(), station_name, "OpenSprinkler Zone");
       stations[sid]->onChange([sid](bool value) {
         DEBUG_PRINTF("[Matter] Station %d -> %s\n", sid, value ? "ON" : "OFF");
         if(value) OSMatter::instance().station_on(sid);
@@ -779,9 +697,6 @@ void create_program_endpoints(int &budget) {
     programs[pid] = std::unique_ptr<MatterOnOffPlugin>(new(mem) MatterOnOffPlugin());
     if (programs[pid]->begin(false)) {
       budget--;
-      ProgramStruct program;
-      pd.read(pid, &program);
-      matter_label_endpoint(programs[pid]->getEndPointId(), program.name, "OpenSprinkler Program");
       programs[pid]->onChange([pid](bool value) {
         DEBUG_PRINTF("[Matter] Program %d -> %s (queued)\n", pid, value ? "START" : "STOP");
         MatterCmd cmd{};
@@ -816,9 +731,6 @@ void create_binary_sensor_endpoints(int &budget) {
     binary_sensor_lights[port] = std::unique_ptr<MatterOnOffLight>(new(mem) MatterOnOffLight());
     if (binary_sensor_lights[port]->begin(matter_binary_sensor_active(port))) {
       budget--;
-      matter_label_endpoint(binary_sensor_lights[port]->getEndPointId(),
-                            port == 0 ? "Rain Sensor 1" : "Rain Sensor 2",
-                            "OpenSprinkler Rain Sensor");
       binary_sensor_lights[port]->onChange([port](bool value) {
         DEBUG_PRINTF("[Matter] Rain sensor %d controller write ignored -> %s\n", port, value ? "ON" : "OFF");
         return false;
@@ -841,7 +753,6 @@ void create_analog_sensor_endpoint(uint16_t key, SensorBase* sensor, MatterSenso
         new(mem) MatterTemperatureSensor());
       if(temp_sensors[key]->begin(initial_value)) {
         budget--;
-        matter_label_endpoint(temp_sensors[key]->getEndPointId(), sensor->name, "OpenSprinkler Temperature Sensor");
       }
       break;
     }
@@ -852,7 +763,6 @@ void create_analog_sensor_endpoint(uint16_t key, SensorBase* sensor, MatterSenso
         new(mem) MatterHumiditySensor());
       if(humidity_sensors[key]->begin(initial_value)) {
         budget--;
-        matter_label_endpoint(humidity_sensors[key]->getEndPointId(), sensor->name, "OpenSprinkler Humidity Sensor");
       }
       break;
     }
@@ -863,7 +773,6 @@ void create_analog_sensor_endpoint(uint16_t key, SensorBase* sensor, MatterSenso
         new(mem) MatterPressureSensor());
       if(pressure_sensors[key]->begin(initial_value)) {
         budget--;
-        matter_label_endpoint(pressure_sensors[key]->getEndPointId(), sensor->name, "OpenSprinkler Pressure Sensor");
       }
       break;
     }

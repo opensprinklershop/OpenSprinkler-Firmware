@@ -838,7 +838,7 @@ byte OpenSprinkler::start_ether() {
 	gpio_install_isr_service(0);
 	
 	delay(100);
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, SCK, MISO, MOSI, 20)) {
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, 20)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
 	}
@@ -1912,6 +1912,8 @@ void OpenSprinkler::apply_all_station_bits(void (*post_activation_callback)()) {
 
 /** Read rain sensor status */
 void OpenSprinkler::detect_binarysensor_status(time_os_t curr_time) {
+    time_os_t sensor_time = (time_os_t)(millis() / 1000UL);
+
 	// sensor_type: 0 if normally closed, 1 if normally open
 	if(iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_RAIN || iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_SOIL) {
 		if(hw_rev>=2)	pinMode(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
@@ -1921,20 +1923,20 @@ void OpenSprinkler::detect_binarysensor_status(time_os_t curr_time) {
 			if(!sensor1_on_timer) {
 				// add minimum of 5 seconds on delay
 				ulong delay_time = (ulong)iopts[IOPT_SENSOR1_ON_DELAY]*60;
-				sensor1_on_timer = curr_time + (delay_time>5?delay_time:5);
+				sensor1_on_timer = sensor_time + (delay_time>5?delay_time:5);
 				sensor1_off_timer = 0;
 			} else {
-				if(curr_time > sensor1_on_timer) {
+				if(sensor_time > sensor1_on_timer) {
 					status.sensor1_active = 1;
 				}
 			}
 		} else {
 			if(!sensor1_off_timer) {
 				ulong delay_time = (ulong)iopts[IOPT_SENSOR1_OFF_DELAY]*60;
-				sensor1_off_timer = curr_time + (delay_time>5?delay_time:5);
+				sensor1_off_timer = sensor_time + (delay_time>5?delay_time:5);
 				sensor1_on_timer = 0;
 			} else {
-				if(curr_time > sensor1_off_timer) {
+				if(sensor_time > sensor1_off_timer) {
 					status.sensor1_active = 0;
 				}
 			}
@@ -1959,20 +1961,20 @@ void OpenSprinkler::detect_binarysensor_status(time_os_t curr_time) {
 			if(!sensor2_on_timer) {
 				// add minimum of 5 seconds on delay
 				ulong delay_time = (ulong)iopts[IOPT_SENSOR2_ON_DELAY]*60;
-				sensor2_on_timer = curr_time + (delay_time>5?delay_time:5);
+				sensor2_on_timer = sensor_time + (delay_time>5?delay_time:5);
 				sensor2_off_timer = 0;
 			} else {
-				if(curr_time > sensor2_on_timer) {
+				if(sensor_time > sensor2_on_timer) {
 					status.sensor2_active = 1;
 				}
 			}
 		} else {
 			if(!sensor2_off_timer) {
 				ulong delay_time = (ulong)iopts[IOPT_SENSOR2_OFF_DELAY]*60;
-				sensor2_off_timer = curr_time + (delay_time>5?delay_time:5);
+				sensor2_off_timer = sensor_time + (delay_time>5?delay_time:5);
 				sensor2_on_timer = 0;
 			} else {
-				if(curr_time > sensor2_off_timer) {
+				if(sensor_time > sensor2_off_timer) {
 					status.sensor2_active = 0;
 				}
 			}
@@ -2023,8 +2025,12 @@ void OpenSprinkler::sensor_resetall() {
 	sensor2_on_timer = 0;
 	sensor2_off_timer = 0;
 	sensor2_active_lasttime = 0;
+	old_status.sensor1 = status.sensor1 = 0;
+	old_status.sensor2 = status.sensor2 = 0;
 	old_status.sensor1_active = status.sensor1_active = 0;
 	old_status.sensor2_active = status.sensor2_active = 0;
+	status.forced_sensor1 = 0;
+	status.forced_sensor2 = 0;
 }
 
 /** Read current sensing value

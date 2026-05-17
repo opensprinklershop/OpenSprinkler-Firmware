@@ -110,7 +110,18 @@ OS_BASE_URL=http://192.168.0.151 OS_PASSWORD_HASH=<YOUR_ADMIN_PASSWORD_HASH> npm
 
 VS Code MCP configuration is in `.vscode/mcp.json` — the server is auto-started by Copilot/Claude.
 
-Available MCP tools: `get_all`, `get_debug`, `get_sensors`, `get_zigbee_devices`, `get_ble_devices`, `get_system_resources`, `get_station_status`, `get_options`, `get_controller_variables`, etc. See `tools/mcp-server/README.md` for the full list.
+Available MCP tools: `get_all`, `get_debug`, `get_sensors`, `get_zigbee_devices`, `get_ble_devices`, `get_system_resources`, `get_station_status`, `get_options`, `get_controller_variables`, **`get_monitor_log`** (new!), etc. See `tools/mcp-server/README.md` for the full list.
+
+#### Monitor Logs via MCP (new feature!)
+```bash
+# Debug Zigbee/Matter connections with live monitor + MCP log access:
+./fw.sh deploy zigbee monitor      # Build → Upload → Show live serial monitor
+./fw.sh deploy matter monitor      # Logs saved to /tmp/zigbee_monitor_*.log
+
+# Then retrieve logs via MCP:
+get_monitor_log variant=zigbee tail=50    # Last 50 lines
+get_monitor_log variant=zigbee tail=0     # All lines
+```
 
 ### Testing via direct REST API
 All OpenSprinkler endpoints accept `?pw=<md5hash>` (use the admin password hash computed above):

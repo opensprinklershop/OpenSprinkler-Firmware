@@ -634,7 +634,8 @@ boolean check_password(char *p)
 
 	// Check password parameter
 	const char *pw = req.getQueryParameter("pw");
-	if(pw != NULL && os.password_verify(pw)) {
+	bool pw_valid = (pw != NULL && os.password_verify(pw));
+	if(pw_valid) {
 		return true;
 	}
 
@@ -2537,9 +2538,14 @@ void server_json_debug(OTF_PARAMS_DEF) {
 #else
 	print_header();
 #endif
-	bfill.emit_p(PSTR("{\"date\":\"$S\",\"time\":\"$S\",\"heap\":$L"), __DATE__, __TIME__,
+	bfill.emit_p(PSTR("{\"date\":\"$S\",\"time\":\"$S\",\"heap\":$L,\"debug_build\":$D"), __DATE__, __TIME__,
 #if defined(ESP8266) || defined(ESP32)
-	(unsigned long)ESP.getFreeHeap());
+	(unsigned long)ESP.getFreeHeap(),
+#if defined(ENABLE_DEBUG)
+	1);
+#else
+	0);
+#endif
 
 	#if defined(ESP8266)
 	FSInfo fs_info;
@@ -2583,7 +2589,12 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	}
 */
 #else
-	(unsigned long)freeHeap());
+	(unsigned long)freeHeap(),
+#if defined(ENABLE_DEBUG)
+	1);
+#else
+	0);
+#endif
 	bfill.emit_p(PSTR("}"));
 #endif
 	handle_return(HTML_OK);
@@ -2726,11 +2737,13 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 	if (!part) {
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"matter_kvs partition not found\"}"));
 		handle_return(HTML_OK);
+		return;
 	}
 
 	if (part->size == 0) {
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"matter_kvs partition size is zero\"}"));
 		handle_return(HTML_OK);
+		return;
 	}
 
 	HTTPClient http;
@@ -2756,6 +2769,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 		if (opened) http.end();
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"download failed\",\"http\":$D}"), opened ? httpCode : -1);
 		handle_return(HTML_OK);
+		return;
 	}
 
 	int contentLen = http.getSize();
@@ -2763,6 +2777,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 		http.end();
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"binary too large\",\"size\":$D,\"max\":$D}"), contentLen, (int)part->size);
 		handle_return(HTML_OK);
+		return;
 	}
 
 	WiFiClient *stream = http.getStreamPtr();
@@ -2770,6 +2785,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 		http.end();
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"no response stream\"}"));
 		handle_return(HTML_OK);
+		return;
 	}
 
 	esp_err_t err = esp_partition_erase_range(part, 0, part->size);
@@ -2777,6 +2793,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 		http.end();
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"erase failed\",\"esp\":$D}"), (int)err);
 		handle_return(HTML_OK);
+		return;
 	}
 
 	uint8_t buf[1024];
@@ -2790,6 +2807,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 				http.end();
 				bfill.emit_p(PSTR("{\"result\":0,\"error\":\"download timeout\"}"));
 				handle_return(HTML_OK);
+				return;
 			}
 			delay(5);
 			continue;
@@ -2801,6 +2819,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 			http.end();
 			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"partition overflow\"}"));
 			handle_return(HTML_OK);
+			return;
 		}
 
 		int n = stream->readBytes((char*)buf, toRead);
@@ -2811,6 +2830,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 			http.end();
 			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"write failed\",\"esp\":$D}"), (int)err);
 			handle_return(HTML_OK);
+			return;
 		}
 
 		written += (size_t)n;
@@ -2824,6 +2844,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 	if (written == 0) {
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"empty download\"}"));
 		handle_return(HTML_OK);
+		return;
 	}
 
 	bfill.emit_p(PSTR("{\"result\":1,\"written\":$D}"), (int)written);
@@ -5637,7 +5658,7 @@ void server_zigbee_join_network(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
 		duration = atoi(tmp_buffer);
 		if (duration < 1) duration = 1;
-		if (duration > 10) duration = 10;
+		if (duration > 120) duration = 120;
 	}
 
 	bool do_factory_reset = false;
@@ -5648,6 +5669,21 @@ void server_zigbee_join_network(OTF_PARAMS_DEF) {
 	// Optional reset request (must happen before ensure_started call)
 	if (do_factory_reset) {
 		sensor_zigbee_factory_reset();
+		bool active_before = sensor_zigbee_is_active();
+		bool connected_before = sensor_zigbee_is_connected();
+		bool leave_requested = sensor_zigbee_leave_network();
+
+		bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D,\"status\":\"resetting\","
+		                   "\"active_before\":$D,\"connected_before\":$D,"
+		                   "\"leave_requested\":$D,\"reset_requested\":1,\"reboot\":1}"),
+		             duration,
+		             active_before ? 1 : 0,
+		             connected_before ? 1 : 0,
+		             leave_requested ? 1 : 0);
+		send_packet(OTF_PARAMS);
+		reboot_in(1500);
+		handle_return(HTML_OK);
+		return;
 	}
 
 	// Ensure Zigbee is started, then trigger network search
@@ -5659,11 +5695,23 @@ void server_zigbee_join_network(OTF_PARAMS_DEF) {
 		return;
 	}
 
-	// Client mode: grant bounded (max 10s) radio priority for join/scan.
-	sensor_zigbee_open_network(duration);
+	// Client mode: start BDB network steering directly at runtime.
+	bool steering_started = sensor_zigbee_open_network(duration);
+	if (!steering_started) {
+		bfill.emit_p(PSTR("{\"result\":0,\"duration\":$D,\"status\":\"not_started\","
+		                   "\"error\":\"network steering not started; leave/reset stale network first\","
+		                   "\"active\":$D,\"connected\":$D,\"reset_requested\":$D,\"reboot\":0}"),
+		             duration,
+		             sensor_zigbee_is_active() ? 1 : 0,
+		             sensor_zigbee_is_connected() ? 1 : 0,
+		             do_factory_reset ? 1 : 0);
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
 
 	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D,\"status\":\"searching\","
-	                   "\"active\":$D,\"connected\":$D,\"reset_requested\":$D}"),
+	                   "\"active\":$D,\"connected\":$D,\"reset_requested\":$D,\"reboot\":0}"),
 	             duration,
 	             sensor_zigbee_is_active() ? 1 : 0,
 	             sensor_zigbee_is_connected() ? 1 : 0,
@@ -5697,10 +5745,11 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 		return;
 	}
 
-	bfill.emit_p(PSTR("{\"result\":1,\"active\":$D,\"connected\":$D,"
+	bfill.emit_p(PSTR("{\"result\":1,\"active\":$D,\"connected\":$D,\"factory_new\":$D,"
 	                   "\"mode\":\"$S\",\"coex\":\"$S\",\"join_window_remaining\":$D"),
 	             sensor_zigbee_is_active() ? 1 : 0,
 	             sensor_zigbee_is_connected() ? 1 : 0,
+	             sensor_zigbee_client_factory_new() ? 1 : 0,
 	             ieee802154_is_zigbee_gw() ? "gateway" : "client",
 	             "disabled",
 	             sensor_zigbee_get_join_window_remaining());
@@ -5721,6 +5770,65 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 
 	bfill.emit_p(PSTR("}"));
 	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+
+/**
+ * zl
+ * @brief ZigBee Client: Leave/disconnect from the current ZigBee network
+ * Only available when mode == ZIGBEE_CLIENT
+ * Parameters: reboot=0|1 (default 1)
+ * Returns JSON: {"result":1, "action":"leave", "reboot":1}
+ */
+void server_zigbee_leave_network(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	print_header();
+#endif
+
+	if (!ieee802154_is_zigbee_client()) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"not in zigbee_client mode\"}"));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	bool do_reboot = true;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("reboot"), true)) {
+		do_reboot = (atoi(tmp_buffer) != 0);
+	}
+
+	bool active_before = sensor_zigbee_is_active();
+	bool connected_before = sensor_zigbee_is_connected();
+	bool factory_new_before = sensor_zigbee_client_factory_new();
+	if (active_before && !connected_before && factory_new_before) {
+		DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] /zl ignored: already factory-new and not connected"));
+		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"leave\",\"status\":\"already_factory_new\","
+		                   "\"active_before\":$D,\"connected_before\":$D,\"factory_new\":1,\"reboot\":0}"),
+		             active_before ? 1 : 0,
+		             connected_before ? 1 : 0);
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		return;
+	}
+	bool requested = sensor_zigbee_leave_network();
+
+	bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"leave\",\"active_before\":$D,"
+	                   "\"connected_before\":$D,\"factory_new\":$D,\"reboot\":$D}"),
+	             requested ? 1 : 0,
+	             active_before ? 1 : 0,
+	             connected_before ? 1 : 0,
+	             factory_new_before ? 1 : 0,
+	             do_reboot ? 1 : 0);
+	send_packet(OTF_PARAMS);
+
+	if (requested && do_reboot) {
+		reboot_in(1500);
+	}
 	handle_return(HTML_OK);
 }
 
@@ -6156,6 +6264,7 @@ const char _url_keys[] PROGMEM =
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	"zj"  // Zigbee Client: join/search network
 	"zs"  // Zigbee: get connection status
+	"zl"  // Zigbee Client: leave/disconnect network
 	"zg"  // Zigbee Gateway: manage devices
 	"zd"  // Zigbee: get discovered devices
 	"zo"  // Zigbee: open network
@@ -6254,6 +6363,7 @@ URLHandler urls[] = {
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	server_zigbee_join_network, // zj
 	server_zigbee_status, // zs
+	server_zigbee_leave_network, // zl
 	server_zigbee_gw_manage, // zg
 	server_zigbee_discovered_devices, // zd
 	server_zigbee_open_network, // zo
@@ -6441,6 +6551,19 @@ void start_server_client() {
 		otf->on("/mcp", server_mcp_options_handler, OTF::OTF_HTTP_OPTIONS);
 		otf->on("/mcp", server_mcp_delete_handler, OTF::OTF_HTTP_DELETE);
 #endif
+#if defined(ESP32C5)
+		otf->on("/ir", server_ieee802154_get);
+		otf->on("/iw", server_ieee802154_set);
+#endif
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+		otf->on("/zj", server_zigbee_join_network);
+		otf->on("/zs", server_zigbee_status);
+		otf->on("/zl", server_zigbee_leave_network);
+		otf->on("/zg", server_zigbee_gw_manage);
+		otf->on("/zd", server_zigbee_discovered_devices);
+		otf->on("/zo", server_zigbee_open_network);
+		otf->on("/zc", server_zigbee_clear_flags);
+#endif
 
 		// set up all other handlers
 		char uri[4];
@@ -6532,6 +6655,20 @@ void initialize_otf() {
 		otf->on("/mcp", server_mcp_get_handler, OTF::OTF_HTTP_GET);
 		otf->on("/mcp", server_mcp_options_handler, OTF::OTF_HTTP_OPTIONS);
 		otf->on("/mcp", server_mcp_delete_handler, OTF::OTF_HTTP_DELETE);
+
+#if defined(ESP32C5)
+		otf->on("/ir", server_ieee802154_get);
+		otf->on("/iw", server_ieee802154_set);
+#endif
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+		otf->on("/zj", server_zigbee_join_network);
+		otf->on("/zs", server_zigbee_status);
+		otf->on("/zl", server_zigbee_leave_network);
+		otf->on("/zg", server_zigbee_gw_manage);
+		otf->on("/zd", server_zigbee_discovered_devices);
+		otf->on("/zo", server_zigbee_open_network);
+		otf->on("/zc", server_zigbee_clear_flags);
+#endif
 
 		// set up all other handlers
 		char uri[4];

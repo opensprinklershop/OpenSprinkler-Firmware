@@ -86,6 +86,65 @@ def patch_zigbee_psram_task(source, target, env):
     print("[FIX_BUILD] Patched ZigbeeCore.cpp: Zigbee_main task stack → internal RAM (PSRAM fallback)")
 
 env.AddPreAction("buildprog", patch_zigbee_psram_task)
+patch_zigbee_psram_task(None, None, env)
+
+
+def patch_zigbee_application_controlled_steering(source, target, env):
+    """Patch ZigbeeCore.cpp so End Device network steering is started only by the app (/zj)."""
+    framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
+    if not framework_dir:
+        return
+    zb_core = os.path.join(framework_dir, "libraries", "Zigbee", "src", "ZigbeeCore.cpp")
+    if not os.path.exists(zb_core):
+        return
+
+    with open(zb_core, "r") as f:
+        content = f.read()
+
+    changed = False
+
+    old_auto = (
+        "          } else {\n"
+        "            log_i(\"Start network steering\");\n"
+        "            esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);\n"
+        "            Zigbee._started = true;\n"
+        "            xSemaphoreGive(Zigbee.lock);\n"
+        "          }"
+    )
+    new_auto = (
+        "          } else {\n"
+        "            log_i(\"Factory-new end device ready; network steering is application-controlled\");\n"
+        "            Zigbee._started = true;\n"
+        "            xSemaphoreGive(Zigbee.lock);\n"
+        "          }"
+    )
+    if old_auto in content:
+        content = content.replace(old_auto, new_auto, 1)
+        changed = True
+
+    old_retry = (
+        "        } else {\n"
+        "          log_i(\"Network steering was not successful (status: %s)\", esp_err_to_name(err_status));\n"
+        "          esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);\n"
+        "        }"
+    )
+    new_retry = (
+        "        } else {\n"
+        "          log_i(\"Network steering was not successful (status: %s); waiting for application retry\", esp_err_to_name(err_status));\n"
+        "        }"
+    )
+    if old_retry in content:
+        content = content.replace(old_retry, new_retry, 1)
+        changed = True
+
+    if changed:
+        with open(zb_core, "w") as f:
+            f.write(content)
+        print("[FIX_BUILD] Patched ZigbeeCore.cpp: End Device steering is application-controlled (no auto/retry loop)")
+
+
+env.AddPreAction("buildprog", patch_zigbee_application_controlled_steering)
+patch_zigbee_application_controlled_steering(None, None, env)
 
 # --- Parallel build: use all available CPU cores ---
 num_cores = multiprocessing.cpu_count()

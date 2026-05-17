@@ -115,6 +115,7 @@ In `~/.config/claude/claude_desktop_config.json`:
 | `get_special_stations` | Spezial-Stationen (RF, Remote, GPIO, HTTP) | `/je` |
 | `get_log` | Bewässerungsprotokoll (nach Zeitraum oder Tagen) | `/jl` |
 | `get_debug` | Debug-/Diagnoseinformationen | `/db` |
+| `get_monitor_log` | Live serial monitor logs (Zigbee/Matter/ESP8266) | `/tmp/zigbee_monitor_*.log` |
 
 ### Steuerung
 
@@ -235,6 +236,47 @@ src/
 ├── client.ts       # HTTP-Client für die OpenSprinkler REST-API
 ├── tools.ts        # Registrierung aller MCP-Tools (Abfragen, Steuerung, Sensoren, etc.)
 └── resources.ts    # MCP-Ressourcen (API-Dokumentation, Live-Controller-Status)
+```
+
+## Debug-Funktion: Live Monitor Logs (Neue Funktion!)
+
+Das Tool `get_monitor_log` streamt Debug-Ausgaben von der Geräte-seriellen Schnittstelle über die MCP-API.
+
+### Workflow
+
+1. **Auf dem Host-Computer: Monitor mit fw.sh starten**
+   ```bash
+   cd /data/Workspace/OpenSprinkler-Firmware
+   ./fw.sh deploy zigbee monitor      # Baut → Uploaded → Zeigt live Serial-Monitor
+   ```
+
+2. **Via MCP: Logs abrufen**
+   ```bash
+   # Alle verfügbaren Log-Dateien anzeigen
+   get_monitor_log
+   
+   # Letzte 50 Zeilen Zigbee-Logs
+   get_monitor_log variant=zigbee tail=50
+   
+   # Alle Zigbee-Logs abrufen
+   get_monitor_log variant=zigbee tail=0
+   ```
+
+### Log-Speicherorte
+
+- Zigbee: `/tmp/zigbee_monitor_zigbee.log`
+- Matter: `/tmp/zigbee_monitor_matter.log`
+- ESP8266: `/tmp/zigbee_monitor_esp8266.log`
+
+### Anwendungsfall: Zigbee-Verbindungsfehler debuggen
+
+```
+[ZIGBEE-CLIENT] Starting Zigbee END DEVICE...
+[ZIGBEE-CLIENT] Starting as END DEVICE (WiFi coexistence supported)
+[ZIGBEE-CLIENT] ZBOSS config: network_size=16, io_buffer=32, scheduler_queue=40
+[ZIGBEE-CLIENT] Starting network steering for 180 seconds (join search)
+[ZIGBEE-CLIENT] Waiting for coordinator signal... (check Fritzbox/hub logs)
+[ZIGBEE-CLIENT] Connected to Zigbee network!     ← oder Timeout/Fehler
 ```
 
 ### Sicherheitshinweise
