@@ -122,7 +122,6 @@ int TruebnerRS485Sensor::read(unsigned long /*time*/) {
   repeat_read++;
   if (repeat_read > 4) {  // timeout
     repeat_read = 0;
-    flags.data_ok = false;
     i2c_rs485_allocated[device] = 0;
     DEBUG_PRINTLN(F("read_sensor_rs485: timeout"));
   }
