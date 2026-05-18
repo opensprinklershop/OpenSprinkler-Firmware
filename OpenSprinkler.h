@@ -436,6 +436,8 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static int8_t send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
 	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
 	static int8_t send_http_request(char* server_with_port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
+	static int8_t send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=12000);
+	static void process_async_http_requests();
 	
 	#if defined(USE_OTF)
 	static OTCConfig otc;

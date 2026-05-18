@@ -36,6 +36,8 @@
 #include <esp_netif.h>
 #include <esp_partition.h>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <driver/gpio.h>
 #if defined(ESP32C5)
 #include "soc/lp_aon_reg.h"
@@ -838,7 +840,7 @@ byte OpenSprinkler::start_ether() {
 	gpio_install_isr_service(0);
 	
 	delay(100);
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, 20)) {
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, 60)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		return 0;
 	}
@@ -877,6 +879,7 @@ byte OpenSprinkler::start_ether() {
 	lcd_print_line_clear_pgm(PSTR("  [w5500]    "), 2);
 	#endif
 
+	/*
 	ulong timeout = millis()+60000; // 60 seconds time out
 	unsigned char timecount = 1;
 	while ((!eth.connected()
@@ -887,7 +890,7 @@ byte OpenSprinkler::start_ether() {
 		lcd.print(timecount);
 		delay(1000);
 		timecount++;
-	}
+	}*/
 	lcd_print_line_clear_pgm(PSTR(""), 2);
 	if (eth.connected()) {
 		// if wired connection is successful at this point, copy the network ips to config
@@ -1379,8 +1382,12 @@ void OpenSprinkler::begin() {
 #endif
 
 	// Default controller status variables
-	// Static variables are assigned 0 by default
-	// so only need to initialize non-zero ones
+	// ConStatus lives in EXT_RAM_BSS on ESP targets. On some soft reboots
+	// that memory can retain stale bits, so clear it explicitly.
+	memset(&status, 0, sizeof(status));
+	memset(&old_status, 0, sizeof(old_status));
+
+	// Initialize non-zero defaults.
 	status.enabled = 1;
 	status.safe_reboot = 0;
 	status.overcurrent_sid = 0;  // explicit zero (SPIRAM BSS not always zeroed on soft-reset)
@@ -2551,28 +2558,110 @@ void OpenSprinkler::switch_gpiostation(GPIOStationData *data, bool turnon) {
 /** Callback function for switching remote station */
 void remote_http_callback(char* buffer) {
 
-	DEBUG_PRINTLN(buffer);
+	DEBUG_PRINTLN(buffer );
 
 }
 
+namespace {
+
+static constexpr uint16_t HTTP_TIMEOUT_MIN_MS = 100;
+static constexpr uint16_t HTTP_TIMEOUT_MAX_MS = 12000;
+
+static uint16_t clamp_http_timeout(uint16_t timeout) {
+	if (timeout < HTTP_TIMEOUT_MIN_MS) return HTTP_TIMEOUT_MIN_MS;
+	if (timeout > HTTP_TIMEOUT_MAX_MS) return HTTP_TIMEOUT_MAX_MS;
+	return timeout;
+}
+
+#if defined(ESP32)
+static SemaphoreHandle_t s_http_request_mutex = nullptr;
+
+struct AsyncHttpRequestParams {
+	char server[64];
+	uint16_t port;
+	char* request;
+	void(*callback)(char*);
+	bool usessl;
+	uint16_t timeout;
+};
+
+static SemaphoreHandle_t get_http_request_mutex() {
+	if (!s_http_request_mutex) {
+		s_http_request_mutex = xSemaphoreCreateMutex();
+	}
+	return s_http_request_mutex;
+}
+
+static bool lock_http_request() {
+	SemaphoreHandle_t mutex = get_http_request_mutex();
+	if (!mutex) return false;
+	return xSemaphoreTake(mutex, pdMS_TO_TICKS(250)) == pdTRUE;
+}
+
+static void unlock_http_request() {
+	if (s_http_request_mutex) xSemaphoreGive(s_http_request_mutex);
+}
+
+static void send_http_request_async_task(void* arg) {
+	AsyncHttpRequestParams* req = (AsyncHttpRequestParams*)arg;
+	if (req) {
+		OpenSprinkler::send_http_request(req->server, req->port, req->request, req->callback, req->usessl, req->timeout);
+		if (req->request) free(req->request);
+		free(req);
+	}
+	vTaskDelete(NULL);
+}
+#else
+struct AsyncHttpRequestParams {
+	char server[64];
+	uint16_t port;
+	char* request;
+	void(*callback)(char*);
+	bool usessl;
+	uint16_t timeout;
+};
+
+static AsyncHttpRequestParams* s_http_async_pending = nullptr;
+#endif
+
+} // namespace
+
 int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
+	uint16_t effective_timeout = clamp_http_timeout(timeout);
 
 	if(server == NULL || server[0]==0 || port==0 ) { // sanity checking
 		DEBUG_PRINTLN(F("server:port is invalid!"));
 		return HTTP_RQT_CONNECT_ERR;
 	}
+	#if defined(ESP32)
+	if (!lock_http_request()) {
+		DEBUG_PRINTLN(F("http request busy"));
+		return HTTP_RQT_CONNECT_ERR;
+	}
+	#endif
 #if defined(ARDUINO)
 	const size_t ssl_tmp_memory_needed = 10000;
 
 	Client *client = NULL;
 	#if defined(ESP8266)
 		if(usessl) {
-			free_tmp_memory(ssl_tmp_memory_needed);
-			// BearSSL/HTTPS can easily OOM on low-heap ESP8266 builds.
-			WiFiClientSecure *_c = new WiFiClientSecure();
-			_c->setInsecure();
-			_c->setBufferSizes(512, 512);
-			client = _c;
+			if (!free_tmp_memory(ssl_tmp_memory_needed)) {
+				// Not enough heap for BearSSL — fall back to plain HTTP to avoid OOM crash
+				DEBUG_PRINTF("[SSL] OOM fallback: free=%d\n", (int)freeMemory());
+				usessl = false;
+				port = 80;
+				client = new WiFiClient();
+			} else {
+				// BearSSL/HTTPS can easily OOM on low-heap ESP8266 builds.
+				WiFiClientSecure *_c = new WiFiClientSecure();
+				if (!_c) {
+					restore_tmp_memory(ssl_tmp_memory_needed);
+					return HTTP_RQT_CONNECT_ERR;
+				}
+				_c->setInsecure();
+				_c->setBufferSizes(512, 512);
+				client = _c;
+			}
 		} else {
 			client = new WiFiClient();
 		}
@@ -2588,12 +2677,19 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		client = new EthernetClient();
 	#endif
 
+	if (!client) {
+		DEBUG_PRINTLN(F("client alloc failed"));
+		#if defined(ESP32)
+		unlock_http_request();
+		#endif
+		return HTTP_RQT_CONNECT_ERR;
+	}
 	#define HTTP_CONNECT_NTRIES 1
 	unsigned char tries = 0;
 	int conn_result = 0;
 	(void)conn_result; // Used in DEBUG_PRINT but not in release builds
 	#if defined(ESP32)
-	client->setTimeout(2000); // 2s connect timeout (default 5s blocks main loop too long)
+	client->setTimeout(effective_timeout);
 	#endif
 	do {
 		DEBUG_PRINT(server);
@@ -2619,6 +2715,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		#if defined(ESP8266) 
 		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 		#endif
+		#if defined(ESP32)
+		unlock_http_request();
+		#endif
 		return HTTP_RQT_CONNECT_ERR;
 	}
 #else
@@ -2637,6 +2736,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINT(F("failed."));
 		client->stop();
 		delete client;
+		#if defined(ESP32)
+		unlock_http_request();
+		#endif
 		return HTTP_RQT_CONNECT_ERR;
 	}
 
@@ -2650,7 +2752,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINTLN(F("client no longer connected"));
 	}
 	memset(ether_buffer, 0, ETHER_BUFFER_SIZE);
-	uint32_t stoptime = millis()+timeout;
+	uint32_t stoptime = millis()+effective_timeout;
 
 	int pos = 0;
 #if defined(ARDUINO)
@@ -2689,9 +2791,93 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	#if defined(ESP8266) || defined(ESP32)
 	if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 	#endif
-	if(strlen(ether_buffer)==0) return HTTP_RQT_EMPTY_RETURN;
+	if(strlen(ether_buffer)==0) {
+		#if defined(ESP32)
+		unlock_http_request();
+		#endif
+		return HTTP_RQT_EMPTY_RETURN;
+	}
 	if(callback) callback(ether_buffer);
+	#if defined(ESP32)
+	unlock_http_request();
+	#endif
 	return HTTP_RQT_SUCCESS;
+}
+
+int8_t OpenSprinkler::send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
+	if(server == NULL || server[0]==0 || port==0 || p == NULL) {
+		DEBUG_PRINTLN(F("server:port is invalid for async request"));
+		return HTTP_RQT_CONNECT_ERR;
+	}
+
+	uint16_t effective_timeout = clamp_http_timeout(timeout);
+
+	#if defined(ESP32)
+	AsyncHttpRequestParams* req = (AsyncHttpRequestParams*)calloc(1, sizeof(AsyncHttpRequestParams));
+	if (!req) return HTTP_RQT_CONNECT_ERR;
+
+	size_t req_len = strlen(p);
+	req->request = (char*)malloc(req_len + 1);
+	if (!req->request) {
+		free(req);
+		return HTTP_RQT_CONNECT_ERR;
+	}
+
+	strncpy(req->server, server, sizeof(req->server) - 1);
+	req->port = port;
+	memcpy(req->request, p, req_len + 1);
+	req->callback = callback;
+	req->usessl = usessl;
+	req->timeout = effective_timeout;
+
+	BaseType_t task_ok = xTaskCreate(send_http_request_async_task, "http_async", 8192, req, 1, NULL);
+	if (task_ok != pdPASS) {
+		free(req->request);
+		free(req);
+		return HTTP_RQT_CONNECT_ERR;
+	}
+	return HTTP_RQT_SUCCESS;
+	#else
+	if (s_http_async_pending) {
+		DEBUG_PRINTLN(F("async http queue busy"));
+		return HTTP_RQT_CONNECT_ERR;
+	}
+
+	AsyncHttpRequestParams* req = (AsyncHttpRequestParams*)calloc(1, sizeof(AsyncHttpRequestParams));
+	if (!req) return HTTP_RQT_CONNECT_ERR;
+
+	size_t req_len = strlen(p);
+	req->request = (char*)malloc(req_len + 1);
+	if (!req->request) {
+		free(req);
+		return HTTP_RQT_CONNECT_ERR;
+	}
+
+	strncpy(req->server, server, sizeof(req->server) - 1);
+	req->port = port;
+	memcpy(req->request, p, req_len + 1);
+	req->callback = callback;
+	req->usessl = usessl;
+	req->timeout = effective_timeout;
+
+	s_http_async_pending = req;
+	return HTTP_RQT_SUCCESS;
+	#endif
+}
+
+void OpenSprinkler::process_async_http_requests() {
+	#if defined(ESP32)
+	return;
+	#else
+	if (!s_http_async_pending) return;
+
+	AsyncHttpRequestParams* req = s_http_async_pending;
+	s_http_async_pending = nullptr;
+
+	send_http_request(req->server, req->port, req->request, req->callback, req->usessl, req->timeout);
+	if (req->request) free(req->request);
+	free(req);
+	#endif
 }
 
 int8_t OpenSprinkler::send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
@@ -2756,7 +2942,7 @@ void OpenSprinkler::switch_remotestation(RemoteIPStationData *data, bool turnon,
 
 	char server[20];
 	snprintf(server, 20, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-	send_http_request(server, port, p, remote_http_callback);
+	send_http_request_async(server, port, p, remote_http_callback, false, 12000);
 }
 
 /** Switch remote OTC station
@@ -2793,7 +2979,7 @@ void OpenSprinkler::switch_remotestation(RemoteOTCStationData *data, bool turnon
 
 	bf.emit_p(PSTR("User-Agent: $S\r\n\r\n"), user_agent_string);
 
-	send_http_request(DEFAULT_OTC_SERVER_APP, DEFAULT_OTC_PORT_APP, p, remote_http_callback, true);
+	send_http_request_async(DEFAULT_OTC_SERVER_APP, DEFAULT_OTC_PORT_APP, p, remote_http_callback, true, 12000);
 }
 
 /** Switch http(s) station
@@ -2819,7 +3005,7 @@ void OpenSprinkler::switch_httpstation(HTTPStationData *data, bool turnon, bool 
 	bf.emit_p(PSTR("GET /$S HTTP/1.0\r\nHOST: $S\r\n"), cmd, server);
 	bf.emit_p(PSTR("User-Agent: $S\r\n\r\n"), user_agent_string);
 
-	send_http_request(server, atoi(port), p, remote_http_callback, usessl);
+	send_http_request_async(server, atoi(port), p, remote_http_callback, usessl, 12000);
 }
 
 #if defined(OSPI)

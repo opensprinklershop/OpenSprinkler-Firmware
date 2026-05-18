@@ -29,6 +29,10 @@
 #include "sensors.h"
 #include "espconnect.h"
 
+#if defined(ESP8266)
+#include <user_interface.h>
+#endif
+
 NotifNodeStruct* NotifQueue::head = NULL;
 NotifNodeStruct* NotifQueue::tail = NULL;
 unsigned char NotifQueue::nqueue = 0;
@@ -65,6 +69,53 @@ void set_notif_enabled(uint32_t notif) {
 void ip2string(char* str, size_t str_len, unsigned char ip[4]) {
 	snprintf_P(str+strlen(str), str_len, PSTR("%d.%d.%d.%d"), ip[0], ip[1], ip[2], ip[3]);
 }
+
+#if defined(ESP8266)
+static void append_esp8266_reboot_diag(char* str, size_t str_len) {
+	if (!str || str_len == 0) return;
+
+	size_t used = strlen(str);
+	if (used >= str_len - 1) return;
+
+	const rst_info* reset_info_ptr = ESP.getResetInfoPtr();
+	if (reset_info_ptr) {
+		snprintf_P(str + used, str_len - used,
+			PSTR(" CrashID: r=%d e=%d epc1=%08x epc2=%08x epc3=%08x excvaddr=%08x depc=%08x."),
+			(int)reset_info_ptr->reason,
+			(int)reset_info_ptr->exccause,
+			(unsigned int)reset_info_ptr->epc1,
+			(unsigned int)reset_info_ptr->epc2,
+			(unsigned int)reset_info_ptr->epc3,
+			(unsigned int)reset_info_ptr->excvaddr,
+			(unsigned int)reset_info_ptr->depc);
+		used = strlen(str);
+		if (used >= str_len - 1) return;
+	}
+
+	String reset_reason = ESP.getResetReason();
+	String reset_info = ESP.getResetInfo();
+
+	if (reset_info.length() > 0) {
+		reset_info.replace("\r", " ");
+		reset_info.replace("\n", " | ");
+		const size_t max_reset_info_len = 420;
+		if (reset_info.length() > max_reset_info_len) {
+			reset_info = reset_info.substring(0, max_reset_info_len);
+			reset_info += "...";
+		}
+	}
+
+	if (reset_reason.length() > 0) {
+		snprintf_P(str + used, str_len - used, PSTR(" ResetReason: %s."), reset_reason.c_str());
+		used = strlen(str);
+		if (used >= str_len - 1) return;
+	}
+
+	if (reset_info.length() > 0) {
+		snprintf_P(str + used, str_len - used, PSTR(" SDK: %s"), reset_info.c_str());
+	}
+}
+#endif
 
 bool NotifQueue::add(uint32_t t, uint32_t l, float f, uint8_t b) {
 		if (!is_notif_enabled(t)) { // if not subscribed to this type, return
@@ -622,6 +673,12 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						unsigned char ip[4] = {_ip[0], _ip[1], _ip[2], _ip[3]};
 						ip2string(postval, TMP_BUFFER_SIZE, ip);
 					}
+					#if defined(ESP8266)
+						if (os.last_reboot_cause == REBOOT_CAUSE_POWERON) {
+							strncat_P(postval, PSTR(". Unexpected reboot detected."), TMP_BUFFER_SIZE - strlen(postval) - 1);
+						}
+						append_esp8266_reboot_diag(postval, TMP_BUFFER_SIZE);
+					#endif
 					#else
 						ip2string(postval, TMP_BUFFER_SIZE, &(Ethernet.localIP()[0]));
 					#endif

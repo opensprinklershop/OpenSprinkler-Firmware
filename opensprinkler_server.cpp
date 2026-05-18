@@ -5504,12 +5504,14 @@ void server_influx_get_main() {
 /**
  * ir
  * @brief Get IEEE 802.15.4 radio configuration
- * Returns JSON with all available modes and the active mode:
+ * Returns JSON with all available modes and derived flags by default:
  *   {"activeMode":1, "activeModeName":"matter",
  *    "bootVariant":1, "bootVariantName":"otf1",
  *    "modes":[{"id":0,"name":"disabled"},{"id":1,"name":"matter"},
  *             {"id":2,"name":"zigbee_gateway"},{"id":3,"name":"zigbee_client"}],
  *    "enabled":1, "matter":1, "zigbee":0, "zigbee_gw":0, "zigbee_client":0}
+ * With verbose=0, returns compact JSON:
+ *   {"activeMode":1,"bootVariant":2}
  */
 void server_ieee802154_get(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -5522,6 +5524,19 @@ void server_ieee802154_get(OTF_PARAMS_DEF) {
 
 	IEEE802154Mode mode = ieee802154_get_mode();
 	IEEE802154BootVariant boot_variant = ieee802154_get_boot_variant();
+	bool verbose = true;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("verbose"), true)) {
+		verbose = atoi(tmp_buffer) != 0;
+	}
+
+	if (!verbose) {
+		bfill.emit_p(PSTR("{\"activeMode\":$D,\"bootVariant\":$D}"),
+		             static_cast<uint8_t>(mode),
+		             static_cast<uint8_t>(boot_variant));
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+	}
+
 	bfill.emit_p(PSTR("{\"activeMode\":$D,\"activeModeName\":\"$S\","
 	                   "\"bootVariant\":$D,\"bootVariantName\":\"$S\","
 	                   "\"modes\":["),
@@ -6408,6 +6423,51 @@ URLHandler urls[] = {
 	//server_fill_files,
 };
 
+static int find_url_handler_index(char k0, char k1) {
+	for (unsigned char i = 0; i < sizeof(urls) / sizeof(URLHandler); i++) {
+		if (pgm_read_byte(_url_keys + 2 * i) == k0 &&
+			pgm_read_byte(_url_keys + 2 * i + 1) == k1) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void log_api_timing(const char* path, unsigned long started_ms, int result_code) {
+	const unsigned long elapsed = millis() - started_ms;
+	if (elapsed > 200) {
+		DEBUG_PRINT(F("[API-TIMING] "));
+		DEBUG_PRINT(path ? path : "?");
+		DEBUG_PRINT(F(" "));
+		DEBUG_PRINT(elapsed);
+		DEBUG_PRINT(F("ms result="));
+		DEBUG_PRINTLN(result_code);
+	}	
+}
+
+#if defined(USE_OTF)
+void server_api_dispatch(OTF_PARAMS_DEF) {
+	const char* path = req.getPath();
+	const unsigned long started_ms = millis();
+
+	if (!path || path[0] != '/' || path[1] == 0 || path[2] == 0) {
+		otf_send_result(OTF_PARAMS, HTML_PAGE_NOT_FOUND);
+		log_api_timing(path ? path : "?", started_ms, HTML_PAGE_NOT_FOUND);
+		return;
+	}
+
+	const int idx = find_url_handler_index(path[1], path[2]);
+	if (idx < 0) {
+		otf_send_result(OTF_PARAMS, HTML_PAGE_NOT_FOUND);
+		log_api_timing(path, started_ms, HTML_PAGE_NOT_FOUND);
+		return;
+	}
+
+	(urls[idx])(OTF_PARAMS);
+	log_api_timing(path, started_ms, HTML_OK);
+}
+#endif
+
 // handle Ethernet request
 #if defined(ESP8266) || defined(ESP32)
 void on_firmware_update(OTF_PARAMS_DEF) {
@@ -6572,7 +6632,7 @@ void start_server_client() {
 		for(unsigned char i=0;i<sizeof(urls)/sizeof(URLHandler);i++) {
 			uri[1]=pgm_read_byte(_url_keys+2*i);
 			uri[2]=pgm_read_byte(_url_keys+2*i+1);
-			otf->on(uri, urls[i]);
+			otf->on(uri, server_api_dispatch);
 		}
 		callback_initialized = true;
 
@@ -6619,7 +6679,7 @@ void start_server_ap() {
 	for(unsigned char i=0;i<sizeof(urls)/sizeof(URLHandler);i++) {
 		uri[1]=pgm_read_byte(_url_keys+2*i);
 		uri[2]=pgm_read_byte(_url_keys+2*i+1);
-		otf->on(uri, urls[i]);
+		otf->on(uri, server_api_dispatch);
 	}
 
 	// Start HTTP/HTTPS server (WICHTIG: nach Callbacks registrieren!)
@@ -6677,7 +6737,7 @@ void initialize_otf() {
 		for(unsigned char i=0;i<sizeof(urls)/sizeof(URLHandler);i++) {
 			uri[1]=pgm_read_byte(_url_keys+2*i);
 			uri[2]=pgm_read_byte(_url_keys+2*i+1);
-			otf->on(uri, urls[i]);
+			otf->on(uri, server_api_dispatch);
 		}
 		callback_initialized = true;
 	}
@@ -6688,6 +6748,7 @@ void initialize_otf() {
 // This funtion is only used for non-OTF platforms
 void handle_web_request(char *p) {
 	rewind_ether_buffer();
+	const unsigned long started_ms = millis();
 
 	// assume this is a GET request
 	// GET /xx?xxxx
@@ -6697,71 +6758,69 @@ void handle_web_request(char *p) {
 	if(com[0]==' ') {
 		server_home();  // home page handler
 		send_packet();
+		log_api_timing("/", started_ms, HTML_OK);
 		m_client->stop();
 	} else {
-		// server funtion handlers
-		unsigned char i;
-		for(i=0;i<sizeof(urls)/sizeof(URLHandler);i++) {
-			if(pgm_read_byte(_url_keys+2*i)==com[0]
-			 &&pgm_read_byte(_url_keys+2*i+1)==com[1]) {
+		char path[4] = {'/', com[0], com[1], 0};
+		int idx = find_url_handler_index(com[0], com[1]);
 
-				// check password
-				int ret = HTML_UNAUTHORIZED;
+		if(idx >= 0) {
+			// check password
+			int ret = HTML_UNAUTHORIZED;
 
-				if (com[0]=='s' && com[1]=='u') { // for /su do not require password
-					get_buffer = dat;
-					(urls[i])();
-					ret = return_code;
-				} else if ((com[0]=='j' && com[1]=='o') ||
-									 (com[0]=='j' && com[1]=='a'))  { // for /jo and /ja we output fwv if password fails
-					if(check_password(dat)==false) {
-						print_header();
-						bfill.emit_p(PSTR("{\"$F\":$D}"),
-									 iopt_json_names+0, os.iopts[0]);
-						ret = HTML_OK;
-					} else {
-						get_buffer = dat;
-						(urls[i])();
-						ret = return_code;
-					}
-				} else if (com[0]=='d' && com[1]=='b') {
-					get_buffer = dat;
-					(urls[i])();
-					ret = return_code;
-				} else {
-					// first check password
-					if(check_password(dat)==false) {
-						ret = HTML_UNAUTHORIZED;
-					} else {
-						get_buffer = dat;
-						(urls[i])();
-						ret = return_code;
-					}
-				}
-				if (ret == -1) {
-					if (m_client)
-						m_client->stop();
-					return;
-				}
-				switch(ret) {
-				case HTML_OK:
-					break;
-				case HTML_REDIRECT_HOME:
-					print_header(false);
-					bfill.emit_p(PSTR("$F"), htmlReturnHome);
-					break;
-				default:
+			if (com[0]=='s' && com[1]=='u') { // for /su do not require password
+				get_buffer = dat;
+				(urls[idx])();
+				ret = return_code;
+			} else if ((com[0]=='j' && com[1]=='o') ||
+								 (com[0]=='j' && com[1]=='a'))  { // for /jo and /ja we output fwv if password fails
+				if(check_password(dat)==false) {
 					print_header();
-					bfill.emit_p(PSTR("{\"result\":$D}"), ret);
+					bfill.emit_p(PSTR("{\"$F\":$D}"),
+								 iopt_json_names+0, os.iopts[0]);
+					ret = HTML_OK;
+				} else {
+					get_buffer = dat;
+					(urls[idx])();
+					ret = return_code;
 				}
-				break;
+			} else if (com[0]=='d' && com[1]=='b') {
+				get_buffer = dat;
+				(urls[idx])();
+				ret = return_code;
+			} else {
+				// first check password
+				if(check_password(dat)==false) {
+					ret = HTML_UNAUTHORIZED;
+				} else {
+					get_buffer = dat;
+					(urls[idx])();
+					ret = return_code;
+				}
 			}
-		}
-
-		if(i==sizeof(urls)/sizeof(URLHandler)) {
+			if (ret == -1) {
+				log_api_timing(path, started_ms, ret);
+				if (m_client)
+					m_client->stop();
+				return;
+			}
+			switch(ret) {
+			case HTML_OK:
+				break;
+			case HTML_REDIRECT_HOME:
+				print_header(false);
+				bfill.emit_p(PSTR("$F"), htmlReturnHome);
+				break;
+			default:
+				print_header();
+				bfill.emit_p(PSTR("{\"result\":$D}"), ret);
+			}
+			log_api_timing(path, started_ms, ret);
+		} else {
 			// no server funtion found
 			print_header();
 			bfill.emit_p(PSTR("{\"result\":$D}"), HTML_PAGE_NOT_FOUND);
+			log_api_timing(path, started_ms, HTML_PAGE_NOT_FOUND);
 		}
 		send_packet();
 		m_client->stop();

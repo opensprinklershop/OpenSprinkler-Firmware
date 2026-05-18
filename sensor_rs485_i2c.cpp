@@ -357,7 +357,6 @@ int RS485I2CSensor::read(unsigned long time) {
       DEBUG_PRINT(F("len="));
       DEBUG_PRINTLN(len);
       repeat_read = 0;
-      flags.data_ok = false;
       active_i2c_RS485 = 0;
       active_i2c_RS485_mode = 0;
       last_read = time;
@@ -445,7 +444,6 @@ int RS485I2CSensor::read(unsigned long time) {
   repeat_read++;
   if (repeat_read > 4) {  // timeout
     repeat_read = 0;
-    flags.data_ok = false;
     active_i2c_RS485 = 0;
     active_i2c_RS485_mode = 0;
     last_read = time;

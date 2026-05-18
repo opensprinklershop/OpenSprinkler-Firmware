@@ -1317,6 +1317,9 @@ void do_loop()
 #endif	// Process Ethernet packets
 
 	// Start up MQTT when we have a network connection (skip during ZigBee lock or join)
+	os.process_async_http_requests();
+
+	// Start up MQTT when we have a network connection (skip during ZigBee lock or join)
 	if (!online_update_in_progress() && os.status.req_mqtt_restart && os.network_connected() && boot_elapsed >= 15000) {
 		DEBUG_PRINTLN(F("req_mqtt_restart"));
 		os.mqtt.begin();
@@ -2145,25 +2148,25 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 		}// RAH calculate GPM, 1 pulse per gallon
 		else {flow_last_gpm = 0;}  // RAH if not one gallon (two pulses) measured then record 0 gpm
 		flow_sid = -1;
-
-		// check if the current time is past the scheduled start time,
-		// because we may be turning off a station that hasn't started yet
-		if (curr_time >= q->st) {
-			// record lastrun log (only for non-master stations)
-			if (os.status.mas != (sid + 1) && os.status.mas2 != (sid + 1)) {
-				pd.lastrun.station = sid;
-				pd.lastrun.program = qpid_decode(q->pid);
-				pd.lastrun.duration = curr_time - q->st;
-				pd.lastrun.endtime = curr_time;
-
-				// log station run
-				write_log(LOGDATA_STATION, curr_time); // LOG_TODO
-				notif.add(NOTIFY_STATION_OFF, sid, pd.lastrun.duration);
-				notif.add(NOTIFY_FLOW_ALERT, sid, pd.lastrun.duration);
-			}
-		}
 	}
 	else flow_last_gpm = 0; // RAH if not flow zone then record 0 gpm
+
+	// check if the current time is past the scheduled start time,
+	// because we may be turning off a station that hasn't started yet
+	if (curr_time >= q->st) {
+		// record lastrun log (only for non-master stations)
+		if (os.status.mas != (sid + 1) && os.status.mas2 != (sid + 1)) {
+			pd.lastrun.station = sid;
+			pd.lastrun.program = qpid_decode(q->pid);
+			pd.lastrun.duration = curr_time - q->st;
+			pd.lastrun.endtime = curr_time;
+
+			// log station run
+			write_log(LOGDATA_STATION, curr_time); // LOG_TODO
+			notif.add(NOTIFY_STATION_OFF, sid, pd.lastrun.duration);
+			notif.add(NOTIFY_FLOW_ALERT, sid, pd.lastrun.duration);
+		}
+	}
 
 	// make necessary adjustments to sequential time stamps
 	int16_t station_delay = water_time_decode_signed(os.iopts[IOPT_STATION_DELAY_TIME]);

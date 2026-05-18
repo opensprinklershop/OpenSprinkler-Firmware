@@ -81,13 +81,13 @@ static void getweather_callback(char* buffer) {
 		}
 	}
 
-	/* Use own sunrise/sunset calculation 
 	if (findKeyVal(p, tmp_buffer, TMP_BUFFER_SIZE, PSTR("restricted"), true)) {
 		wt_restricted = atoi(tmp_buffer);
 	} else {
 		wt_restricted = 0;
 	}
 	
+	/* Use own sunrise/sunset calculation 
 	if (findKeyVal(p, tmp_buffer, TMP_BUFFER_SIZE, PSTR("sunrise"), true)) {
 		v = atoi(tmp_buffer);
 		if (v>=0 && v<=1440 && (uint16_t)v != os.nvdata.sunrise_time) {
@@ -252,7 +252,7 @@ void GetWeather() {
 #if defined(OS_AVR)
 	int ret = os.send_http_request(host_start, ether_buffer, getweather_callback_with_peel_header);
 #else
-	int ret = os.send_http_request(host_start, port, ether_buffer, getweather_callback_with_peel_header, use_ssl);
+	int ret = os.send_http_request_async(host_start, port, ether_buffer, getweather_callback_with_peel_header, use_ssl, 12000);
 #endif
 	DEBUG_PRINT(F("HTTP request sent, return code: "));
 	DEBUG_PRINTLN(ret);

@@ -99,6 +99,7 @@ OSPI_PI_HOST="${OSPI_PI_HOST:-192.168.0.167}"
 OSPI_PI_USER="${OSPI_PI_USER:-pi}"
 OSPI_PI_PASS="${OSPI_PI_PASS:-}"
 OSPI_PI_DIR="${OSPI_PI_DIR:-/home/pi/OpenSprinkler-Firmware}"
+OSPI_PI_TMP_DIR="${OSPI_PI_TMP_DIR:-/tmp/opensprinkler-fw-sync}"
 DEFINES_H="${SCRIPT_DIR}/defines.h"
 # Auto-migrate legacy upgrade path to the new location.
 # This keeps old .env files working after moving upgrade/ to /data/upgrade.
@@ -354,6 +355,20 @@ _ospi_ssh() {
     fi
 }
 
+# Run a command on the Pi as the configured SSH user (without sudo).
+_ospi_ssh_user() {
+    if [[ -n "$OSPI_PI_PASS" ]]; then
+        sshpass -p "$OSPI_PI_PASS" \
+            ssh -o StrictHostKeyChecking=no -o BatchMode=no \
+            "${OSPI_PI_USER}@${OSPI_PI_HOST}" \
+            "$*"
+    else
+        ssh -o StrictHostKeyChecking=no \
+            "${OSPI_PI_USER}@${OSPI_PI_HOST}" \
+            "$*"
+    fi
+}
+
 # rsync wrapper that injects the password via sshpass when set.
 _ospi_rsync() {
     local ssh_cmd="ssh -o StrictHostKeyChecking=no"
@@ -380,12 +395,20 @@ _OSPI_RSYNC_EXCLUDES=(
 
 # Push local workspace to the Pi.
 ospi_push() {
-    info "Syncing source → ${OSPI_PI_HOST}:${OSPI_PI_DIR} …"
+    info "Syncing source → ${OSPI_PI_HOST}:${OSPI_PI_TMP_DIR} …"
+    _ospi_ssh_user "mkdir -p '${OSPI_PI_TMP_DIR}/src'"
     _ospi_rsync -az --info=progress2 \
+        --delete --no-group --omit-dir-times \
         "${_OSPI_RSYNC_EXCLUDES[@]}" \
         "${SCRIPT_DIR}/" \
-        "${OSPI_PI_USER}@${OSPI_PI_HOST}:${OSPI_PI_DIR}/"
-    ok "Source synced to Pi."
+        "${OSPI_PI_USER}@${OSPI_PI_HOST}:${OSPI_PI_TMP_DIR}/src/"
+
+    info "Applying staged source to ${OSPI_PI_DIR} with sudo …"
+    _ospi_ssh "
+        mkdir -p '${OSPI_PI_DIR}'
+        rsync -a --delete --omit-dir-times '${OSPI_PI_TMP_DIR}/src/' '${OSPI_PI_DIR}/'
+    "
+    ok "Source staged + synced to Pi target."
 }
 
 # Pull Pi workspace back to local (to capture bug fixes made on the device).
@@ -398,13 +421,13 @@ ospi_pull_back() {
     ok "Sync-back complete. Review changes with: git diff"
 }
 
-# Build only: push source and compile via build2.sh.
+# Build only: push source and compile via build.sh.
 build_ospi() {
     header "OsPi – remote build (${OSPI_PI_HOST})"
     check_ospi_conn
     ospi_push
-    info "Running build2.sh on Pi …"
-    _ospi_ssh "cd '${OSPI_PI_DIR}' && ./build2.sh"
+    info "Running build.sh on Pi …"
+    _ospi_ssh "cd '${OSPI_PI_DIR}' && ./build.sh"
     ok "OsPi build complete."
 }
 
@@ -433,13 +456,17 @@ build_env() {
     local env="$1"
     header "Building firmware: ${env}"
     ensure_c5_framework_libs "$env"
-    if "$PIO_BIN" run --environment "$env"; then
-        ok "Build successful → .pio/build/${env}/firmware.bin"
-        copy_to_dist "$env"
-    else
-        error "Build failed: ${env}"
-        exit 1
+    if ! "$PIO_BIN" run --environment "$env"; then
+        # PlatformIO/SCons can sporadically fail on the first run with missing
+        # intermediate build directories; retry once before failing hard.
+        warn "First build attempt failed for ${env} — retrying once …"
+        if ! "$PIO_BIN" run --environment "$env"; then
+            error "Build failed: ${env}"
+            exit 1
+        fi
     fi
+    ok "Build successful → .pio/build/${env}/firmware.bin"
+    copy_to_dist "$env"
 }
 
 upload_env() {
@@ -2060,30 +2087,34 @@ case "$ACTION" in
                 ;;
             *)
                 check_pio
-                deploy_variant="$VARIANT"
+                deploy_variant="all"
                 deploy_debug=false
                 deploy_with_monitor=false
 
-                # Parse variants and flags
-                if [[ "$deploy_variant" == "debug" ]]; then
-                    # "deploy debug" → debug all platforms, no monitor
-                    deploy_debug=true
-                    deploy_variant="all"
-                elif [[ "$deploy_variant" == "monitor" ]]; then
-                    # "deploy monitor" → monitor mode (implies debug)
-                    deploy_with_monitor=true
-                    deploy_debug=true
-                    deploy_variant="all"
-                fi
-
-                # Check for additional modes in MODE_ARG
-                if [[ "$MODE_ARG" == "debug" ]]; then
-                    deploy_debug=true
-                elif [[ "$MODE_ARG" == "monitor" ]]; then
-                    # "deploy [variant] monitor" or "deploy debug monitor"
-                    deploy_with_monitor=true
-                    deploy_debug=true
-                fi
+                # Parse up to two optional args in any order:
+                #   ./fw.sh deploy <variant> [debug|monitor]
+                #   ./fw.sh deploy [debug|monitor] <variant>
+                for token in "$VARIANT" "$MODE_ARG"; do
+                    case "$token" in
+                    ""|all)
+                        ;;
+                    matter|zigbee|esp8266|ospi)
+                        deploy_variant="$token"
+                        ;;
+                    debug)
+                        deploy_debug=true
+                        ;;
+                    monitor)
+                        deploy_with_monitor=true
+                        deploy_debug=true
+                        ;;
+                    *)
+                        error "Unknown deploy argument: $token"
+                        error "Allowed: matter|zigbee|esp8266|ospi|all|debug|monitor"
+                        exit 1
+                        ;;
+                    esac
+                done
 
                 if $deploy_with_monitor; then
                     # Monitor mode: deploy + monitor (with debug enabled)

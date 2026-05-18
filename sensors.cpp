@@ -1549,7 +1549,7 @@ void push_message(SensorBase *sensor) {
                    "Content-Type: application/json\r\n\r\n$S"),
               SOPT_IFTTT_KEY, DEFAULT_IFTTT_URL, strlen(postval), postval);
 
-    os.send_http_request(DEFAULT_IFTTT_URL, 80, ether_buffer, sensor_remote_http_callback);
+    os.send_http_request_async(DEFAULT_IFTTT_URL, 80, ether_buffer, sensor_remote_http_callback, false, 12000);
     // DEBUG_PRINTLN(F("push ifttt2"));
   }
 
