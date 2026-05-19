@@ -420,6 +420,14 @@ static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
     }
 }
 
+static void gw_cache_tuya_dp_report(uint64_t ieee_addr, uint8_t src_endpoint,
+                                    uint8_t dp_number, int32_t value, int lqi) {
+    gw_cache_tuya_report(ieee_addr, src_endpoint,
+                         ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC,
+                         (uint16_t)dp_number,
+                         value, lqi);
+}
+
 static void gw_apply_profile_hint(uint64_t ieee_addr,
                                   const char* manufacturer,
                                   const char* model,
@@ -770,6 +778,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
             case TUYA_DP_SOIL_MOISTURE:
             case TUYA_DP_SOIL_MOISTURE_ALT1:
             case TUYA_DP_SOIL_MOISTURE_ALT2:
+                gw_cache_tuya_dp_report(ieee_addr, ind.src_endpoint, dp_number, dp_value, ind.lqi);
                 // Tuya soil_moisture is raw % (0-100), map to soil moisture cluster
                 DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Mapped DP %u -> cluster=0x%04X attr=0x%04X\n"),
                              dp_number, ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE, 0x0000);
@@ -792,6 +801,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                 //               Maps to representative % midpoints so the value
                 //               is stored in the soil moisture cluster like any other reading.
                 if (dp_type == TUYA_DP_TYPE_VALUE) {
+                    gw_cache_tuya_dp_report(ieee_addr, ind.src_endpoint, dp_number, dp_value, ind.lqi);
                     DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Mapped DP %u -> soil moisture (VALUE)\n"),
                                  dp_number);
                     gw_cache_tuya_report(ieee_addr, ind.src_endpoint,
@@ -799,6 +809,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                                          dp_value, ind.lqi);
                     saw_soil_signature_dp = true;
                 } else if (dp_type == TUYA_DP_TYPE_ENUM) {
+                    gw_cache_tuya_dp_report(ieee_addr, ind.src_endpoint, dp_number, dp_value, ind.lqi);
                     // 3-level soil moisture category → representative % midpoints
                     int32_t soil_pct = (dp_value == TUYA_SOIL_STATE_WET)    ? 80 :
                                        (dp_value == TUYA_SOIL_STATE_NORMAL) ? 50 : 20;
@@ -818,6 +829,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                 break;
 
             case TUYA_DP_TEMPERATURE:
+                gw_cache_tuya_dp_report(ieee_addr, ind.src_endpoint, dp_number, dp_value, ind.lqi);
                 // Tuya temperature is in tenths of °C (e.g. 227 = 22.7°C)
                 DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Mapped DP %u -> cluster=0x%04X attr=0x%04X\n"),
                              dp_number, ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT, 0x0000);
@@ -828,6 +840,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                 break;
 
             case TUYA_DP_BATTERY:
+                gw_cache_tuya_dp_report(ieee_addr, ind.src_endpoint, dp_number, dp_value, ind.lqi);
                 // Tuya battery is raw % (0-100), map to power config cluster
                 DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Mapped DP %u -> cluster=0x%04X attr=0x%04X\n"),
                              dp_number, ZB_ZCL_CLUSTER_ID_POWER_CONFIG, 0x0021);
@@ -1258,6 +1271,20 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
         } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG) {
             // Tuya battery is raw % (0-100), keep as-is
             zb_sensor->last_battery = (uint32_t)report.value;
+        } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC) {
+            uint16_t dp = report.attr_id & ~TUYA_REPORT_FLAG_PRESCALED;
+            if (dp == TUYA_DP_TEMPERATURE) {
+                converted_value = report.value / 10.0;
+            } else if (dp == TUYA_DP_BATTERY) {
+                converted_value = report.value;
+                zb_sensor->last_battery = (uint32_t)report.value;
+            } else if (dp == TUYA_DP_SOIL_MOISTURE ||
+                       dp == TUYA_DP_SOIL_MOISTURE_ALT1 ||
+                       dp == TUYA_DP_SOIL_MOISTURE_ALT2) {
+                converted_value = report.value;
+            } else if (dp == TUYA_DP_SOIL_MOISTURE_ALT3) {
+                converted_value = report.value;
+            }
         }
     } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE && report.attr_id == 0x0000) {
         converted_value = report.value / 100.0;
@@ -1806,7 +1833,8 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             // battery on any sensor matching the IEEE address
             if (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && 
                 (report.attr_id & ~TUYA_REPORT_FLAG_PRESCALED) == 0x0021 && report.ieee_addr != 0) {
-                uint8_t battery_pct = (uint8_t)(report.value / 2);  // ZCL BatteryPercentageRemaining is 0-200
+                bool is_tuya_battery = (report.attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0;
+                uint8_t battery_pct = is_tuya_battery ? (uint8_t)report.value : (uint8_t)(report.value / 2);  // ZCL BatteryPercentageRemaining is 0-200
                 SensorIterator it2 = sensors_iterate_begin();
                 SensorBase* s2;
                 while ((s2 = sensors_iterate_next(it2)) != NULL) {
