@@ -86,17 +86,9 @@ int OspiPcf8591Sensor::read(unsigned long time) {
                 return HTTP_RQT_NOT_RECEIVED;
         }
 
-        // PCF8591 pipeline: first read triggers a new conversion but returns the
-        // previously sampled value (stale). Discard it and read again to get
-        // the freshly converted result.
         int16_t raw;
         float v;
-        res = pcf8591_read(&gs_handle, &raw, &v);  // dummy – triggers new conversion
-        if (res != 0) {
-                pcf8591_deinit(&gs_handle);
-                return HTTP_RQT_NOT_RECEIVED;
-        }
-        res = pcf8591_read(&gs_handle, &raw, &v);  // actual fresh value
+        res = pcf8591_read(&gs_handle, &raw, &v);
         if (res != 0) {
                 pcf8591_deinit(&gs_handle);
                 return HTTP_RQT_NOT_RECEIVED;
