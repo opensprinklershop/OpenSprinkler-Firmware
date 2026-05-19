@@ -3419,14 +3419,20 @@ static void perform_ntp_sync() {
 
 	// Delay first NTP sync after boot to ensure network stack is fully ready
 	// This is especially important for Zigbee builds where lwIP needs time to stabilize
-	#if defined(ESP32)
-	if (os.powerup_lasttime && (os.now_tz() < os.powerup_lasttime + 30)) {
-		return; // Wait at least 30 seconds after boot before first NTP sync
-	}
-	#endif
+	//#if defined(ESP32)
+	//if (os.powerup_lasttime && (os.now_tz() < os.powerup_lasttime + 30)) {
+	//	return; // Wait at least 30 seconds after boot before first NTP sync
+	//}
+	//#endif
 
 	if (os.status.req_ntpsync) {
-		os.status.req_ntpsync = 0;
+		static ulong last_ntp_attempt_ms = 0;
+		ulong now_ms = millis();
+		if (last_ntp_attempt_ms != 0 && (long)(now_ms - last_ntp_attempt_ms) < 5000L) {
+			return;
+		}
+		last_ntp_attempt_ms = now_ms;
+
 		if (!ui_state) {
 			os.lcd_print_line_clear_pgm(PSTR("NTP Syncing..."),1);
 		}
@@ -3440,10 +3446,14 @@ static void perform_ntp_sync() {
 			last_ntp_result = t;
 		}
 		if (t>0) {
+			os.status.req_ntpsync = 0;
 			setTime(t);
 			RTC.set(t);
 			calc_sunrise_sunset();
 			DEBUG_PRINTLN(RTC.get());
+		} else {
+			// Keep the sync request pending so the next retry can try again.
+			os.status.req_ntpsync = 1;
 		}
 	}
 #else

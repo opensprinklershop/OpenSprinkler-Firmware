@@ -6872,6 +6872,25 @@ static bool ntp_resolve_primary_server(char* out, size_t out_len, const unsigned
 	return false;
 }
 
+static bool ntp_resolve_gateway_server(char* out, size_t out_len) {
+	if (!out || out_len == 0) return false;
+	out[0] = 0;
+
+	IPAddress gwip;
+	if (useEth) {
+		gwip = eth.gatewayIP();
+	} else {
+		gwip = WiFi.gatewayIP();
+	}
+
+	if (!gwip) return false;
+	String gw = gwip.toString();
+	if (gw.length() == 0 || gw == F("0.0.0.0")) return false;
+	strncpy(out, gw.c_str(), out_len - 1);
+	out[out_len - 1] = 0;
+	return true;
+}
+
 ulong getNtpTime() {
 	static bool configured = false;
 	static char customAddress[16];
@@ -6889,12 +6908,22 @@ ulong getNtpTime() {
 			esp_sntp_stop();
 		}
 		if (!ntp_resolve_primary_server(customAddress, sizeof customAddress, ntpip)) {
-			DEBUG_PRINTLN(F("using default time servers (esp_sntp)"));
-			esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-			esp_sntp_setservername(0, "time.google.com");
-			esp_sntp_setservername(1, "time.nist.gov");
-			esp_sntp_setservername(2, "time.windows.com");
-			esp_sntp_init();
+			if (ntp_resolve_gateway_server(customAddress, sizeof customAddress)) {
+				DEBUG_PRINT(F("using gateway time server (esp_sntp): "));
+				DEBUG_PRINTLN(customAddress);
+				esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+				esp_sntp_setservername(0, customAddress);
+				esp_sntp_setservername(1, "time.google.com");
+				esp_sntp_setservername(2, "time.nist.gov");
+				esp_sntp_init();
+			} else {
+				DEBUG_PRINTLN(F("using default time servers (esp_sntp)"));
+				esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+				esp_sntp_setservername(0, "time.google.com");
+				esp_sntp_setservername(1, "time.nist.gov");
+				esp_sntp_setservername(2, "time.windows.com");
+				esp_sntp_init();
+			}
 		} else {
 			DEBUG_PRINT(F("using primary time server (esp_sntp): "));
 			DEBUG_PRINTLN(customAddress);
@@ -6907,8 +6936,14 @@ ulong getNtpTime() {
 #else
 		// ESP8266 uses configTime
 		if (!ntp_resolve_primary_server(customAddress, sizeof customAddress, ntpip)) {
-			DEBUG_PRINTLN(F("using default time servers"));
-			configTime(0, 0, "time.google.com", "time.nist.gov", "time.windows.com");
+			if (ntp_resolve_gateway_server(customAddress, sizeof customAddress)) {
+				DEBUG_PRINT(F("using gateway time server: "));
+				DEBUG_PRINTLN(customAddress);
+				configTime(0, 0, customAddress, "time.google.com", "time.nist.gov");
+			} else {
+				DEBUG_PRINTLN(F("using default time servers"));
+				configTime(0, 0, "time.google.com", "time.nist.gov", "time.windows.com");
+			}
 		} else {
 			DEBUG_PRINT(F("using primary time server: "));
 			DEBUG_PRINTLN(customAddress);
