@@ -235,6 +235,10 @@ typedef struct SensorLog {
 #define PROG_DIGITAL_MINMAX 4  // under min or over max : factor1 else factor2
 #define PROG_NONE 99           // No adjustment
 
+#define PROG_STALE_LAST_VALUE 0  // keep current behaviour: use the last valid sensor value
+#define PROG_STALE_DISABLE 1     // stale sensor disables this adjustment (factor 100%)
+#define PROG_STALE_FALLBACK 2    // stale sensor uses stale_fallback directly
+
 /**
  * @brief Program sensor adjustment class
  * @note Defines how sensor values influence program watering adjustments
@@ -249,13 +253,18 @@ public:
   double factor2;
   double min;
   double max;
+  uint32_t stale_timeout; // seconds, 0=disabled
+  uint8_t stale_policy;   // PROG_STALE_*
+  double stale_fallback;  // adjustment factor, 1.0 = 100%
   char name[30];
   
   /**
    * @brief Constructor
    */
   ProgSensorAdjust() : nr(0), type(0), sensor(0), prog(0), 
-                       factor1(0.0), factor2(0.0), min(0.0), max(0.0) {
+                       factor1(0.0), factor2(0.0), min(0.0), max(0.0),
+                       stale_timeout(0), stale_policy(PROG_STALE_LAST_VALUE),
+                       stale_fallback(1.0) {
     name[0] = 0;
   }
   
@@ -530,6 +539,8 @@ ProgSensorAdjust *prog_adjust_by_idx(uint idx);
 double calc_sensor_watering(uint prog);
 double calc_sensor_watering_by_nr(uint nr);
 double calc_sensor_watering_int(ProgSensorAdjust *p, double sensorData);
+bool prog_adjust_is_stale(ProgSensorAdjust *p);
+bool prog_adjust_uses_fallback(ProgSensorAdjust *p);
 
 void GetSensorWeather();
 void GetSensorWeatherEto();

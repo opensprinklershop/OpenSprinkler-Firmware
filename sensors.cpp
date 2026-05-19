@@ -2106,6 +2106,60 @@ double calc_digital_minmax(ProgSensorAdjust *p, double sensorData) {
   if (sensorData >= p->max) return p->factor1;
   return p->factor2;
 }
+
+static double clamp_adjust_factor(double factor) {
+  if (factor < 0.0) return 0.0;
+  if (factor > 2.0) return 2.0;
+  return factor;
+}
+
+static bool prog_adjust_sensor_is_stale(ProgSensorAdjust *p, SensorBase *sensor, ulong now) {
+  if (!p || !sensor || p->stale_timeout == 0) return false;
+
+  ulong base_time = sensor->last_read ? sensor->last_read : os.powerup_lasttime;
+  if (base_time == 0) return false;
+
+  return (long)(now - base_time) >= (long)p->stale_timeout;
+}
+
+static double calc_sensor_watering_for_sensor(ProgSensorAdjust *p, SensorBase *sensor,
+                                              bool *stale_active = nullptr,
+                                              bool *fallback_used = nullptr) {
+  if (stale_active) *stale_active = false;
+  if (fallback_used) *fallback_used = false;
+  if (!p || !sensor || !sensor->flags.enable) return 1.0;
+
+  bool stale = prog_adjust_sensor_is_stale(p, sensor, os.now_tz());
+  if (stale_active) *stale_active = stale;
+
+  if (stale) {
+    if (p->stale_policy == PROG_STALE_DISABLE) {
+      if (fallback_used) *fallback_used = true;
+      return 1.0;
+    }
+    if (p->stale_policy == PROG_STALE_FALLBACK) {
+      if (fallback_used) *fallback_used = true;
+      return clamp_adjust_factor(p->stale_fallback);
+    }
+  }
+
+  if (!sensor->flags.data_ok) return 1.0;
+  return calc_sensor_watering_int(p, sensor->last_data);
+}
+
+bool prog_adjust_is_stale(ProgSensorAdjust *p) {
+  if (!p) return false;
+  return prog_adjust_sensor_is_stale(p, sensor_by_nr(p->sensor), os.now_tz());
+}
+
+bool prog_adjust_uses_fallback(ProgSensorAdjust *p) {
+  if (!p) return false;
+  bool stale_active = false;
+  bool fallback_used = false;
+  calc_sensor_watering_for_sensor(p, sensor_by_nr(p->sensor), &stale_active, &fallback_used);
+  return stale_active && fallback_used;
+}
+
 /**
  * @brief calculate adjustment
  *
@@ -2120,10 +2174,7 @@ double calc_sensor_watering(uint prog) {
     if (!p) continue;
     if (p->prog - 1 == prog) {
       SensorBase *sensor = sensor_by_nr(p->sensor);
-      if (sensor && sensor->flags.enable && sensor->flags.data_ok) {
-        double res = calc_sensor_watering_int(p, sensor->last_data);
-        result = result * res;
-      }
+      result = result * calc_sensor_watering_for_sensor(p, sensor);
     }
   }
   if (result < 0.0) result = 0.0;
@@ -2167,6 +2218,9 @@ void ProgSensorAdjust::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("factor2")] = factor2;
   obj[F("min")] = min;
   obj[F("max")] = max;
+  obj[F("stale_timeout")] = stale_timeout;
+  obj[F("stale_policy")] = stale_policy;
+  obj[F("stale_fallback")] = stale_fallback;
   obj[F("name")] = name;
 }
 
@@ -2179,6 +2233,10 @@ void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
   factor2 = obj[F("factor2")] | 0.0;
   min = obj[F("min")] | 0.0;
   max = obj[F("max")] | 0.0;
+  stale_timeout = obj[F("stale_timeout")] | 0;
+  stale_policy = obj[F("stale_policy")] | PROG_STALE_LAST_VALUE;
+  if (stale_policy > PROG_STALE_FALLBACK) stale_policy = PROG_STALE_LAST_VALUE;
+  stale_fallback = clamp_adjust_factor(obj[F("stale_fallback")] | 1.0);
   
   const char* nameStr = obj[F("name")] | "";
   SAFE_STRNCPY(name, nameStr, sizeof(name));
@@ -2198,27 +2256,7 @@ double calc_sensor_watering_by_nr(uint nr) {
     ProgSensorAdjust *p = it->second;
     if (p) {
       SensorBase *sensor = sensor_by_nr(p->sensor);
-      if (sensor && sensor->flags.enable && sensor->flags.data_ok) {
-        double res = 0;
-        switch (p->type) {
-          case PROG_NONE:
-            res = 1;
-            break;
-          case PROG_LINEAR:
-            res = calc_linear(p, sensor->last_data);
-            break;
-          case PROG_DIGITAL_MIN:
-            res = calc_digital_min(p, sensor->last_data);
-            break;
-          case PROG_DIGITAL_MAX:
-            res = calc_digital_max(p, sensor->last_data);
-            break;
-          default:
-            res = 0;
-        }
-
-        result = result * res;
-      }
+      result = result * calc_sensor_watering_for_sensor(p, sensor);
     }
   }
 
@@ -2292,6 +2330,9 @@ int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
   obj["factor2"] = factor2;
   obj["min"] = min;
   obj["max"] = max;
+  obj["stale_timeout"] = 0;
+  obj["stale_policy"] = PROG_STALE_LAST_VALUE;
+  obj["stale_fallback"] = 1.0;
   if (name && name[0] != 0) {
     obj["name"] = name;
   }

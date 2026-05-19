@@ -181,7 +181,7 @@
 
 <script>
 function id(s) {return document.getElementById(s);}
-function sel(i) {id('ssid').value=ssids[i][0];id('bssid').value=ssids[i][1];id('channel').value=ssids[i][3];}
+function sel(i) {id('ssid').value=ssids[i][0];id('bssid').value='';id('channel').value='';}
 var tci, ssids;
 var scanTries = 0;
 function tryConnect() {

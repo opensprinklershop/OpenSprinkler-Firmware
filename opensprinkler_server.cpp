@@ -4714,6 +4714,13 @@ void server_sensorprog_config(OTF_PARAMS_DEF) {
 		handle_return(HTML_DATA_MISSING);
 	obj["max"] = atof(tmp_buffer);
 
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("stale_timeout"), true))
+		obj["stale_timeout"] = strtoul(tmp_buffer, NULL, 0);
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("stale_policy"), true))
+		obj["stale_policy"] = strtoul(tmp_buffer, NULL, 0);
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("stale_fallback"), true))
+		obj["stale_fallback"] = atof(tmp_buffer);
+
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("name"), true))
 		obj["name"] = tmp_buffer;
 
@@ -4731,6 +4738,8 @@ void progconfig_json(ProgSensorAdjust *p, double current) {
 
 	// Add calculated current value
 	obj["current"] = current;
+	obj["stale"] = prog_adjust_is_stale(p) ? 1 : 0;
+	obj["fallback"] = prog_adjust_uses_fallback(p) ? 1 : 0;
 
 	// Serialize to string and emit
 	String jsonStr;
