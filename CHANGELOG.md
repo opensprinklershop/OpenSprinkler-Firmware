@@ -6,6 +6,26 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (200)] — 2026-05-19
+
+### Added
+- **Stale sensor handling**: added timeout and fallback policies so stale sensor readings can be handled predictably instead of silently influencing adjustments indefinitely
+- **Flow pulse sensor support**: added pulse-based flow sensing and water-consumption logging, including unit handling and Zigbee gateway integration hooks
+- **Matter maintenance controls**: added firmware-side support to remove Matter commissioning data/fabrics and to write Matter KVS partition data for provisioning workflows
+- **Monitor logs via MCP**: added `get_monitor_log` support so live serial monitor logs can be retrieved through the MCP tooling after deploy/monitor runs
+
+### Changed
+- **ESP32-C5 Matter support**: improved Matter integration for Ethernet and sensor capabilities, including linker/build compatibility updates for the C5 release environments
+- **Firmware release workflow**: expanded `fw.sh` release/full-flash handling, Matter KVS sync, online deploy behavior, and GitHub release automation
+- **Async HTTP handling**: improved asynchronous request handling and related firmware-management paths to reduce blocking behavior during network operations
+- **ESP32-C5 boot menu**: refactored boot-menu option setup and improved legacy reset-path handling
+
+### Fixed
+- **PCF8591 fresh-data reads (OSPi)**: adjusted the PCF8591 read pipeline so fresh conversion data is handled correctly with a smaller buffer path
+- **Truebner RS485 timeout recovery**: removed an unnecessary `data_ok` reset on transient timeouts so the last valid sensor state is preserved correctly
+- **Zigbee Tuya data handling**: cached Tuya DP reports in the gateway path to improve handling of manufacturer-specific reports
+- **ESP32-C5 OTA/update flow**: improved OTA update handling and firmware upload behavior for C5 builds
+
 ## [2.4.0 (199)] — 2026-05-09
 
 ### Fixed
