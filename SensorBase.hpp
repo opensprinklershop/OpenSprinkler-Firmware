@@ -40,6 +40,7 @@ public:
   uint32_t last_native_data = 0;  // last native sensor data
   double last_data = 0.0;         // last converted sensor data
   SensorFlags_t flags = {};       // enable/log/show/data_ok etc.
+  uint8_t stdlog = 0;             // also write water consumption to standard log
   int16_t factor = 1;             // factor
   int16_t divider = 1;            // divider
   char userdef_unit[8] = {0};     // unit for custom sensors
@@ -55,6 +56,8 @@ public:
   ulong last_read = 0;  // timestamp
   double last_logged_data = 0.0;
   ulong last_logged_time = 0;
+  double last_stdlog_data = 0.0;
+  ulong last_stdlog_time = 0;
   ulong last = 0;
 
 #if !defined(ESP8266)
@@ -225,6 +228,7 @@ public:
     obj[F("unitid")] = getUnitId();  // Use virtual method for consistency
     obj[F("enable")] = (uint)flags.enable;
     obj[F("log")] = (uint)flags.log;
+    obj[F("stdlog")] = (uint)stdlog;
     obj[F("show")] = (uint)flags.show;
 
     // runtime fields
@@ -266,6 +270,7 @@ public:
     if (obj.containsKey(F("unitid"))) assigned_unitid = obj[F("unitid")];
     if (obj.containsKey(F("enable"))) flags.enable = obj[F("enable")];
     if (obj.containsKey(F("log"))) flags.log = obj[F("log")];
+    if (obj.containsKey(F("stdlog"))) stdlog = obj[F("stdlog")];
     if (obj.containsKey(F("show"))) flags.show = obj[F("show")];
 
     if (obj.containsKey(F("data_ok"))) flags.data_ok = obj[F("data_ok")];

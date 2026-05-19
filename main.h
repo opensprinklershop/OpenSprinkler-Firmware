@@ -36,6 +36,7 @@ void reset_all_stations(bool running_ones_only=false);
 void reset_all_stations_immediate(bool running_ones_only=false);
 void delete_log(char *name);
 void write_log(unsigned char type, time_os_t curr_time);
+void write_flow_log(double volume, uint8_t unitid, ulong duration, time_os_t curr_time);
 void make_logfile_name(char *name);
 #if defined(ESP32)
 void init_external_flash(); // initialize external flash

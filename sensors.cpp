@@ -149,10 +149,10 @@ static std::map<uint, ProgSensorAdjust*> progSensorAdjustsMap;
 // NOTE: std::map cannot use EXT_RAM_BSS_ATTR - has internal tree pointers
 static std::map<uint, Monitor*> monitorsMap;
 
-static const unsigned char MAX_SENSOR_UNITNAMES = 15;
+static const unsigned char MAX_SENSOR_UNITNAMES = 18;
 const char *sensor_unitNames[]{
-    "",  "%", "°C", "°F", "V", "%", "in", "mm", "mph", "kmh", "%", "DK", "LM", "LX", "L"
-    //0   1     2     3    4    5    6     7      8      9     10,  11,   12,   13,  14
+  "",  "%", "°C", "°F", "V", "%", "in", "mm", "mph", "kmh", "%", "DK", "LM", "LX", "L", "gal", "L Verbrauch", "gal Verbrauch"
+  //0   1     2     3    4    5    6     7      8      9     10,  11,   12,   13,  14,  15,    16,            17
     //   0=Nothing
     //   1=Soil moisture
     //   2=degree celsius temperature
@@ -167,9 +167,88 @@ const char *sensor_unitNames[]{
     //  11=DK (Permitivität)
     //  12=LM (Lumen)
     //  13=LX (LUX)
-    //  14=L  (Liter)
+    //  14=L  (Liter, absolute meter counter)
+    //  15=gal (Gallon, absolute meter counter)
+    //  16=L Verbrauch (relative consumption)
+    //  17=gal Verbrauch (relative consumption)
 };
 uint8_t logFileSwitch[3] = {0, 0, 0};  // 0=use smaller File, 1=LOG1, 2=LOG2
+
+extern ulong flow_count;
+
+static bool sensor_unit_is_water_absolute(uint8_t unitid) {
+  return unitid == UNIT_LITER || unitid == UNIT_GALLON;
+}
+
+static bool sensor_unit_is_water_consumption(uint8_t unitid) {
+  return unitid == UNIT_LITER_CONSUMPTION || unitid == UNIT_GALLON_CONSUMPTION;
+}
+
+static bool sensor_unit_is_water_volume(uint8_t unitid) {
+  return sensor_unit_is_water_absolute(unitid) || sensor_unit_is_water_consumption(unitid);
+}
+
+static uint8_t sensor_consumption_unit_for(uint8_t unitid) {
+  if (unitid == UNIT_GALLON || unitid == UNIT_GALLON_CONSUMPTION) return UNIT_GALLON_CONSUMPTION;
+  return UNIT_LITER_CONSUMPTION;
+}
+
+static double flow_pulse_volume() {
+  uint32_t volume100 = (((uint32_t)os.iopts[IOPT_PULSE_RATE_1]) << 8) + os.iopts[IOPT_PULSE_RATE_0];
+  return (double)volume100 / 100.0;
+}
+
+class FlowPulseSensor : public SensorBase {
+public:
+  explicit FlowPulseSensor(uint type) : SensorBase(type) {}
+
+  virtual int read(unsigned long time) override {
+    (void)time;
+    uint32_t current_count = (uint32_t)flow_count;
+    if (last_read == 0 || current_count < last_native_data) {
+      last_native_data = current_count;
+      last_data = 0;
+      flags.data_ok = 1;
+      return HTTP_RQT_SUCCESS;
+    }
+
+    uint32_t delta = current_count - last_native_data;
+    last_native_data = current_count;
+    last_data = (double)delta * flow_pulse_volume();
+    flags.data_ok = 1;
+    return HTTP_RQT_SUCCESS;
+  }
+
+  virtual unsigned char getUnitId() const override {
+    if (assigned_unitid == UNIT_GALLON_CONSUMPTION || assigned_unitid == UNIT_GALLON) return UNIT_GALLON_CONSUMPTION;
+    return UNIT_LITER_CONSUMPTION;
+  }
+};
+
+static void sensor_standard_waterlog_add(SensorBase *sensor, ulong time) {
+  if (!sensor || !sensor->stdlog || !sensor->flags.data_ok) return;
+
+  uint8_t unitid = getSensorUnitId(sensor);
+  if (!sensor_unit_is_water_volume(unitid)) return;
+
+  double volume = sensor->last_data;
+  uint8_t log_unitid = sensor_consumption_unit_for(unitid);
+
+  if (sensor_unit_is_water_absolute(unitid)) {
+    if (sensor->last_stdlog_time == 0) {
+      sensor->last_stdlog_data = sensor->last_data;
+      sensor->last_stdlog_time = time;
+      return;
+    }
+    volume = sensor->last_data - sensor->last_stdlog_data;
+    sensor->last_stdlog_data = sensor->last_data;
+  }
+
+  ulong duration = sensor->last_stdlog_time > 0 && time > sensor->last_stdlog_time ? time - sensor->last_stdlog_time : sensor->read_interval;
+  sensor->last_stdlog_time = time;
+  if (volume <= 0) return;
+  write_flow_log(volume, log_unitid, duration, time);
+}
 
 
 
@@ -1354,7 +1433,12 @@ void calc_sensorlogs() {
         if (sensor->flags.enable && sensor->flags.log) {
           ulong idx = startidx;
           double data = 0;
+          double last_water_data = 0;
           ulong n = 0;
+          uint8_t unitid = getSensorUnitId(sensor);
+          bool water_meter = sensor_unit_is_water_volume(unitid);
+          bool water_absolute = sensor_unit_is_water_absolute(unitid);
+          bool have_water_data = false;
           bool done = false;
           while (!done) {
             int sn = sensorlog_load2(LOG_STD, idx, BLOCKSIZE, sensorlog);
@@ -1366,7 +1450,21 @@ void calc_sensorlogs() {
                 break;
               }
               if (sensorlog[i].nr == sensor->nr) {
-                data += sensorlog[i].data;
+                if (water_absolute) {
+                  if (!have_water_data) {
+                    last_water_data = sensorlog[i].data;
+                    have_water_data = true;
+                    continue;
+                  }
+                  double delta = sensorlog[i].data - last_water_data;
+                  last_water_data = sensorlog[i].data;
+                  if (delta < 0) continue;
+                  data += delta;
+                } else if (water_meter) {
+                  data += sensorlog[i].data;
+                } else {
+                  data += sensorlog[i].data;
+                }
                 n++;
               }
             }
@@ -1374,7 +1472,7 @@ void calc_sensorlogs() {
           if (n > 0) {
             sensorlog->nr = sensor->nr;
             sensorlog->time = fromdate;
-            sensorlog->data = data / (double)n;
+            sensorlog->data = water_meter ? data : data / (double)n;
             sensorlog->native_data = 0;
             sensorlog_add(LOG_WEEK, sensorlog);
           }
@@ -1421,6 +1519,7 @@ void calc_sensorlogs() {
           ulong idx = startidx;
           double data = 0;
           ulong n = 0;
+          bool water_meter = sensor_unit_is_water_volume(getSensorUnitId(sensor));
           bool done = false;
           while (!done) {
             int sn = sensorlog_load2(LOG_WEEK, idx, BLOCKSIZE, sensorlog);
@@ -1440,7 +1539,7 @@ void calc_sensorlogs() {
           if (n > 0) {
             sensorlog->nr = sensor->nr;
             sensorlog->time = fromdate;
-            sensorlog->data = data / (double)n;
+            sensorlog->data = water_meter ? data : data / (double)n;
             sensorlog->native_data = 0;
             sensorlog_add(LOG_MONTH, sensorlog);
           }
@@ -1632,6 +1731,7 @@ void read_all_sensors(boolean online) {
 #endif
           unsigned long log_start_ms = millis();
           sensorlog_add(LOG_STD, current_sensor, time);
+          sensor_standard_waterlog_add(current_sensor, time);
           DEBUG_PRINTF(F("[SENSOR] log done #%d duration=%lums\n"), current_sensor->nr, millis() - log_start_ms);
           unsigned long push_start_ms = millis();
           push_message(current_sensor);
@@ -1842,6 +1942,9 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
       return new BLESensor(type);
 #endif
 #endif
+    case SENSOR_FLOW_PULSE:
+  return new FlowPulseSensor(type);
+
     // Internal system sensors
 #if defined(ESP8266) || defined(ESP32)
     case SENSOR_FREE_MEMORY:
@@ -2444,6 +2547,7 @@ unsigned char getSensorUnitId(int type) {
     case SENSOR_MODBUS_RTU:
     case SENSOR_BLE:
     case SENSOR_ZIGBEE:
+    case SENSOR_FLOW_PULSE:
     default:                       return UNIT_USERDEF;
   }
 }

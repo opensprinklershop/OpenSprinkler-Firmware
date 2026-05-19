@@ -73,7 +73,8 @@ unsigned char ModbusRtuSensor::getUnitId() const {
     case SENSOR_SMT100_PMTY: return UNIT_DK;
     case SENSOR_TH100_MOIS: return UNIT_HUM_PERCENT;
     case SENSOR_TH100_TEMP: return UNIT_DEGREE;
-    default: return UNIT_NONE;
+    case SENSOR_MODBUS_RTU: return assigned_unitid > 0 ? assigned_unitid : UNIT_USERDEF;
+    default: return assigned_unitid > 0 ? assigned_unitid : UNIT_NONE;
   }
 }
 
@@ -91,7 +92,8 @@ unsigned char TruebnerRS485Sensor::getUnitId() const {
     case SENSOR_SMT100_PMTY: return UNIT_DK;
     case SENSOR_TH100_MOIS: return UNIT_HUM_PERCENT;
     case SENSOR_TH100_TEMP: return UNIT_DEGREE;
-    default: return UNIT_NONE;
+    case SENSOR_MODBUS_RTU: return assigned_unitid > 0 ? assigned_unitid : UNIT_USERDEF;
+    default: return assigned_unitid > 0 ? assigned_unitid : UNIT_NONE;
   }
 }
 #endif
@@ -110,7 +112,8 @@ unsigned char RS485I2CSensor::getUnitId() const {
     case SENSOR_SMT100_PMTY: return UNIT_DK;
     case SENSOR_TH100_MOIS: return UNIT_HUM_PERCENT;
     case SENSOR_TH100_TEMP: return UNIT_DEGREE;
-    default: return UNIT_NONE;
+    case SENSOR_MODBUS_RTU: return assigned_unitid > 0 ? assigned_unitid : UNIT_USERDEF;
+    default: return assigned_unitid > 0 ? assigned_unitid : UNIT_NONE;
   }
 }
 #endif
@@ -129,7 +132,8 @@ unsigned char UsbRs485Sensor::getUnitId() const {
     case SENSOR_SMT100_PMTY: return UNIT_DK;
     case SENSOR_TH100_MOIS: return UNIT_HUM_PERCENT;
     case SENSOR_TH100_TEMP: return UNIT_DEGREE;
-    default: return UNIT_NONE;
+    case SENSOR_MODBUS_RTU: return assigned_unitid > 0 ? assigned_unitid : UNIT_USERDEF;
+    default: return assigned_unitid > 0 ? assigned_unitid : UNIT_NONE;
   }
 }
 #endif

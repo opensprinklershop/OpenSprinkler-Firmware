@@ -112,6 +112,7 @@ struct ClientZigbeeNetworkSnapshot {
 #define ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING         0x0406
 #define ZB_ZCL_CLUSTER_ID_LEAF_WETNESS              0x0407
 #define ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE             0x0408
+#define ZB_ZCL_CLUSTER_ID_METERING                  0x0702
 
 // Tuya-specific protocol definitions (cluster 0xEF00)
 #define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
@@ -348,6 +349,11 @@ public:
             esp_zb_attribute_list_t *power_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
             esp_zb_cluster_list_add_power_config_cluster(_cluster_list, power_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
 
+            esp_zb_attribute_list_t *meter_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_METERING);
+            if (meter_cluster) {
+                esp_zb_cluster_list_add_custom_cluster(_cluster_list, meter_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+            }
+
             // Tuya-specific cluster 0xEF00 (CLIENT to receive Tuya DP reports)
             esp_zb_attribute_list_t *tuya_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC);
             if (tuya_cluster) {
@@ -421,6 +427,17 @@ private:
             case ESP_ZB_ZCL_ATTR_TYPE_U8:  return (int32_t)(*(uint8_t*)attr->data.value);
             case ESP_ZB_ZCL_ATTR_TYPE_U16: return (int32_t)(*(uint16_t*)attr->data.value);
             case ESP_ZB_ZCL_ATTR_TYPE_U32: return (int32_t)(*(uint32_t*)attr->data.value);
+            case 0x24:  // uint40
+            case 0x25: { // uint48
+                uint8_t len = (attr->data.type == 0x24) ? 5 : 6;
+                const uint8_t* raw = (const uint8_t*)attr->data.value;
+                uint32_t value = 0;
+                for (uint8_t i = 0; i < len && i < 4; i++) {
+                    value |= ((uint32_t)raw[i]) << (8 * i);
+                }
+                if (value > 0x7FFFFFFFUL) value = 0x7FFFFFFFUL;
+                return (int32_t)value;
+            }
             default:
                 // DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Unknown attribute type: 0x%02X\n"), attr->data.type);
                 return 0;
@@ -2253,6 +2270,9 @@ unsigned char ZigbeeSensor::getUnitId() const {
             
         case ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT:
             return UNIT_LX;
+
+        case ZB_ZCL_CLUSTER_ID_METERING:
+            return UNIT_LITER;
             
         case ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT:
         case ZB_ZCL_CLUSTER_ID_FLOW_MEASUREMENT:

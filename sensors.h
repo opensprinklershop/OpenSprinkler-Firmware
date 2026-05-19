@@ -141,6 +141,7 @@ extern "C" {
 
 #define SENSOR_ZIGBEE                   95  // Zigbee sensor (generic, via Zigbee2MQTT)
 #define SENSOR_BLE                      96  // BLE (Bluetooth Low Energy) sensor
+#define SENSOR_FLOW_PULSE               97  // Integrated pulse driven water meter
 
 #define SENSOR_REMOTE                   100 // Remote sensor of an remote opensprinkler
 #define SENSOR_WEATHER_TEMP_F           101 // Weather service - temperature (Fahrenheit)
@@ -405,6 +406,9 @@ typedef Monitor Monitor_t;
 #define UNIT_LM 12 //Lumen
 #define UNIT_LX 13 //Lux
 #define UNIT_LITER 14 //Liter
+#define UNIT_GALLON 15 //Gallon
+#define UNIT_LITER_CONSUMPTION 16 //Liter Verbrauch
+#define UNIT_GALLON_CONSUMPTION 17 //Gallonen Verbrauch
 #define UNIT_USERDEF 99
 
 // Unitnames

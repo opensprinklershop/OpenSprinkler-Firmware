@@ -4843,6 +4843,7 @@ static const int sensor_types[] = {
 #if defined(ESP32)
 	SENSOR_BLE,
 #endif
+	SENSOR_FLOW_PULSE,
 #if defined(ESP8266) || defined(ESP32)
 	SENSOR_ANALOG_EXTENSION_BOARD,
 	SENSOR_ANALOG_EXTENSION_BOARD_P,
@@ -4896,13 +4897,14 @@ static const char* sensor_names[] = {
 	"Truebner SMT100 RS485 Modbus, permittivity mode",
 	"Truebner TH100 RS485 Modbus, humidity mode",
 	"Truebner TH100 RS485 Modbus, temperature mode",
-	"RS485/MODBUS RTU generic sensor",
+	"RS485/MODBUS RTU generic sensor / water meter",
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	"Zigbee sensor",
 #endif
 #if defined(ESP32)
 	"BLE sensor",
 #endif
+	"Integrated pulse water meter",
  #if defined(ESP8266) || defined(ESP32)
 	"ASB - voltage mode 0..5V",
 	"ASB - 0..3.3V to 0..100%",

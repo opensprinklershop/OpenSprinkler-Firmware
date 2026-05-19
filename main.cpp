@@ -2731,6 +2731,77 @@ static const char log_type_names[] PROGMEM =
 	"s2\0"
 	"cu\0";
 
+void write_flow_log(double volume, uint8_t unitid, ulong duration, time_os_t curr_time) {
+	if (!os.iopts[IOPT_ENABLE_LOGGING]) return;
+
+	snprintf(tmp_buffer, TMP_BUFFER_SIZE, "%lu", curr_time / 86400);
+	make_logfile_name(tmp_buffer);
+
+#if defined(ARDUINO)
+	#if defined(ESP8266) || defined(ESP32)
+	File file = LittleFS.open(tmp_buffer, "r+");
+	if(!file) {
+		#if defined(ESP8266)
+		FSInfo fs_info;
+		LittleFS.info(fs_info);
+		if(fs_info.totalBytes < fs_info.usedBytes + fs_info.blockSize * 4) {
+			for(unsigned char i=0;i<7;i++) delete_log_oldest();
+		}
+		#else
+		if(LittleFS.totalBytes() < LittleFS.usedBytes() + 2048 * 4) {
+			for(unsigned char i=0;i<7;i++) delete_log_oldest();
+		}
+		#endif
+		file = LittleFS.open(tmp_buffer, "w");
+		if(!file) return;
+	}
+	file.seek(0, SeekEnd);
+	#else
+	sd.chdir("/");
+	if (sd.chdir(LOG_PREFIX) == false) {
+		if (sd.mkdir(LOG_PREFIX) == false) return;
+	}
+	SdFile file;
+	int ret = file.open(tmp_buffer, O_CREAT | O_WRITE );
+	file.seekEnd();
+	if(!ret) return;
+	#endif
+#else
+	struct stat st;
+	if(stat(get_filename_fullpath(LOG_PREFIX), &st)) {
+		if(mkdir(get_filename_fullpath(LOG_PREFIX), S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH)) return;
+	}
+	FILE *file;
+	file = fopen(get_filename_fullpath(tmp_buffer), "rb+");
+	if(!file) {
+		file = fopen(get_filename_fullpath(tmp_buffer), "wb");
+		if (!file) return;
+	}
+	fseek(file, 0, SEEK_END);
+#endif
+
+	strcpy_P(tmp_buffer, PSTR("["));
+#if defined(ARDUINO)
+	dtostrf(volume, 0, 2, tmp_buffer + strlen(tmp_buffer));
+#else
+	snprintf(tmp_buffer + strlen(tmp_buffer), TMP_BUFFER_SIZE - strlen(tmp_buffer), "%.2f", volume);
+#endif
+	snprintf(tmp_buffer + strlen(tmp_buffer), TMP_BUFFER_SIZE - strlen(tmp_buffer), ",\"fl\",%lu,%lu,%u]\r\n", duration, curr_time, unitid);
+
+#if defined(ARDUINO)
+	#if defined(ESP8266) || defined(ESP32)
+	file.write((const uint8_t*)tmp_buffer, strlen(tmp_buffer));
+	file.close();
+	#else
+	file.write(tmp_buffer);
+	file.close();
+	#endif
+#else
+	fputs(tmp_buffer, file);
+	fclose(file);
+#endif
+}
+
 /** write run record to log on SD card */
 void write_log(unsigned char type, time_os_t curr_time) {
 

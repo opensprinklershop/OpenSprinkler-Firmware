@@ -65,6 +65,7 @@ static constexpr size_t GW_DISCOVERED_MAX = 128;
 #define ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING         0x0406
 #define ZB_ZCL_CLUSTER_ID_LEAF_WETNESS              0x0407
 #define ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE             0x0408
+#define ZB_ZCL_CLUSTER_ID_METERING                  0x0702
 
 // Basic Cluster attribute IDs
 #define ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID       0x0004
@@ -908,11 +909,24 @@ static uint8_t gw_cluster_attr_type(uint16_t cluster_id) {
     }
 }
 
+static bool gw_cluster_supports_config_reporting(uint16_t cluster_id, uint16_t attr_id) {
+    // Simple Metering CurrentSummationDelivered is uint48. The current report
+    // helper is sized for the common measurement attributes, so water meters
+    // use active reads or their own unsolicited reports instead.
+    if (cluster_id == ZB_ZCL_CLUSTER_ID_METERING && attr_id == 0x0000) return false;
+    return true;
+}
+
 // Send a ZCL Configure Reporting command for one attribute.
 // Tells the remote device to push reports every [min_interval..max_interval] seconds.
 bool sensor_zigbee_gw_configure_reporting(uint64_t device_ieee, uint8_t endpoint,
                                            uint16_t cluster_id, uint16_t attr_id,
                                            uint16_t min_interval, uint16_t max_interval) {
+    if (!gw_cluster_supports_config_reporting(cluster_id, attr_id)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] ConfigReport skipped: unsupported attr width c=0x%04X a=0x%04X\n"),
+                     cluster_id, attr_id);
+        return false;
+    }
     if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
         // DEBUG_PRINTF("[ZIGBEE-GW] ConfigReport SKIP: not ready. ieee=%016llX\n",
                      // (unsigned long long)device_ieee);
@@ -1120,6 +1134,12 @@ public:
                 // DEBUG_PRINTLN(F("[ZIGBEE-GW] Power config cluster 0x0001 added (CLIENT)"));
             }
 
+            esp_zb_attribute_list_t *meter_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_METERING);
+            if (meter_cluster) {
+                esp_zb_cluster_list_add_custom_cluster(_cluster_list, meter_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+                // DEBUG_PRINTLN(F("[ZIGBEE-GW] Metering cluster 0x0702 added (CLIENT)"));
+            }
+
             // Tuya manufacturer-specific cluster (0xEF00) as CLIENT so we receive
             // incoming DP reports from Tuya devices (GIEX GX-04, etc.)
             esp_zb_attribute_list_t *tuya_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC);
@@ -1241,6 +1261,17 @@ private:
             case ESP_ZB_ZCL_ATTR_TYPE_U8:  return (int32_t)(*(uint8_t*)attr->data.value);
             case ESP_ZB_ZCL_ATTR_TYPE_U16: return (int32_t)(*(uint16_t*)attr->data.value);
             case ESP_ZB_ZCL_ATTR_TYPE_U32: return (int32_t)(*(uint32_t*)attr->data.value);
+            case 0x24:  // uint40
+            case 0x25: { // uint48
+                uint8_t len = (attr->data.type == 0x24) ? 5 : 6;
+                const uint8_t* raw = (const uint8_t*)attr->data.value;
+                uint32_t value = 0;
+                for (uint8_t i = 0; i < len && i < 4; i++) {
+                    value |= ((uint32_t)raw[i]) << (8 * i);
+                }
+                if (value > 0x7FFFFFFFUL) value = 0x7FFFFFFFUL;
+                return (int32_t)value;
+            }
             default:
                 // DEBUG_PRINTF(F("[ZIGBEE-GW] Unknown attribute type: 0x%02X\n"), attr->data.type);
                 return 0;
@@ -1480,6 +1511,7 @@ static void gw_schedule_configure_reporting_all(unsigned long initial_delay_ms =
         if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
         ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
         if (zb->device_ieee == 0) continue;
+        if (!gw_cluster_supports_config_reporting(zb->cluster_id, zb->attribute_id)) continue;
 
         uint ri = zb->read_interval ? zb->read_interval : 60;
         uint16_t max_interval = (ri >= 15 && ri <= 3600) ? (uint16_t)ri : 120;
@@ -1806,7 +1838,8 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                 (report.cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE            && report_attr_raw == 0x0000) ||
                 (report.cluster_id == ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT     && report_attr_raw == 0x0000) ||
                 (report.cluster_id == ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT  && report_attr_raw == 0x0000) ||
-                (report.cluster_id == ZB_ZCL_CLUSTER_ID_FLOW_MEASUREMENT         && report_attr_raw == 0x0000)
+                (report.cluster_id == ZB_ZCL_CLUSTER_ID_FLOW_MEASUREMENT         && report_attr_raw == 0x0000) ||
+                (report.cluster_id == ZB_ZCL_CLUSTER_ID_METERING                 && report_attr_raw == 0x0000)
             );
             if (is_known_standard_cluster && report.ieee_addr != 0) {
                 SensorIterator ac_it = sensors_iterate_begin();
