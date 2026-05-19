@@ -1283,7 +1283,37 @@ private:
 
 static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttributeReport& report, bool solicited) {
     if (!zb_sensor) return;
-    
+
+    // ── Battery report short-circuit ─────────────────────────────────────
+    // Battery reports (cluster 0x0001/attr 0x0021 or Tuya DP 15) carry a
+    // percentage that must ONLY update `last_battery` — never the sensor's
+    // `last_data`, otherwise the battery percentage (50/100/…) is logged as
+    // the soil-moisture / temperature / etc. value.  This guard is
+    // defense-in-depth: even when the dispatch loop or auto-correct routes
+    // a battery report to a non-battery sensor by mistake, the measurement
+    // payload is preserved.
+    {
+        bool is_tuya_report = (report.attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0;
+        uint16_t raw_attr = report.attr_id & ~TUYA_REPORT_FLAG_PRESCALED;
+        bool is_battery_report =
+            (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr == 0x0021) ||
+            (is_tuya_report && report.cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC &&
+             raw_attr == TUYA_DP_BATTERY);
+        if (is_battery_report) {
+            uint32_t batt_pct = is_tuya_report ? (uint32_t)report.value
+                                               : (uint32_t)(report.value / 2);
+            if (batt_pct > 100) batt_pct = 100;
+            zb_sensor->last_battery = batt_pct;
+            zb_sensor->last_lqi     = report.lqi;
+            // Intentionally do NOT touch last_data / last_native_data /
+            // flags.data_ok / last_read / last / comm_mode — those belong
+            // to the actual measurement channel, not the battery channel.
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Sensor '%s' battery update: %u%% (no data overwrite)\n"),
+                         zb_sensor->name, (unsigned)batt_pct);
+            return;
+        }
+    }
+
     zb_sensor->last_native_data = report.value;
     double converted_value = (double)report.value;
 
@@ -1299,16 +1329,10 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
         } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE) {
             // Tuya soil moisture is already raw % (0-100)
             converted_value = report.value;
-        } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG) {
-            // Tuya battery is raw % (0-100), keep as-is
-            zb_sensor->last_battery = (uint32_t)report.value;
         } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC) {
             uint16_t dp = report.attr_id & ~TUYA_REPORT_FLAG_PRESCALED;
             if (dp == TUYA_DP_TEMPERATURE) {
                 converted_value = report.value / 10.0;
-            } else if (dp == TUYA_DP_BATTERY) {
-                converted_value = report.value;
-                zb_sensor->last_battery = (uint32_t)report.value;
             } else if (dp == TUYA_DP_SOIL_MOISTURE ||
                        dp == TUYA_DP_SOIL_MOISTURE_ALT1 ||
                        dp == TUYA_DP_SOIL_MOISTURE_ALT2) {
@@ -1331,11 +1355,11 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
         } else {
             converted_value = 0.0;
         }
-    } else if (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && report.attr_id == 0x0021) {
-        converted_value = report.value / 2.0;
-        zb_sensor->last_battery = (uint32_t)converted_value;
     }
-    
+    // NOTE: POWER_CONFIG/0x0021 (battery) is handled by the early-return
+    // guard at the top of this function — it must never reach the
+    // measurement-update path below.
+
     converted_value -= (double)zb_sensor->offset_mv / 1000.0;
     if (zb_sensor->factor && zb_sensor->divider)
         converted_value *= (double)zb_sensor->factor / (double)zb_sensor->divider;
@@ -1355,11 +1379,9 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
 
     // Update communication mode based on whether this report was solicited
     // (response to our ZCL Read Attributes) or unsolicited (device-pushed report).
-    // Battery/power config reports are excluded — they don't indicate data channel.
-    uint16_t report_attr_raw = report.attr_id & ~TUYA_REPORT_FLAG_PRESCALED;
-    bool is_battery = (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG &&
-                       report_attr_raw == 0x0021);
-    if (!is_battery) {
+    // Battery reports already returned above, so every report reaching here
+    // belongs to the measurement channel.
+    {
         ZbCommMode new_mode = solicited ? ZB_COMM_ACTIVE : ZB_COMM_REPORT;
         if (zb_sensor->comm_mode == ZB_COMM_UNKNOWN ||
             (new_mode == ZB_COMM_REPORT && zb_sensor->comm_mode == ZB_COMM_ACTIVE)) {
