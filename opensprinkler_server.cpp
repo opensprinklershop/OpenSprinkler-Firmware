@@ -6869,19 +6869,6 @@ static bool ntp_resolve_primary_server(char* out, size_t out_len, const unsigned
 		return true;
 	}
 
-	unsigned char gwip[4] = {
-		os.iopts[IOPT_GATEWAY_IP1],
-		os.iopts[IOPT_GATEWAY_IP2],
-		os.iopts[IOPT_GATEWAY_IP3],
-		os.iopts[IOPT_GATEWAY_IP4]
-	};
-	if (ntp_is_valid_ipv4(gwip)) {
-		String gw = IPAddress(gwip[0], gwip[1], gwip[2], gwip[3]).toString();
-		strncpy(out, gw.c_str(), out_len - 1);
-		out[out_len - 1] = 0;
-		return true;
-	}
-
 	return false;
 }
 
@@ -6965,11 +6952,6 @@ ulong getNtpTime() {
 		os.iopts[IOPT_NTP_IP2],
 		os.iopts[IOPT_NTP_IP3],
 		os.iopts[IOPT_NTP_IP4]};
-	unsigned char gwip[4] = {
-		os.iopts[IOPT_GATEWAY_IP1],
-		os.iopts[IOPT_GATEWAY_IP2],
-		os.iopts[IOPT_GATEWAY_IP3],
-		os.iopts[IOPT_GATEWAY_IP4]};
 	unsigned char tries=0;
 	ulong gt = 0;
 	ulong startt = millis();
@@ -6995,10 +6977,6 @@ ulong getNtpTime() {
 		if (ntp_is_valid_ipv4(ntpip)) {
 			DEBUG_PRINTLN(IPAddress(ntpip[0],ntpip[1],ntpip[2],ntpip[3]));
 			ret = udp.beginPacket(ntpip, NTP_PORT);
-		} else if (ntp_is_valid_ipv4(gwip)) {
-			DEBUG_PRINT(F("gateway "));
-			DEBUG_PRINTLN(IPAddress(gwip[0],gwip[1],gwip[2],gwip[3]));
-			ret = udp.beginPacket(gwip, NTP_PORT);
 		} else {
 			DEBUG_PRINT(public_ntp_servers[sidx]);
 			ret = udp.beginPacket(public_ntp_servers[sidx], NTP_PORT);
