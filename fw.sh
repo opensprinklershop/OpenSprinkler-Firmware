@@ -1546,6 +1546,90 @@ EOFM
     fi
 }
 
+# Ensure versions.json contains an up-to-date entry for the version referenced
+# by manifest.json. This is used by online-deploy to keep IONOS metadata
+# consistent even when no full release pipeline is run.
+sync_versions_from_manifest() {
+    if [[ ! -f "$MANIFEST" ]]; then
+        warn "versions sync skipped — ${MANIFEST} not found."
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$VERSIONS_JSON")"
+
+    python3 - "$MANIFEST" "$VERSIONS_JSON" <<'PYEOF'
+import json
+import os
+import sys
+from datetime import date
+
+manifest_path = sys.argv[1]
+versions_path = sys.argv[2]
+
+with open(manifest_path, "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+
+fw_version = int(manifest.get("fw_version", 0) or 0)
+fw_minor = int(manifest.get("fw_minor", 0) or 0)
+if fw_version <= 0:
+    print("  versions.json sync skipped: manifest has no valid fw_version")
+    sys.exit(0)
+
+catalog = []
+if os.path.isfile(versions_path):
+    try:
+        with open(versions_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if isinstance(loaded, list):
+                catalog = loaded
+    except Exception:
+        catalog = []
+
+today = date.today().isoformat()
+entry_date = today
+for item in catalog:
+    if int(item.get("fw_version", 0) or 0) == fw_version and int(item.get("fw_minor", 0) or 0) == fw_minor:
+        entry_date = item.get("date") or today
+        break
+
+entry = {
+    "fw_version": fw_version,
+    "fw_minor": fw_minor,
+    "date": entry_date,
+    "zigbee_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_zigbee.bin",
+    "matter_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_matter.bin",
+    "esp8266_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_esp8266.bin",
+    "zigbee_sha256": manifest.get("zigbee_sha256", ""),
+    "matter_sha256": manifest.get("matter_sha256", ""),
+    "esp8266_sha256": manifest.get("esp8266_sha256", ""),
+    "changelog": manifest.get("changelog", "")
+}
+
+catalog = [
+    item for item in catalog
+    if not (
+        int(item.get("fw_version", 0) or 0) == fw_version
+        and int(item.get("fw_minor", 0) or 0) == fw_minor
+    )
+]
+catalog.insert(0, entry)
+catalog.sort(key=lambda e: (int(e.get("fw_version", 0) or 0), int(e.get("fw_minor", 0) or 0)), reverse=True)
+
+with open(versions_path, "w", encoding="utf-8") as f:
+    json.dump(catalog, f, indent=2, ensure_ascii=False)
+
+print(f"  versions.json updated: v{fw_version}_{fw_minor}")
+PYEOF
+
+    ok "versions.json synced from manifest.json"
+}
+
+prepare_online_upgrade_metadata() {
+    read_version
+    sync_manifest_sha256
+    sync_versions_from_manifest
+}
+
 # Update CHANGELOG.md header for the new release
 update_changelog() {
     local version_str="$1"
@@ -1746,6 +1830,9 @@ online_deploy() {
     header "Online deploy → IONOS"
     local ui_env="$(dirname "$UI_FW_SH")/.env"
     local -a deploy_cmd=("$UI_FW_SH")
+
+    info "Preparing upgrade metadata before upload (manifest + versions) …"
+    prepare_online_upgrade_metadata
 
     if [[ ! -f "$UI_FW_SH" ]]; then
         warn "Online deploy skipped — ${UI_FW_SH} not found."

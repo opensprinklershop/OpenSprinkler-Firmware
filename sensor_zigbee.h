@@ -232,6 +232,11 @@ public:
     uint8_t endpoint = 1;             // Zigbee endpoint (usually 1)
     uint16_t cluster_id = 0x0408;     // Cluster ID (0x0408=soil moisture, 0x0402=temperature)
     uint16_t attribute_id = 0x0000;   // Attribute ID (0x0000=MeasuredValue)
+    // Optional Tuya DataPoint overrides (-1 = disabled / auto mapping)
+    int16_t tuya_dp_value = -1;       // DP ID that carries the primary measurement value
+    int16_t tuya_dp_battery = -1;     // DP ID that carries battery percentage/state
+    int16_t tuya_dp_unit = -1;        // DP ID for unit selector (e.g. 0=C,1=F), informational
+    uint8_t tuya_unit = 0xFF;         // Last seen unit enum for tuya_dp_unit (0=C,1=F, 0xFF=unknown)
     
     // NOTE: factor, divider, offset_mv, offset2 are inherited from SensorBase.
     // JSON keys: "fac", "div", "offset", "offset2" (handled by SensorBase::fromJson/toJson).

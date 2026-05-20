@@ -22,7 +22,7 @@
 extern OpenSprinkler os;
 extern bool useEth;   // true when the device is connected via Ethernet (main.cpp)
 extern ETHClass eth;  // Ethernet interface object (main.cpp)
-extern void reboot_in(uint32_t ms); // main.cpp — Ticker-based deferred reboot
+extern void reboot_in(uint32_t ms, uint8_t cause); // main.cpp - Ticker-based deferred reboot
 
 // Thread-safe state
 static SemaphoreHandle_t s_ota_mutex = NULL;
@@ -810,7 +810,7 @@ void online_update_start() {
 	if (ota_save_start_manifest(*param)) {
 		delete param;
 		ota_set_state(OTA_STATUS_REBOOTING_OTA, 0, "Rebooting to free memory for OTA...");
-		reboot_in(1500);
+		reboot_in(1500, REBOOT_CAUSE_FWUPDATE);
 	} else {
 		delete param;
 		ota_set_state(OTA_STATUS_ERROR_LOW_MEMORY, 0,

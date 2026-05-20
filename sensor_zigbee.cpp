@@ -119,22 +119,47 @@ struct ClientZigbeeNetworkSnapshot {
 #define TUYA_CMD_DATA_REQUEST   0x00
 #define TUYA_CMD_DATA_RESPONSE  0x01
 #define TUYA_CMD_DATA_REPORT    0x02
-#define TUYA_DP_TYPE_RAW    0x00
-#define TUYA_DP_TYPE_BOOL   0x01
-#define TUYA_DP_TYPE_VALUE  0x02  // 4-byte big-endian integer
-#define TUYA_DP_TYPE_STRING 0x03
-#define TUYA_DP_TYPE_ENUM   0x04
-#define TUYA_DP_TYPE_BITMAP 0x05
-// Common Tuya DP numbers for soil/environment sensors (varies by model)
-#define TUYA_DP_SOIL_MOISTURE      3
-#define TUYA_DP_TEMPERATURE        5
-#define TUYA_DP_TEMPERATURE_UNIT   9
-#define TUYA_DP_SOIL_MOISTURE_STATE 14  // GX04: ENUM 0=dry→20%, 1=normal→50%, 2=wet→80%
-#define TUYA_DP_BATTERY           15
-// Flag to prefer 3 over 14 for soil moisture if both are present
-#define TUYA_REPORT_FLAG_IGNORE_STATE  0x4000
+#define TUYA_TYPE_RAW    0x00
+#define TUYA_TYPE_BOOL   0x01
+#define TUYA_TYPE_VALUE  0x02  // 4-byte big-endian integer
+#define TUYA_TYPE_STRING 0x03
+#define TUYA_TYPE_ENUM   0x04
+#define TUYA_TYPE_BITMAP 0x05
 // Flag to mark Tuya reports as pre-scaled (no ZCL scaling needed)
 #define TUYA_REPORT_FLAG_PRESCALED     0x8000
+#define TUYA_REPORT_TYPE_SHIFT         8
+#define TUYA_REPORT_TYPE_MASK          0x0F00
+#define TUYA_REPORT_DP_MASK            0x00FF
+
+static uint16_t tuya_report_attr(uint8_t dp_number, uint8_t dp_type) {
+    return TUYA_REPORT_FLAG_PRESCALED |
+           (((uint16_t)dp_type << TUYA_REPORT_TYPE_SHIFT) & TUYA_REPORT_TYPE_MASK) |
+           (uint16_t)dp_number;
+}
+
+static uint16_t zigbee_report_attr_id(uint16_t attr_id) {
+    return (attr_id & TUYA_REPORT_FLAG_PRESCALED) ? (attr_id & TUYA_REPORT_DP_MASK) : attr_id;
+}
+
+static uint8_t tuya_report_type(uint16_t attr_id) {
+    return (attr_id & TUYA_REPORT_FLAG_PRESCALED) ? (uint8_t)((attr_id & TUYA_REPORT_TYPE_MASK) >> TUYA_REPORT_TYPE_SHIFT) : 0;
+}
+
+static uint32_t zigbee_battery_percent_from_report(bool is_tuya_report, uint16_t raw_attr_id, uint8_t tuya_type, int16_t configured_tuya_battery_dp, int32_t value) {
+    if (is_tuya_report) {
+        if (configured_tuya_battery_dp >= 0 && raw_attr_id == (uint16_t)configured_tuya_battery_dp && tuya_type == TUYA_TYPE_ENUM) {
+            if (value <= 0) return 0;
+            if (value == 1) return 50;
+            return 100;
+        }
+        if (value < 0) return 0;
+        return (value > 100) ? 100 : (uint32_t)value;
+    }
+
+    if (value < 0) return 0;
+    uint32_t batt_pct = (uint32_t)(value / 2);
+    return (batt_pct > 100) ? 100 : batt_pct;
+}
 
 // Basic Cluster attribute IDs
 #define ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID       0x0004
@@ -525,12 +550,12 @@ static bool client_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         if (offset + dp_len > ind.asdu_length) break;
 
         int32_t dp_value = 0;
-        if (dp_type == TUYA_DP_TYPE_VALUE && dp_len == 4) {
+        if (dp_type == TUYA_TYPE_VALUE && dp_len == 4) {
             dp_value = (int32_t)(((uint32_t)ind.asdu[offset] << 24) |
                                  ((uint32_t)ind.asdu[offset + 1] << 16) |
                                  ((uint32_t)ind.asdu[offset + 2] << 8) |
                                  ((uint32_t)ind.asdu[offset + 3]));
-        } else if (dp_type == TUYA_DP_TYPE_ENUM || dp_type == TUYA_DP_TYPE_BOOL) {
+        } else if (dp_type == TUYA_TYPE_ENUM || dp_type == TUYA_TYPE_BOOL) {
             dp_value = (int32_t)ind.asdu[offset];
         } else if (dp_len <= 4) {
             for (uint16_t j = 0; j < dp_len; j++) dp_value = (dp_value << 8) | ind.asdu[offset + j];
@@ -539,50 +564,10 @@ static bool client_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] DP %u: type=%u len=%u value=%ld\n"),
                  dp_number, dp_type, dp_len, dp_value);
 
-        // Map Tuya DPs to ZCL cluster/attribute and route through the sensor callback
-        uint16_t mapped_cluster = 0;
-        uint16_t mapped_attr = 0;
-        bool mapped = true;
-        switch (dp_number) {
-            case TUYA_DP_SOIL_MOISTURE:
-                mapped_cluster = ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE;
-                mapped_attr = 0x0000 | TUYA_REPORT_FLAG_PRESCALED | TUYA_REPORT_FLAG_IGNORE_STATE;
-                break;
-            case TUYA_DP_SOIL_MOISTURE_STATE:
-                if (mapped_attr & TUYA_REPORT_FLAG_IGNORE_STATE) {
-                    mapped = false;
-                    break;
-                }
-                // GX04 categorical soil level: 0=dry → 20%, 1=normal → 50%, 2=wet → 80%
-                dp_value = (dp_value == 0) ? 20 : (dp_value == 1) ? 50 : 80;
-                mapped_cluster = ZB_ZCL_CLUSTER_ID_SOIL_MOISTURE;
-                mapped_attr = 0x0000 | TUYA_REPORT_FLAG_PRESCALED;
-                break;
-            case TUYA_DP_TEMPERATURE:
-                mapped_cluster = ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT;
-                mapped_attr = 0x0000 | TUYA_REPORT_FLAG_PRESCALED;
-                break;
-            case TUYA_DP_BATTERY:
-                mapped_cluster = ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
-                mapped_attr = 0x0021 | TUYA_REPORT_FLAG_PRESCALED;
-                break;
-            case TUYA_DP_TEMPERATURE_UNIT:
-                mapped = false;
-                break;
-            default:
-                DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] Unhandled DP %u (type=%u len=%u) value=%ld\n"),
-                             dp_number, dp_type, dp_len, dp_value);
-                mapped = false;
-                break;
-        }
-
-        if (mapped) {
-            DEBUG_PRINTF(F("[ZIGBEE-CLIENT][TUYA] Mapped DP %u -> cluster=0x%04X attr=0x%04X\n"),
-                         dp_number, mapped_cluster, mapped_attr & ~TUYA_REPORT_FLAG_PRESCALED);
-            ZigbeeSensor::zigbee_attribute_callback(
-                ieee_addr, ind.src_endpoint, mapped_cluster,
-                mapped_attr, dp_value, ind.lqi);
-        }
+        ZigbeeSensor::zigbee_attribute_callback(
+            ieee_addr, ind.src_endpoint, ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC,
+            tuya_report_attr(dp_number, dp_type),
+            dp_value, ind.lqi);
 
         offset += dp_len;
     }
@@ -1497,7 +1482,17 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
 
     // Check Tuya pre-scaled flag: Tuya DP values don't need ZCL conversion
     bool is_tuya_prescaled = (attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0;
-    uint16_t raw_attr_id = attr_id & ~TUYA_REPORT_FLAG_PRESCALED;
+    uint16_t raw_attr_id = zigbee_report_attr_id(attr_id);
+    uint8_t tuya_type = tuya_report_type(attr_id);
+
+    DEBUG_PRINTF(F("[ZIGBEE-DATA] RX ieee=0x%016llX ep=%u cluster=0x%04X attr=0x%04X raw=%ld lqi=%u tuya=%u\n"),
+                 (unsigned long long)ieee_addr,
+                 (unsigned)endpoint,
+                 (unsigned)cluster_id,
+                 (unsigned)raw_attr_id,
+                 (long)value,
+                 (unsigned)lqi,
+                 (unsigned)(is_tuya_prescaled ? 1 : 0));
 
     SensorIterator it = sensors_iterate_begin();
     SensorBase* sensor;
@@ -1509,7 +1504,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
         ZigbeeSensor* zb_sensor = static_cast<ZigbeeSensor*>(sensor);
         
         bool matches = (zb_sensor->cluster_id == cluster_id &&
-                       zb_sensor->attribute_id == raw_attr_id);
+                   zb_sensor->attribute_id == raw_attr_id);
         
         if (zb_sensor->device_ieee != 0 && ieee_addr != 0) {
             matches = matches && (zb_sensor->device_ieee == ieee_addr);
@@ -1518,10 +1513,35 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
         if (zb_sensor->endpoint != 1 && endpoint != 0) {
             matches = matches && (zb_sensor->endpoint == endpoint);
         }
+
+        bool ieee_match = !(zb_sensor->device_ieee != 0 && ieee_addr != 0) || (zb_sensor->device_ieee == ieee_addr);
+        bool ep_match = !(zb_sensor->endpoint != 1 && endpoint != 0) || (zb_sensor->endpoint == endpoint);
+        bool is_tuya_dp_report = is_tuya_prescaled && cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC;
+        if (!matches && is_tuya_dp_report && ieee_match && ep_match &&
+            zb_sensor->tuya_dp_value >= 0 && raw_attr_id == (uint16_t)zb_sensor->tuya_dp_value) {
+            matches = true;
+        }
         
         if (matches) {
             DEBUG_PRINTF(F("[ZIGBEE] Updating sensor: %s%s\n"), sensor->name,
                          is_tuya_prescaled ? " (Tuya)" : "");
+
+            // Battery reports must only refresh last_battery and must never
+            // overwrite the sensor's primary measurement channel (last_data).
+            if ((cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr_id == 0x0021) ||
+                (is_tuya_dp_report && zb_sensor->tuya_dp_battery >= 0 && raw_attr_id == (uint16_t)zb_sensor->tuya_dp_battery)) {
+                uint32_t batt_pct = zigbee_battery_percent_from_report(is_tuya_prescaled, raw_attr_id, tuya_type, zb_sensor->tuya_dp_battery, value);
+                zb_sensor->last_battery = batt_pct;
+                zb_sensor->last_lqi = lqi;
+                DEBUG_PRINTF(F("[ZIGBEE-BATT] Sensor='%s' ieee=0x%016llX ep=%u raw=%ld -> batt=%u%% lqi=%u (no last_data overwrite)\n"),
+                             sensor->name,
+                             (unsigned long long)ieee_addr,
+                             (unsigned)endpoint,
+                             (long)value,
+                             (unsigned)batt_pct,
+                             (unsigned)lqi);
+                continue;
+            }
             
             zb_sensor->last_native_data = value;
             double converted_value = (double)value;
@@ -1546,11 +1566,8 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
                     converted_value = value / 2.0;
                     zb_sensor->last_battery = (uint32_t)converted_value;
                 }
-            } else {
-                // Tuya: battery is already raw %
-                if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr_id == 0x0021) {
-                    zb_sensor->last_battery = (uint32_t)converted_value;
-                }
+            } else if (is_tuya_dp_report && zb_sensor->tuya_dp_value >= 0 && raw_attr_id == (uint16_t)zb_sensor->tuya_dp_value) {
+                converted_value = value;
             }
             
             // Apply user-defined factor/divider/offset
@@ -1607,15 +1624,43 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
             }
 
             DEBUG_PRINTF(F("[ZIGBEE] Raw: %d -> Converted: %.2f\n"), value, converted_value);
+            DEBUG_PRINTF(F("[ZIGBEE-DATA] Sensor='%s' ieee=0x%016llX ep=%u cluster=0x%04X attr=0x%04X native=%ld data=%.3f batt=%u lqi=%u\n"),
+                         sensor->name,
+                         (unsigned long long)ieee_addr,
+                         (unsigned)endpoint,
+                         (unsigned)cluster_id,
+                         (unsigned)raw_attr_id,
+                         (long)zb_sensor->last_native_data,
+                         converted_value,
+                         (unsigned)zb_sensor->last_battery,
+                         (unsigned)zb_sensor->last_lqi);
             // Don't break — multiple logical sensors may reference the
             // same physical device (same IEEE/cluster/attr).  Continue
             // iterating so every matching sensor is updated.
-        } else if (cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr_id == 0x0021 &&
-                   zb_sensor->device_ieee != 0 && zb_sensor->device_ieee == ieee_addr) {
+        } else if (is_tuya_dp_report && zb_sensor->device_ieee != 0 && zb_sensor->device_ieee == ieee_addr &&
+               zb_sensor->tuya_dp_unit >= 0 && raw_attr_id == (uint16_t)zb_sensor->tuya_dp_unit) {
+            zb_sensor->tuya_unit = (value < 0) ? 0xFF : (uint8_t)value;
+            zb_sensor->last_lqi = lqi;
+            DEBUG_PRINTF(F("[ZIGBEE-UNIT] Sensor='%s' ieee=0x%016llX ep=%u dp=%u unit=%ld lqi=%u\n"),
+                 sensor->name,
+                 (unsigned long long)ieee_addr,
+                 (unsigned)endpoint,
+                 (unsigned)raw_attr_id,
+                 (long)value,
+                 (unsigned)lqi);
+        } else if (((cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr_id == 0x0021) ||
+                (is_tuya_dp_report && zb_sensor->tuya_dp_battery >= 0 && raw_attr_id == (uint16_t)zb_sensor->tuya_dp_battery)) &&
+               zb_sensor->device_ieee != 0 && zb_sensor->device_ieee == ieee_addr) {
             // Battery report for same device: update last_battery on non-battery sensors too
-            uint32_t batt_pct = is_tuya_prescaled ? (uint32_t)value : (uint32_t)(value / 2.0);
+            uint32_t batt_pct = zigbee_battery_percent_from_report(is_tuya_prescaled, raw_attr_id, tuya_type, zb_sensor->tuya_dp_battery, value);
             zb_sensor->last_battery = batt_pct;
-            DEBUG_PRINTF(F("[ZIGBEE] Battery update for sensor %s: %u%%\n"), sensor->name, batt_pct);
+            DEBUG_PRINTF(F("[ZIGBEE-BATT] Linked sensor='%s' ieee=0x%016llX ep=%u raw=%ld -> batt=%u%% lqi=%u\n"),
+                         sensor->name,
+                         (unsigned long long)ieee_addr,
+                         (unsigned)endpoint,
+                         (long)value,
+                         (unsigned)batt_pct,
+                         (unsigned)lqi);
         }
     }
 }
@@ -1715,6 +1760,25 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             attribute_id = val.as<uint16_t>();
         }
     }
+    // Optional per-sensor Tuya DP overrides
+    if (obj.containsKey(F("tuya_dp"))) {
+        tuya_dp_value = obj[F("tuya_dp")].as<int16_t>();
+    } else if (obj.containsKey(F("dp_value"))) {
+        tuya_dp_value = obj[F("dp_value")].as<int16_t>();
+    }
+    if (obj.containsKey(F("tuya_dp_batt"))) {
+        tuya_dp_battery = obj[F("tuya_dp_batt")].as<int16_t>();
+    } else if (obj.containsKey(F("dp_battery"))) {
+        tuya_dp_battery = obj[F("dp_battery")].as<int16_t>();
+    }
+    if (obj.containsKey(F("tuya_dp_unit"))) {
+        tuya_dp_unit = obj[F("tuya_dp_unit")].as<int16_t>();
+    } else if (obj.containsKey(F("dp_unit"))) {
+        tuya_dp_unit = obj[F("dp_unit")].as<int16_t>();
+    }
+    if (obj.containsKey(F("tuya_unit"))) {
+        tuya_unit = obj[F("tuya_unit")].as<uint8_t>();
+    }
     // Basic Cluster info (persisted from device query)
     if (obj.containsKey(F("zb_manufacturer"))) {
         const char *mfr = obj[F("zb_manufacturer")].as<const char*>();
@@ -1793,6 +1857,11 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     char attr_hex[10];
     snprintf(attr_hex, sizeof(attr_hex), "0x%04X", attribute_id);
     obj[F("attribute_id")] = String(attr_hex);
+
+    if (tuya_dp_value >= 0) obj[F("tuya_dp")] = tuya_dp_value;
+    if (tuya_dp_battery >= 0) obj[F("tuya_dp_batt")] = tuya_dp_battery;
+    if (tuya_dp_unit >= 0) obj[F("tuya_dp_unit")] = tuya_dp_unit;
+    if (tuya_unit != 0xFF) obj[F("tuya_unit")] = tuya_unit;
     
     // Battery level — only persist when actually measured
     if (last_battery != UINT32_MAX) obj[F("battery")] = last_battery;

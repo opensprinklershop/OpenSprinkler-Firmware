@@ -6,9 +6,11 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (201)] — 2026-05-19
+## [2.4.0 (201)] — 2026-05-20
 
 ### Fixed
+- **Zigbee client battery contamination**: in `zigbee_attribute_callback`, battery reports (`POWER_CONFIG/0x0021`) in client mode no longer overwrite the sensor's `last_data`. An early-exit guard now updates only `last_battery` and `last_lqi` and skips the rest of the update path, so the battery percentage can never be logged or displayed as the soil-moisture / temperature / humidity value.
+- **Tuya DP14 soil state priority**: added `dp_soil_exact_received` flag so that DP3 (exact soil moisture %) always takes priority over DP14 (categorical dry/moist/wet state) within the same Tuya report frame.
 - **Zigbee Soil battery contamination (gateway)**: in `gw_updateSensorFromReport`, battery reports (`POWER_CONFIG/0x0021` or Tuya DP 15) no longer overwrite the sensor's `last_data` / `last_native_data` / `flags.data_ok` / `last_read`. A short-circuit at the top of the function now updates only `last_battery` and `last_lqi` and returns early, so the battery percentage (50/76/100/…) can never be logged or displayed as the soil-moisture / temperature / humidity value.
 
 ## [2.4.0 (200)] — 2026-05-19

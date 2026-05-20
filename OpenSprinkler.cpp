@@ -3287,7 +3287,7 @@ void OpenSprinkler::options_setup() {
 		#if defined(ESP32C5)
 		auto bootmenu_select_firmware_type = [&]() -> int {
 			IEEE802154BootVariant selection = ieee802154_get_boot_variant();
-			bool selection_changed = false;
+			bool has_selection = false;
 			// return codes: 0=cancel/timeout, 1=applied+reboot, 2=next menu item
 
 			// Ignore the startup button that entered this menu item.
@@ -3299,16 +3299,20 @@ void OpenSprinkler::options_setup() {
 				delay(10);
 			}
 
-			auto render = [&](IEEE802154BootVariant v) {
-				lcd_print_line_clear_pgm(PSTR("FW Type Select"), 0);
+			auto render = [&](bool selected, IEEE802154BootVariant v) {
+				lcd_print_line_clear_pgm(PSTR("FW Select B3:OK"), 0);
+				if (!selected) {
+					lcd_print_line_clear_pgm(PSTR("B1:ZB  B2:MAT"), 1);
+					return;
+				}
 				if (v == IEEE802154BootVariant::ZIGBEE) {
-					lcd_print_line_clear_pgm(PSTR("B1:ZB B2:MAT *"), 1);
+					lcd_print_line_clear_pgm(PSTR("B1:ZB* B2:MAT"), 1);
 				} else {
-					lcd_print_line_clear_pgm(PSTR("B1:ZB*B2:MAT "), 1);
+					lcd_print_line_clear_pgm(PSTR("B1:ZB  B2:MAT*"), 1);
 				}
 			};
 
-			render(selection);
+			render(has_selection, selection);
 			ulong start = millis();
 			while (millis() - start < 10000) {
 				unsigned char btn = button_read(BUTTON_WAIT_NONE);
@@ -3318,24 +3322,20 @@ void OpenSprinkler::options_setup() {
 				}
 
 				switch (btn & BUTTON_MASK) {
-					case BUTTON_1: 
-						if (selection != IEEE802154BootVariant::ZIGBEE) {	
-							selection = IEEE802154BootVariant::ZIGBEE;
-							selection_changed = true;
-						}	
-						render(selection);
+					case BUTTON_1:
+						selection = IEEE802154BootVariant::ZIGBEE;
+						has_selection = true;
+						render(has_selection, selection);
 						break;
 					case BUTTON_2:
-						if (selection != IEEE802154BootVariant::MATTER) {
-							selection = IEEE802154BootVariant::MATTER;
-							selection_changed = true;
-						}
-						render(selection);
+						selection = IEEE802154BootVariant::MATTER;
+						has_selection = true;
+						render(has_selection, selection);
 						break;
 					case BUTTON_3: {
-							if (!selection_changed) {
-								return 2;
-							}
+						if (!has_selection) {
+							return 2;
+						}
 						IEEE802154Mode mode =
 							(selection == IEEE802154BootVariant::ZIGBEE)
 								? IEEE802154Mode::IEEE_ZIGBEE_GATEWAY
@@ -3346,24 +3346,21 @@ void OpenSprinkler::options_setup() {
 							lcd_print_line_clear_pgm(PSTR("Switch failed"), 0);
 							lcd_print_line_clear_pgm(PSTR("No changes"), 1);
 							delay(1200);
-								return 0;
+							return 0;
 						}
 
 						lcd_print_line_clear_pgm(PSTR("Switch saved"), 0);
 						lcd_print_line_clear_pgm(PSTR("Rebooting..."), 1);
 						delay(600);
 						reboot_dev(REBOOT_CAUSE_BUTTON);
-							return 1;
+						return 1;
 					}
 					default:
 						break;
 				}
 			}
 
-			lcd_print_line_clear_pgm(PSTR("Timeout"), 0);
-			lcd_print_line_clear_pgm(PSTR("No changes"), 1);
-			delay(800);
-			return 0;
+			return 2;
 		};
 		#endif
 
@@ -3375,8 +3372,7 @@ void OpenSprinkler::options_setup() {
 	{
 		#if defined(ESP32C5)
 		// ESP32-C5 boot menu extension: first item is firmware type selection.
-		// If B3 is pressed without B1/B2 selection, continue to the standard
-		// setup-options menu (same behavior as startup BUTTON_3).
+		// If nothing is selected, continue to the standard factory-reset menu.
 		int fw_menu_result = bootmenu_select_firmware_type();
 		if (fw_menu_result == 1) {
 			return;

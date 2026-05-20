@@ -750,8 +750,12 @@ void start_server_client();
 // NOTE: Ticker cannot use EXT_RAM_BSS_ATTR - has internal function pointers
 static Ticker reboot_ticker;
 
-void reboot_in(uint32_t ms) {
+void reboot_in(uint32_t ms, uint8_t cause) {
 	if(os.state != OS_STATE_WAIT_REBOOT) {
+		if(cause) {
+			os.nvdata.reboot_cause = cause;
+			os.nvdata_save();
+		}
 		uint8_t prev_state = os.state;
 		os.state = OS_STATE_WAIT_REBOOT;
 		debug_os_state_transition("reboot_in", prev_state, os.state);
@@ -767,6 +771,10 @@ void reboot_in(uint32_t ms) {
 		});
 		#endif
 	}
+}
+
+void reboot_in(uint32_t ms) {
+	reboot_in(ms, REBOOT_CAUSE_RESET);
 }
 #elif !defined(OSPI)
 void handle_web_request(char *p);

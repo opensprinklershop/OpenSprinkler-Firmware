@@ -580,6 +580,7 @@ void on_ap_change_config(OTF_PARAMS_DEF) {
 	}
 }
 
+void reboot_in(uint32_t ms, uint8_t cause);
 void reboot_in(uint32_t ms);
 
 void on_ap_try_connect(OTF_PARAMS_DEF) {
@@ -594,7 +595,7 @@ void on_ap_try_connect(OTF_PARAMS_DEF) {
 		os.iopts[IOPT_WIFI_MODE] = WIFI_MODE_STA;
 		os.iopts_save();
 		DEBUG_PRINTLN(F("IP received by client, restart."));
-		reboot_in(1000);
+		reboot_in(1000, REBOOT_CAUSE_WIFIDONE);
 	}
 }
 #endif
@@ -5648,7 +5649,7 @@ void server_ieee802154_set(OTF_PARAMS_DEF) {
 	send_packet(OTF_PARAMS);
 
 	// Schedule reboot after sending the response
-	reboot_in(2000);
+	reboot_in(2000, REBOOT_CAUSE_WEB);
 	handle_return(HTML_OK);
 }
 
@@ -5707,7 +5708,7 @@ void server_zigbee_join_network(OTF_PARAMS_DEF) {
 		             connected_before ? 1 : 0,
 		             leave_requested ? 1 : 0);
 		send_packet(OTF_PARAMS);
-		reboot_in(1500);
+		reboot_in(1500, REBOOT_CAUSE_WEB);
 		handle_return(HTML_OK);
 		return;
 	}
@@ -5853,7 +5854,7 @@ void server_zigbee_leave_network(OTF_PARAMS_DEF) {
 	send_packet(OTF_PARAMS);
 
 	if (requested && do_reboot) {
-		reboot_in(1500);
+		reboot_in(1500, REBOOT_CAUSE_WEB);
 	}
 	handle_return(HTML_OK);
 }
@@ -6444,38 +6445,22 @@ static int find_url_handler_index(char k0, char k1) {
 	return -1;
 }
 
-static void log_api_timing(const char* path, unsigned long started_ms, int result_code) {
-	const unsigned long elapsed = millis() - started_ms;
-	if (elapsed > 200) {
-		DEBUG_PRINT(F("[API-TIMING] "));
-		DEBUG_PRINT(path ? path : "?");
-		DEBUG_PRINT(F(" "));
-		DEBUG_PRINT(elapsed);
-		DEBUG_PRINT(F("ms result="));
-		DEBUG_PRINTLN(result_code);
-	}	
-}
-
 #if defined(USE_OTF)
 void server_api_dispatch(OTF_PARAMS_DEF) {
 	const char* path = req.getPath();
-	const unsigned long started_ms = millis();
 
 	if (!path || path[0] != '/' || path[1] == 0 || path[2] == 0) {
 		otf_send_result(OTF_PARAMS, HTML_PAGE_NOT_FOUND);
-		log_api_timing(path ? path : "?", started_ms, HTML_PAGE_NOT_FOUND);
 		return;
 	}
 
 	const int idx = find_url_handler_index(path[1], path[2]);
 	if (idx < 0) {
 		otf_send_result(OTF_PARAMS, HTML_PAGE_NOT_FOUND);
-		log_api_timing(path, started_ms, HTML_PAGE_NOT_FOUND);
 		return;
 	}
 
 	(urls[idx])(OTF_PARAMS);
-	log_api_timing(path, started_ms, HTML_OK);
 }
 #endif
 
@@ -6759,7 +6744,6 @@ void initialize_otf() {
 // This funtion is only used for non-OTF platforms
 void handle_web_request(char *p) {
 	rewind_ether_buffer();
-	const unsigned long started_ms = millis();
 
 	// assume this is a GET request
 	// GET /xx?xxxx
@@ -6769,7 +6753,6 @@ void handle_web_request(char *p) {
 	if(com[0]==' ') {
 		server_home();  // home page handler
 		send_packet();
-		log_api_timing("/", started_ms, HTML_OK);
 		m_client->stop();
 	} else {
 		char path[4] = {'/', com[0], com[1], 0};
@@ -6810,7 +6793,6 @@ void handle_web_request(char *p) {
 				}
 			}
 			if (ret == -1) {
-				log_api_timing(path, started_ms, ret);
 				if (m_client)
 					m_client->stop();
 				return;
@@ -6826,12 +6808,10 @@ void handle_web_request(char *p) {
 				print_header();
 				bfill.emit_p(PSTR("{\"result\":$D}"), ret);
 			}
-			log_api_timing(path, started_ms, ret);
 		} else {
 			// no server funtion found
 			print_header();
 			bfill.emit_p(PSTR("{\"result\":$D}"), HTML_PAGE_NOT_FOUND);
-			log_api_timing(path, started_ms, HTML_PAGE_NOT_FOUND);
 		}
 		send_packet();
 		m_client->stop();
