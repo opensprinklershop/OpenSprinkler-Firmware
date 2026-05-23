@@ -364,6 +364,14 @@ public:
     static void updateProfileInfo(uint64_t ieee_addr, const char* manufacturer, const char* model, const char* vendor);
 };
 
+bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon);
+bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon);
+
+#else // ESP32C5 && OS_ENABLE_ZIGBEE
+
+inline bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
+inline bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) { return false; }
+
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE
 
 #endif // _SENSOR_ZIGBEE_H

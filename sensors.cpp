@@ -74,6 +74,9 @@
 
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   #include "sensor_fyta.h"
+#if defined(ESP32)
+  #include "sensor_gardena.h"
+#endif
 #endif
 
 #include "sensor_group.h"
@@ -617,6 +620,9 @@ void sensor_api_connect() {
   sensor_mqtt_init();
   // DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
   fyta_check_opts();
+  #if defined(ESP32)
+  gardena_check_opts();
+  #endif
   #endif
 
   // BLE + Zigbee: handled by sensor_radio_early_init() at boot (non-Matter)
@@ -628,7 +634,7 @@ void sensor_api_connect() {
   apiConnected = true;
 }
 // sensor_api_connect() initializes all network-dependent sensor subsystems
-// (MQTT, FYTA, Zigbee, BLE) once the device is connected in WiFi STA mode
+// (MQTT, FYTA, Gardena, Zigbee, BLE) once the device is connected in WiFi STA mode
 // and the required delay after Matter init has elapsed.
 
 /**
@@ -924,6 +930,11 @@ static void sensor_trend_init_from_log(SensorBase *sensor) {
 
 void sensor_load() {
   // DEBUG_PRINTLN(F("sensor_load"));
+  
+  // Clean up existing map to avoid memory / heap leaks on reload
+  for (auto &kv : sensorsMap) {
+    delete kv.second;
+  }
   sensorsMap.clear();
   current_sensor = NULL;
 
@@ -1845,6 +1856,13 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
       FytaSensor *s = new FytaSensor(type);
       return s;
     }
+#if defined(ESP32)
+    case SENSOR_GARDENA_MOISTURE:
+    case SENSOR_GARDENA_TEMPERATURE: {
+      GardenaSensor *s = new GardenaSensor(type);
+      return s;
+    }
+#endif
     #endif
 
     // Analog Sensor Board (ASB) sensors
@@ -2574,6 +2592,11 @@ unsigned char getSensorUnitId(int type) {
     // FYTA
     case SENSOR_FYTA_MOISTURE:     return UNIT_PERCENT;
     case SENSOR_FYTA_TEMPERATURE:  return UNIT_DEGREE;
+  #if defined(ESP32)
+    // Gardena
+    case SENSOR_GARDENA_MOISTURE:  return UNIT_PERCENT;
+    case SENSOR_GARDENA_TEMPERATURE:return UNIT_DEGREE;
+  #endif
     // Weather
     case SENSOR_WEATHER_TEMP_F:    return UNIT_FAHRENHEIT;
     case SENSOR_WEATHER_TEMP_C:    return UNIT_DEGREE;

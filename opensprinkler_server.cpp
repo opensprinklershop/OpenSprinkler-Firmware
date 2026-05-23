@@ -35,6 +35,9 @@
 #include "osinfluxdb.h"
 #include "ArduinoJson.hpp"
 #include "sensor_fyta.h"
+#if defined(ESP32)
+#include "sensor_gardena.h"
+#endif
 #if defined(USE_OTF)
 #include "mcp_server.h"
 #endif
@@ -893,6 +896,10 @@ void server_change_stations(OTF_PARAMS_DEF) {
 				urlDecode(tmp_buffer+1); // decode the string for OS_AVR
 				#endif
 				if (strlen(tmp_buffer+1) > sizeof(HTTPStationData)) {
+					handle_return(HTML_DATA_OUTOFBOUND);
+				}
+			} else if (tmp_buffer[0] == STN_TYPE_ZIGBEE) {
+				if (strlen(tmp_buffer+1) > STATION_SPECIAL_DATA_SIZE) {
 					handle_return(HTML_DATA_OUTOFBOUND);
 				}
 			}
@@ -2079,6 +2086,19 @@ void server_change_options(OTF_PARAMS_DEF)
 		os.sopt_save(SOPT_FYTA_OPTS, tmp_buffer);
 	}
 
+    if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("gardena"), true, &keyfound)) {
+	#if defined(ESP32)
+		#if !defined(USE_OTF)
+		urlDecode(tmp_buffer);
+		#endif
+		DEBUG_PRINTLN(tmp_buffer);
+		os.sopt_save(SOPT_GARDENA_OPTS, tmp_buffer);
+	} else if (keyfound) {
+		tmp_buffer[0]=0;
+		os.sopt_save(SOPT_GARDENA_OPTS, tmp_buffer);
+	#endif
+	}
+
 	// if not using NTP and manually setting time
 	if (!os.iopts[IOPT_USE_NTP] && findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ttt"), true)) {
 #if defined(ARDUINO)
@@ -2750,17 +2770,17 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 	HTTPClient http;
 	int httpCode = 0;
 	bool opened = false;
+	WiFiClientSecure client_secure;
+	WiFiClient client_plain;
 
 	if (url.startsWith("https://")) {
-		WiFiClientSecure client;
-		client.setInsecure();
-		if (http.begin(client, url)) {
+		client_secure.setInsecure();
+		if (http.begin(client_secure, url)) {
 			httpCode = http.GET();
 			opened = true;
 		}
 	} else {
-		WiFiClient client;
-		if (http.begin(client, url)) {
+		if (http.begin(client_plain, url)) {
 			httpCode = http.GET();
 			opened = true;
 		}
@@ -2789,22 +2809,26 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 		return;
 	}
 
-	esp_err_t err = esp_partition_erase_range(part, 0, part->size);
-	if (err != ESP_OK) {
+	size_t part_size = part->size;
+	uint8_t *download_buf = (uint8_t *)heap_caps_malloc(part_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if (!download_buf) {
+		download_buf = (uint8_t *)malloc(part_size);
+	}
+	if (!download_buf) {
 		http.end();
-		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"erase failed\",\"esp\":$D}"), (int)err);
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"out of memory\"}"));
 		handle_return(HTML_OK);
 		return;
 	}
 
-	uint8_t buf[1024];
-	size_t written = 0;
+	size_t bytes_received = 0;
 	unsigned long deadline = millis() + 60000UL;
 
 	while (http.connected() || stream->available()) {
 		int avail = stream->available();
 		if (avail <= 0) {
 			if ((long)(millis() - deadline) > 0) {
+				free(download_buf);
 				http.end();
 				bfill.emit_p(PSTR("{\"result\":0,\"error\":\"download timeout\"}"));
 				handle_return(HTML_OK);
@@ -2815,40 +2839,60 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 		}
 
 		int toRead = avail;
-		if (toRead > (int)sizeof(buf)) toRead = sizeof(buf);
-		if (written + (size_t)toRead > part->size) {
+		if (toRead > 1024) toRead = 1024;
+		if (bytes_received + (size_t)toRead > part_size) {
+			free(download_buf);
 			http.end();
 			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"partition overflow\"}"));
 			handle_return(HTML_OK);
 			return;
 		}
 
-		int n = stream->readBytes((char*)buf, toRead);
+		int n = stream->readBytes((char*)(download_buf + bytes_received), toRead);
 		if (n <= 0) continue;
 
-		err = esp_partition_write(part, written, buf, (size_t)n);
-		if (err != ESP_OK) {
-			http.end();
-			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"write failed\",\"esp\":$D}"), (int)err);
-			handle_return(HTML_OK);
-			return;
-		}
-
-		written += (size_t)n;
+		bytes_received += (size_t)n;
 		deadline = millis() + 60000UL;
 
-		if (contentLen > 0 && written >= (size_t)contentLen) break;
+		if (contentLen > 0 && bytes_received >= (size_t)contentLen) break;
 	}
 
 	http.end();
 
-	if (written == 0) {
+	if (bytes_received == 0) {
+		free(download_buf);
 		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"empty download\"}"));
 		handle_return(HTML_OK);
 		return;
 	}
 
-	bfill.emit_p(PSTR("{\"result\":1,\"written\":$D}"), (int)written);
+	// Pad the written size to a multiple of 4 bytes for aligned esp_partition_write
+	size_t write_size = (bytes_received + 3) & ~3;
+	if (write_size > part_size) {
+		write_size = part_size;
+	}
+	for (size_t i = bytes_received; i < write_size; ++i) {
+		download_buf[i] = 0xFF;
+	}
+
+	esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+	if (err != ESP_OK) {
+		free(download_buf);
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"erase failed\",\"esp\":$D}"), (int)err);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	err = esp_partition_write(part, 0, download_buf, write_size);
+	free(download_buf);
+
+	if (err != ESP_OK) {
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"write failed\",\"esp\":$D}"), (int)err);
+		handle_return(HTML_OK);
+		return;
+	}
+
+	bfill.emit_p(PSTR("{\"result\":1,\"written\":$D}"), (int)bytes_received);
 	handle_return(HTML_OK);
 }
 #endif
@@ -4326,6 +4370,59 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 	DEBUG_PRINTLN(F("server_fyta_query_plants done"));
 }
+
+#if defined(ESP32)
+void server_gardena_get_credentials(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+#endif
+
+	JsonDocument doc;
+	DeserializationError error = deserializeJson(doc, os.sopt_load(SOPT_GARDENA_OPTS));
+	if (error || !doc.is<JsonObject>()) {
+		strcpy(tmp_buffer, "{\"api_key\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"refresh_token\":\"\",\"access_token\":\"\",\"location_id\":\"\"}");
+		os.sopt_save(SOPT_GARDENA_OPTS, tmp_buffer);
+	}
+
+	bfill.emit_p(PSTR("{"));
+	bfill.emit_p(PSTR("\"gardena\":$O"), SOPT_GARDENA_OPTS);
+	bfill.emit_p(PSTR("}"));
+	handle_return(HTML_OK);
+}
+
+void server_gardena_query_locations(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+#endif
+
+	GardenaApi gardenaapi(os.sopt_load(SOPT_GARDENA_OPTS));
+	JsonDocument locations;
+	JsonDocument out;
+	if (!gardenaapi.getLocationList(locations)) {
+		bfill.emit_p(PSTR("{\"error\":\"location list unavailable\",\"locations\":[]}"));
+		handle_return(HTML_OK);
+		return;
+	}
+
+	JsonArray result = out["locations"].to<JsonArray>();
+	JsonArrayConst data = locations["data"].as<JsonArrayConst>();
+	if (!data.isNull()) {
+		for (JsonVariantConst variant : data) {
+			JsonObjectConst item = variant.as<JsonObjectConst>();
+			JsonObject entry = result.createNestedObject();
+			entry["id"] = item["id"] | "";
+			entry["name"] = item["attributes"]["name"] | "";
+		}
+	}
+
+	bfill.emit_p(PSTR("$O"), out);
+	handle_return(HTML_OK);
+}
+#endif
 #endif
 
 /**
@@ -4880,6 +4977,10 @@ static const int sensor_types[] = {
     SENSOR_FYTA_MOISTURE,
     SENSOR_FYTA_TEMPERATURE,
 #endif
+#if defined(ESP32)
+	SENSOR_GARDENA_MOISTURE,
+	SENSOR_GARDENA_TEMPERATURE,
+#endif
 	SENSOR_MQTT,
 	SENSOR_REMOTE,
 	SENSOR_WEATHER_TEMP_F,
@@ -4944,6 +5045,10 @@ static const char* sensor_names[] = {
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 	"FYTA moisture sensor",
 	"FYTA temperature sensor",
+#endif
+#if defined(ESP32)
+	"Gardena moisture sensor",
+	"Gardena temperature sensor",
 #endif
 
 	"MQTT subscription",
@@ -6428,9 +6533,11 @@ URLHandler urls[] = {
 #if defined(ESP32) || defined(ESP8266)
 	server_backup_get, // ub
 #endif
-#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+#if defined(ESP32)
 	server_fyta_query_plants, // fy
 	server_fyta_get_credentials, //fc
+	server_gardena_query_locations, // gl
+	server_gardena_get_credentials, // ga
 #endif
 	//server_fill_files,
 };

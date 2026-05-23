@@ -881,6 +881,23 @@ void do_loop()
 
 	ulong boot_elapsed = millis() - boot_time_ms;
 
+#if defined(ESP32) && defined(OS_ENABLE_ZIGBEE)
+	static bool checked_zigbee_gw_fallback = false;
+	if (!checked_zigbee_gw_fallback && boot_elapsed >= 15000) {
+		checked_zigbee_gw_fallback = true;
+		if (ieee802154_is_zigbee_gw()) {
+			if (!useEth || !eth.linkUp()) {
+				DEBUG_PRINTLN(F("[ZIGBEE] Gateway mode started but no Ethernet connection is available! Fallback to Zigbee Client..."));
+				IEEE802154Mode fallback_mode = IEEE802154Mode::IEEE_ZIGBEE_CLIENT;
+				IEEE802154BootVariant fallback_boot = ieee802154_boot_variant_for_mode(fallback_mode);
+				ieee802154_select_otf_boot_variant(fallback_boot);
+				ieee802154_save_config(fallback_mode, fallback_boot);
+				reboot_in(2000, REBOOT_CAUSE_NETWORK_FAIL);
+			}
+		}
+	}
+#endif
+
 	// sensor_api_connect: runs once after network is ready.
 	// Matter mode: wait 15s after Matter init (BLE/Zigbee managed by Matter).
 	// Non-Matter: BLE+Zigbee already initialized via sensor_radio_early_init(),
@@ -1877,6 +1894,13 @@ void check_weather() {
 	if (os.status.program_busy) return;
 
 	if (!os.network_connected()) return;
+
+	// Do not check weather if NTP is enabled but system time is not yet synced
+	#if defined(ARDUINO)
+	if (os.iopts[IOPT_USE_NTP] && (time(NULL) < 1704067200UL)) {
+		return;
+	}
+	#endif
 
 	// Delay first weather check after boot to ensure network stack is fully ready
 	// This is especially important for Zigbee builds where lwIP needs time to stabilize

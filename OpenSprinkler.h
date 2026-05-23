@@ -249,6 +249,15 @@ struct ModbusStationData {
 	unsigned char data_off[4];
 };
 
+/** Zigbee Station data structures - Must fit in STATION_SPECIAL_DATA_SIZE */
+struct ZigbeeStationData {
+	char device_ieee[16];   // IEEE address stored as 16-character hex string
+	char endpoint[2];       // Endpoint stored as 2-character hex string
+	char use_tuya[1];       // 1 = Tuya custom DP, 0 = Standard ZCL On/Off
+	char tuya_dp[2];        // Tuya DP ID stored as 2-character hex string
+	char reserved[15];      // reserved/padding (matches 36 bytes)
+};
+
 /** Volatile controller status bits */
 struct ConStatus {
 	unsigned char enabled:1;         // operation enable (when set, controller operation is enabled)
@@ -390,6 +399,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void switch_gpiostation(GPIOStationData *data, bool turnon); // switch gpio station
 	static void switch_httpstation(HTTPStationData *data, bool turnon, bool usessl=false); // switch http station
 	static void switch_modbusStation(ModbusStationData *data, bool turnon); // switch RS485 station
+	static void switch_zigbeestation(ZigbeeStationData *data, bool turnon); // switch Zigbee station
 
 	// -- options and data storeage
 	static void nvdata_load();

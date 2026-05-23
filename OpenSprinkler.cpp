@@ -31,6 +31,10 @@
 #include "ieee802154_config.h"
 
 #if defined(ESP32)
+#include "sensor_gardena.h"
+#endif
+
+#if defined(ESP32)
 #include <esp_system.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
@@ -51,6 +55,45 @@
 #include <lwip/dns.h>
 #endif
 #include "sensor_ble.h"
+#include "sensor_zigbee.h"
+
+#if defined(ESP32)
+static void switch_gardena_station(StationData *pdata, unsigned char value, uint16_t dur) {
+	GardenaApi gardenaapi(os.sopt_load(SOPT_GARDENA_OPTS));
+	JsonDocument doc;
+	JsonDocument settings;
+	DeserializationError error = deserializeJson(settings, os.sopt_load(SOPT_GARDENA_OPTS));
+	String locationId = "";
+	if (!error && settings.is<JsonObject>()) {
+		if (settings.containsKey("location_id")) {
+			locationId = settings["location_id"].as<String>();
+		} else if (settings.containsKey("locationId")) {
+			locationId = settings["locationId"].as<String>();
+		}
+	}
+	if (locationId.isEmpty()) {
+		return;
+	}
+	if (!gardenaapi.getLocationData(locationId, doc)) {
+		return;
+	}
+	JsonArrayConst valves = doc["valves"].as<JsonArrayConst>();
+	if (valves.isNull()) {
+		return;
+	}
+	unsigned long index = strtoul((const char *)pdata->sped, NULL, 0);
+	for (JsonVariantConst variant : valves) {
+		JsonObjectConst valve = variant.as<JsonObjectConst>();
+		if (!valve.isNull() && valve["id"].as<unsigned long>() == index) {
+			String serviceId = valve["serviceId"].as<String>();
+			gardenaapi.sendValveCommand(serviceId, value, dur > 0 ? dur : 60);
+			break;
+		}
+	}
+}
+#else
+static void switch_gardena_station(StationData *, unsigned char, uint16_t) {}
+#endif
 
 /** Declare static data members */
 OSMqtt OpenSprinkler::mqtt;
@@ -500,6 +543,7 @@ const char *OpenSprinkler::sopts[] = {
 	DEFAULT_EMPTY_STRING, // SOPT_STA_BSSID_CHL
 	DEFAULT_EMPTY_STRING, // SOPT_EMAIL_OPTS
 	DEFAULT_EMPTY_STRING, // SOPT_FYTA_OPTS
+	DEFAULT_EMPTY_STRING, // SOPT_GARDENA_OPTS
 };
 
 /** Weekday strings (stored in PROGMEM to reduce RAM usage) */
@@ -2472,7 +2516,15 @@ void OpenSprinkler::switch_special_station(unsigned char sid, unsigned char valu
 		case STN_TYPE_RS485:
 			switch_modbusStation((ModbusStationData *)pdata->sped, value);
 			break;
-		}
+
+		case STN_TYPE_ZIGBEE:
+			switch_zigbeestation((ZigbeeStationData *)pdata->sped, value);
+			break;
+
+		case STN_TYPE_GARDENA:
+			switch_gardena_station(pdata, value, dur);
+			break;
+	}
 	}
 }
 
@@ -3042,6 +3094,35 @@ void OpenSprinkler::switch_modbusStation(ModbusStationData *data, bool turnon) {
 
 	send_rs485_command(ip4, port, address, reg, onoff, true);
 #endif
+}
+
+void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon) {
+	// 1. Convert device_ieee (16 hex chars) to uint64_t
+	uint64_t ieee = 0;
+	for (int i = 0; i < 16; i++) {
+		char c = data->device_ieee[i];
+		ieee <<= 4;
+		if (c >= '0' && c <= '9') {
+			ieee += (c - '0');
+		} else if (c >= 'A' && c <= 'F') {
+			ieee += 10 + (c - 'A');
+		} else if (c >= 'a' && c <= 'f') {
+			ieee += 10 + (c - 'a');
+		}
+	}
+
+	// 2. Parse endpoint (2 hex chars) to uint8_t
+	uint8_t ep = (uint8_t)hex2ulong((unsigned char*)data->endpoint, sizeof(data->endpoint));
+	if (ep == 0) ep = 1; // default to endpoint 1
+
+	// 3. Process Tuya DP or standard On/Off
+	bool use_tuya = (data->use_tuya[0] == '1');
+	if (use_tuya) {
+		uint8_t dp_id = (uint8_t)hex2ulong((unsigned char*)data->tuya_dp, sizeof(data->tuya_dp));
+		sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
+	} else {
+		sensor_zigbee_send_on_off(ieee, ep, turnon);
+	}
 }
 
 /** Prepare factory reset */

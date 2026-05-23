@@ -359,13 +359,13 @@ def patch_c5_matter_sdkconfig_headers(env):
         "CONFIG_ESP_MATTER_ENABLE_OPENTHREAD",
         "CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER",
         "CONFIG_THREAD_NETWORK_ENDPOINT_ID",
-        "CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER",
     ]
     forced_values = {
         "CONFIG_CHIP_TASK_STACK_SIZE": "12288",
         "CONFIG_ENABLE_ETHERNET_TELEMETRY": "1",
         "CONFIG_ETHERNET_NETWORK_COMMISSIONING_DRIVER": "1",
         "CONFIG_ETHERNET_NETWORK_ENDPOINT_ID": "0",
+        "CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER": "1",
     }
     patched = 0
     for variant in ("qio_qspi", "dio_qspi", "qio_opi", "dio_opi"):

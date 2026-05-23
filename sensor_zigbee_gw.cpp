@@ -2099,4 +2099,105 @@ void sensor_zigbee_gw_loop() {
     }
 }
 
+bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon) {
+    if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Standard On/Off command failed: Zigbee not initialized or not connected"));
+        return false;
+    }
+    if (device_ieee == 0) return false;
+
+    esp_zb_ieee_addr_t ieee_le = {0};
+    for (int i = 0; i < 8; i++) {
+        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
+    }
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+    esp_zb_lock_release();
+
+    if (short_addr == 0xFFFF || short_addr == 0xFFFE) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Standard On/Off command failed: short addr unknown for ieee=%016llX\n"),
+                    (unsigned long long)device_ieee);
+        return false;
+    }
+
+    esp_zb_zcl_on_off_cmd_t req = {};
+    req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
+    req.zcl_basic_cmd.dst_endpoint = endpoint;
+    req.zcl_basic_cmd.src_endpoint = 10;
+    req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    req.on_off_cmd_id = turnon ? ESP_ZB_ZCL_CMD_ON_OFF_ON_ID : ESP_ZB_ZCL_CMD_ON_OFF_OFF_ID;
+
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Sending On/Off command -> short_addr=0x%04X ep=%d state=%d\n"),
+                 short_addr, endpoint, turnon);
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_on_off_cmd_req(&req);
+    esp_zb_lock_release();
+
+    return true;
+}
+
+bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
+    if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Tuya DP write failed: Zigbee not initialized or not connected"));
+        return false;
+    }
+    if (device_ieee == 0) return false;
+
+    esp_zb_ieee_addr_t ieee_le = {0};
+    for (int i = 0; i < 8; i++) {
+        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
+    }
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+    esp_zb_lock_release();
+
+    if (short_addr == 0xFFFF || short_addr == 0xFFFE) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP write failed: short addr unknown for ieee=%016llX\n"),
+                    (unsigned long long)device_ieee);
+        return false;
+    }
+
+    // Prepare Tuya data write payload
+    // Payload layout:
+    // [0..1] tuya_seq (0x0001 or any trans_id)
+    // [2] dp_number (dp_id)
+    // [3] dp_type (0x01 = boolean)
+    // [4..5] dp_length (0x0001 big-endian)
+    // [6] dp_value (0x01 or 0x00)
+    uint8_t payload[7];
+    payload[0] = 0x00;
+    payload[1] = 0x01; // sequence/transaction id
+    payload[2] = dp_id;
+    payload[3] = 0x01; // DP type Boolean
+    payload[4] = 0x00;
+    payload[5] = 0x01; // Length 1
+    payload[6] = turnon ? 0x01 : 0x00;
+
+    esp_zb_zcl_custom_cluster_cmd_req_t req = {};
+    req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
+    req.zcl_basic_cmd.dst_endpoint = endpoint;
+    req.zcl_basic_cmd.src_endpoint = 10;
+    req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    req.profile_id = ESP_ZB_AF_HA_PROFILE_ID;
+    req.cluster_id = ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC;
+    req.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    req.dis_default_resp = 1;
+    req.custom_cmd_id = 0x00; // Tuya command: set/command
+    req.data.type = ESP_ZB_ZCL_ATTR_TYPE_SET;
+    req.data.size = sizeof(payload);
+    req.data.value = payload;
+
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Sending Tuya DP set -> short_addr=0x%04X ep=%d dp=%d state=%d\n"),
+                 short_addr, endpoint, dp_id, turnon);
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_custom_cluster_cmd_req(&req);
+    esp_zb_lock_release();
+
+    return true;
+}
+
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE

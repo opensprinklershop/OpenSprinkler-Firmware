@@ -136,6 +136,9 @@ extern "C" {
 #define INDEPENDENT_SENSORS_START       60  // starting id for independent sensors
 #define SENSOR_FYTA_MOISTURE            60  // FYTA moisture sensor
 #define SENSOR_FYTA_TEMPERATURE         61  // FYTA temperature sensor
+
+#define SENSOR_GARDENA_MOISTURE         62  // Gardena soil moisture sensor
+#define SENSOR_GARDENA_TEMPERATURE      63  // Gardena temperature sensor
  
 #define SENSOR_MQTT                     90  // subscribe to a MQTT server and query a value
 

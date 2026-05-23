@@ -587,23 +587,51 @@ export function registerTools(
 
   server.tool(
     "get_sensor_log",
-    "Get sensor log data. Equivalent to /so.",
+    "Get sensor log data from /so, with proper translation of epoch times to after/before, days/hours filters, or record indices.",
     {
       nr: z.number().optional().describe("Sensor number"),
-      start: z.number().optional().describe("Start time (epoch seconds)"),
+      start: z.number().optional().describe("Log starting record index (0-based) OR start time (epoch seconds)"),
       end: z.number().optional().describe("End time (epoch seconds)"),
       hist: z.number().optional().describe("History window in days"),
+      max: z.number().optional().describe("Maximum number of records to return"),
       format: z.enum(["json", "csv"]).optional().describe("Output format"),
     },
     async (args) => {
       const params: Record<string, string | number | undefined> = {};
       if (args.nr !== undefined) params.nr = args.nr;
-      if (args.start !== undefined) params.start = args.start;
-      if (args.end !== undefined) params.end = args.end;
-      if (args.hist !== undefined) params.hist = args.hist;
-      if (args.format) params.format = args.format;
-      const data = await getClient().get("/so", params);
-      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      if (args.max !== undefined) params.max = args.max;
+
+      if (args.start !== undefined) {
+        // If start is an epoch timestamp (> 100000000), send as "after"
+        if (args.start > 100000000) {
+          params.after = args.start;
+        } else {
+          params.start = args.start;
+        }
+      }
+
+      if (args.end !== undefined) {
+        // end maps to "before" in the firmware
+        params.before = args.end;
+      }
+
+      if (args.hist !== undefined) {
+        // hist maps to "lastdays" in the firmware
+        params.lastdays = args.hist;
+      }
+
+      const isCsv = args.format === "csv";
+      if (isCsv) {
+        params.csv = 1;
+      }
+
+      if (isCsv) {
+        const data = await getClient().getRaw("/so", params);
+        return { content: [{ type: "text", text: data }] };
+      } else {
+        const data = await getClient().get("/so", params);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
     },
   );
 

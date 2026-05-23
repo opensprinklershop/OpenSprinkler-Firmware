@@ -6,6 +6,14 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0 (202)] — 2026-05-22
+
+### Added
+- **Gardena API integration (ESP32 only)**: added support for Gardena Smart Gateway connectivity, allowing remote valve control via Gardena's Cloud API. Gardena sensors (soil moisture and temperature) are now available in the UI for stations and sensor configurations. API gating ensures Gardena features are only active on ESP32 builds with firmware version 2.4.0 (202) or later.
+
+### Changed
+- **Platform-specific Gardena support**: Gardena functionality is exclusively available on ESP32 platforms; ESP8266 and OSPi builds contain no Gardena dependencies or overhead.
+
 ## [2.4.0 (201)] — 2026-05-20
 
 ### Fixed
