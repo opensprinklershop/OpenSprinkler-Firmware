@@ -174,6 +174,8 @@ enum {
 #define HTTP_RQT_CONNECT_ERR   -2
 #define HTTP_RQT_TIMEOUT       -3
 #define HTTP_RQT_EMPTY_RETURN  -4
+#define HTTP_RQT_PENDING       -5
+#define HTTP_RQT_STALE         -6
 
 /** Sensor macro defines */
 #define SENSOR_TYPE_NONE    0x00

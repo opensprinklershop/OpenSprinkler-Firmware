@@ -2803,7 +2803,27 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	} else {
 		DEBUG_PRINTLN(F("client no longer connected"));
 	}
-	memset(ether_buffer, 0, ETHER_BUFFER_SIZE);
+
+#if defined(ESP32) || defined(OSPI)
+	char *http_buffer = (char *)malloc(ETHER_BUFFER_SIZE + 1);
+	if (!http_buffer) {
+		DEBUG_PRINTLN(F("failed to allocate http request buffer"));
+		client->stop();
+		delete client;
+		#if defined(ESP8266) || defined(ESP32)
+		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
+		#endif
+		#if defined(ESP32)
+		unlock_http_request();
+		#endif
+		return HTTP_RQT_CONNECT_ERR;
+	}
+	memset(http_buffer, 0, ETHER_BUFFER_SIZE + 1);
+#else
+	char *http_buffer = ether_buffer;
+	memset(http_buffer, 0, ETHER_BUFFER_SIZE);
+#endif
+
 	uint32_t stoptime = millis()+effective_timeout;
 
 	int pos = 0;
@@ -2815,7 +2835,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		int nbytes = client->available();
 		if(nbytes>0) {
 			if(pos+nbytes>ETHER_BUFFER_SIZE) nbytes=ETHER_BUFFER_SIZE-pos; // cannot read more than buffer size
-			client->read((uint8_t*)ether_buffer+pos, nbytes);
+			client->read((uint8_t*)http_buffer+pos, nbytes);
 			pos+=nbytes;
 		} else {
 			// Yield while waiting for data: allows higher-priority FreeRTOS tasks (WiFi/TCP)
@@ -2833,23 +2853,29 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		}
 	}
 #else
-	len = client->read((uint8_t *)ether_buffer+pos, ETHER_BUFFER_SIZE);
+	len = client->read((uint8_t *)http_buffer+pos, ETHER_BUFFER_SIZE);
 	pos += len;
 
 #endif
-	ether_buffer[pos]=0; // properly end buffer with 0
+	http_buffer[pos]=0; // properly end buffer with 0
 	client->stop();
 	delete client;
 	#if defined(ESP8266) || defined(ESP32)
 	if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 	#endif
-	if(strlen(ether_buffer)==0) {
+	if(strlen(http_buffer)==0) {
+#if defined(ESP32) || defined(OSPI)
+		free(http_buffer);
+#endif
 		#if defined(ESP32)
 		unlock_http_request();
 		#endif
 		return HTTP_RQT_EMPTY_RETURN;
 	}
-	if(callback) callback(ether_buffer);
+	if(callback) callback(http_buffer);
+#if defined(ESP32) || defined(OSPI)
+	free(http_buffer);
+#endif
 	#if defined(ESP32)
 	unlock_http_request();
 	#endif

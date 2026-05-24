@@ -2744,7 +2744,7 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	const char *default_url = "https://opensprinklershop.de/upgrade/matter_kvs.bin";
+	const char *default_url = "https://ui.opensprinklershop.de/upgrade/matter_kvs.bin";
 	String url(default_url);
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("u"), true) && tmp_buffer[0]) {
 		url = String(tmp_buffer);
@@ -4379,6 +4379,13 @@ void server_gardena_get_credentials(OTF_PARAMS_DEF) {
 	char *p = get_buffer;
 #endif
 
+#if defined(USE_OTF)
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
 	JsonDocument doc;
 	DeserializationError error = deserializeJson(doc, os.sopt_load(SOPT_GARDENA_OPTS));
 	if (error || !doc.is<JsonObject>()) {
@@ -4399,11 +4406,18 @@ void server_gardena_query_locations(OTF_PARAMS_DEF) {
 	char *p = get_buffer;
 #endif
 
+#if defined(USE_OTF)
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
 	GardenaApi gardenaapi(os.sopt_load(SOPT_GARDENA_OPTS));
 	JsonDocument locations;
 	JsonDocument out;
 	if (!gardenaapi.getLocationList(locations)) {
-		bfill.emit_p(PSTR("{\"error\":\"location list unavailable\",\"locations\":[]}"));
+		bfill.emit_p(PSTR("{\"error\":\"location list unavailable\",\"locations\":[],\"sensors\":[],\"valves\":[]}"));
 		handle_return(HTML_OK);
 		return;
 	}
@@ -4416,6 +4430,34 @@ void server_gardena_query_locations(OTF_PARAMS_DEF) {
 			JsonObject entry = result.createNestedObject();
 			entry["id"] = item["id"] | "";
 			entry["name"] = item["attributes"]["name"] | "";
+		}
+	}
+
+	// Also retrieve list of sensors and valves either from query parameter or stored settings
+	String locationId = "";
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("location_id"), true)) {
+		locationId = tmp_buffer;
+	} else {
+		JsonDocument settings;
+		DeserializationError error = deserializeJson(settings, os.sopt_load(SOPT_GARDENA_OPTS));
+		if (!error && settings.is<JsonObject>()) {
+			if (settings.containsKey("location_id")) {
+				locationId = settings["location_id"].as<String>();
+			} else if (settings.containsKey("locationId")) {
+				locationId = settings["locationId"].as<String>();
+			}
+		}
+	}
+
+	if (locationId.isEmpty() && !result.isNull() && result.size() > 0) {
+		locationId = result[0]["id"].as<String>();
+	}
+
+	if (!locationId.isEmpty()) {
+		JsonDocument locData;
+		if (gardenaapi.getLocationData(locationId, locData)) {
+			out["sensors"] = locData["sensors"];
+			out["valves"] = locData["valves"];
 		}
 	}
 
@@ -6434,7 +6476,12 @@ const char _url_keys[] PROGMEM =
 #if defined(ESP32) || defined(ESP8266)
 	"ub"  // OTA backup: get config backup JSON
 #endif
-#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+#if defined(ESP32)
+	"fy"
+	"fc"
+	"gl"
+	"ga"
+#elif defined(ESP8266) || defined(OSPI)
 	"fy"
 	"fc"
 #endif
@@ -6538,6 +6585,9 @@ URLHandler urls[] = {
 	server_fyta_get_credentials, //fc
 	server_gardena_query_locations, // gl
 	server_gardena_get_credentials, // ga
+#elif defined(ESP8266) || defined(OSPI)
+	server_fyta_query_plants, // fy
+	server_fyta_get_credentials, //fc
 #endif
 	//server_fill_files,
 };

@@ -36,7 +36,7 @@ unsigned char md_scales[MAX_N_MD_SCALES];
 unsigned char md_N = 0;
 unsigned char mda = 0;
 char wt_rawData[TMP_BUFFER_SIZE];
-int wt_errCode = HTTP_RQT_NOT_RECEIVED;
+int wt_errCode = HTTP_RQT_PENDING;
 unsigned char wt_monthly[12] = {100,100,100,100,100,100,100,100,100,100,100,100};
 unsigned char wt_restricted = 0;
 

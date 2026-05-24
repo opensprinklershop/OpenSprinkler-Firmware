@@ -1921,7 +1921,7 @@ void check_weather() {
 			os.iopts[IOPT_WATER_PERCENTAGE] = 100; // reset watering percentage to 100%
 			wt_restricted = 0; // reset wt_rawData, errCode, and md_scales array
 			wt_rawData[0] = 0;
-			wt_errCode = HTTP_RQT_NOT_RECEIVED;
+			wt_errCode = HTTP_RQT_STALE;
 			md_N = 0;
 		}
 	} else if (!os.checkwt_lasttime || (ntz > os.checkwt_lasttime + CHECK_WEATHER_TIMEOUT)) {

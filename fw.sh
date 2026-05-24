@@ -92,6 +92,7 @@ fi
 # ── Configuration ────────────────────────────────────────────────────────────
 DEVICE_IP="${OS_IP:-192.168.0.151}"
 PIO_BIN="platformio"
+SILENT="${SILENT:-true}"
 
 # ── OsPi remote build configuration ─────────────────────────────────────────
 # Set OSPI_PI_PASS in .env, or configure SSH key auth (ssh-copy-id)
@@ -426,8 +427,16 @@ build_ospi() {
     header "OsPi – remote build (${OSPI_PI_HOST})"
     check_ospi_conn
     ospi_push
-    info "Running build.sh on Pi …"
-    _ospi_ssh "cd '${OSPI_PI_DIR}' && ./build.sh"
+
+    local silent_flag=""
+    if [[ "${SILENT:-}" == "true" || "${SILENT:-}" == "1" ]]; then
+        silent_flag="-s"
+        info "Running build.sh on Pi (silent) …"
+    else
+        info "Running build.sh on Pi …"
+    fi
+
+    _ospi_ssh "cd '${OSPI_PI_DIR}' && ./build.sh ${silent_flag}"
     ok "OsPi build complete."
 }
 
@@ -1471,9 +1480,9 @@ entry = {
     'fw_version': int(sys.argv[1]),
     'fw_minor': int(sys.argv[2]),
     'date': sys.argv[3],
-    'zigbee_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
-    'matter_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
-    'esp8266_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
+    'zigbee_url': 'https://ui.opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
+    'matter_url': 'https://ui.opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
+    'esp8266_url': 'https://ui.opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
     'zigbee_sha256': sys.argv[5],
     'matter_sha256': sys.argv[6],
     'esp8266_sha256': sys.argv[7],
@@ -1527,13 +1536,13 @@ update_manifest() {
 {
 	"fw_version": ${OS_FW_VERSION},
 	"fw_minor": ${OS_FW_MINOR},
-	"zigbee_url": "https://opensprinklershop.de/upgrade/firmware_zigbee.bin",
-	"matter_url": "https://opensprinklershop.de/upgrade/firmware_matter.bin",
-	"esp8266_url": "https://opensprinklershop.de/upgrade/firmware_esp8266.bin",
+	"zigbee_url": "https://ui.opensprinklershop.de/upgrade/firmware_zigbee.bin",
+	"matter_url": "https://ui.opensprinklershop.de/upgrade/firmware_matter.bin",
+	"esp8266_url": "https://ui.opensprinklershop.de/upgrade/firmware_esp8266.bin",
 	"zigbee_sha256": "${zigbee_sha256}",
 	"matter_sha256": "${matter_sha256}",
 	"esp8266_sha256": "${esp8266_sha256}",
-	"versions_url": "https://opensprinklershop.de/upgrade/versions.json",
+	"versions_url": "https://ui.opensprinklershop.de/upgrade/versions.json",
 	"releases_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$releases_url"),
 	"prev_release_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$prev_release_url"),
 	"changelog": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$changelog_text")
@@ -1596,9 +1605,9 @@ entry = {
     "fw_version": fw_version,
     "fw_minor": fw_minor,
     "date": entry_date,
-    "zigbee_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_zigbee.bin",
-    "matter_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_matter.bin",
-    "esp8266_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_esp8266.bin",
+    "zigbee_url": f"https://ui.opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_zigbee.bin",
+    "matter_url": f"https://ui.opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_matter.bin",
+    "esp8266_url": f"https://ui.opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_esp8266.bin",
     "zigbee_sha256": manifest.get("zigbee_sha256", ""),
     "matter_sha256": manifest.get("matter_sha256", ""),
     "esp8266_sha256": manifest.get("esp8266_sha256", ""),
@@ -2084,6 +2093,7 @@ ${BOLD}OsPi environment variables:${NC}
   OSPI_PI_USER=<user>     OsPi SSH user    (default: pi)
   OSPI_PI_PASS=<password> OsPi SSH password (leave empty to use SSH keys)
   OSPI_PI_DIR=<path>      OsPi firmware dir (default: /home/pi/OpenSprinkler-Firmware)
+  SILENT=<true|false>     Run remote build silently on Pi target (default: true)
 
 ${BOLD}Examples:${NC}
   ./fw.sh build
