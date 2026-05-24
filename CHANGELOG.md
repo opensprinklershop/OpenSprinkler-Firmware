@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (202)] — 2026-05-25
+## [2.4.0(202)] — 2026-05-25
 
 ### Added
 - **Gardena API Integration (ESP32 only)**: added support for Gardena Smart Gateway cloud connectivity on ESP32, allowing remote valve coordination via Gardena's Cloud API. Gardena soil moisture and temperature sensors are now fully accessible in the UI.
@@ -24,14 +24,14 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **RS485 Hex Payload Crash Preventer**: added defensive padding to string boundaries during RS485 Modbus configuration parsing, resolving a runtime crash when parsing short hex buffers.
 - **Platform-specific Overheads**: optimized Gardena overheads; ESP8266 and OSPi builds contain zero Gardena libraries or memory footprints.
 
-## [2.4.0 (201)] — 2026-05-20
+## [2.4.0(201)] — 2026-05-20
 
 ### Fixed
 - **Zigbee client battery contamination**: in `zigbee_attribute_callback`, battery reports (`POWER_CONFIG/0x0021`) in client mode no longer overwrite the sensor's `last_data`. An early-exit guard now updates only `last_battery` and `last_lqi` and skips the rest of the update path, so the battery percentage can never be logged or displayed as the soil-moisture / temperature / humidity value.
 - **Tuya DP14 soil state priority**: added `dp_soil_exact_received` flag so that DP3 (exact soil moisture %) always takes priority over DP14 (categorical dry/moist/wet state) within the same Tuya report frame.
 - **Zigbee Soil battery contamination (gateway)**: in `gw_updateSensorFromReport`, battery reports (`POWER_CONFIG/0x0021` or Tuya DP 15) no longer overwrite the sensor's `last_data` / `last_native_data` / `flags.data_ok` / `last_read`. A short-circuit at the top of the function now updates only `last_battery` and `last_lqi` and returns early, so the battery percentage (50/76/100/…) can never be logged or displayed as the soil-moisture / temperature / humidity value.
 
-## [2.4.0 (200)] — 2026-05-19
+## [2.4.0(200)] — 2026-05-19
 
 ### Added
 - **Stale sensor handling**: added timeout and fallback policies so stale sensor readings can be handled predictably instead of silently influencing adjustments indefinitely
@@ -51,7 +51,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **Zigbee Tuya data handling**: cached Tuya DP reports in the gateway path to improve handling of manufacturer-specific reports
 - **ESP32-C5 OTA/update flow**: improved OTA update handling and firmware upload behavior for C5 builds
 
-## [2.4.0 (199)] — 2026-05-09
+## [2.4.0(199)] — 2026-05-09
 
 ### Fixed
 - **Group sensors restored**: fixed regression where `SENSOR_GROUP_MIN/MAX/AVG/SUM` stopped producing values after `sensor_update_groups()` had been turned into a no-op; aggregation + `data_ok` + sensor logging are active again
@@ -63,7 +63,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (198)] — 2026-05-03
+## [2.4.0(198)] — 2026-05-03
 
 ### Added
 - **UI: Sensor name heading in Analog Sensor Chart**: when opening the chart from a specific sensor (e.g. via a dashboard click), the sensor's name is now shown as a heading above the charts
@@ -77,14 +77,14 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (197)] — 2026-04-24
+## [2.4.0(197)] — 2026-04-24
 
 ### Fixed
 - **Memory leak in e-mail sender**: fixed heap corruption caused by an allocator mismatch (`strdup`/`delete[]`) in `EMailSender::setSMTPServer()` and a missing `delete[]` for temporary recipient arrays in the `send()` overloads — improves long-term stability on ESP8266
 
 ---
 
-## [2.4.0 (196)] — 2026-04-17
+## [2.4.0(196)] — 2026-04-17
 
 ### Added
 - **Valve current measurement (ESP32-C5)**: new dynamic baseline tracking and valve-only current calculation — the firmware continuously measures idle system current and subtracts it from the total when a valve is running, displaying only the solenoid current draw
@@ -100,7 +100,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 ### Fixed
 - **Baseline current no longer hardcoded**: replaced the fixed `baseline_current = 80` with a dynamic EMA-based measurement that adapts to the actual idle current of each individual board
 
-## [2.4.0 (194)] — 2026-04-06
+## [2.4.0(194)] — 2026-04-06
 
 ### Added
 - **Inverse group scheduling**: new inverted logic mode for station groups. When enabled, stations in the same group can run in parallel, while different groups run one after another; group `P` always remains sequential
@@ -117,7 +117,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **HTTPS fallback on low memory**: if there is not enough memory for SSL, requests now fall back to HTTP instead of failing outright
 - **OSPi build compatibility**: Linux build scripts now detect Debian-like and non-Debian systems more robustly
 
-## [2.4.0 (193)] — 2026-04-03
+## [2.4.0(193)] — 2026-04-03
 
 ### Added
 - **Sensor interface warnings (`/sl` API)**: new `emit_sensor_warnings()` emits a `"warnings"` array in the sensor list response; warns when configured sensor interfaces are unavailable (I2C board missing, RS485 adapter missing, MQTT disabled/disconnected, Zigbee wrong mode, BLE not available)
@@ -139,7 +139,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (187)] — 2026-03-20
+## [2.4.0(187)] — 2026-03-20
 
 ### Added
 - **ESP RainMaker integration**: new `opensprinkler_rainmaker.cpp/h` exposes irrigation zones as RainMaker Switch devices and sensor data (rain, flow, temperature, soil moisture) as RainMaker devices for Alexa & Google Home (ESP32 only, `ENABLE_RAINMAKER`) (e8a5397)
@@ -170,7 +170,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (186)] — 2026-03-15
+## [2.4.0(186)] — 2026-03-15
 
 ### Added
 - **OTA Online Update**: implemented online firmware update functionality — pull firmware directly from the upgrade server without USB (1470e9e)
