@@ -6,13 +6,23 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0 (202)] — 2026-05-22
+## [2.4.0 (202)] — 2026-05-25
 
 ### Added
-- **Gardena API integration (ESP32 only)**: added support for Gardena Smart Gateway connectivity, allowing remote valve control via Gardena's Cloud API. Gardena sensors (soil moisture and temperature) are now available in the UI for stations and sensor configurations. API gating ensures Gardena features are only active on ESP32 builds with firmware version 2.4.0 (202) or later.
+- **Gardena API Integration (ESP32 only)**: added support for Gardena Smart Gateway cloud connectivity on ESP32, allowing remote valve coordination via Gardena's Cloud API. Gardena soil moisture and temperature sensors are now fully accessible in the UI.
+- **Native Zigbee & Tuya Zone Control**: implemented direct and native control of Zigbee and Tuya zones, allowing the firmware to directly manage wireless valves, relays, smart plugs, and switches over the Zigbee/Matter networks.
+- **RS485, Zigbee & Tuya Water Meters**: added support for RS485 (Modbus), Zigbee, and Tuya-based water meters, enabling precise water consumption logging and flow sensors integration.
+- **Special Station Zone Icons**: introduced dedicated dashboard vector-style badges for specialized station zones (RS485 / Modbus, Zigbee, Gardena). These icons remain permanently visible in both active and idle states to guarantee persistent diagnostics.
+- **Gardena Credentials Assistant**: restored the comprehensive, localized "Setup Gardena Credentials" help wizard in the Analog Sensor options pane, complete with interactive guides and an automated OAuth 2.0 login hook.
 
 ### Changed
-- **Platform-specific Gardena support**: Gardena functionality is exclusively available on ESP32 platforms; ESP8266 and OSPi builds contain no Gardena dependencies or overhead.
+- **Gated Special Zone Selection**: station editor choices for Gardena and Zigbee zones are now filtered dynamically, hiding options when the target controller lacks the required hardware capabilities or runs older firmware.
+- **Improved Matter & Zigbee Detection**: optimized version and option-based runtime checks to reliably detect when Matter or Zigbee features are active on the board.
+
+### Fixed
+- **Zone Style Desynchronization**: fixed a bug where changing a zone's station type would not update the dashboard icon immediately or would revert after a device reboot. The UI now bypasses stale settings cache and calls `/je` directly.
+- **RS485 Hex Payload Crash Preventer**: added defensive padding to string boundaries during RS485 Modbus configuration parsing, resolving a runtime crash when parsing short hex buffers.
+- **Platform-specific Overheads**: optimized Gardena overheads; ESP8266 and OSPi builds contain zero Gardena libraries or memory footprints.
 
 ## [2.4.0 (201)] — 2026-05-20
 
