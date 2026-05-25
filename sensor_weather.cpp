@@ -27,6 +27,7 @@
 #include "weather.h"
 #include "sensor_remote.h"
 #include "opensprinkler_server.h"
+#include "utils.h"
 
 // Weather
 time_t last_weather_time = 0;
@@ -39,6 +40,43 @@ double current_precip = 0.0;
 double current_wind = 0.0;
 double current_eto = 0.0;
 double current_radiation = 0.0;
+
+static void sensor_weather_callback(char *buffer) {
+  peel_http_header(buffer);
+  char buf[20];
+  char *s = strstr(buffer, "\"temp\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    current_temp = atof(buf);
+  }
+  s = strstr(buffer, "\"humidity\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    current_humidity = atof(buf);
+  }
+  s = strstr(buffer, "\"precip\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    current_precip = atof(buf);
+  }
+  s = strstr(buffer, "\"wind\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    current_wind = atof(buf);
+  }
+  DEBUG_PRINTF("Weather: temp=%.1f hum=%.1f precip=%.2f wind=%.1f\n",
+               current_temp, current_humidity, current_precip, current_wind);
+}
+
+static void sensor_weather_eto_callback(char *buffer) {
+  peel_http_header(buffer);
+  char buf[20];
+  char *s = strstr(buffer, "\"eto\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    current_eto = atof(buf) * 25.4;  // convert to mm
+  }
+  s = strstr(buffer, "\"radiation\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    current_radiation = atof(buf);
+  }
+  DEBUG_PRINTF("WeatherEto: eto=%.2f radiation=%.1f\n", current_eto, current_radiation);
+}
 
 void GetSensorWeather() {
 #if defined(ESP8266) || defined(ESP32)
@@ -75,27 +113,8 @@ void GetSensorWeather() {
 
   // DEBUG_PRINTLN(F("GetSensorWeather"));
 
-  int ret = os.send_http_request(host, ether_buffer);
+  int ret = os.send_http_request(host, ether_buffer, sensor_weather_callback);
   if (ret == HTTP_RQT_SUCCESS) {
-    char buf[20];
-    char *s = strstr(ether_buffer, "\"temp\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      current_temp = atof(buf);
-    }
-    s = strstr(ether_buffer, "\"humidity\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      current_humidity = atof(buf);
-    }
-    s = strstr(ether_buffer, "\"precip\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      current_precip = atof(buf);
-    }
-    s = strstr(ether_buffer, "\"wind\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      current_wind = atof(buf);
-    }
-    DEBUG_PRINTF("Weather: temp=%.1f hum=%.1f precip=%.2f wind=%.1f\n",
-                 current_temp, current_humidity, current_precip, current_wind);
     current_weather_ok = true;
     last_weather_time = time;
   } else {
@@ -142,18 +161,8 @@ void GetSensorWeatherEto() {
 
   // DEBUG_PRINTLN(F("GetSensorWeatherEto"));
 
-  int ret = os.send_http_request(host, ether_buffer);
+  int ret = os.send_http_request(host, ether_buffer, sensor_weather_eto_callback);
   if (ret == HTTP_RQT_SUCCESS) {
-    char buf[20];
-    char *s = strstr(ether_buffer, "\"eto\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      current_eto = atof(buf) * 25.4;  // convert to mm
-    }
-    s = strstr(ether_buffer, "\"radiation\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      current_radiation = atof(buf);
-    }
-    DEBUG_PRINTF("WeatherEto: eto=%.2f radiation=%.1f\n", current_eto, current_radiation);
     current_weather_eto_ok = true;
     last_weather_time_eto = time;
   } else {

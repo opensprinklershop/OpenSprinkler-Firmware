@@ -13,7 +13,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **Native Zigbee & Tuya Zone Control**: implemented direct and native control of Zigbee and Tuya zones, allowing the firmware to directly manage wireless valves, relays, smart plugs, and switches over the Zigbee/Matter networks.
 - **RS485, Zigbee & Tuya Water Meters**: added support for RS485 (Modbus), Zigbee, and Tuya-based water meters, enabling precise water consumption logging and flow sensors integration.
 - **Special Station Zone Icons**: introduced dedicated dashboard vector-style badges for specialized station zones (RS485 / Modbus, Zigbee, Gardena). These icons remain permanently visible in both active and idle states to guarantee persistent diagnostics.
-- **Gardena Credentials Assistant**: restored the comprehensive, localized "Setup Gardena Credentials" help wizard in the Analog Sensor options pane, complete with interactive guides and an automated OAuth 2.0 login hook.
+- **Gardena Credentials Assistant**: added an comprehensive, localized "Setup Gardena Credentials" help wizard in the Analog Sensor options pane, complete with interactive guides and an automated OAuth 2.0 login hook.
 
 ### Changed
 - **Gated Special Zone Selection**: station editor choices for Gardena and Zigbee zones are now filtered dynamically, hiding options when the target controller lacks the required hardware capabilities or runs older firmware.
