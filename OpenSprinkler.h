@@ -399,7 +399,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void switch_gpiostation(GPIOStationData *data, bool turnon); // switch gpio station
 	static void switch_httpstation(HTTPStationData *data, bool turnon, bool usessl=false); // switch http station
 	static void switch_modbusStation(ModbusStationData *data, bool turnon); // switch RS485 station
-	static void switch_zigbeestation(ZigbeeStationData *data, bool turnon); // switch Zigbee station
+	static void switch_zigbeestation(ZigbeeStationData *data, bool turnon, uint8_t sid); // switch Zigbee station
 
 	// -- options and data storeage
 	static void nvdata_load();
@@ -443,10 +443,10 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void clear_all_station_bits(); // clear all station bits
 	static void apply_all_station_bits(void (*post_activation_callback)()=NULL); // apply all station bits (activate/deactive values)
 
-	static int8_t send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
-	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
-	static int8_t send_http_request(char* server_with_port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000);
-	static int8_t send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=12000);
+	static int8_t send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
+	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
+	static int8_t send_http_request(char* server_with_port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
+	static int8_t send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=12000, bool expect_response=true);
 	static void process_async_http_requests();
 	
 	#if defined(USE_OTF)

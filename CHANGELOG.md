@@ -6,6 +6,14 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(203)] — 2026-05-26
+
+### Fixed
+- **Zigbee Gateway: Newly-joined devices stayed labelled as "Unknown"** because the Basic Cluster (manufacturer 0x0004 / model 0x0005) read responses were dispatched to a handler that only cleared the pending flag but never stored the strings. `zbAttributeRead` now routes Basic Cluster string attributes through `gw_handleBasicClusterResponse`, so devices such as the GIEX GX02 single-zone valve are correctly identified after joining and surface their real manufacturer/model in `/zd` and the sensor / station editors.
+- **GX02 valve switching in zone control**: added runtime fallback in Zigbee zone switching so `_TZE200_sh1btabb|TS0601` (and already-detected Tuya devices) are controlled via Tuya DP writes even if the stored zone mode is still Standard ZCL. This fixes cases where pairing/identification worked but turning the zone on/off did not actuate the valve.
+
+---
+
 ## [2.4.0(202)] — 2026-05-25
 
 ### Added

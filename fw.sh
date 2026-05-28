@@ -9,6 +9,8 @@
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
 #   release sync-tags                    – Create missing GitHub releases for existing tags
+#   libs    [rebuild|deploy|rebuild-copy|deploy-copy]
+#                                        – Rebuild/deploy custom ESP32 Arduino libs
 #   online-deploy                        – Upload current upgrade/ tree to IONOS only
 #   generate-mfg                         – Generate Matter manufacturing data (DAC, NVS)
 #   flash-mfg                            – Flash matter_kvs partition only
@@ -16,6 +18,8 @@
 #                                          (no compilation – always uses current release)
 #   switch  [matter|zigbee|mode]         – Switch firmware variant via REST API
 #                                          (automatically reboots the device)
+#   install-ip [matter|zigbee|esp8266] [firmware.bin]
+#                                        – Upload/install firmware via device IP (REST)
 #   reset                                 – Reset/reboot device via USB (RTS/DTR)
 #
 # Usage:
@@ -37,6 +41,8 @@
 #                                      (View logs via MCP: get_monitor_log variant=zigbee)
 #   ./fw.sh release
 #   ./fw.sh release rebuild
+#   ./fw.sh libs rebuild
+#   ./fw.sh libs deploy
 #   ./fw.sh generate-mfg
 #   ./fw.sh flash-mfg
 #   ./fw.sh full-flash zigbee     -> flash pre-built bootloader + partitions + firmware (no compile)
@@ -47,6 +53,8 @@
 #   ./fw.sh switch zigbee        -> switch to ZigBee Gateway firmware
 #   ./fw.sh switch zigbee-client -> switch to ZigBee Client firmware
 #   ./fw.sh switch disabled      -> disable IEEE 802.15.4 radio
+#   OS_IP=192.168.0.59 ./fw.sh install-ip zigbee
+#   OS_IP=192.168.0.59 ./fw.sh install-ip matter /data/upgrade/firmware_matter.bin
 #
 # Environment variables (optional):
 #   OS_IP           Device IP  (default: 192.168.0.151)
@@ -143,6 +151,73 @@ _get_hash() {
         echo -n "$OS_PASSWORD" | md5sum | awk '{print $1}'
     else
         echo ""   # no password → empty hash (public endpoints)
+    fi
+}
+
+# ── Install firmware via IP (REST API) ─────────────────────────────────────
+install_ip() {
+    local variant="$1"
+    local bin_file="${2:-}"
+    local slot=""
+
+    if [[ -z "$variant" ]]; then
+        error "Usage: ./fw.sh install-ip <matter|zigbee|esp8266> [firmware.bin]"
+        exit 1
+    fi
+
+    case "$variant" in
+        zigbee) slot="ota0" ;;
+        matter) slot="ota1" ;;
+        esp8266) slot="" ;;
+        *)
+            error "Unknown variant: $variant"
+            error "Allowed: matter | zigbee | esp8266"
+            exit 1
+            ;;
+    esac
+
+    if [[ -z "$bin_file" ]]; then
+        bin_file="${UPGRADE_DIR}/firmware_${variant}.bin"
+    fi
+
+    if [[ ! -f "$bin_file" ]]; then
+        error "Firmware binary not found: $bin_file"
+        error "Usage: ./fw.sh install-ip <matter|zigbee|esp8266> [firmware.bin]"
+        exit 1
+    fi
+
+    check_device
+    local hash
+    hash=$(_get_hash)
+
+    header "Firmware-Upload via IP: $bin_file → $DEVICE_IP ($variant)"
+
+    local url="http://${DEVICE_IP}:8080/update"
+    if [[ -n "$slot" ]]; then
+        url+="?slot=${slot}"
+    fi
+
+    info "Uploading firmware (multipart/form-data) to ${url} ..."
+    local resp
+    resp=$(curl -sS -X POST --connect-timeout 10 --max-time 600 \
+        -F "pw=${hash}" \
+        -F "slot=${slot}" \
+        -F "file=@${bin_file}" \
+        "$url") || {
+        error "Upload failed: ${url}"
+        exit 1
+    }
+
+    echo "Response: $resp"
+    if echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result'); sys.exit(0 if r in (0,1,'0','1') else 1)" 2>/dev/null; then
+        ok "Firmware upload successful. Device reboot is triggered by firmware."
+        info "Firmware update in progress. Device will be unavailable for 30–60s."
+    else
+        error "Firmware upload failed."
+        local err_msg
+        err_msg=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error', d.get('result','?')))" 2>/dev/null || echo "Unknown error")
+        error "Error: ${err_msg}"
+        exit 1
     fi
 }
 
@@ -545,18 +620,18 @@ def stop(_signum, _frame):
     global running
     running = False
 
-signal.signal(signal.SIGINT, stop)
-signal.signal(signal.SIGTERM, stop)
+# signal.signal(signal.SIGINT, stop)
+# signal.signal(signal.SIGTERM, stop)
 
 ser = serial.Serial(port, baud, timeout=0.2)
-print(f"--- Reset-aware monitor on {port} | {baud} 8-N-1")
-print("--- Resetting target now to capture boot logs")
-sys.stdout.flush()
+# print(f"--- Reset-aware monitor on {port} | {baud} 8-N-1")
+# print("--- Resetting target now to capture boot logs")
+# sys.stdout.flush()
 
-ser.dtr = False
-ser.rts = True
-time.sleep(0.1)
-ser.rts = False
+# ser.dtr = False
+# ser.rts = True
+# time.sleep(0.1)
+# ser.rts = False
 
 try:
     while running:
@@ -2046,6 +2121,11 @@ ${BOLD}Actions:${NC}
                                             then deploy to IONOS
     release sync-tags                         Create missing GitHub releases for
                                                                                         existing v* tags
+    libs [rebuild|deploy|rebuild-copy|deploy-copy]
+                                                                                        Rebuild/deploy custom ESP32-C5 Arduino libs
+                                                                                        rebuild      = compile + deploy to workspace/.pio
+                                                                                        deploy       = deploy only (skip compile)
+                                                                                        *-copy       = additionally copy to ~/.platformio
   generate-mfg                              Generate Matter manufacturing data
                                             (test PAA → PAI → DAC chain + NVS binary)
   flash-mfg                                 Flash matter_kvs partition to device
@@ -2058,6 +2138,10 @@ ${BOLD}Actions:${NC}
   reset                                     Reset/reboot device via USB (RTS/DTR)
   switch <matter|zigbee|zigbee-client|disabled>
                                             Switch firmware via REST API + reboot
+    install-ip <matter|zigbee|esp8266> [firmware.bin]
+                                                                                        Install firmware via device IP.
+                                                                                        If firmware.bin is omitted, defaults to:
+                                                                                        ${UPGRADE_DIR}/firmware_<variant>.bin
   status                                    Show device status
 
 ${BOLD}Variants (build/upload/deploy):${NC}
@@ -2111,6 +2195,10 @@ ${BOLD}Examples:${NC}
   ./fw.sh switch zigbee
   ./fw.sh release
   ./fw.sh release rebuild
+    ./fw.sh libs rebuild
+    ./fw.sh libs deploy
+    ./fw.sh libs rebuild-copy
+    ./fw.sh libs deploy-copy
     ./fw.sh online-deploy
   ./fw.sh release sync-tags
   ./fw.sh generate-mfg
@@ -2122,6 +2210,8 @@ ${BOLD}Examples:${NC}
   ./fw.sh reset
   UPLOAD_PORT=/dev/ttyACM0 ./fw.sh reset
   OS_IP=192.168.0.151 OS_PASSWORD=opendoor ./fw.sh switch zigbee
+    OS_IP=192.168.0.59 ./fw.sh install-ip zigbee
+    OS_IP=192.168.0.59 ./fw.sh install-ip matter /data/upgrade/firmware_matter.bin
   OS_IP=192.168.0.86  OS_HASH=a6d82bced638de3def1e9bbb4983225c ./fw.sh status
   OSPI_PI_PASS=secret ./fw.sh build ospi
   OSPI_PI_PASS=secret ./fw.sh deploy ospi
@@ -2131,12 +2221,48 @@ ${BOLD}Prerequisites (release):${NC}
 EOF
 }
 
+run_libs() {
+    local mode="${1:-rebuild}"
+    local libs_script="${SCRIPT_DIR}/build_and_deploy_libs.sh"
+
+    if [[ ! -x "$libs_script" ]]; then
+        error "Library build script not found or not executable: $libs_script"
+        exit 1
+    fi
+
+    case "$mode" in
+        ""|all|rebuild)
+            info "Rebuilding custom ESP32-C5 Arduino libs (workspace + .pio/packages) ..."
+            "$libs_script"
+            ;;
+        deploy)
+            info "Deploying existing custom libs only (skip build) ..."
+            "$libs_script" --skip-build
+            ;;
+        rebuild-copy)
+            info "Rebuilding custom libs and copying to ~/.platformio ..."
+            "$libs_script" --copy-pio
+            ;;
+        deploy-copy)
+            info "Deploying existing custom libs and copying to ~/.platformio ..."
+            "$libs_script" --skip-build --copy-pio
+            ;;
+        *)
+            error "Unknown libs mode: $mode"
+            error "Usage: ./fw.sh libs [rebuild|deploy|rebuild-copy|deploy-copy]"
+            exit 1
+            ;;
+    esac
+}
+
 # ── Main logic ───────────────────────────────────────────────────────────────
 ACTION="${1:-help}"
 VARIANT="${2:-all}"
 MODE_ARG="${3:-}"
 
 case "$ACTION" in
+    install-ip)
+        install_ip "$VARIANT" "$MODE_ARG" ;;
     build)
         case "$VARIANT" in
             ospi)     build_ospi ;;
@@ -2310,6 +2436,11 @@ case "$ACTION" in
             all|"")   do_release full ;;
             *) error "Unknown release mode: $VARIANT (rebuild|sync-tags)"; exit 1 ;;
         esac
+        ;;
+
+    libs)
+        # Optional second argument selects libs mode.
+        run_libs "$VARIANT"
         ;;
 
     online-deploy|upload-online)

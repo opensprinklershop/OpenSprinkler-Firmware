@@ -54,6 +54,61 @@ static bool gw_zigbee_needs_nvram_reset = false;
 static std::vector<ZigbeeDeviceInfo> gw_discovered_devices;
 static constexpr size_t GW_DISCOVERED_MAX = 128;
 
+struct GwPendingSwitchCommand {
+    bool valid;
+    bool use_tuya;
+    uint64_t ieee_addr;
+    uint8_t endpoint;
+    uint8_t dp_id;
+    bool turnon;
+    uint8_t attempts;
+    unsigned long next_try_ms;
+};
+
+static GwPendingSwitchCommand gw_pending_switch = {false, false, 0, 1, 1, false, 0, 0};
+
+static void gw_queue_pending_switch(bool use_tuya, uint64_t ieee_addr, uint8_t endpoint, uint8_t dp_id, bool turnon) {
+    if (ieee_addr == 0) return;
+    gw_pending_switch.valid = true;
+    gw_pending_switch.use_tuya = use_tuya;
+    gw_pending_switch.ieee_addr = ieee_addr;
+    gw_pending_switch.endpoint = endpoint ? endpoint : 1;
+    gw_pending_switch.dp_id = dp_id ? dp_id : 1;
+    gw_pending_switch.turnon = turnon;
+    if (gw_pending_switch.attempts < 250) gw_pending_switch.attempts++;
+    gw_pending_switch.next_try_ms = millis() + 1000UL;
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Queued deferred %s command: ieee=%016llX ep=%d state=%d attempt=%d\n"),
+                 use_tuya ? "Tuya-DP" : "On/Off",
+                 (unsigned long long)ieee_addr,
+                 gw_pending_switch.endpoint,
+                 turnon ? 1 : 0,
+                 gw_pending_switch.attempts);
+}
+
+// Try to normalize a possibly stale/truncated station IEEE against runtime
+// discovered devices. This handles cases where stored station data contains a
+// shifted 64-bit value (e.g. good_ieee >> 8), which would otherwise keep
+// short-address resolution in a permanent "unknown" state.
+static bool gw_try_fix_ieee(uint64_t* ieee_addr) {
+    if (!ieee_addr || *ieee_addr == 0) return false;
+    uint64_t in = *ieee_addr;
+    for (const auto& dev : gw_discovered_devices) {
+        if (dev.ieee_addr == 0) continue;
+        if (dev.ieee_addr == in) return false; // already exact
+
+        // Common corruption pattern seen in station payloads: one-byte right
+        // shift of the IEEE value. Match both directions defensively.
+        if ((dev.ieee_addr >> 8) == in || ((in >> 8) == dev.ieee_addr)) {
+            *ieee_addr = dev.ieee_addr;
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Corrected station IEEE: %016llX -> %016llX\n"),
+                         (unsigned long long)in,
+                         (unsigned long long)*ieee_addr);
+            return true;
+        }
+    }
+    return false;
+}
+
 // Zigbee Cluster IDs
 #define ZB_ZCL_CLUSTER_ID_BASIC                     0x0000
 #define ZB_ZCL_CLUSTER_ID_POWER_CONFIG              0x0001
@@ -108,14 +163,27 @@ static std::vector<GwConfigReportRequest> gw_config_report_queue;
 static unsigned long gw_last_config_report_ms = 0;
 #define GW_CONFIG_REPORT_STAGGER_MS 600  // ms between successive configure-report sends
 
+struct GwBasicQueryRequest {
+    uint64_t ieee_addr;
+    uint16_t short_addr;
+    uint8_t endpoint;
+    uint8_t attempts;
+    unsigned long next_query_ms;
+};
+static std::vector<GwBasicQueryRequest> gw_basic_query_queue;
+#define GW_BASIC_QUERY_RETRY_MS 5000UL
+#define GW_BASIC_QUERY_MAX_ATTEMPTS 6
+
 // Tuya manufacturer-specific cluster (manuSpecificTuya)
 #define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
 
 // Tuya DP (DataPoint) command IDs within cluster 0xEF00
-#define TUYA_CMD_DATA_REQUEST   0x00  // Gateway → device (query all DPs)
-#define TUYA_CMD_DATA_RESPONSE  0x01  // Device → gateway (response to query)
-#define TUYA_CMD_DATA_REPORT    0x02  // Device → gateway (unsolicited report)
-#define TUYA_CMD_DATA_ACTIVE    0x03  // Device → gateway (requests GW to query)
+#define TUYA_CMD_DATA_REQUEST   0x00  // Gateway -> device (set one or more DPs)
+#define TUYA_CMD_DATA_RESPONSE  0x01  // Device -> gateway (legacy DP response)
+#define TUYA_CMD_DATA_REPORT    0x02  // Device -> gateway (DP report / set response)
+#define TUYA_CMD_DATA_QUERY     0x03  // Gateway -> device (query all DPs)
+#define TUYA_CMD_DATA_SEND      0x04  // Gateway -> device (alternate set-data command)
+#define TUYA_CMD_ACTIVE_STATUS  0x06  // Device -> gateway (active status DP report)
 #define TUYA_CMD_MCU_VERSION_REQ  0x10  // Device → gateway (MCU version query)
 #define TUYA_CMD_MCU_VERSION_RESP 0x11  // Gateway → device (MCU version answer)
 #define TUYA_CMD_TIME_SYNC_REQ  0x24  // Device → gateway (time sync request)
@@ -146,6 +214,50 @@ static uint16_t zigbee_report_attr_id(uint16_t attr_id) {
 
 static uint8_t tuya_report_type(uint16_t attr_id) {
     return (attr_id & TUYA_REPORT_FLAG_PRESCALED) ? (uint8_t)((attr_id & TUYA_REPORT_TYPE_MASK) >> TUYA_REPORT_TYPE_SHIFT) : 0;
+}
+
+static bool gw_is_ignorable_unmatched_tuya_dp(uint16_t dp) {
+    // These DPs are commonly emitted as valve state / meta / unit / battery
+    // channels without dedicated user sensors. Treat them as non-actionable
+    // for NO MATCH diagnostics to keep logs readable.
+    return (dp == 2   ||   // valve switch state
+            dp == 9   ||   // unit selector
+            dp == 14  ||   // battery enum/value on some Tuya sensors
+            dp == 0x65 ||  // vendor meta
+            dp == 0x66 ||  // vendor meta
+            dp == 0x6F);   // vendor meta/status
+}
+
+static uint8_t gw_hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+    if (c >= 'A' && c <= 'F') return (uint8_t)(10 + c - 'A');
+    if (c >= 'a' && c <= 'f') return (uint8_t)(10 + c - 'a');
+    return 0;
+}
+
+static uint64_t gw_parse_ieee_hex(const char* hex16) {
+    uint64_t ieee = 0;
+    if (!hex16) return 0;
+    for (uint8_t i = 0; i < 16; i++) {
+        ieee = (ieee << 4) | gw_hex_nibble(hex16[i]);
+    }
+    return ieee;
+}
+
+static uint8_t gw_parse_hex_u8(const char* hex, uint8_t len) {
+    uint8_t value = 0;
+    if (!hex) return 0;
+    while (len--) {
+        value = (uint8_t)((value << 4) | gw_hex_nibble(*hex++));
+    }
+    return value;
+}
+
+static bool gw_ieee_matches_station(uint64_t station_ieee, uint64_t report_ieee) {
+    if (station_ieee == 0 || report_ieee == 0) return false;
+    return station_ieee == report_ieee ||
+           (station_ieee >> 8) == report_ieee ||
+           (report_ieee >> 8) == station_ieee;
 }
 
 static uint32_t zigbee_battery_percent_from_report(bool is_tuya_report, uint16_t raw_attr_id, uint8_t tuya_type, int16_t configured_tuya_battery_dp, int32_t value) {
@@ -396,6 +508,159 @@ static void gw_handleBasicClusterResponse(uint16_t short_addr, const esp_zb_zcl_
     }
 }
 
+// ========== Zigbee station switch-failure verification ==========
+// When a Tuya DP write is sent to a station, the expected state (ON/OFF)
+// and a timestamp are recorded.  When the device echoes the DP back (which
+// most Tuya valves do within a few seconds), the actual value is compared.
+// A mismatch — or no echo within ZB_VERIFY_TIMEOUT_MS — triggers an MQTT
+// alert on topic  station/{sid}/alert/switch.
+
+#define ZB_VERIFY_MAX        8
+#define ZB_VERIFY_TIMEOUT_MS 10000   // 10 s without echo → failure
+
+struct ZbStationVerify {
+    uint64_t ieee;
+    uint8_t  dp_id;
+    bool     expected_on;
+    uint32_t sent_ms;
+    uint8_t  sid;
+    bool     pending;
+};
+
+static ZbStationVerify DRAM_ATTR zb_verify_table[ZB_VERIFY_MAX];
+static uint8_t DRAM_ATTR zb_station_switch_error[MAX_NUM_STATIONS];
+static uint8_t DRAM_ATTR zb_station_switch_waiting[MAX_NUM_STATIONS];
+static uint8_t DRAM_ATTR zb_station_physical_on[MAX_NUM_STATIONS];
+
+static void gw_station_switch_error_set(uint8_t sid, bool error) {
+    if (sid >= MAX_NUM_STATIONS) return;
+    zb_station_switch_error[sid] = error ? 1 : 0;
+    if (error) zb_station_switch_waiting[sid] = 0;
+}
+
+static void gw_station_switch_waiting_set(uint8_t sid, bool waiting) {
+    if (sid >= MAX_NUM_STATIONS) return;
+    zb_station_switch_waiting[sid] = waiting ? 1 : 0;
+}
+
+static void gw_station_physical_state_set(uint8_t sid, bool actual_on);
+
+static void gw_station_verify_publish_fail(uint8_t sid, bool expected_on, bool timeout) {
+    gw_station_switch_error_set(sid, true);
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Switch-fail alert: sid=%u expected_on=%d timeout=%d\n"),
+                 (unsigned)sid, expected_on ? 1 : 0, timeout ? 1 : 0);
+    if (!os.mqtt.enabled()) return;
+    if (!os.mqtt.connected()) os.mqtt.reconnect();
+    if (!os.mqtt.connected()) return;
+    char topic[48];
+    char payload[80];
+    snprintf_P(topic,   sizeof(topic),   PSTR("station/%u/alert/switch"), (unsigned)sid);
+    snprintf_P(payload, sizeof(payload), PSTR("{\"expected_on\":%d,\"timeout\":%d}"),
+               expected_on ? 1 : 0, timeout ? 1 : 0);
+    os.mqtt.publish(topic, payload);
+}
+
+// Called from gw_cache_tuya_dp_report when a Tuya DP is received.
+static void gw_station_verify_process(uint64_t ieee, uint8_t dp_id, bool actual_on) {
+
+    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+        if (!zb_verify_table[i].pending) continue;
+        if (zb_verify_table[i].ieee  != ieee)  continue;
+        if (zb_verify_table[i].dp_id != dp_id) continue;
+        bool ok = (zb_verify_table[i].expected_on == actual_on);
+        zb_verify_table[i].pending = false;
+        if (!ok) {
+            gw_station_verify_publish_fail(zb_verify_table[i].sid,
+                                           zb_verify_table[i].expected_on, false);
+        } else {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u switch confirmed: dp=%u on=%d\n"),
+                         (unsigned)zb_verify_table[i].sid, (unsigned)dp_id, actual_on ? 1 : 0);
+        }
+        return;
+    }
+}
+
+static void gw_station_physical_state_set(uint8_t sid, bool actual_on) {
+    if (sid >= os.nstations) return;
+
+    gw_station_switch_error_set(sid, false);
+    gw_station_switch_waiting_set(sid, false);
+
+    bool was_on = zb_station_physical_on[sid] != 0;
+    if (was_on == actual_on) return;
+
+    zb_station_physical_on[sid] = actual_on ? 1 : 0;
+
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u physical state from Tuya DP: on=%d\n"),
+                 (unsigned)sid, actual_on ? 1 : 0);
+}
+
+static void gw_station_status_process_tuya_dp(uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool actual_on) {
+    if (ieee == 0 || dp_id == 0 || os.nstations == 0) return;
+
+    for (uint8_t sid = 0; sid < os.nstations; sid++) {
+        if (os.get_station_type(sid) != STN_TYPE_ZIGBEE) continue;
+
+        StationData station = {};
+        os.get_station_data(sid, &station);
+        ZigbeeStationData* data = (ZigbeeStationData*)station.sped;
+
+        uint64_t station_ieee = gw_parse_ieee_hex(data->device_ieee);
+        if (!gw_ieee_matches_station(station_ieee, ieee)) continue;
+
+        uint8_t station_ep = gw_parse_hex_u8(data->endpoint, sizeof(data->endpoint));
+        if (station_ep == 0) station_ep = 1;
+        if (endpoint != 0 && station_ep != endpoint) continue;
+
+        bool use_tuya = (data->use_tuya[0] == '1');
+        uint8_t station_dp = gw_parse_hex_u8(data->tuya_dp, sizeof(data->tuya_dp));
+        if (station_dp == 0) station_dp = 1;
+
+        const char* mfr = "";
+        const char* mdl = "";
+        const char* vnd = "";
+        bool dev_is_tuya = false;
+        bool matched_device = false;
+
+        for (const auto& dev : gw_discovered_devices) {
+            if (dev.ieee_addr != ieee) continue;
+            mfr = dev.manufacturer;
+            mdl = dev.model_id;
+            vnd = dev.vendor;
+            dev_is_tuya = dev.is_tuya;
+            matched_device = true;
+            break;
+        }
+
+        if (!matched_device) {
+            SensorIterator it = sensors_iterate_begin();
+            SensorBase* sensor;
+            while ((sensor = sensors_iterate_next(it)) != NULL) {
+                if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+                ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+                if (zb->device_ieee != ieee) continue;
+                mfr = zb->zb_manufacturer;
+                mdl = zb->zb_model;
+                vnd = zb->zb_vendor;
+                matched_device = true;
+                break;
+            }
+        }
+
+        bool is_ts0601 = (strcmp(mdl, "TS0601") == 0);
+        bool gx02_by_mfr = (strstr(mfr, "sh1btabb") != NULL) || (strstr(mfr, "7ytb3h8u") != NULL);
+        bool gx02_by_vendor = (strstr(vnd, "GIEX") != NULL);
+        bool is_gx02 = is_ts0601 && (gx02_by_mfr || gx02_by_vendor);
+        if (!use_tuya && (dev_is_tuya || is_gx02)) use_tuya = true;
+        if (is_gx02) station_dp = 2;
+
+        if (!use_tuya || station_dp != dp_id) continue;
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u matched Tuya DP report: dp=%u on=%d\n"),
+                 (unsigned)sid, (unsigned)dp_id, actual_on ? 1 : 0);
+        gw_station_physical_state_set(sid, actual_on);
+    }
+}
+
 // ========== Tuya DP protocol handler (APS layer) - continued ==========
 // Tuya devices using cluster 0xEF00 send proprietary DataPoint messages
 // instead of standard ZCL attribute reports. This APS indication handler
@@ -459,10 +724,46 @@ static void gw_cache_tuya_dp_report(uint64_t ieee_addr, uint8_t src_endpoint,
                          ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC,
                          (uint16_t)dp_number,
                          value, lqi, dp_type);
+    // Keep the dashboard's Zigbee physical-state icon in sync when a valve is
+    // operated manually on the device and reports its switch DP back.
+    gw_station_status_process_tuya_dp(ieee_addr, src_endpoint, dp_number, value != 0);
+    // Check if this DP echoes a pending station switch command.
+    gw_station_verify_process(ieee_addr, dp_number, value != 0);
 }
 
-// Tuya sequence counter for outgoing commands
+// Tuya sequence counter for outgoing commands. Keep this simple and monotonic:
+// zigbee-herdsman/Z2M sends a 16-bit `seq` field here, while some ZHA Tuya
+// paths interpret the same two bytes as status=0 plus an 8-bit TSN. Starting
+// from zero keeps both interpretations valid for the common low sequence range.
 static uint16_t gw_tuya_seq = 0;
+
+static void gw_zigbee_default_response_cb(zb_cmd_type_t resp_to_cmd, esp_zb_zcl_status_t status, uint8_t endpoint, uint16_t cluster) {
+    if (cluster != ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC) return;
+    DEBUG_PRINTF(F("[ZIGBEE-GW][ZCL] Default response: cluster=0x%04X ep=%u resp_to_cmd=0x%02X status=0x%02X\n"),
+                 cluster, endpoint, (unsigned)resp_to_cmd, (unsigned)status);
+}
+
+static uint16_t gw_next_tuya_seq() {
+    uint16_t seq = gw_tuya_seq;
+    gw_tuya_seq = (uint16_t)(gw_tuya_seq + 1);
+    return seq;
+}
+
+static size_t gw_build_tuya_dp_payload(uint8_t* payload, size_t payload_size,
+                                       uint16_t seq, uint8_t dp_id, uint8_t dp_type,
+                                       const uint8_t* value, uint16_t value_len) {
+    const size_t required = 6U + value_len;
+    if (!payload || !value || payload_size < required) return 0;
+
+    payload[0] = (uint8_t)(seq >> 8);
+    payload[1] = (uint8_t)(seq & 0xFF);
+    payload[2] = dp_id;
+    payload[3] = dp_type;
+    payload[4] = (uint8_t)(value_len >> 8);
+    payload[5] = (uint8_t)(value_len & 0xFF);
+    memcpy(payload + 6, value, value_len);
+    return required;
+}
 
 /**
  * @brief Send a Tuya time sync response (cmd 0x24) to a device.
@@ -553,7 +854,7 @@ static void gw_tuya_send_mcu_version_resp(uint16_t short_addr, uint8_t dst_ep, u
 }
 
 /**
- * @brief Send a Tuya DP Query (cmd 0x00) to a device to request all datapoints.
+ * @brief Send a Tuya DP Query (cmd 0x03) to a device to request all datapoints.
  *
  * This is the "interview" that triggers Tuya devices to report their initial
  * sensor values.  Many Tuya devices will NOT spontaneously report data until
@@ -570,7 +871,7 @@ static void gw_tuya_send_dp_query(uint16_t short_addr, uint8_t dst_ep) {
     req.cluster_id = ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC;
     req.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
     req.dis_default_resp = 1;
-    req.custom_cmd_id = TUYA_CMD_DATA_REQUEST;
+    req.custom_cmd_id = TUYA_CMD_DATA_QUERY;
     req.data.type = ESP_ZB_ZCL_ATTR_TYPE_SET;
     req.data.size = 0;
     req.data.value = nullptr;
@@ -625,8 +926,8 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
     uint8_t seq_number = ind.asdu[1];
     uint8_t command_id = ind.asdu[2];
 
-    // DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] cmd=0x%02X seq=%d len=%u from 0x%04X ep=%d\n"),
-                // command_id, seq_number, ind.asdu_length, ind.src_short_addr, ind.src_endpoint);
+    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] cmd=0x%02X zcl_seq=%u len=%u from 0x%04X ep=%u fc=0x%02X\n"),
+                 command_id, seq_number, ind.asdu_length, ind.src_short_addr, ind.src_endpoint, ind.asdu[0]);
 
     // Handle Tuya time sync request (0x24)
     // Many Tuya devices send this right after joining; without a response
@@ -659,10 +960,10 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         return true;
     }
 
-    // Handle Tuya active status request (0x03)
-    // Device is asking the gateway to query its datapoints.
-    if (command_id == TUYA_CMD_DATA_ACTIVE) {
-        // DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Active DP request from 0x%04X — sending query now\n"), ind.src_short_addr);
+    // Handle Tuya data query seen from a device defensively: answer with a
+    // gateway query, matching the legacy behavior this firmware used before.
+    if (command_id == TUYA_CMD_DATA_QUERY) {
+        // DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP query from 0x%04X - sending query now\n"), ind.src_short_addr);
         // Resolve IEEE from stack and add as responsive device
         esp_zb_ieee_addr_t raw_ieee;
         if (esp_zb_ieee_address_by_short(ind.src_short_addr, raw_ieee) == ESP_OK) {
@@ -675,10 +976,12 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         return true;
     }
 
-    // Only process dataResponse (0x01) and dataReport (0x02) for DP parsing
-    if (command_id != TUYA_CMD_DATA_RESPONSE && command_id != TUYA_CMD_DATA_REPORT) {
-        // DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Unhandled command 0x%02X from 0x%04X\n"),
-                    // command_id, ind.src_short_addr);
+    // Process all known DP-bearing response/report variants.
+    if (command_id != TUYA_CMD_DATA_RESPONSE &&
+        command_id != TUYA_CMD_DATA_REPORT &&
+        command_id != TUYA_CMD_ACTIVE_STATUS) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Unhandled command 0x%02X from 0x%04X\n"),
+                command_id, ind.src_short_addr);
         return true;  // Consume — don't let ZCL stack fail on unknown Tuya commands
     }
 
@@ -718,6 +1021,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
 
     // Parse DP records starting after ZCL header (3 bytes) + Tuya seq (2 bytes) = offset 5
     uint32_t offset = 5;
+    int dps_parsed = 0;
     while (offset + 4 <= ind.asdu_length) {  // Minimum DP record: 4 bytes header
         uint8_t dp_number = ind.asdu[offset];
         uint8_t dp_type = ind.asdu[offset + 1];
@@ -754,7 +1058,12 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         gw_cache_tuya_dp_report(ieee_addr, ind.src_endpoint, dp_number, dp_value, ind.lqi, dp_type);
 
         offset += dp_len;
+        dps_parsed++;
     }
+
+    // A bare Tuya ACK without DP records only confirms protocol receipt. It is
+    // not proof that a valve actually opened or closed, so switch verification
+    // remains pending until the expected DP report arrives or times out.
 
     return true;  // Consumed — do not let ZCL stack process cluster 0xEF00
 }
@@ -1075,7 +1384,26 @@ public:
         }
 
         gw_read_pending = false;
-        
+
+        // Handle Basic Cluster responses (manufacturer 0x0004 / model 0x0005 strings)
+        // so that newly-discovered devices get a real label instead of "unknown".
+        // Must run BEFORE the generic sensor cache path which only handles
+        // numeric attribute reports.
+        if (cluster_id == ZB_ZCL_CLUSTER_ID_BASIC &&
+            (attribute->id == ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID ||
+             attribute->id == ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID)) {
+            // Ensure the device is present in the discovered list before we try
+            // to fill its manufacturer/model fields.
+            uint64_t basic_ieee = 0;
+            esp_zb_ieee_addr_t basic_raw;
+            if (esp_zb_ieee_address_by_short(src_address.u.short_addr, basic_raw) == ESP_OK) {
+                for (int i = 7; i >= 0; i--) basic_ieee = (basic_ieee << 8) | basic_raw[i];
+                if (basic_ieee) gw_add_responsive_device(src_address.u.short_addr, basic_ieee, src_endpoint);
+            }
+            gw_handleBasicClusterResponse(src_address.u.short_addr, attribute);
+            return; // Don't treat the string as a sensor value
+        }
+
         // DEBUG_PRINTF(F("[ZIGBEE-GW] >>> zbAttributeRead: cluster=0x%04X attr=0x%04X type=0x%02X src_ep=%d src_short=0x%04X\n"),
                     // cluster_id, attribute->id, attribute->data.type, src_endpoint, src_address.u.short_addr);
         
@@ -1512,6 +1840,7 @@ void sensor_zigbee_gw_start() {
     }
 
     gw_zigbee_initialized = true;
+    Zigbee.onGlobalDefaultResponse(gw_zigbee_default_response_cb);
     // DEBUG_PRINTLN(F("[ZIGBEE-GW] Zigbee Coordinator started successfully!"));
     // DEBUG_PRINTF("[ZIGBEE-GW] Zigbee.started()=%d, Zigbee.connected()=%d\n",
                 // Zigbee.started() ? 1 : 0, Zigbee.connected() ? 1 : 0);
@@ -1668,37 +1997,45 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
         if (checked_count == 0) {
             DEBUG_PRINTLN(F("[ZIGBEE-GW] ✗ WARNING: No ZigBee sensors configured! (checked empty list)"));
         } else if (!found) {
-            DEBUG_PRINTF(F("[ZIGBEE-GW] ✗ NO MATCH (checked %d ZigBee sensor%s)\n"), checked_count, checked_count == 1 ? "" : "s");
-            DEBUG_PRINTF(F("[ZIGBEE-GW]   Report detail: ieee=0x%016llX ep=%u cluster=0x%04X attr=0x%04X value=%ld%s solicited=%d\n"),
-                         (unsigned long long)report.ieee_addr,
-                         report.endpoint,
-                         report.cluster_id,
-                         zigbee_report_attr_id(report.attr_id),
-                         report.value,
-                         (report.attr_id & TUYA_REPORT_FLAG_PRESCALED) ? " (Tuya)" : "",
-                         report_solicited ? 1 : 0);
-
-            SensorIterator dbg_it = sensors_iterate_begin();
-            SensorBase* dbg_sensor;
-            bool same_ieee_found = false;
-            while ((dbg_sensor = sensors_iterate_next(dbg_it)) != NULL) {
-                if (!dbg_sensor || dbg_sensor->type != SENSOR_ZIGBEE) continue;
-                ZigbeeSensor* dbg_zb = static_cast<ZigbeeSensor*>(dbg_sensor);
-                if (report.ieee_addr == 0 || dbg_zb->device_ieee != report.ieee_addr) continue;
-                same_ieee_found = true;
-                DEBUG_PRINTF(F("[ZIGBEE-GW]   Candidate '%s': ep=%u cluster=0x%04X attr=0x%04X mfr=\"%s\" model=\"%s\" vendor=\"%s\" data_ok=%d\n"),
-                             dbg_sensor->name,
-                             dbg_zb->endpoint,
-                             dbg_zb->cluster_id,
-                             dbg_zb->attribute_id,
-                             dbg_zb->zb_manufacturer,
-                             dbg_zb->zb_model,
-                             dbg_zb->zb_vendor,
-                             dbg_zb->flags.data_ok ? 1 : 0);
+            bool suppress_nomatch = false;
+            if (report.cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC &&
+                ((report.attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0)) {
+                suppress_nomatch = gw_is_ignorable_unmatched_tuya_dp(zigbee_report_attr_id(report.attr_id));
             }
-            if (!same_ieee_found && report.ieee_addr != 0) {
-                DEBUG_PRINTF(F("[ZIGBEE-GW]   No configured ZigBee sensor bound to ieee=0x%016llX\n"),
-                             (unsigned long long)report.ieee_addr);
+
+            if (!suppress_nomatch) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW] ✗ NO MATCH (checked %d ZigBee sensor%s)\n"), checked_count, checked_count == 1 ? "" : "s");
+                DEBUG_PRINTF(F("[ZIGBEE-GW]   Report detail: ieee=0x%016llX ep=%u cluster=0x%04X attr=0x%04X value=%ld%s solicited=%d\n"),
+                             (unsigned long long)report.ieee_addr,
+                             report.endpoint,
+                             report.cluster_id,
+                             zigbee_report_attr_id(report.attr_id),
+                             report.value,
+                             (report.attr_id & TUYA_REPORT_FLAG_PRESCALED) ? " (Tuya)" : "",
+                             report_solicited ? 1 : 0);
+
+                SensorIterator dbg_it = sensors_iterate_begin();
+                SensorBase* dbg_sensor;
+                bool same_ieee_found = false;
+                while ((dbg_sensor = sensors_iterate_next(dbg_it)) != NULL) {
+                    if (!dbg_sensor || dbg_sensor->type != SENSOR_ZIGBEE) continue;
+                    ZigbeeSensor* dbg_zb = static_cast<ZigbeeSensor*>(dbg_sensor);
+                    if (report.ieee_addr == 0 || dbg_zb->device_ieee != report.ieee_addr) continue;
+                    same_ieee_found = true;
+                    DEBUG_PRINTF(F("[ZIGBEE-GW]   Candidate '%s': ep=%u cluster=0x%04X attr=0x%04X mfr=\"%s\" model=\"%s\" vendor=\"%s\" data_ok=%d\n"),
+                                 dbg_sensor->name,
+                                 dbg_zb->endpoint,
+                                 dbg_zb->cluster_id,
+                                 dbg_zb->attribute_id,
+                                 dbg_zb->zb_manufacturer,
+                                 dbg_zb->zb_model,
+                                 dbg_zb->zb_vendor,
+                                 dbg_zb->flags.data_ok ? 1 : 0);
+                }
+                if (!same_ieee_found && report.ieee_addr != 0) {
+                    DEBUG_PRINTF(F("[ZIGBEE-GW]   No configured ZigBee sensor bound to ieee=0x%016llX\n"),
+                                 (unsigned long long)report.ieee_addr);
+                }
             }
         }
         
@@ -1860,6 +2197,15 @@ void sensor_zigbee_gw_open_network(uint16_t duration) {
         }
     }
     uint8_t dur = (duration > 254) ? 254 : (uint8_t)duration;
+
+    if (dur == 0) {
+        gw_join_window_end = 0;
+        esp_zb_lock_acquire(portMAX_DELAY);
+        Zigbee.openNetwork(0);
+        esp_zb_lock_release();
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Join window CLOSED by request"));
+        return;
+    }
     // DEBUG_PRINTF("[ZIGBEE-GW] Opening network for %d seconds (permit join), started=%d connected=%d\n",
                  // dur, Zigbee.started() ? 1 : 0, Zigbee.connected() ? 1 : 0);
 
@@ -1892,8 +2238,19 @@ void sensor_zigbee_gw_open_network(uint16_t duration) {
     // DEBUG_PRINTLN(F("[ZIGBEE-GW] Network open for joining"));
 }
 
+uint16_t sensor_zigbee_gw_get_join_window_remaining() {
+    if (gw_join_window_end == 0) return 0;
+    unsigned long now = millis();
+    if ((long)(gw_join_window_end - now) <= 0) return 0;
+    unsigned long remaining_ms = gw_join_window_end - now;
+    return (uint16_t)((remaining_ms + 999UL) / 1000UL);
+}
+
 void sensor_zigbee_gw_loop() {
     if (!gw_zigbee_initialized) return;
+
+    // Check for timed-out station switch verifications.
+    sensor_zigbee_station_verify_tick();
 
     // Persist comm_mode changes that were set during report processing.
     if (gw_comm_mode_changed) {
@@ -1966,6 +2323,40 @@ void sensor_zigbee_gw_loop() {
         }
         last_connected = connected;
         gw_zigbee_connected = connected;
+    }
+
+    // Retry one deferred station command if it was queued while Zigbee was not
+    // connected (or short address was not yet known during startup/rejoin).
+    if (connected && gw_pending_switch.valid && millis() >= gw_pending_switch.next_try_ms) {
+        bool ok = false;
+        if (gw_pending_switch.use_tuya) {
+            ok = sensor_zigbee_send_tuya_dp_write(gw_pending_switch.ieee_addr,
+                                                  gw_pending_switch.endpoint,
+                                                  gw_pending_switch.dp_id,
+                                                  gw_pending_switch.turnon);
+        } else {
+            ok = sensor_zigbee_send_on_off(gw_pending_switch.ieee_addr,
+                                           gw_pending_switch.endpoint,
+                                           gw_pending_switch.turnon);
+        }
+        if (ok) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Deferred command delivered: ieee=%016llX ep=%d state=%d\n"),
+                         (unsigned long long)gw_pending_switch.ieee_addr,
+                         gw_pending_switch.endpoint,
+                         gw_pending_switch.turnon ? 1 : 0);
+            gw_pending_switch.valid = false;
+            gw_pending_switch.attempts = 0;
+        } else {
+            if (gw_pending_switch.attempts >= 30) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Deferred command dropped after %d attempts: ieee=%016llX\n"),
+                             gw_pending_switch.attempts,
+                             (unsigned long long)gw_pending_switch.ieee_addr);
+                gw_pending_switch.valid = false;
+                gw_pending_switch.attempts = 0;
+            } else {
+                gw_pending_switch.next_try_ms = millis() + 1000UL;
+            }
+        }
     }
 
     // NOTE: No idle timeout - Arduino Zigbee library does NOT support
@@ -2102,9 +2493,14 @@ void sensor_zigbee_gw_loop() {
 bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon) {
     if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
         DEBUG_PRINTLN(F("[ZIGBEE-GW] Standard On/Off command failed: Zigbee not initialized or not connected"));
+        gw_queue_pending_switch(false, device_ieee, endpoint, 0, turnon);
         return false;
     }
     if (device_ieee == 0) return false;
+
+    // Correct stale/truncated station IEEE against discovered devices before
+    // attempting short-address lookup.
+    gw_try_fix_ieee(&device_ieee);
 
     esp_zb_ieee_addr_t ieee_le = {0};
     for (int i = 0; i < 8; i++) {
@@ -2118,6 +2514,7 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
     if (short_addr == 0xFFFF || short_addr == 0xFFFE) {
         DEBUG_PRINTF(F("[ZIGBEE-GW] Standard On/Off command failed: short addr unknown for ieee=%016llX\n"),
                     (unsigned long long)device_ieee);
+        gw_queue_pending_switch(false, device_ieee, endpoint, 0, turnon);
         return false;
     }
 
@@ -2141,9 +2538,14 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
     if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
         DEBUG_PRINTLN(F("[ZIGBEE-GW] Tuya DP write failed: Zigbee not initialized or not connected"));
+        gw_queue_pending_switch(true, device_ieee, endpoint, dp_id, turnon);
         return false;
     }
     if (device_ieee == 0) return false;
+
+    // Correct stale/truncated station IEEE against discovered devices before
+    // attempting short-address lookup.
+    gw_try_fix_ieee(&device_ieee);
 
     esp_zb_ieee_addr_t ieee_le = {0};
     for (int i = 0; i < 8; i++) {
@@ -2157,24 +2559,23 @@ bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, ui
     if (short_addr == 0xFFFF || short_addr == 0xFFFE) {
         DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP write failed: short addr unknown for ieee=%016llX\n"),
                     (unsigned long long)device_ieee);
+        gw_queue_pending_switch(true, device_ieee, endpoint, dp_id, turnon);
         return false;
     }
 
-    // Prepare Tuya data write payload
-    // Payload layout:
-    // [0..1] tuya_seq (0x0001 or any trans_id)
-    // [2] dp_number (dp_id)
-    // [3] dp_type (0x01 = boolean)
-    // [4..5] dp_length (0x0001 big-endian)
-    // [6] dp_value (0x01 or 0x00)
-    uint8_t payload[7];
-    payload[0] = 0x00;
-    payload[1] = 0x01; // sequence/transaction id
-    payload[2] = dp_id;
-    payload[3] = 0x01; // DP type Boolean
-    payload[4] = 0x00;
-    payload[5] = 0x01; // Length 1
-    payload[6] = turnon ? 0x01 : 0x00;
+    // Prepare a generic Tuya dataRequest payload. This is the same logical
+    // shape used by Zigbee2MQTT's sendDataPoint* helpers and works for valves,
+    // switches, lights, and other Tuya MCU devices once their DP map is known.
+    uint8_t payload[16];
+    uint8_t bool_value[1] = { (uint8_t)(turnon ? 0x01 : 0x00) };
+    uint16_t tuya_seq = gw_next_tuya_seq();
+    size_t payload_len = gw_build_tuya_dp_payload(payload, sizeof(payload),
+                                                  tuya_seq, dp_id, TUYA_TYPE_BOOL,
+                                                  bool_value, sizeof(bool_value));
+    if (payload_len == 0) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Tuya DP write failed: payload build error"));
+        return false;
+    }
 
     esp_zb_zcl_custom_cluster_cmd_req_t req = {};
     req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
@@ -2183,21 +2584,96 @@ bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, ui
     req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
     req.profile_id = ESP_ZB_AF_HA_PROFILE_ID;
     req.cluster_id = ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC;
-    req.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    req.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV;
     req.dis_default_resp = 1;
-    req.custom_cmd_id = 0x00; // Tuya command: set/command
+    req.custom_cmd_id = TUYA_CMD_DATA_REQUEST;
     req.data.type = ESP_ZB_ZCL_ATTR_TYPE_SET;
-    req.data.size = sizeof(payload);
+    req.data.size = payload_len;
     req.data.value = payload;
 
-    DEBUG_PRINTF(F("[ZIGBEE-GW] Sending Tuya DP set -> short_addr=0x%04X ep=%d dp=%d state=%d\n"),
-                 short_addr, endpoint, dp_id, turnon);
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Sending Tuya DP set -> short_addr=0x%04X ep=%d dp=%d type=%d state=%d seq=%u dir=TO_SRV defresp=off\n"),
+                 short_addr, endpoint, dp_id, TUYA_TYPE_BOOL, turnon, (unsigned)tuya_seq);
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya payload (%u bytes): %02X %02X %02X %02X %02X %02X %02X\n"),
+                 (unsigned)payload_len,
+                 payload[0], payload[1], payload[2], payload[3],
+                 payload[4], payload[5], payload[6]);
 
     esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zcl_custom_cluster_cmd_req(&req);
+    uint8_t tsn = esp_zb_zcl_custom_cluster_cmd_req(&req);
     esp_zb_lock_release();
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP cmd dispatched, tsn=%u\n"), (unsigned)tsn);
 
     return true;
+}
+
+void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t dp_id, bool expected_on) {
+    gw_station_switch_error_set(sid, false);
+    gw_station_switch_waiting_set(sid, true);
+
+    // Update existing entry for same ieee + dp_id.
+    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+        if (zb_verify_table[i].pending &&
+            zb_verify_table[i].ieee  == ieee &&
+            zb_verify_table[i].dp_id == dp_id) {
+            zb_verify_table[i].expected_on = expected_on;
+            zb_verify_table[i].sent_ms     = millis();
+            zb_verify_table[i].sid         = sid;
+            return;
+        }
+    }
+    // Find a free slot.
+    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+        if (!zb_verify_table[i].pending) {
+            zb_verify_table[i] = {ieee, dp_id, expected_on, millis(), sid, true};
+            return;
+        }
+    }
+    // All slots full — silently skip (worst case: no alert for this switch).
+}
+
+uint8_t sensor_zigbee_station_status_code(uint8_t sid) {
+    if (sid >= MAX_NUM_STATIONS) return 0;
+    if (zb_station_switch_error[sid]) return 2;
+    if (zb_station_switch_waiting[sid]) return zb_station_physical_on[sid] ? 4 : 1;
+
+    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+        if (zb_verify_table[i].pending && zb_verify_table[i].sid == sid) {
+            return zb_station_physical_on[sid] ? 4 : 1;
+        }
+    }
+    return zb_station_physical_on[sid] ? 3 : 0;
+}
+
+void sensor_zigbee_station_clear_error(uint8_t sid) {
+    gw_station_switch_error_set(sid, false);
+    gw_station_switch_waiting_set(sid, false);
+}
+
+void sensor_zigbee_station_verify_tick() {
+    uint32_t now = millis();
+    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+        if (!zb_verify_table[i].pending) continue;
+        if (now - zb_verify_table[i].sent_ms >= ZB_VERIFY_TIMEOUT_MS) {
+            gw_station_verify_publish_fail(zb_verify_table[i].sid,
+                                           zb_verify_table[i].expected_on, true);
+            zb_verify_table[i].pending = false;
+        }
+    }
+}
+
+void sensor_zigbee_gw_force_off_all_stations() {
+    if (os.nstations == 0) return;
+
+    for (uint8_t sid = 0; sid < os.nstations; sid++) {
+        uint8_t bid = sid >> 3;
+        uint8_t s = sid & 0x07;
+        if (!(os.attrib_spe[bid] & (1 << s))) continue;
+        if (os.get_station_type(sid) != STN_TYPE_ZIGBEE) continue;
+
+        StationData* pdata = (StationData*)tmp_buffer;
+        os.get_station_data(sid, pdata);
+        os.switch_zigbeestation((ZigbeeStationData*)pdata->sped, false, sid);
+    }
 }
 
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE

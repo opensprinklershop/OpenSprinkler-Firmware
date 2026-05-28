@@ -55,6 +55,7 @@
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 #include "sensor_zigbee.h"
+#include "sensor_zigbee_gw.h"
 #endif
 
 #include "ieee802154_config.h"
@@ -2183,7 +2184,16 @@ void server_json_status_main() {
 		bfill.emit_p(PSTR("$D"), (os.station_bits[(sid>>3)]>>(sid&0x07))&1);
 		if(sid!=os.nstations-1) bfill.emit_p(PSTR(","));
 	}
-	bfill.emit_p(PSTR("],\"nstations\":$D}"), os.nstations);
+	bfill.emit_p(PSTR("]"));
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+	bfill.emit_p(PSTR(",\"zst\":["));
+	for (sid=0;sid<os.nstations;sid++) {
+		bfill.emit_p(PSTR("$D"), sensor_zigbee_station_status_code(sid));
+		if(sid!=os.nstations-1) bfill.emit_p(PSTR(","));
+	}
+	bfill.emit_p(PSTR("]"));
+#endif
+	bfill.emit_p(PSTR(",\"nstations\":$D}"), os.nstations);
 }
 
 /** Output station status */
@@ -3830,6 +3840,7 @@ void server_sensor_readnow(OTF_PARAMS_DEF) {
 
 void sensorconfig_json(OTF_PARAMS_DEF) {
 	bool first = true;
+	uint8_t batch_count = 0;
 	for (auto it = sensors_iterate_begin(); ; ) {
 		SensorBase *sensor = sensors_iterate_next(it);
 		if (!sensor) break;
@@ -3872,7 +3883,13 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
 				}
 			}
 		}
-		send_packet(OTF_PARAMS);
+		// Avoid flushing after every sensor: HTTPS/TLS suffers from many tiny
+		// packets. Flush only when buffer is almost full or after a small batch.
+		batch_count++;
+		if (bfill.avail() < 128 || batch_count >= 8) {
+			send_packet(OTF_PARAMS);
+			batch_count = 0;
+		}
 	}
 }
 
@@ -6133,10 +6150,18 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		ZigbeeDeviceInfo devices[10];
 		int count = sensor_zigbee_get_discovered_devices(devices, 10);
 
+		// Allow callers (UI sensor editor AND zone editor) to choose between
+		// "only devices already bound to a sensor" and the full discovery list.
+		// Default = full list, so the Zone editor can find a paired valve that
+		// does not yet have a sensor configured (e.g. GX02 single-zone valve).
+		bool only_registered = false;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("only_registered"), true)) {
+			only_registered = (atoi(tmp_buffer) != 0);
+		}
 		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"list\",\"devices\":["));
 		int out_count = 0;
 		for (int i = 0; i < count; i++) {
-			if (!zigbee_device_is_registered(devices[i].ieee_addr)) continue;
+			if (only_registered && !zigbee_device_is_registered(devices[i].ieee_addr)) continue;
 			enrich_device_info_from_sensor(devices[i]);
 			if (out_count > 0) bfill.emit_p(PSTR(","));
 			char ieee_str[20];
@@ -6153,6 +6178,37 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			             devices[i].device_id,
 			             devices[i].is_new ? 1 : 0);
 			out_count++;
+		}
+		// Append registered (bound) sensors that are NOT in the in-memory
+		// discovered list. After a reboot, devices typically have not re-announced
+		// yet, so /zg would be empty and the Zone editor would lose the paired
+		// device. Synthesize entries from saved sensor data.
+		{
+			SensorIterator it = sensors_iterate_begin();
+			SensorBase* s;
+			while ((s = sensors_iterate_next(it)) != NULL) {
+				if (!s || s->type != SENSOR_ZIGBEE) continue;
+				ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
+				if (zb->device_ieee == 0) continue;
+				// Skip if already emitted from the discovered list.
+				bool already = false;
+				for (int j = 0; j < count; j++) {
+					if (devices[j].ieee_addr == zb->device_ieee) { already = true; break; }
+				}
+				if (already) continue;
+				if (out_count > 0) bfill.emit_p(PSTR(","));
+				char ieee_str[20];
+				snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
+				         (unsigned long long)zb->device_ieee);
+				bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":0,\"model\":\"$S\","
+				                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":0,\"is_new\":0}"),
+				             ieee_str,
+				             zb->zb_model[0] ? zb->zb_model : "",
+				             zb->zb_manufacturer[0] ? zb->zb_manufacturer : "",
+				             zb->zb_vendor[0] ? zb->zb_vendor : "",
+				             zb->endpoint ? zb->endpoint : 1);
+				out_count++;
+			}
 		}
 		bfill.emit_p(PSTR("],\"count\":$D}"), out_count);
 	}
@@ -6228,9 +6284,10 @@ void server_zigbee_open_network(OTF_PARAMS_DEF) {
 
 	uint16_t duration = 10;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
-		duration = atoi(tmp_buffer);
-		if (duration < 1) duration = 1;
-		if (duration > 10) duration = 10;
+		int parsed = atoi(tmp_buffer);
+		if (parsed < 0) parsed = 0;
+		if (parsed > 10) parsed = 10;
+		duration = (uint16_t)parsed;
 	}
 
 	sensor_zigbee_open_network(duration);
@@ -6255,6 +6312,10 @@ void server_zigbee_clear_flags(OTF_PARAMS_DEF) {
 #endif
 
 	sensor_zigbee_clear_new_device_flags();
+	if (ieee802154_is_zigbee_gw()) {
+		// Also close permit-join window so UI scanner cleanup really ends joining.
+		sensor_zigbee_open_network(0);
+	}
 
 	bfill.emit_p(PSTR("{\"result\":1}"));
 

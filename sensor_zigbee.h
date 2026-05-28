@@ -41,6 +41,7 @@ struct ZigbeeDeviceInfo {
     uint32_t discovered_at;       // UNIX timestamp (os.now_tz()) when device was discovered during scan
     unsigned long last_rx_at_ms;  // millis() when last APS frame received (0 = never this session)
     uint8_t  silent_query_count;  // consecutive DP queries sent with no response (reset on any RX)
+    uint8_t  basic_query_attempts;// Basic Cluster requery attempts while mfr/model still empty
     char vendor[32];              // Human-readable vendor name from devices API (e.g. "GIEX")
 };
 

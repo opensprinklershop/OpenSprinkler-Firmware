@@ -50,6 +50,11 @@ void sensor_zigbee_gw_loop();
 void sensor_zigbee_gw_open_network(uint16_t duration);
 
 /**
+ * @brief Remaining gateway permit-join window in seconds
+ */
+uint16_t sensor_zigbee_gw_get_join_window_remaining();
+
+/**
  * @brief Force a factory reset of Zigbee NVRAM for gateway mode
  */
 void sensor_zigbee_gw_factory_reset();
@@ -123,6 +128,39 @@ bool sensor_zigbee_gw_configure_reporting(uint64_t device_ieee, uint8_t endpoint
  * @return true if query was sent
  */
 bool sensor_zigbee_gw_request_dp_query(uint64_t device_ieee, uint8_t endpoint);
+
+/**
+ * @brief Actively send OFF to every configured Zigbee station.
+ *
+ * Called from the global "Stop All Stations" code paths so the physical
+ * valves are guaranteed to receive the off command. Delivery is confirmed
+ * (and retried up to 4× over 10 s) by the verify/retry queue.
+ */
+void sensor_zigbee_gw_force_off_all_stations();
+
+/**
+ * @brief Register a pending switch-state verification for a Zigbee station.
+ * Called from switch_zigbeestation after each ON/OFF command is sent.
+ */
+void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t dp_id, bool expected_on);
+
+/**
+ * @brief Return the current Zigbee station switch status.
+ * 0 = confirmed off, 1 = pending while last confirmed off, 2 = switch error,
+ * 3 = confirmed on, 4 = pending while last confirmed on.
+ */
+uint8_t sensor_zigbee_station_status_code(uint8_t sid);
+
+/**
+ * @brief Clear a remembered Zigbee switch error for a station.
+ */
+void sensor_zigbee_station_clear_error(uint8_t sid);
+
+/**
+ * @brief Check for timed-out station switch verifications and publish alerts.
+ * Called from sensor_zigbee_gw_loop() on every pass.
+ */
+void sensor_zigbee_station_verify_tick();
 
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE
 #endif // _SENSOR_ZIGBEE_GW_H

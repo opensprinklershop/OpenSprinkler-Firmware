@@ -42,6 +42,9 @@
 #include "ieee802154_config.h"
 #if defined(OS_ENABLE_ZIGBEE)
 #include "sensor_zigbee.h"
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+#include "sensor_zigbee_gw.h"
+#endif
 #endif
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
@@ -2592,6 +2595,14 @@ void reset_all_stations_immediate(bool running_ones_only) {
 	os.apply_all_station_bits();
 	pd.reset_runtime();
 	pd.clear_pause();
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+	// Belt-and-suspenders: re-send OFF to every configured Zigbee station.
+	// clear_all_station_bits() already routes through switch_special_station
+	// for stations whose bit was set, but a previous send may have failed and
+	// left the physical valve open. This sweep ensures recovery; the verify
+	// queue confirms delivery and retries on mismatch.
+	sensor_zigbee_gw_force_off_all_stations();
+#endif
 }
 }
 
@@ -2617,6 +2628,12 @@ void reset_all_stations(bool running_ones_only) {
 		for(q=pd.queue;q<pd.queue+pd.nqueue;q++) {
 			q->dur = 0;
 		}
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+		// Belt-and-suspenders for the global "Stop All Stations" path: actively
+		// resend OFF to every Zigbee station so a previously-failed off frame
+		// still gets delivered. Verify queue handles confirmation/retry.
+		sensor_zigbee_gw_force_off_all_stations();
+#endif
 	}
 }
 

@@ -206,8 +206,35 @@ struct ClientBasicQueryItem {
     uint16_t short_addr;
     uint8_t  endpoint;
     unsigned long discovered_time;
+    uint8_t attempts;
 };
 static std::vector<ClientBasicQueryItem> client_basic_query_queue;
+
+static bool client_is_basic_query_queued(uint64_t ieee_addr) {
+    for (const auto& q : client_basic_query_queue) {
+        if (q.ieee_addr == ieee_addr) return true;
+    }
+    return false;
+}
+
+static void client_queue_basic_cluster_query(uint64_t ieee_addr, uint16_t short_addr, uint8_t endpoint, unsigned long delay_ms) {
+    if (ieee_addr == 0) return;
+    if (endpoint == 0) endpoint = 1;
+    for (auto& q : client_basic_query_queue) {
+        if (q.ieee_addr == ieee_addr) {
+            q.short_addr = short_addr;
+            q.endpoint = endpoint;
+            return;
+        }
+    }
+    ClientBasicQueryItem item = {};
+    item.ieee_addr = ieee_addr;
+    item.short_addr = short_addr;
+    item.endpoint = endpoint;
+    item.discovered_time = millis() - CLIENT_BASIC_QUERY_DELAY_MS + delay_ms;
+    item.attempts = 0;
+    client_basic_query_queue.push_back(item);
+}
 
 /**
  * @brief Extract a ZCL CHAR_STRING attribute into a C string buffer
@@ -492,6 +519,9 @@ static uint64_t client_resolve_ieee(uint16_t short_addr) {
             dev.short_addr = short_addr;
             dev.endpoint = 1;
             dev.is_new = true;
+            if ((dev.manufacturer[0] == '\0' || dev.model_id[0] == '\0') && !client_is_basic_query_queued(ieee64)) {
+                client_queue_basic_cluster_query(ieee64, short_addr, 1, 1000UL);
+            }
             return ieee64;
         }
     }
@@ -508,7 +538,12 @@ static uint64_t client_resolve_ieee(uint16_t short_addr) {
         client_discovered_devices.erase(client_discovered_devices.begin());
     }
     client_discovered_devices.push_back(info);
-    // DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Auto-discovered device: ieee=0x%016llX short=0x%04X\n"),
+
+    // Queue for Basic Cluster query (get manufacturer/model asynchronously).
+    // Use a short delay so the device has time to be ready for queries.
+    client_queue_basic_cluster_query(ieee64, short_addr, 1, 2000UL);
+    
+    // DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Auto-discovered device: ieee=0x%016llX short=0x%04X, queued for Basic Cluster query\n"),
                  // (unsigned long long)ieee64, short_addr);
     return ieee64;
 }
@@ -1027,9 +1062,19 @@ static void client_zigbee_loop_internal() {
                 if (client_query_basic_cluster(item.ieee_addr, item.endpoint)) {
                     // DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Basic Cluster query sent for 0x%016llX\n"),
                                  // (unsigned long long)item.ieee_addr);
+                    client_basic_query_queue.erase(client_basic_query_queue.begin());
+                } else {
+                    item.attempts++;
+                    if (item.attempts >= 6) {
+                        DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Basic Cluster query send failed for 0x%016llX after %u attempts\n"),
+                                     (unsigned long long)item.ieee_addr, item.attempts);
+                        client_basic_query_queue.erase(client_basic_query_queue.begin());
+                    } else {
+                        item.discovered_time = millis() - CLIENT_BASIC_QUERY_DELAY_MS + 5000UL;
+                        DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Basic Cluster query send failed for 0x%016llX, retry %u queued\n"),
+                                     (unsigned long long)item.ieee_addr, item.attempts);
+                    }
                 }
-                // Remove from queue regardless of success (avoid infinite retries)
-                client_basic_query_queue.erase(client_basic_query_queue.begin());
             }
         }
     }
@@ -1288,6 +1333,9 @@ bool sensor_zigbee_is_connected() {
 }
 
 uint16_t sensor_zigbee_get_join_window_remaining() {
+    if (ieee802154_get_mode() == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
+        return sensor_zigbee_gw_get_join_window_remaining();
+    }
     if (ieee802154_get_mode() != IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
         return 0;
     }
@@ -1336,6 +1384,11 @@ bool sensor_zigbee_open_network(uint16_t duration) {
         sensor_zigbee_gw_open_network(duration);
         return true;
     } else if (mode == IEEE802154Mode::IEEE_ZIGBEE_CLIENT) {
+        if (duration == 0) {
+            // Explicit close semantics are only needed for gateway mode.
+            // For client mode, just report success to keep API symmetric.
+            return true;
+        }
         return client_zigbee_start_network_steering(duration);
     }
     // DEBUG_PRINTLN(F("[ZIGBEE] open_network only available in ZIGBEE mode"));
@@ -1763,16 +1816,26 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     // Optional per-sensor Tuya DP overrides
     if (obj.containsKey(F("tuya_dp"))) {
         tuya_dp_value = obj[F("tuya_dp")].as<int16_t>();
+    } else if (obj.containsKey(F("tuya_dp_value"))) {
+        tuya_dp_value = obj[F("tuya_dp_value")].as<int16_t>();
     } else if (obj.containsKey(F("dp_value"))) {
         tuya_dp_value = obj[F("dp_value")].as<int16_t>();
+    } else if (obj.containsKey(F("dp"))) {
+        tuya_dp_value = obj[F("dp")].as<int16_t>();
     }
     if (obj.containsKey(F("tuya_dp_batt"))) {
         tuya_dp_battery = obj[F("tuya_dp_batt")].as<int16_t>();
+    } else if (obj.containsKey(F("tuya_dp_battery"))) {
+        tuya_dp_battery = obj[F("tuya_dp_battery")].as<int16_t>();
     } else if (obj.containsKey(F("dp_battery"))) {
         tuya_dp_battery = obj[F("dp_battery")].as<int16_t>();
+    } else if (obj.containsKey(F("battery_dp"))) {
+        tuya_dp_battery = obj[F("battery_dp")].as<int16_t>();
     }
     if (obj.containsKey(F("tuya_dp_unit"))) {
         tuya_dp_unit = obj[F("tuya_dp_unit")].as<int16_t>();
+    } else if (obj.containsKey(F("unit_dp"))) {
+        tuya_dp_unit = obj[F("unit_dp")].as<int16_t>();
     } else if (obj.containsKey(F("dp_unit"))) {
         tuya_dp_unit = obj[F("dp_unit")].as<int16_t>();
     }

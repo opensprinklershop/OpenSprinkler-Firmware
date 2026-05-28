@@ -56,44 +56,10 @@
 #endif
 #include "sensor_ble.h"
 #include "sensor_zigbee.h"
-
-#if defined(ESP32)
-static void switch_gardena_station(StationData *pdata, unsigned char value, uint16_t dur) {
-	GardenaApi gardenaapi(os.sopt_load(SOPT_GARDENA_OPTS));
-	JsonDocument doc;
-	JsonDocument settings;
-	DeserializationError error = deserializeJson(settings, os.sopt_load(SOPT_GARDENA_OPTS));
-	String locationId = "";
-	if (!error && settings.is<JsonObject>()) {
-		if (settings.containsKey("location_id")) {
-			locationId = settings["location_id"].as<String>();
-		} else if (settings.containsKey("locationId")) {
-			locationId = settings["locationId"].as<String>();
-		}
-	}
-	if (locationId.isEmpty()) {
-		return;
-	}
-	if (!gardenaapi.getLocationData(locationId, doc)) {
-		return;
-	}
-	JsonArrayConst valves = doc["valves"].as<JsonArrayConst>();
-	if (valves.isNull()) {
-		return;
-	}
-	unsigned long index = strtoul((const char *)pdata->sped, NULL, 0);
-	for (JsonVariantConst variant : valves) {
-		JsonObjectConst valve = variant.as<JsonObjectConst>();
-		if (!valve.isNull() && valve["id"].as<unsigned long>() == index) {
-			String serviceId = valve["serviceId"].as<String>();
-			gardenaapi.sendValveCommand(serviceId, value, dur > 0 ? dur : 60);
-			break;
-		}
-	}
-}
-#else
-static void switch_gardena_station(StationData *, unsigned char, uint16_t) {}
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+#include "sensor_zigbee_gw.h"
 #endif
+#include "special_station_handlers.h"
 
 /** Declare static data members */
 OSMqtt OpenSprinkler::mqtt;
@@ -872,6 +838,9 @@ byte OpenSprinkler::start_ether() {
 	#else
 	Network.onEvent(etherOnEvent);
 
+	wifi_mode_t save_mode = WiFi.getMode(); // make sure WiFi mode is initialized before eth.begin() to
+	WiFi.mode(WIFI_OFF); // turn off WiFi to save resources (will be re-enabled if RainMaker is enabled)
+
 	DEBUG_PRINTLN(F("W5500 initialization..."));
 	DEBUG_PRINTF("CS=%d, IRQ=%d, RST=%d\n", PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET);
 
@@ -886,6 +855,7 @@ byte OpenSprinkler::start_ether() {
 	delay(100);
 	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, 60)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
+		WiFi.mode(save_mode); // restore WiFi mode on failure
 		return 0;
 	}
 	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus)"));
@@ -1947,6 +1917,11 @@ void OpenSprinkler::apply_all_station_bits(void (*post_activation_callback)()) {
 				bid=next_sid_to_refresh>>3;
 				s=next_sid_to_refresh&0x07;
 				bool on = (station_bits[bid]>>s)&0x01;
+				#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+				if (!on && get_station_type(next_sid_to_refresh) == STN_TYPE_ZIGBEE && sensor_zigbee_station_status_code(next_sid_to_refresh) == 1) {
+					return;
+				}
+				#endif
 				uint16_t dur = 0;
 				if(on) {
 					unsigned char sqi=pd.station_qid[next_sid_to_refresh];
@@ -2404,7 +2379,7 @@ void OpenSprinkler::attribs_save() {
 			if(memcmp(&at,&at0,sizeof(StationAttrib))!=0) {
 				file_write_block(STATIONS_FILENAME, &at, (uint32_t)sid*sizeof(StationData)+offsetof(StationData, attrib), sizeof(StationAttrib)); // attribte bits are 1 byte long
 			}
-			if(attrib_spe[bid]>>s==0) {
+			if(((attrib_spe[bid] >> s) & 0x01) == 0) {
 				// if station special bit is 0, make sure to write type STANDARD
 				// only write if content has changed
 				file_read_block(STATIONS_FILENAME, &ty0, (uint32_t)sid*sizeof(StationData)+offsetof(StationData, type), 1);
@@ -2518,11 +2493,11 @@ void OpenSprinkler::switch_special_station(unsigned char sid, unsigned char valu
 			break;
 
 		case STN_TYPE_ZIGBEE:
-			switch_zigbeestation((ZigbeeStationData *)pdata->sped, value);
+			switch_zigbeestation((ZigbeeStationData *)pdata->sped, value, sid);
 			break;
 
 		case STN_TYPE_GARDENA:
-			switch_gardena_station(pdata, value, dur);
+			switch_gardena_station_handler(pdata, value, dur);
 			break;
 	}
 	}
@@ -2536,6 +2511,12 @@ void OpenSprinkler::switch_special_station(unsigned char sid, unsigned char valu
 unsigned char OpenSprinkler::set_station_bit(unsigned char sid, unsigned char value, uint16_t dur) {
 	unsigned char *data = station_bits+(sid>>3);  // pointer to the station byte
 	unsigned char mask = (unsigned char)1<<(sid&0x07); // mask
+	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+	if (sensor_zigbee_station_status_code(sid) == 2) {
+		sensor_zigbee_station_clear_error(sid);
+	}
+	#endif
+
 	if (value) {
 		if((*data)&mask) return 0;  // if bit is already set, return no change
 		else {
@@ -2627,6 +2608,18 @@ static uint16_t clamp_http_timeout(uint16_t timeout) {
 
 #if defined(ESP32)
 static SemaphoreHandle_t s_http_request_mutex = nullptr;
+static WiFiClientSecure* s_http_tls_client = nullptr;
+
+static constexpr uint32_t HTTP_DNS_CACHE_TTL_MS = 5UL * 60UL * 1000UL;
+
+struct HttpDnsCacheEntry {
+	char host[64];
+	IPAddress ip;
+	uint32_t expires_at;
+	bool valid;
+};
+
+static HttpDnsCacheEntry s_http_dns_cache = {{0}, IPAddress(), 0, false};
 
 struct AsyncHttpRequestParams {
 	char server[64];
@@ -2635,6 +2628,7 @@ struct AsyncHttpRequestParams {
 	void(*callback)(char*);
 	bool usessl;
 	uint16_t timeout;
+	bool expect_response;
 };
 
 static SemaphoreHandle_t get_http_request_mutex() {
@@ -2642,6 +2636,39 @@ static SemaphoreHandle_t get_http_request_mutex() {
 		s_http_request_mutex = xSemaphoreCreateMutex();
 	}
 	return s_http_request_mutex;
+}
+
+static WiFiClientSecure* get_shared_tls_client() {
+	if (!s_http_tls_client) {
+		s_http_tls_client = new WiFiClientSecure();
+		if (s_http_tls_client) {
+			s_http_tls_client->setInsecure();
+		}
+	}
+	return s_http_tls_client;
+}
+
+static bool resolve_host_with_cache(const char* host, IPAddress& out_ip) {
+	if (!host || !host[0]) return false;
+
+	uint32_t now = millis();
+	if (s_http_dns_cache.valid &&
+		strncmp(s_http_dns_cache.host, host, sizeof(s_http_dns_cache.host)) == 0 &&
+		(int32_t)(s_http_dns_cache.expires_at - now) > 0) {
+		out_ip = s_http_dns_cache.ip;
+		return true;
+	}
+
+	if (!WiFi.hostByName(host, out_ip)) {
+		return false;
+	}
+
+	strncpy(s_http_dns_cache.host, host, sizeof(s_http_dns_cache.host) - 1);
+	s_http_dns_cache.host[sizeof(s_http_dns_cache.host) - 1] = 0;
+	s_http_dns_cache.ip = out_ip;
+	s_http_dns_cache.expires_at = now + HTTP_DNS_CACHE_TTL_MS;
+	s_http_dns_cache.valid = true;
+	return true;
 }
 
 static bool lock_http_request() {
@@ -2657,7 +2684,7 @@ static void unlock_http_request() {
 static void send_http_request_async_task(void* arg) {
 	AsyncHttpRequestParams* req = (AsyncHttpRequestParams*)arg;
 	if (req) {
-		OpenSprinkler::send_http_request(req->server, req->port, req->request, req->callback, req->usessl, req->timeout);
+		OpenSprinkler::send_http_request(req->server, req->port, req->request, req->callback, req->usessl, req->timeout, req->expect_response);
 		if (req->request) free(req->request);
 		free(req);
 	}
@@ -2671,6 +2698,7 @@ struct AsyncHttpRequestParams {
 	void(*callback)(char*);
 	bool usessl;
 	uint16_t timeout;
+	bool expect_response;
 };
 
 static AsyncHttpRequestParams* s_http_async_pending = nullptr;
@@ -2678,8 +2706,9 @@ static AsyncHttpRequestParams* s_http_async_pending = nullptr;
 
 } // namespace
 
-int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
+int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout, bool expect_response) {
 	uint16_t effective_timeout = clamp_http_timeout(timeout);
+	bool shared_client = false;
 
 	if(server == NULL || server[0]==0 || port==0 ) { // sanity checking
 		DEBUG_PRINTLN(F("server:port is invalid!"));
@@ -2719,9 +2748,8 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		}
 	#elif defined(ESP32)
 		if(usessl) {
-			WiFiClientSecure *_c = new WiFiClientSecure();
-			_c->setInsecure();
-			client = _c;
+			client = get_shared_tls_client();
+			shared_client = (client != NULL);
 		} else {
 			client = new WiFiClient();
 		}
@@ -2751,8 +2779,18 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINT(tries);
 		DEBUG_PRINTLN(F(")"));
 		#if defined(ESP32)
-		// Connect using direct call - TCPIP locking is handled by Arduino WiFi layer
-		conn_result = client->connect(server, port);
+		if (!usessl) {
+			// Use cached DNS for command/control HTTP calls.
+			IPAddress resolved_ip;
+			if (resolve_host_with_cache(server, resolved_ip)) {
+				conn_result = client->connect(resolved_ip, port);
+			} else {
+				conn_result = client->connect(server, port);
+			}
+		} else {
+			// Keep hostname for TLS/SNI. Reused TLS object enables session resumption opportunities.
+			conn_result = client->connect(server, port);
+		}
 		if(conn_result == 1) break;
 		#else
 		if(client->connect(server, port)==1) break;
@@ -2763,7 +2801,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	if(tries==HTTP_CONNECT_NTRIES) {
 		DEBUG_PRINTLN(F("failed."));
 		client->stop();
-		delete client;
+		if (!shared_client) delete client;
 		#if defined(ESP8266) 
 		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 		#endif
@@ -2804,12 +2842,24 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINTLN(F("client no longer connected"));
 	}
 
+	if (!expect_response) {
+		client->stop();
+		if (!shared_client) delete client;
+		#if defined(ESP8266) || defined(ESP32)
+		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
+		#endif
+		#if defined(ESP32)
+		unlock_http_request();
+		#endif
+		return HTTP_RQT_SUCCESS;
+	}
+
 #if defined(ESP32) || defined(OSPI)
 	char *http_buffer = (char *)malloc(ETHER_BUFFER_SIZE + 1);
 	if (!http_buffer) {
 		DEBUG_PRINTLN(F("failed to allocate http request buffer"));
 		client->stop();
-		delete client;
+		if (!shared_client) delete client;
 		#if defined(ESP8266) || defined(ESP32)
 		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 		#endif
@@ -2859,7 +2909,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 #endif
 	http_buffer[pos]=0; // properly end buffer with 0
 	client->stop();
-	delete client;
+	if (!shared_client) delete client;
 	#if defined(ESP8266) || defined(ESP32)
 	if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 	#endif
@@ -2882,7 +2932,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	return HTTP_RQT_SUCCESS;
 }
 
-int8_t OpenSprinkler::send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
+int8_t OpenSprinkler::send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*), bool usessl, uint16_t timeout, bool expect_response) {
 	if(server == NULL || server[0]==0 || port==0 || p == NULL) {
 		DEBUG_PRINTLN(F("server:port is invalid for async request"));
 		return HTTP_RQT_CONNECT_ERR;
@@ -2907,6 +2957,7 @@ int8_t OpenSprinkler::send_http_request_async(const char* server, uint16_t port,
 	req->callback = callback;
 	req->usessl = usessl;
 	req->timeout = effective_timeout;
+	req->expect_response = expect_response;
 
 	BaseType_t task_ok = xTaskCreate(send_http_request_async_task, "http_async", 8192, req, 1, NULL);
 	if (task_ok != pdPASS) {
@@ -2937,6 +2988,7 @@ int8_t OpenSprinkler::send_http_request_async(const char* server, uint16_t port,
 	req->callback = callback;
 	req->usessl = usessl;
 	req->timeout = effective_timeout;
+	req->expect_response = expect_response;
 
 	s_http_async_pending = req;
 	return HTTP_RQT_SUCCESS;
@@ -2952,13 +3004,13 @@ void OpenSprinkler::process_async_http_requests() {
 	AsyncHttpRequestParams* req = s_http_async_pending;
 	s_http_async_pending = nullptr;
 
-	send_http_request(req->server, req->port, req->request, req->callback, req->usessl, req->timeout);
+	send_http_request(req->server, req->port, req->request, req->callback, req->usessl, req->timeout, req->expect_response);
 	if (req->request) free(req->request);
 	free(req);
 	#endif
 }
 
-int8_t OpenSprinkler::send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
+int8_t OpenSprinkler::send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout, bool expect_response) {
 	char server[20];
 	unsigned char ip[4];
 	ip[0] = ip4>>24;
@@ -2966,13 +3018,13 @@ int8_t OpenSprinkler::send_http_request(uint32_t ip4, uint16_t port, char* p, vo
 	ip[2] = (ip4>>8)&0xff;
 	ip[3] = ip4&0xff;
 	snprintf(server, 20, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-	return send_http_request(server, port, p, callback, usessl, timeout);
+	return send_http_request(server, port, p, callback, usessl, timeout, expect_response);
 }
 
-int8_t OpenSprinkler::send_http_request(char* server_with_port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout) {
+int8_t OpenSprinkler::send_http_request(char* server_with_port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout, bool expect_response) {
 	char * server = strtok(server_with_port, ":");
 	char * port = strtok(NULL, ":");
-	return send_http_request(server, (port==NULL)?80:atoi(port), p, callback, usessl, timeout);
+	return send_http_request(server, (port==NULL)?80:atoi(port), p, callback, usessl, timeout, expect_response);
 }
 
 /** Switch remote IP station
@@ -3020,7 +3072,8 @@ void OpenSprinkler::switch_remotestation(RemoteIPStationData *data, bool turnon,
 
 	char server[20];
 	snprintf(server, 20, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-	send_http_request_async(server, port, p, remote_http_callback, false, 12000);
+	// Command-only request: don't wait for full response body.
+	send_http_request_async(server, port, p, NULL, false, 12000, false);
 }
 
 /** Switch remote OTC station
@@ -3057,7 +3110,8 @@ void OpenSprinkler::switch_remotestation(RemoteOTCStationData *data, bool turnon
 
 	bf.emit_p(PSTR("User-Agent: $S\r\n\r\n"), user_agent_string);
 
-	send_http_request_async(DEFAULT_OTC_SERVER_APP, DEFAULT_OTC_PORT_APP, p, remote_http_callback, true, 12000);
+	// Command-only request: don't wait for full TLS response body.
+	send_http_request_async(DEFAULT_OTC_SERVER_APP, DEFAULT_OTC_PORT_APP, p, NULL, true, 12000, false);
 }
 
 /** Switch http(s) station
@@ -3083,72 +3137,8 @@ void OpenSprinkler::switch_httpstation(HTTPStationData *data, bool turnon, bool 
 	bf.emit_p(PSTR("GET /$S HTTP/1.0\r\nHOST: $S\r\n"), cmd, server);
 	bf.emit_p(PSTR("User-Agent: $S\r\n\r\n"), user_agent_string);
 
-	send_http_request_async(server, atoi(port), p, remote_http_callback, usessl, 12000);
-}
-
-#if defined(OSPI)
-extern boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
-#elif defined(ESP8266) || defined(ESP32)
-extern boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t reg,uint16_t data, bool isbit);
-#endif
-
-void OpenSprinkler::switch_modbusStation(ModbusStationData *data, bool turnon) {
-	/*
-	unsigned char ip[8];    // ESP8266 only
-	unsigned char port[4];  // ESP8266 only
-	unsigned char device[2]; // OSPI only, lineindex (0 first) in modbusDevs array / rs485 file
-	unsigned char address[2];
-	unsigned char register_on[4];
-	unsigned char data_on[4];
-	unsigned char register_off[4];
-	unsigned char data_off[4];
-	*/
-
-#if defined(OSPI)
-	uint8_t device = (uint8_t)hex2ulong(data->device, sizeof(data->device));
-	uint8_t address = (uint8_t)hex2ulong(data->address, sizeof(data->address));
-	uint16_t reg = (uint16_t)hex2ulong(turnon ? data->register_on : data->register_off, sizeof(data->register_on));
-	uint16_t onoff = (uint16_t)hex2ulong(turnon ? data->data_on : data->data_off, sizeof(data->data_on));
-
-	send_rs485_command(device, address, reg, onoff, true);
-#elif defined(ESP8266) || defined(ESP32)
-	uint32_t ip4 = hex2ulong(data->ip, sizeof(data->ip));
-	uint16_t port = (uint16_t)hex2ulong(data->port, sizeof(data->port));
-	uint8_t address = (uint8_t)hex2ulong(data->address, sizeof(data->address));
-	uint16_t reg = (uint16_t)hex2ulong(turnon ? data->register_on : data->register_off, sizeof(data->register_on));
-	uint16_t onoff = (uint16_t)hex2ulong(turnon ? data->data_on : data->data_off, sizeof(data->data_on));
-
-	send_rs485_command(ip4, port, address, reg, onoff, true);
-#endif
-}
-
-void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon) {
-	// 1. Convert device_ieee (16 hex chars) to uint64_t
-	uint64_t ieee = 0;
-	for (int i = 0; i < 16; i++) {
-		char c = data->device_ieee[i];
-		ieee <<= 4;
-		if (c >= '0' && c <= '9') {
-			ieee += (c - '0');
-		} else if (c >= 'A' && c <= 'F') {
-			ieee += 10 + (c - 'A');
-		} else if (c >= 'a' && c <= 'f') {
-			ieee += 10 + (c - 'a');
-		}
-	}
-
-	// 2. Parse endpoint (2 hex chars) to uint8_t
-	uint8_t ep = (uint8_t)hex2ulong((unsigned char*)data->endpoint, sizeof(data->endpoint));
-	if (ep == 0) ep = 1; // default to endpoint 1
-
-	// 3. Process Tuya DP or standard On/Off
-	bool use_tuya = (data->use_tuya[0] == '1');
-	if (use_tuya) {
-		uint8_t dp_id = (uint8_t)hex2ulong((unsigned char*)data->tuya_dp, sizeof(data->tuya_dp));
-		sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
-	} else {
-		sensor_zigbee_send_on_off(ieee, ep, turnon);
-	}
+	// Command-only request: don't wait for full response body.
+	send_http_request_async(server, atoi(port), p, NULL, usessl, 12000, false);
 }
 
 /** Prepare factory reset */
