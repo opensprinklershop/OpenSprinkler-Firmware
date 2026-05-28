@@ -6110,6 +6110,30 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		sensor_zigbee_open_network(duration);
 		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"permit\",\"duration\":$D}"), duration);
 
+	} else if (strcmp(action, "query_basic") == 0) {
+		char ieee_str[24] = "";
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint8_t endpoint = 1;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("endpoint"), true)) {
+			endpoint = (uint8_t)atoi(tmp_buffer);
+			if (endpoint == 0) endpoint = 1;
+		}
+		bool ok = sensor_zigbee_gw_query_basic_cluster_by_ieee(addr, endpoint);
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"query_basic\",\"ieee\":\"$S\",\"endpoint\":$D}"),
+		             ok ? 1 : 0, ieee_str, endpoint);
+
 	} else if (strcmp(action, "remove") == 0) {
 		// Remove a device by IEEE address
 		char ieee_str[24] = "";
@@ -6168,7 +6192,8 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 			         (unsigned long long)devices[i].ieee_addr);
 			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D}"),
+			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
+			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\"}"),
 			             ieee_str,
 			             devices[i].short_addr,
 			             devices[i].model_id,
@@ -6176,7 +6201,12 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			             devices[i].vendor,
 			             devices[i].endpoint,
 			             devices[i].device_id,
-			             devices[i].is_new ? 1 : 0);
+			             devices[i].is_new ? 1 : 0,
+			             devices[i].app_version,
+			             devices[i].stack_version,
+			             devices[i].hw_version,
+			             devices[i].date_code,
+			             devices[i].sw_build_id);
 			out_count++;
 		}
 		// Append registered (bound) sensors that are NOT in the in-memory
@@ -6201,7 +6231,8 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 				         (unsigned long long)zb->device_ieee);
 				bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":0,\"model\":\"$S\","
-				                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":0,\"is_new\":0}"),
+				                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":0,\"is_new\":0,"
+				                  "\"app_version\":255,\"stack_version\":255,\"hw_version\":255,\"date_code\":\"\",\"sw_build_id\":\"\"}"),
 				             ieee_str,
 				             zb->zb_model[0] ? zb->zb_model : "",
 				             zb->zb_manufacturer[0] ? zb->zb_manufacturer : "",
@@ -6247,7 +6278,8 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		    (millis() - devices[i].last_rx_at_ms) < 15UL * 60UL * 1000UL ? 1 : 0;
 		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
 		                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
-		                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D}"),
+		                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D,"
+		                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\"}"),
 		             ieee_str,
 		             devices[i].short_addr,
 		             devices[i].model_id,
@@ -6258,7 +6290,12 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		             devices[i].is_new ? 1 : 0,
 		             (unsigned long)devices[i].discovered_at,
 		             last_rx_age_s,
-		             is_online);
+		             is_online,
+		             devices[i].app_version,
+		             devices[i].stack_version,
+		             devices[i].hw_version,
+		             devices[i].date_code,
+		             devices[i].sw_build_id);
 		send_packet(OTF_PARAMS);
 	}
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);

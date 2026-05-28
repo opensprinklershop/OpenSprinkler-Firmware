@@ -95,6 +95,14 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
 void sensor_zigbee_gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint);
 
 /**
+ * @brief Query Basic Cluster version/manufacturer/model attributes by IEEE address
+ * @param device_ieee IEEE address of target device
+ * @param endpoint Target endpoint
+ * @return true if the read request was sent
+ */
+bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t endpoint);
+
+/**
  * @brief Actively read one attribute from a remote device in Gateway mode
  * @param device_ieee IEEE address of target device
  * @param endpoint Target endpoint
@@ -142,7 +150,7 @@ void sensor_zigbee_gw_force_off_all_stations();
  * @brief Register a pending switch-state verification for a Zigbee station.
  * Called from switch_zigbeestation after each ON/OFF command is sent.
  */
-void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t dp_id, bool expected_on);
+void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on);
 
 /**
  * @brief Return the current Zigbee station switch status.

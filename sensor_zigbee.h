@@ -33,8 +33,13 @@ struct ZigbeeDeviceInfo {
     uint16_t short_addr;          // Short network address
     char model_id[32];            // Model identifier
     char manufacturer[32];        // Manufacturer name
+    char date_code[24];           // Basic cluster DateCode (0x0006), if reported
+    char sw_build_id[32];         // Basic cluster SWBuildID (0x4000), if reported
     uint8_t endpoint;             // Primary endpoint
     uint16_t device_id;           // Zigbee device ID
+    uint8_t app_version;          // Basic cluster ApplicationVersion (0x0001), 0xFF = unknown
+    uint8_t stack_version;        // Basic cluster StackVersion (0x0002), 0xFF = unknown
+    uint8_t hw_version;           // Basic cluster HWVersion (0x0003), 0xFF = unknown
     bool is_new;                  // Flag for newly discovered device
     bool has_responded;           // Device has responded to a query or report
     bool is_tuya;                 // True if device has sent Tuya cluster 0xEF00 frames
@@ -367,11 +372,13 @@ public:
 
 bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon);
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon);
+bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon);
 
 #else // ESP32C5 && OS_ENABLE_ZIGBEE
 
 inline bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
 inline bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) { return false; }
+inline bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
 
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE
 

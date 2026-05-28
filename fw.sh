@@ -4,7 +4,7 @@
 #
 # Actions:
 #   build   [matter|zigbee|esp8266|all]  – Build firmware
-#   upload  [matter|zigbee|esp8266|all]  – Upload firmware (via USB/Serial)
+#   upload  [matter|zigbee|esp8266|all]  – Upload firmware (IP/REST if reachable, USB fallback)
 #   deploy  [matter|zigbee|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
@@ -55,6 +55,8 @@
 #   ./fw.sh switch disabled      -> disable IEEE 802.15.4 radio
 #   OS_IP=192.168.0.59 ./fw.sh install-ip zigbee
 #   OS_IP=192.168.0.59 ./fw.sh install-ip matter /data/upgrade/firmware_matter.bin
+#   FW_UPLOAD_METHOD=usb ./fw.sh deploy zigbee    -> force USB/serial upload
+#   FW_UPLOAD_METHOD=ip  ./fw.sh upload zigbee    -> force IP/REST upload
 #
 # Environment variables (optional):
 #   OS_IP           Device IP  (default: 192.168.0.151)
@@ -62,6 +64,7 @@
 #   OS_HASH         Admin password already as MD5 hash
 #   MONITOR_SPEED   Serial monitor baud rate (default: 115200)
 #   MONITOR_LOGS    Enable saving monitor logs to /tmp/ (automatic with 'monitor' flag)
+#   FW_UPLOAD_METHOD auto|ip|usb (default: auto; auto prefers IP for a reachable device)
 # =============================================================================
 
 set -euo pipefail
@@ -113,7 +116,6 @@ DEFINES_H="${SCRIPT_DIR}/defines.h"
 # Auto-migrate legacy upgrade path to the new location.
 # This keeps old .env files working after moving upgrade/ to /data/upgrade.
 if [[ "${OS_UPGRADE_DIR:-}" == "/srv/www/htdocs/upgrade" ]]; then
-    warn "OS_UPGRADE_DIR uses legacy path (/srv/www/htdocs/upgrade) — switching to /data/upgrade"
     OS_UPGRADE_DIR="/data/upgrade"
 fi
 UPGRADE_DIR="${OS_UPGRADE_DIR:-/data/upgrade}"
@@ -142,6 +144,7 @@ MATTER_PRODUCT_ID="0x8000"
 ENV_C5_MATTER="esp32-c5-matter"
 ENV_C5_ZIGBEE="esp32-c5-zigbee"
 ENV_ESP8266="os3x_esp8266"
+FW_UPLOAD_METHOD="${FW_UPLOAD_METHOD:-auto}"
 
 # Determine password hash
 _get_hash() {
@@ -151,6 +154,59 @@ _get_hash() {
         echo -n "$OS_PASSWORD" | md5sum | awk '{print $1}'
     else
         echo ""   # no password → empty hash (public endpoints)
+    fi
+}
+
+_variant_to_slot() {
+    case "$1" in
+        zigbee) echo "ota0" ;;
+        matter) echo "ota1" ;;
+        esp8266) echo "" ;;
+        *) echo "" ;;
+    esac
+}
+
+_env_to_variant() {
+    case "$1" in
+        "$ENV_C5_MATTER") echo "matter" ;;
+        "$ENV_C5_ZIGBEE") echo "zigbee" ;;
+        "$ENV_ESP8266")   echo "esp8266" ;;
+        *)                  echo "" ;;
+    esac
+}
+
+_variant_to_upgrade_name() {
+    case "$1" in
+        matter) echo "firmware_matter.bin" ;;
+        zigbee) echo "firmware_zigbee.bin" ;;
+        esp8266) echo "firmware_esp8266.bin" ;;
+        *) echo "" ;;
+    esac
+}
+
+_device_reachable_quiet() {
+    local hash
+    hash=$(_get_hash)
+    curl -sf --connect-timeout 2 --max-time 4 "http://${DEVICE_IP}/jo?pw=${hash}" >/dev/null 2>&1 || \
+        curl -sf --connect-timeout 2 --max-time 4 "http://${DEVICE_IP}/db?pw=${hash}" >/dev/null 2>&1
+}
+
+_select_ip_upload_bin() {
+    local env="$1"
+    local variant="$2"
+    local upgrade_name
+    upgrade_name=$(_variant_to_upgrade_name "$variant")
+
+    local build_bin="${SCRIPT_DIR}/.pio/build/${env}/firmware.bin"
+    local dist_bin="${SCRIPT_DIR}/.pio/dist/firmware_${env}.bin"
+    local upgrade_bin="${UPGRADE_DIR}/${upgrade_name}"
+
+    if [[ -f "$build_bin" ]]; then
+        echo "$build_bin"
+    elif [[ -f "$dist_bin" ]]; then
+        echo "$dist_bin"
+    else
+        echo "$upgrade_bin"
     fi
 }
 
@@ -166,9 +222,7 @@ install_ip() {
     fi
 
     case "$variant" in
-        zigbee) slot="ota0" ;;
-        matter) slot="ota1" ;;
-        esp8266) slot="" ;;
+        zigbee|matter|esp8266) slot=$(_variant_to_slot "$variant") ;;
         *)
             error "Unknown variant: $variant"
             error "Allowed: matter | zigbee | esp8266"
@@ -177,7 +231,7 @@ install_ip() {
     esac
 
     if [[ -z "$bin_file" ]]; then
-        bin_file="${UPGRADE_DIR}/firmware_${variant}.bin"
+        bin_file="${UPGRADE_DIR}/$(_variant_to_upgrade_name "$variant")"
     fi
 
     if [[ ! -f "$bin_file" ]]; then
@@ -221,6 +275,50 @@ install_ip() {
     fi
 }
 
+upload_ip_env() {
+    local env="$1"
+    local variant
+    variant=$(_env_to_variant "$env")
+    if [[ -z "$variant" ]]; then
+        error "IP upload is not supported for environment: ${env}"
+        exit 1
+    fi
+
+    local bin_file
+    bin_file=$(_select_ip_upload_bin "$env" "$variant")
+    install_ip "$variant" "$bin_file"
+}
+
+upload_env_auto() {
+    local env="$1"
+    local method="${FW_UPLOAD_METHOD,,}"
+
+    case "$method" in
+        auto|ip|usb) ;;
+        *)
+            error "Unknown FW_UPLOAD_METHOD=${FW_UPLOAD_METHOD}"
+            error "Allowed: auto | ip | usb"
+            exit 1
+            ;;
+    esac
+
+    if [[ "$method" == "ip" ]]; then
+        upload_ip_env "$env"
+        return
+    fi
+
+    if [[ "$method" == "auto" && -n "${OS_IP:-}" ]]; then
+        if _device_reachable_quiet; then
+            info "Device reachable at ${DEVICE_IP}; using fast IP upload (FW_UPLOAD_METHOD=usb to force serial)."
+            upload_ip_env "$env"
+            return
+        fi
+        info "Device not reachable at ${DEVICE_IP}; falling back to USB upload."
+    fi
+
+    upload_env "$env"
+}
+
 # ── Helper functions ─────────────────────────────────────────────────────────
 check_pio() {
     if ! command -v "$PIO_BIN" &>/dev/null; then
@@ -231,9 +329,12 @@ check_pio() {
 
 check_device() {
     info "Checking connection to ${DEVICE_IP} …"
-    if ! curl -sf --connect-timeout 3 "http://${DEVICE_IP}/db?pw=" &>/dev/null; then
+    local hash
+    hash=$(_get_hash)
+    if ! curl -sf --connect-timeout 3 --max-time 6 "http://${DEVICE_IP}/jo?pw=${hash}" &>/dev/null && \
+       ! curl -sf --connect-timeout 3 --max-time 6 "http://${DEVICE_IP}/db?pw=${hash}" &>/dev/null; then
         error "Device not reachable at http://${DEVICE_IP}"
-        error "Hint: OS_IP=<IP> ./fw.sh switch <variant>"
+        error "Hint: set OS_IP=<IP>, or use FW_UPLOAD_METHOD=usb for serial upload."
         exit 1
     fi
     ok "Device reachable."
@@ -671,8 +772,8 @@ deploy_monitor_env() {
     
     # Upload
     info "Uploading to device..."
-    upload_env "$env"
-    if [[ "$env" == "$ENV_C5_ZIGBEE" ]]; then
+    upload_env_auto "$env"
+    if [[ "$env" == "$ENV_C5_ZIGBEE" && "${FW_UPLOAD_METHOD,,}" == "usb" ]]; then
         ensure_zigbee_boot_partition
     fi
     
@@ -2093,9 +2194,10 @@ ${BOLD}Usage:${NC}
   ./fw.sh <action> [variant]
 
 ${BOLD}Actions:${NC}
-  build   [matter|zigbee|esp8266|ospi|all]  Build firmware (default: all)
-  upload  [matter|zigbee|esp8266|all]       Upload firmware via USB (default: all)
-  deploy  [matter|zigbee|esp8266|ospi|all] [debug]
+    build   [matter|zigbee|esp8266|ospi|all]  Build firmware (default: all)
+    upload  [matter|zigbee|esp8266|all]       Upload firmware (IP/REST if reachable,
+                                                                                        USB fallback; default: all)
+    deploy  [matter|zigbee|esp8266|ospi|all] [debug]
                                             Build + Upload/Deploy (default: all)
                                             Optional 'debug' keeps ENABLE_DEBUG
                                             flags enabled for all variants
@@ -2163,10 +2265,12 @@ ${BOLD}Variants (switch – ESP32-C5 only):${NC}
   disabled       → Disable IEEE 802.15.4 radio
 
 ${BOLD}Environment variables:${NC}
-  OS_IP=<IP>              Device IP        (default: 192.168.0.151)
-  OS_PASSWORD=<password>  Admin password   (will be MD5 hashed)
-  OS_HASH=<md5>           MD5 hash direct  (overrides OS_PASSWORD)
-  UPLOAD_PORT=<port>      Serial port      (auto-detected if not set)
+    OS_IP=<IP>              Device IP        (default: 192.168.0.151)
+    OS_PASSWORD=<password>  Admin password   (will be MD5 hashed)
+    OS_HASH=<md5>           MD5 hash direct  (overrides OS_PASSWORD)
+    FW_UPLOAD_METHOD=<mode> Upload mode: auto | ip | usb  (default: auto)
+                                                    auto prefers IP/REST when OS_IP is reachable
+    UPLOAD_PORT=<port>      Serial port      (auto-detected if not set)
   UPLOAD_SPEED=<baud>     Upload baud rate  (default: 460800)
   ERASE_FLASH=1           Erase entire flash before full-flash
   FACTORY_RESET=1         Also erase NVS + fctry after full-flash (wipes WiFi credentials
@@ -2184,7 +2288,10 @@ ${BOLD}Examples:${NC}
   ./fw.sh build matter
   ./fw.sh build esp8266
   ./fw.sh build ospi
-  ./fw.sh deploy zigbee
+    ./fw.sh deploy zigbee
+    ./fw.sh upload zigbee              # fast IP upload if OS_IP is reachable
+    FW_UPLOAD_METHOD=usb ./fw.sh deploy zigbee
+    FW_UPLOAD_METHOD=ip ./fw.sh upload zigbee
   ./fw.sh deploy debug
   ./fw.sh deploy zigbee debug
   ./fw.sh deploy ospi
@@ -2290,14 +2397,14 @@ case "$ACTION" in
     upload)
         check_pio
         case "$VARIANT" in
-            matter)   upload_env "$ENV_C5_MATTER" ;;
-            zigbee)   upload_env "$ENV_C5_ZIGBEE" ;;
-            esp8266)  upload_env "$ENV_ESP8266" ;;
+            matter)   upload_env_auto "$ENV_C5_MATTER" ;;
+            zigbee)   upload_env_auto "$ENV_C5_ZIGBEE" ;;
+            esp8266)  upload_env_auto "$ENV_ESP8266" ;;
             all|"")
-                warn "Uploading all firmwares requires switching between devices."
-                upload_env "$ENV_C5_MATTER"
-                upload_env "$ENV_C5_ZIGBEE"
-                upload_env "$ENV_ESP8266"
+                warn "Uploading all firmwares can reboot the same device multiple times; single-variant upload is recommended."
+                upload_env_auto "$ENV_C5_MATTER"
+                upload_env_auto "$ENV_C5_ZIGBEE"
+                upload_env_auto "$ENV_ESP8266"
                 ;;
             *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
         esac
@@ -2369,18 +2476,20 @@ case "$ACTION" in
                     matter)
                         build_env "$ENV_C5_MATTER"
                         copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
-                        upload_env "$ENV_C5_MATTER"
+                        upload_env_auto "$ENV_C5_MATTER"
                         ;;
                     zigbee)
                         build_env "$ENV_C5_ZIGBEE"
                         copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
-                        upload_env "$ENV_C5_ZIGBEE"
-                        ensure_zigbee_boot_partition
+                        upload_env_auto "$ENV_C5_ZIGBEE"
+                        if [[ "${FW_UPLOAD_METHOD,,}" == "usb" ]]; then
+                            ensure_zigbee_boot_partition
+                        fi
                         ;;
                     esp8266)
                         build_env "$ENV_ESP8266"
                         copy_one_to_upgrade "$ENV_ESP8266" "firmware_esp8266.bin"
-                        upload_env "$ENV_ESP8266"
+                        upload_env_auto "$ENV_ESP8266"
                         ;;
                     ospi)
                         if $deploy_debug; then
@@ -2396,10 +2505,12 @@ case "$ACTION" in
                             build_ospi
                         fi
                         copy_to_upgrade
-                        upload_env "$ENV_C5_MATTER"
-                        upload_env "$ENV_C5_ZIGBEE"
-                        upload_env "$ENV_ESP8266"
-                        ensure_zigbee_boot_partition
+                        upload_env_auto "$ENV_C5_MATTER"
+                        upload_env_auto "$ENV_C5_ZIGBEE"
+                        upload_env_auto "$ENV_ESP8266"
+                        if [[ "${FW_UPLOAD_METHOD,,}" == "usb" ]]; then
+                            ensure_zigbee_boot_partition
+                        fi
                         header "Deploy complete"
                         ok "Matter:   flashed to ota_1 (0x3A0000)"
                         ok "ZigBee:   flashed to ota_0 (0x10000)"

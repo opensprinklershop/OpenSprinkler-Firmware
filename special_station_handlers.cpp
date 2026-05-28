@@ -114,6 +114,7 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	bool use_tuya = (data->use_tuya[0] == '1');
 	uint8_t dp_id = (uint8_t)hex_to_ulong((unsigned char*)data->tuya_dp, sizeof(data->tuya_dp));
 	if (dp_id == 0) dp_id = 1;
+	bool is_gx02 = false;
 
 	{
 		// 1) Try discovered devices (RAM-only; survives only while controller stays online).
@@ -164,7 +165,7 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 			bool is_ts0601 = (strcmp(mdl, "TS0601") == 0);
 			bool gx02_by_mfr = (strstr(mfr, "sh1btabb") != NULL) || (strstr(mfr, "7ytb3h8u") != NULL);
 			bool gx02_by_vendor = (strstr(vnd, "GIEX") != NULL);
-			bool is_gx02 = is_ts0601 && (gx02_by_mfr || gx02_by_vendor);
+			is_gx02 = is_ts0601 && (gx02_by_mfr || gx02_by_vendor);
 			if (!use_tuya && (dev_is_tuya || is_gx02)) {
 				use_tuya = true;
 				DEBUG_PRINTF(F("[ZIGBEE] Runtime fallback: forcing Tuya DP for ieee=%016llX mfr='%s' model='%s' vendor='%s' dp=%d\n"),
@@ -181,17 +182,22 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 		}
 	}
 
+	bool command_sent = false;
 	if (use_tuya) {
-		sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
+		if (is_gx02 && dp_id == 2) {
+			command_sent = sensor_zigbee_send_giex_water_valve_state(ieee, ep, turnon);
+		} else {
+			command_sent = sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
+		}
 	} else {
-		sensor_zigbee_send_on_off(ieee, ep, turnon);
+		command_sent = sensor_zigbee_send_on_off(ieee, ep, turnon);
 	}
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	// Register for switch-failure verification: if the device doesn't echo
 	// the expected DP state within ZB_VERIFY_TIMEOUT_MS, an MQTT alert is
 	// published on station/{sid}/alert/switch.
-	if (use_tuya && ieee != 0) {
-		sensor_zigbee_station_verify_register(sid, ieee, dp_id, turnon);
+	if (use_tuya && command_sent && ieee != 0) {
+		sensor_zigbee_station_verify_register(sid, ieee, ep, dp_id, turnon);
 	}
 #endif
 }

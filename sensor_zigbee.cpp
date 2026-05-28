@@ -534,6 +534,11 @@ static uint64_t client_resolve_ieee(uint16_t short_addr) {
     info.is_new = true;
     info.manufacturer[0] = '\0';
     info.model_id[0] = '\0';
+    info.date_code[0] = '\0';
+    info.sw_build_id[0] = '\0';
+    info.app_version = 0xFF;
+    info.stack_version = 0xFF;
+    info.hw_version = 0xFF;
     if (client_discovered_devices.size() >= CLIENT_DISCOVERED_MAX) {
         client_discovered_devices.erase(client_discovered_devices.begin());
     }
@@ -2173,6 +2178,9 @@ int sensor_zigbee_get_discovered_devices(ZigbeeDeviceInfo* devices, int max_devi
             info.short_addr = 0;
             info.endpoint = zb->endpoint;
             info.is_new = false;
+            info.app_version = 0xFF;
+            info.stack_version = 0xFF;
+            info.hw_version = 0xFF;
             if (zb->zb_manufacturer[0])
                 strncpy(info.manufacturer, zb->zb_manufacturer, sizeof(info.manufacturer) - 1);
             if (zb->zb_model[0])
