@@ -116,6 +116,7 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	if (dp_id == 0) dp_id = 1;
 	bool is_gx02 = false;
 
+	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	{
 		// 1) Try discovered devices (RAM-only; survives only while controller stays online).
 		bool matched = false;
@@ -181,6 +182,7 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 			}
 		}
 	}
+	#endif
 
 	bool command_sent = false;
 	if (use_tuya) {

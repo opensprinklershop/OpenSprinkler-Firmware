@@ -70,8 +70,6 @@ static GwPendingSwitchCommand gw_pending_switch = {false, false, 0, 1, 1, false,
 
 struct GwTuyaScheduledCommand {
     bool used;
-    bool use_long_addr;
-    uint64_t ieee_addr;
     uint16_t short_addr;
     uint8_t endpoint;
     uint8_t command_id;
@@ -89,22 +87,14 @@ static void gw_tuya_schedule_next();
 
 static void gw_tuya_scheduled_send(uint8_t slot) {
     if (slot >= (sizeof(gw_tuya_schedule) / sizeof(gw_tuya_schedule[0]))) return;
-    GwTuyaScheduledCommand cmd = gw_tuya_schedule[slot];
-    gw_tuya_schedule[slot].used = false;
+    GwTuyaScheduledCommand& cmd = gw_tuya_schedule[slot];
     if (!cmd.used) return;
 
     esp_zb_zcl_custom_cluster_cmd_req_t req = {};
-    if (cmd.use_long_addr) {
-        for (int i = 0; i < 8; i++) {
-            req.zcl_basic_cmd.dst_addr_u.addr_long[i] = (uint8_t)(cmd.ieee_addr >> (i * 8));
-        }
-        req.address_mode = ESP_ZB_APS_ADDR_MODE_64_ENDP_PRESENT;
-    } else {
-        req.zcl_basic_cmd.dst_addr_u.addr_short = cmd.short_addr;
-        req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
-    }
+    req.zcl_basic_cmd.dst_addr_u.addr_short = cmd.short_addr;
     req.zcl_basic_cmd.dst_endpoint = cmd.endpoint;
     req.zcl_basic_cmd.src_endpoint = 10;
+    req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
     req.profile_id = ESP_ZB_AF_HA_PROFILE_ID;
     req.cluster_id = 0xEF00;
     req.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV;
@@ -114,15 +104,12 @@ static void gw_tuya_scheduled_send(uint8_t slot) {
     req.data.size = cmd.payload_len;
     req.data.value = cmd.payload;
 
+    esp_zb_lock_acquire(portMAX_DELAY);
     uint8_t tsn = esp_zb_zcl_custom_cluster_cmd_req(&req);
-    DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP cmd dispatched, slot=%u tsn=%u dp=%u seq=%u addr=%s short=0x%04X ieee=%016llX\n"),
-                 (unsigned)slot,
-                 (unsigned)tsn,
-                 (unsigned)cmd.dp_id,
-                 (unsigned)cmd.seq,
-                 cmd.use_long_addr ? "ieee" : "short",
-                 cmd.short_addr,
-                 (unsigned long long)cmd.ieee_addr);
+    esp_zb_lock_release();
+    cmd.used = false;
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP cmd dispatched, slot=%u tsn=%u dp=%u seq=%u short=0x%04X\n"),
+                 (unsigned)slot, (unsigned)tsn, (unsigned)cmd.dp_id, (unsigned)cmd.seq, cmd.short_addr);
 }
 
 static void gw_tuya_schedule_next() {
@@ -139,19 +126,15 @@ static void gw_tuya_schedule_next() {
     gw_tuya_next_due_ms = 0;
 }
 
-static bool gw_schedule_tuya_dp_cmd(uint16_t short_addr, uint64_t ieee_addr, bool use_long_addr,
-                                    uint8_t endpoint, uint8_t command_id,
+static bool gw_schedule_tuya_dp_cmd(uint16_t short_addr, uint8_t endpoint, uint8_t command_id,
                                     uint8_t dp_id, uint8_t dp_type, const uint8_t* payload,
                                     size_t payload_len, uint16_t seq) {
     if (!payload || payload_len == 0 || payload_len > sizeof(gw_tuya_schedule[0].payload)) return false;
-    if (use_long_addr && ieee_addr == 0) return false;
 
     for (uint8_t slot = 0; slot < (sizeof(gw_tuya_schedule) / sizeof(gw_tuya_schedule[0])); slot++) {
         if (gw_tuya_schedule[slot].used) continue;
 
         gw_tuya_schedule[slot].used = true;
-        gw_tuya_schedule[slot].use_long_addr = use_long_addr;
-        gw_tuya_schedule[slot].ieee_addr = ieee_addr;
         gw_tuya_schedule[slot].short_addr = short_addr;
         gw_tuya_schedule[slot].endpoint = endpoint;
         gw_tuya_schedule[slot].command_id = command_id;
@@ -162,13 +145,8 @@ static bool gw_schedule_tuya_dp_cmd(uint16_t short_addr, uint64_t ieee_addr, boo
         memcpy(gw_tuya_schedule[slot].payload, payload, payload_len);
 
         if (gw_tuya_next_due_ms == 0) gw_tuya_next_due_ms = millis() + 50UL;
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP cmd queued, slot=%u dp=%u seq=%u addr=%s short=0x%04X ieee=%016llX\n"),
-                     (unsigned)slot,
-                     (unsigned)dp_id,
-                     (unsigned)seq,
-                     use_long_addr ? "ieee" : "short",
-                     short_addr,
-                     (unsigned long long)ieee_addr);
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP cmd queued, slot=%u dp=%u seq=%u short=0x%04X\n"),
+                 (unsigned)slot, (unsigned)dp_id, (unsigned)seq, short_addr);
         return true;
     }
 
@@ -297,15 +275,25 @@ static std::vector<GwBasicQueryRequest> gw_basic_query_queue;
 #define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
 
 // Tuya DP (DataPoint) command IDs within cluster 0xEF00
-#define TUYA_CMD_DATA_REQUEST   0x00  // Gateway -> device (set one or more DPs)
-#define TUYA_CMD_DATA_RESPONSE  0x01  // Device -> gateway (legacy DP response)
-#define TUYA_CMD_DATA_REPORT    0x02  // Device -> gateway (DP report / set response)
-#define TUYA_CMD_DATA_QUERY     0x03  // Gateway -> device (query all DPs)
-#define TUYA_CMD_DATA_SEND      0x04  // Gateway -> device (alternate set-data command)
-#define TUYA_CMD_ACTIVE_STATUS  0x06  // Device -> gateway (active status DP report)
+// Per Tuya Standard MCU Protocol: https://developer.tuya.com/en/docs/mcu-standard-protocol/mcusdk-zigbee-uart-protocol
+#define TUYA_CMD_QUERY_DP_DATA  0x00  // Gateway -> device (legacy query all DPs)
+#define TUYA_CMD_RESPOND_DP     0x01  // Gateway -> device (legacy DP response / ACK)
+#define TUYA_CMD_DP_REPORT      0x02  // Device -> gateway (DP report / unsolicited status)
+#define TUYA_CMD_QUERY_REQ      0x03  // Gateway -> device (query DPs)
+#define TUYA_CMD_DP_SEND        0x04  // Gateway -> device (legacy set DP command)
+#define TUYA_CMD_REPORT_DP_DATA 0x06  // Gateway -> device (Report DP data - MAIN CONTROL COMMAND) ← Use this!
+#define TUYA_CMD_REPORT_NO_LINK 0x2C  // Gateway -> device (Report DP without triggering linkage)
 #define TUYA_CMD_MCU_VERSION_REQ  0x10  // Device → gateway (MCU version query)
 #define TUYA_CMD_MCU_VERSION_RESP 0x11  // Gateway → device (MCU version answer)
 #define TUYA_CMD_TIME_SYNC_REQ  0x24  // Device → gateway (time sync request)
+
+// Legacy aliases for compatibility
+#define TUYA_CMD_DATA_REQUEST   TUYA_CMD_QUERY_DP_DATA
+#define TUYA_CMD_DATA_RESPONSE  TUYA_CMD_RESPOND_DP
+#define TUYA_CMD_DATA_REPORT    TUYA_CMD_DP_REPORT
+#define TUYA_CMD_DATA_QUERY     TUYA_CMD_QUERY_REQ
+#define TUYA_CMD_DATA_SEND      TUYA_CMD_DP_SEND
+#define TUYA_CMD_ACTIVE_STATUS  TUYA_CMD_DP_REPORT
 
 // Tuya DP data types
 #define TUYA_TYPE_RAW    0x00
@@ -963,21 +951,22 @@ static void gw_load_tuya_seq() {
     esp_err_t err = nvs_open("zb_gw", NVS_READWRITE, &handle);
     if (err == ESP_OK) {
         uint16_t stored = 0;
-        if (nvs_get_u16(handle, "tuya_seq", &stored) == ESP_OK && stored != 0) {
+        // Per Tuya MCU UART Protocol: SEQ cycles from 0 to 0xfff0 (65520)
+        if (nvs_get_u16(handle, "tuya_seq", &stored) == ESP_OK && stored <= 0xfff0) {
             gw_tuya_seq = stored;
         } else {
-            // First install after this firmware change: start above the low
-            // sequences already used by earlier non-persistent builds.
-            gw_tuya_seq = 0x40;
+            // Start at 0 per Tuya spec (0-0xfff0 cycling)
+            gw_tuya_seq = 0;
             nvs_set_u16(handle, "tuya_seq", gw_tuya_seq);
             nvs_commit(handle);
         }
         nvs_close(handle);
     } else {
-        gw_tuya_seq = 0x40;
+        gw_tuya_seq = 0;
     }
 
-    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Sequence start=%u\n"), (unsigned)gw_tuya_seq);
+    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Sequence start=%u (0x%04X, max=0xfff0=%u)\n"), 
+                 (unsigned)gw_tuya_seq, (unsigned)gw_tuya_seq, 0xfff0);
 }
 
 static void gw_zigbee_default_response_cb(zb_cmd_type_t resp_to_cmd, esp_zb_zcl_status_t status, uint8_t endpoint, uint16_t cluster) {
@@ -988,9 +977,12 @@ static void gw_zigbee_default_response_cb(zb_cmd_type_t resp_to_cmd, esp_zb_zcl_
 
 static uint16_t gw_next_tuya_seq() {
     gw_load_tuya_seq();
+    // Per Tuya MCU UART Protocol: Sequence number cycles from 0 to 0xfff0 (65520)
+    if (gw_tuya_seq > 0xfff0) gw_tuya_seq = 0;
     uint16_t seq = gw_tuya_seq;
     gw_tuya_seq = (uint16_t)(gw_tuya_seq + 1);
-    if (gw_tuya_seq == 0) gw_tuya_seq = 1;
+    // Wrap at 0xfff1 (65521) back to 0
+    if (gw_tuya_seq > 0xfff0) gw_tuya_seq = 0;
     gw_save_tuya_seq(gw_tuya_seq);
     return seq;
 }
@@ -1197,6 +1189,18 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         // DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] MCU version request from 0x%04X\n"), ind.src_short_addr);
         gw_tuya_send_mcu_version_resp(ind.src_short_addr, ind.src_endpoint, seq_number);
         // Resolve IEEE from stack and add as responsive device
+        esp_zb_ieee_addr_t raw_ieee;
+        if (esp_zb_ieee_address_by_short(ind.src_short_addr, raw_ieee) == ESP_OK) {
+            uint64_t ieee = 0;
+            for (int i = 7; i >= 0; i--) ieee = (ieee << 8) | raw_ieee[i];
+            if (ieee) gw_add_responsive_device(ind.src_short_addr, ieee, ind.src_endpoint);
+        }
+        return true;
+    }
+
+    // Some Tuya firmwares send MCU version response (0x11) spontaneously
+    // during interview/keepalive. Treat it as a known non-DP control frame.
+    if (command_id == TUYA_CMD_MCU_VERSION_RESP) {
         esp_zb_ieee_addr_t raw_ieee;
         if (esp_zb_ieee_address_by_short(ind.src_short_addr, raw_ieee) == ESP_OK) {
             uint64_t ieee = 0;
@@ -2893,22 +2897,9 @@ static bool gw_send_tuya_dp_raw_cmd(uint64_t device_ieee, uint8_t endpoint, uint
                                     const uint8_t* value, uint16_t value_len, uint8_t command_id,
                                     bool queue_on_unavailable, bool queued_turnon) {
     uint16_t short_addr = 0;
-    if (!device_ieee) return false;
-    gw_try_fix_ieee(&device_ieee);
-
-    esp_zb_ieee_addr_t ieee_le = {0};
-    for (int i = 0; i < 8; i++) {
-        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
-    }
-
-    esp_zb_lock_acquire(portMAX_DELAY);
-    short_addr = esp_zb_address_short_by_ieee(ieee_le);
-    esp_zb_lock_release();
-
-    bool use_long_addr = (short_addr == 0xFFFF || short_addr == 0xFFFE);
-    if (use_long_addr) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya DP write: short addr unknown for ieee=%016llX, using IEEE destination\n"),
-                     (unsigned long long)device_ieee);
+    if (!gw_resolve_tuya_short_addr(&device_ieee, &short_addr, "Tuya DP write",
+                                    queue_on_unavailable, endpoint, dp_id, queued_turnon)) {
+        return false;
     }
 
     // Prepare a generic Tuya dataRequest payload. This is the same logical
@@ -2924,22 +2915,14 @@ static bool gw_send_tuya_dp_raw_cmd(uint64_t device_ieee, uint8_t endpoint, uint
         return false;
     }
 
-    DEBUG_PRINTF(F("[ZIGBEE-GW] Queueing Tuya DP set -> addr=%s short_addr=0x%04X ieee=%016llX ep=%d cmd=0x%02X dp=%d type=%d len=%u seq=%u dir=TO_SRV defresp=off\n"),
-                 use_long_addr ? "ieee" : "short",
-                 short_addr,
-                 (unsigned long long)device_ieee,
-                 endpoint,
-                 command_id,
-                 dp_id,
-                 dp_type,
-                 (unsigned)value_len,
-                 (unsigned)tuya_seq);
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Queueing Tuya DP set -> short_addr=0x%04X ep=%d cmd=0x%02X dp=%d type=%d len=%u seq=%u dir=TO_SRV defresp=off\n"),
+                 short_addr, endpoint, command_id, dp_id, dp_type, (unsigned)value_len, (unsigned)tuya_seq);
     DEBUG_PRINTF(F("[ZIGBEE-GW] Tuya payload (%u bytes): %02X %02X %02X %02X %02X %02X %02X%s\n"),
                  (unsigned)payload_len,
                  payload[0], payload[1], payload[2], payload[3],
                  payload[4], payload[5], payload[6], payload_len > 7 ? " ..." : "");
 
-    return gw_schedule_tuya_dp_cmd(short_addr, device_ieee, use_long_addr, endpoint, command_id, dp_id, dp_type,
+    return gw_schedule_tuya_dp_cmd(short_addr, endpoint, command_id, dp_id, dp_type,
                                    payload, payload_len, tuya_seq);
 }
 
@@ -2967,20 +2950,24 @@ static bool gw_send_tuya_dp_value_write_cmd(uint64_t device_ieee, uint8_t endpoi
 static bool gw_send_giex_water_valve_state_cmd(uint64_t device_ieee, uint8_t endpoint, bool turnon,
                                                bool queue_on_unavailable) {
     if (!turnon) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Sending OFF via DP2 using standard Report DP (cmd 0x06)"));
         return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, false,
-                                             TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
+                                              TUYA_CMD_REPORT_DP_DATA, queue_on_unavailable);
     }
 
-    DEBUG_PRINTF(F("[ZIGBEE-GW][GX02] Preparing ON: mode=duration(DP1=0), target=0(DP104), then state=ON(DP2)\n"));
+    DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Preparing ON: mode=duration (DP1=0), target=0 (DP104), then state=ON (DP2) using standard Report DP (cmd 0x06)"));
     gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 1, false,
-                                   TUYA_CMD_DATA_REQUEST, false);
+                                   TUYA_CMD_REPORT_DP_DATA, false);
     gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, 104, 0,
-                                    TUYA_CMD_DATA_REQUEST, false);
+                                    TUYA_CMD_REPORT_DP_DATA, false);
     return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, true,
-                                         TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
+                                          TUYA_CMD_REPORT_DP_DATA, queue_on_unavailable);
 }
 
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
+    if (dp_id == 2 && gw_is_giex_water_valve(device_ieee)) {
+        return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true);
+    }
     return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_REQUEST, true);
 }
 
@@ -3038,25 +3025,41 @@ void sensor_zigbee_station_verify_tick() {
     for (int i = 0; i < ZB_VERIFY_MAX; i++) {
         if (!zb_verify_table[i].pending) continue;
         if (zb_verify_table[i].retries == 0 && now - zb_verify_table[i].sent_ms >= ZB_VERIFY_RETRY_MS) {
-            DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm pending: sid=%u dp=%u expected_on=%d, retrying Tuya cmd=0x%02X\n"),
+            bool is_state_dp = (zb_verify_table[i].dp_id == 2);
+            // Use standard Report DP (0x06) for GX02, fallback to DATA_QUERY (0x03) for others
+            uint8_t retry_cmd = (is_state_dp && gw_is_giex_water_valve(zb_verify_table[i].ieee))
+                                  ? TUYA_CMD_REPORT_DP_DATA
+                                  : TUYA_CMD_QUERY_REQ;
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm pending: sid=%u dp=%u expected_on=%d, retrying with cmd=0x%02X\n"),
                          (unsigned)zb_verify_table[i].sid,
                          (unsigned)zb_verify_table[i].dp_id,
                          zb_verify_table[i].expected_on ? 1 : 0,
-                         (unsigned)TUYA_CMD_DATA_REQUEST);
+                         (unsigned)retry_cmd);
             bool retry_sent = false;
-            if (zb_verify_table[i].dp_id == 2 && gw_is_giex_water_valve(zb_verify_table[i].ieee)) {
+            if (is_state_dp && gw_is_giex_water_valve(zb_verify_table[i].ieee)) {
                 retry_sent = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
                                                             zb_verify_table[i].endpoint ? zb_verify_table[i].endpoint : 1,
                                                             2,
                                                             zb_verify_table[i].expected_on,
-                                                            TUYA_CMD_DATA_REQUEST,
+                                                            retry_cmd,
                                                             false);
+                if (!retry_sent) {
+                    // Try legacy DATA_SEND (0x04) as compatibility fallback.
+                    uint8_t alt_cmd = TUYA_CMD_DATA_SEND;
+                    bool retry_sent_alt = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
+                                                                          zb_verify_table[i].endpoint ? zb_verify_table[i].endpoint : 1,
+                                                                          2,
+                                                                          zb_verify_table[i].expected_on,
+                                                                          alt_cmd,
+                                                                          false);
+                    retry_sent = retry_sent || retry_sent_alt;
+                }
             } else {
                 retry_sent = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
                                                             zb_verify_table[i].endpoint ? zb_verify_table[i].endpoint : 1,
                                                             zb_verify_table[i].dp_id,
                                                             zb_verify_table[i].expected_on,
-                                                            TUYA_CMD_DATA_REQUEST,
+                                                            retry_cmd,
                                                             false);
             }
             if (retry_sent) {
@@ -3078,6 +3081,10 @@ void sensor_zigbee_station_verify_tick() {
             }
         }
         if (zb_verify_table[i].retries >= 2 && now - zb_verify_table[i].sent_ms >= ZB_VERIFY_QUERY_GRACE_MS) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm still pending after DP query grace: sid=%u dp=%u expected_on=%d, marking failed\n"),
+                         (unsigned)zb_verify_table[i].sid,
+                         (unsigned)zb_verify_table[i].dp_id,
+                         zb_verify_table[i].expected_on ? 1 : 0);
             gw_station_verify_publish_fail(zb_verify_table[i].sid,
                                            zb_verify_table[i].expected_on, true);
             zb_verify_table[i].pending = false;

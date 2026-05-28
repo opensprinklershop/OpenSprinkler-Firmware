@@ -56,14 +56,17 @@ elif [ -f /etc/systemd/system/OpenSprinkler.service ]; then
 	systemctl stop OpenSprinkler
 fi
 
-#Git update submodules
-
-if git submodule status | grep --quiet '^-'; then
-    echo "A git submodule is not initialized."
-    git submodule update --remote --recursive --init
+#Git update submodules (only when running inside a git worktree)
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	if git submodule status | grep --quiet '^-'; then
+		echo "A git submodule is not initialized."
+		git submodule update --remote --recursive --init
+	else
+		echo "Updating submodules to latest remote version."
+		git submodule update --remote --recursive || true
+	fi
 else
-    echo "Updating submodules to latest remote version."
-    git submodule update --remote --recursive || true
+	echo "Not a git worktree; skipping submodule update."
 fi
 # Apply local patches to external libraries
 # Patch filename convention: <submodule-dir>--<description>.patch
@@ -91,7 +94,7 @@ if [ "$1" == "demo" ]; then
     	ifx=$(ls external/influxdb-cpp/*.cpp)
     	g++ -o OpenSprinkler -DDEMO -DSMTP_OPENSSL $DEBUG -std=c++14 -include string.h main.cpp \
 		OpenSprinkler.cpp program.cpp opensprinkler_server.cpp utils.cpp weather.cpp gpio.cpp mqtt.cpp sunrise.cpp \
-		smtp.c RCSwitch.cpp sensor*.cpp notifier.cpp naett.c psram_utils.cpp TimeLib.cpp osinfluxdb.cpp \
+		smtp.c RCSwitch.cpp sensor*.cpp special_station_handlers.cpp notifier.cpp naett.c psram_utils.cpp TimeLib.cpp osinfluxdb.cpp \
 		$ws_include $ws $otf_include $otf $ifx_include \
 		-lpthread -lmosquitto -lssl -lcrypto -lcurl -li2c -lmodbus -lbluetooth
 else

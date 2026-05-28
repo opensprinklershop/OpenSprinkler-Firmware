@@ -319,6 +319,21 @@ upload_env_auto() {
     upload_env "$env"
 }
 
+upload_env_fast_debug() {
+    local env="$1"
+
+    # Debug deploy should be as fast as possible: prefer IP upload first,
+    # then fall back to USB if device is currently not reachable.
+    if _device_reachable_quiet; then
+        info "Debug deploy: device reachable at ${DEVICE_IP}; using fast IP upload."
+        upload_ip_env "$env"
+        return
+    fi
+
+    warn "Debug deploy: fast IP upload unavailable (device not reachable), falling back to USB upload."
+    upload_env "$env"
+}
+
 # ── Helper functions ─────────────────────────────────────────────────────────
 check_pio() {
     if ! command -v "$PIO_BIN" &>/dev/null; then
@@ -2481,7 +2496,11 @@ case "$ACTION" in
                     zigbee)
                         build_env "$ENV_C5_ZIGBEE"
                         copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
-                        upload_env_auto "$ENV_C5_ZIGBEE"
+                        if $deploy_debug; then
+                            upload_env_fast_debug "$ENV_C5_ZIGBEE"
+                        else
+                            upload_env_auto "$ENV_C5_ZIGBEE"
+                        fi
                         if [[ "${FW_UPLOAD_METHOD,,}" == "usb" ]]; then
                             ensure_zigbee_boot_partition
                         fi
