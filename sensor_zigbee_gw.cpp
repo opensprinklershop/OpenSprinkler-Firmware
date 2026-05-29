@@ -274,15 +274,15 @@ static std::vector<GwBasicQueryRequest> gw_basic_query_queue;
 // Tuya manufacturer-specific cluster (manuSpecificTuya)
 #define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
 
-// Tuya DP (DataPoint) command IDs within cluster 0xEF00
-// Per Tuya Standard MCU Protocol: https://developer.tuya.com/en/docs/mcu-standard-protocol/mcusdk-zigbee-uart-protocol
-#define TUYA_CMD_QUERY_DP_DATA  0x00  // Gateway -> device (legacy query all DPs)
-#define TUYA_CMD_RESPOND_DP     0x01  // Gateway -> device (legacy DP response / ACK)
-#define TUYA_CMD_DP_REPORT      0x02  // Device -> gateway (DP report / unsolicited status)
-#define TUYA_CMD_QUERY_REQ      0x03  // Gateway -> device (query DPs)
-#define TUYA_CMD_DP_SEND        0x04  // Gateway -> device (legacy set DP command)
-#define TUYA_CMD_REPORT_DP_DATA 0x06  // Gateway -> device (Report DP data - MAIN CONTROL COMMAND) ← Use this!
-#define TUYA_CMD_REPORT_NO_LINK 0x2C  // Gateway -> device (Report DP without triggering linkage)
+// Tuya DP command IDs on Zigbee private cluster 0xEF00.
+// Reference: Tuya "Zigbee Generic Interfaces" private command table.
+#define TUYA_CMD_QUERY_DP_DATA  0x00  // TY_DATA_REQUEST: gateway -> device DP write/request
+#define TUYA_CMD_RESPOND_DP     0x01  // TY_DATA_RESPONE: device -> gateway response
+#define TUYA_CMD_DP_REPORT      0x02  // TY_DATA_REPORT: device -> gateway proactive report (two-way ACK)
+#define TUYA_CMD_QUERY_REQ      0x03  // TY_DATA_QUERY: gateway -> device query all DPs
+#define TUYA_CMD_DP_SEND        0x04  // Legacy/vendor variant seen on some devices
+#define TUYA_CMD_REPORT_DP_DATA 0x02  // Keep alias for historical naming in this file
+#define TUYA_CMD_REPORT_NO_LINK 0x2C  // Legacy/vendor extension (not primary path)
 #define TUYA_CMD_MCU_VERSION_REQ  0x10  // Device → gateway (MCU version query)
 #define TUYA_CMD_MCU_VERSION_RESP 0x11  // Gateway → device (MCU version answer)
 #define TUYA_CMD_TIME_SYNC_REQ  0x24  // Device → gateway (time sync request)
@@ -985,6 +985,14 @@ static uint16_t gw_next_tuya_seq() {
     if (gw_tuya_seq > 0xfff0) gw_tuya_seq = 0;
     gw_save_tuya_seq(gw_tuya_seq);
     return seq;
+}
+
+// Reset Tuya sequence to 0 (called when rejoin is triggered for sync)
+static void gw_reset_tuya_seq() {
+    gw_tuya_seq = 0;
+    gw_tuya_seq_loaded = true;
+    gw_save_tuya_seq(0);
+    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Sequence reset to 0 for device rejoin\n"));
 }
 
 static size_t gw_build_tuya_dp_payload(uint8_t* payload, size_t payload_size,
@@ -2559,6 +2567,33 @@ void sensor_zigbee_gw_open_network(uint16_t duration) {
     // DEBUG_PRINTLN(F("[ZIGBEE-GW] Network open for joining"));
 }
 
+// Trigger a forced rejoin for a device and reset Tuya sequence counter.
+// This helps when a device loses sync with the gateway's DP sequence numbering.
+bool sensor_zigbee_gw_rejoin_device(uint64_t device_ieee) {
+    if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Rejoin FAILED for ieee=%016llX: GW not ready\n"),
+                     (unsigned long long)device_ieee);
+        return false;
+    }
+    if (device_ieee == 0) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Rejoin FAILED: device_ieee is 0"));
+        return false;
+    }
+
+    // Reset the global Tuya sequence counter so the device starts fresh
+    gw_reset_tuya_seq();
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Sequence reset to 0 for device ieee=%016llX\n"),
+                 (unsigned long long)device_ieee);
+
+    // The device can now rejoin with a clean sequence state. Open the network
+    // briefly to allow it to re-interview without reconnecting.
+    sensor_zigbee_gw_open_network(60);  // 60 seconds for rejoin window
+
+    DEBUG_PRINTF(F("[ZIGBEE-GW] ✓ Rejoin + seq reset initiated for ieee=%016llX (60s window)\n"),
+                 (unsigned long long)device_ieee);
+    return true;
+}
+
 uint16_t sensor_zigbee_gw_get_join_window_remaining() {
     if (gw_join_window_end == 0) return 0;
     unsigned long now = millis();
@@ -2950,18 +2985,18 @@ static bool gw_send_tuya_dp_value_write_cmd(uint64_t device_ieee, uint8_t endpoi
 static bool gw_send_giex_water_valve_state_cmd(uint64_t device_ieee, uint8_t endpoint, bool turnon,
                                                bool queue_on_unavailable) {
     if (!turnon) {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Sending OFF via DP2 using standard Report DP (cmd 0x06)"));
+        DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Sending OFF via DP2 using TY_DATA_REQUEST (cmd 0x00)"));
         return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, false,
-                                              TUYA_CMD_REPORT_DP_DATA, queue_on_unavailable);
+                                              TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
     }
 
-    DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Preparing ON: mode=duration (DP1=0), target=0 (DP104), then state=ON (DP2) using standard Report DP (cmd 0x06)"));
+    DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Preparing ON: mode=duration (DP1=0), target=0 (DP104), then state=ON (DP2) using TY_DATA_REQUEST (cmd 0x00)"));
     gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 1, false,
-                                   TUYA_CMD_REPORT_DP_DATA, false);
+                                   TUYA_CMD_DATA_REQUEST, false);
     gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, 104, 0,
-                                    TUYA_CMD_REPORT_DP_DATA, false);
+                                    TUYA_CMD_DATA_REQUEST, false);
     return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, true,
-                                          TUYA_CMD_REPORT_DP_DATA, queue_on_unavailable);
+                                          TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
 }
 
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
@@ -3026,9 +3061,9 @@ void sensor_zigbee_station_verify_tick() {
         if (!zb_verify_table[i].pending) continue;
         if (zb_verify_table[i].retries == 0 && now - zb_verify_table[i].sent_ms >= ZB_VERIFY_RETRY_MS) {
             bool is_state_dp = (zb_verify_table[i].dp_id == 2);
-            // Use standard Report DP (0x06) for GX02, fallback to DATA_QUERY (0x03) for others
+            // Use TY_DATA_REQUEST (0x00) for writes, fallback to TY_DATA_QUERY (0x03) for others.
             uint8_t retry_cmd = (is_state_dp && gw_is_giex_water_valve(zb_verify_table[i].ieee))
-                                  ? TUYA_CMD_REPORT_DP_DATA
+                                  ? TUYA_CMD_DATA_REQUEST
                                   : TUYA_CMD_QUERY_REQ;
             DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm pending: sid=%u dp=%u expected_on=%d, retrying with cmd=0x%02X\n"),
                          (unsigned)zb_verify_table[i].sid,

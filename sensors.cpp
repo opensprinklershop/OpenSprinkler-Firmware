@@ -177,7 +177,7 @@ const char *sensor_unitNames[]{
 };
 uint8_t logFileSwitch[3] = {0, 0, 0};  // 0=use smaller File, 1=LOG1, 2=LOG2
 
-extern ulong flow_count;
+extern volatile ulong flow_count;
 
 static bool sensor_unit_is_water_absolute(uint8_t unitid) {
   return unitid == UNIT_LITER || unitid == UNIT_GALLON;
@@ -197,8 +197,7 @@ static uint8_t sensor_consumption_unit_for(uint8_t unitid) {
 }
 
 static double flow_pulse_volume() {
-  uint32_t volume100 = (((uint32_t)os.iopts[IOPT_PULSE_RATE_1]) << 8) + os.iopts[IOPT_PULSE_RATE_0];
-  return (double)volume100 / 100.0;
+  return (double)os.get_flow_volume_per_pulse();
 }
 
 class FlowPulseSensor : public SensorBase {

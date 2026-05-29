@@ -94,7 +94,7 @@ static const char *TAG = "OSRainMaker";
 
 extern OpenSprinkler os;
 extern ProgramData pd;
-extern ulong flow_count;
+extern volatile ulong flow_count;
 
 // Forward declarations from main.cpp (use correct types)
 extern void schedule_all_stations(time_os_t curr_time, unsigned char req_option);

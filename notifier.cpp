@@ -183,8 +183,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	// check if ifttt key exists and also if the enable bit is set
 	os.sopt_load(SOPT_IFTTT_KEY, tmp_buffer);
 	bool ifttt_enabled = (strlen(tmp_buffer)!=0);
-	// flow rate
-	uint32_t flowrate100 = (((uint32_t)os.iopts[IOPT_PULSE_RATE_1])<<8) + os.iopts[IOPT_PULSE_RATE_0];
+	float flow_volume_per_pulse = os.get_flow_volume_per_pulse();
 
 #define DEFAULT_EMAIL_PORT	465
 
@@ -312,7 +311,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				if((int)fval > 0) {
 					snprintf_P(payload+strlen(payload), PUSH_PAYLOAD_LEN, PSTR(",\"duration\":%d"), (int)fval);
 					if (os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
-						float gpm = flow_last_gpm * flowrate100 / 100.f;
+						float gpm = flow_last_gpm * flow_volume_per_pulse;
 						#if defined(OS_AVR)
 						snprintf_P(payload+strlen(payload), PUSH_PAYLOAD_LEN, PSTR(",\"flow\":%d.%02d"), (int)gpm, (int)(gpm*100)%100);
 						#else
@@ -332,7 +331,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				}
 
 				if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
-					float gpm = flow_last_gpm * flowrate100 / 100.f;
+					float gpm = flow_last_gpm * flow_volume_per_pulse;
 					#if defined(OS_AVR)
 					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE, PSTR(" Flow rate: %d.%02d"), (int)gpm, (int)(gpm*100)%100);
 					#else
@@ -343,7 +342,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			}
 
 			//calculate flow average:
-			uint16_t avg_flow = flow_last_gpm * flowrate100;
+			uint16_t avg_flow = (uint16_t)(flow_last_gpm * flow_volume_per_pulse * 100.0f);
 			if (os.get_flow_avg_value(lval) == 0) {
 				os.set_flow_avg_value(lval, avg_flow);
 			} else {
@@ -388,7 +387,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					//station_name_last_five_chars was successfully converted to a number 
 					//flow_last_gpm is actually collected and stored as pulses per minute, not gallons per minute
 					// Alert Check - Compare flow_gpm_alert_setpoint with flow_last_gpm and enable flow_alert_flag if flow is above setpoint
-					if ((flow_last_gpm*flowrate100/100.f) > flow_gpm_alert_setpoint) {
+					if ((flow_last_gpm * flow_volume_per_pulse) > flow_gpm_alert_setpoint) {
 					flow_alert_flag = true;
 				}
 				} else {
@@ -406,7 +405,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				if (os.mqtt.enabled()) {
 					//Format mqtt message
 					snprintf_P(topic, PUSH_TOPIC_LEN, PSTR("station/%d/alert/flow"), lval);
-					float gpm = flow_last_gpm * flowrate100 / 100.f;
+					float gpm = flow_last_gpm * flow_volume_per_pulse;
 					#if defined(OS_AVR)
 					snprintf_P(payload, PUSH_PAYLOAD_LEN, PSTR("{\"flow_rate\":%d.%02d,\"duration\":%d,\"alert_setpoint\":%d.%02d}"), (int)gpm, (int)(gpm*100)%100,
 					(int)fval, (int)flow_gpm_alert_setpoint, (int)(flow_gpm_alert_setpoint*100)%100);
@@ -444,7 +443,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					}
 
 					strcat_P(postval, PSTR(" FLOW ALERT!"));
-					float gpm = flow_last_gpm * flowrate100 / 100.f;
+					float gpm = flow_last_gpm * flow_volume_per_pulse;
 					#if defined(OS_AVR)
 					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE, PSTR(" | Flow rate: %d.%02d > Flow alert setpoint: %d.%02d"),
 						(int)gpm, (int)(gpm*100)%100, (int)flow_gpm_alert_setpoint, (int)(flow_gpm_alert_setpoint*100)%100);
@@ -542,7 +541,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 
 		case NOTIFY_FLOWSENSOR:
 			{
-				float vol = lval*flowrate100/100.f;
+				float vol = lval * flow_volume_per_pulse;
 				if (os.mqtt.enabled()) {
 					strcpy_P(topic, PSTR("sensor/flow"));
 					#if defined(OS_AVR)
@@ -726,7 +725,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					// Generate HTML email report
 					{
 						static const char* const mon_names[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-						uint32_t flowrate100 = ((uint32_t)os.iopts[IOPT_PULSE_RATE_1] << 8) + os.iopts[IOPT_PULSE_RATE_0];
+						float volume_per_pulse = os.get_flow_volume_per_pulse();
 						char dname[32];
 						os.sopt_load(SOPT_DEVICE_NAME, dname, 31);
 						dname[31] = 0;
@@ -765,7 +764,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 							uint16_t m_ym = os.mwdata.records[i].ym;
 							uint16_t y = m_ym / 12;
 							uint8_t m = m_ym % 12; // 0-based month
-							float vol = os.mwdata.records[i].flow_count * flowrate100 / 100.f;
+							float vol = os.mwdata.records[i].flow_count * volume_per_pulse;
 							bool is_last = (i == os.mwdata.nrecords - 1);
 							const char *bg = is_last ? "#e8f4fd" : (i % 2 ? "#f9f9f9" : "#fff");
 							snprintf(buf, sizeof(buf),
@@ -780,7 +779,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						html += F("</table>");
 
 						// Current month running total
-						float curr_vol = os.mwdata.curr_flow * flowrate100 / 100.f;
+						float curr_vol = os.mwdata.curr_flow * volume_per_pulse;
 						uint16_t cy = os.mwdata.curr_ym / 12;
 						uint8_t cm = os.mwdata.curr_ym % 12;
 						snprintf(buf, sizeof(buf),

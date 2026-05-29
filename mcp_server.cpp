@@ -42,7 +42,7 @@ extern ProgramData pd;
 extern BufferFiller bfill;
 extern bool useEth;
 extern OTF::OpenThingsFramework *otf;
-extern ulong flow_count;
+extern volatile ulong flow_count;
 
 // Capture-mode globals (defined in opensprinkler_server.cpp)
 extern bool   g_mcp_capture_active;

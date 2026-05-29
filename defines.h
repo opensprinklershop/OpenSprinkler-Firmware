@@ -389,6 +389,8 @@ enum {
 	IOPT_NOTIF4_ENABLE,
 	IOPT_RAINMAKER_ENABLE, ///< 0 = off (default); 1 = init RainMaker on connect
 	IOPT_INVERT_GROUP_SCHEDULING, ///< 0 = default: same group sequential; 1 = invert: same group parallel
+	IOPT_FLOW_PULSE_DIV_0, ///< low byte of flow pulse divisor (effective volume = pulse_rate/100/divisor)
+	IOPT_FLOW_PULSE_DIV_1, ///< high byte of flow pulse divisor
 	NUM_IOPTS // total number of integer options
 };
 

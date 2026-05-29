@@ -236,6 +236,8 @@ const char iopt_json_names[] PROGMEM =
 	"ife4\0"
 	"rken\0" // IOPT_RAINMAKER_ENABLE: 0=off, 1=on
 	"ginv\0" // IOPT_INVERT_GROUP_SCHEDULING: 0=default, 1=invert
+	"fpd0\0" // IOPT_FLOW_PULSE_DIV_0
+	"fpd1\0" // IOPT_FLOW_PULSE_DIV_1
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -399,7 +401,9 @@ const unsigned char iopt_max[] PROGMEM = {
 	255,             // IOPT_NOTIF3_ENABLE (bitmask byte 3)
 	255,             // IOPT_NOTIF4_ENABLE (bitmask byte 4)
 	1,               // IOPT_RAINMAKER_ENABLE
-	1                // IOPT_INVERT_GROUP_SCHEDULING
+	1,               // IOPT_INVERT_GROUP_SCHEDULING
+	255,             // IOPT_FLOW_PULSE_DIV_0
+	255              // IOPT_FLOW_PULSE_DIV_1
 };
 
 // string options do not have maximum values
@@ -491,6 +495,8 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // Notif4 enable bit
 	0,  // RainMaker enable: 1=enabled 0=disabled (default)
 	0,  // Invert group scheduling: 0=default mode 1=invert mode
+	1,  // flow pulse divisor low byte (default divisor=1)
+	0,  // flow pulse divisor high byte
 };
 
 /** String option values (stored in RAM) */
@@ -2271,6 +2277,19 @@ unsigned char OpenSprinkler::is_sequential_station(unsigned char sid) {
 	return attrib_grp[sid] != PARALLEL_GROUP_ID;
 }
 
+uint16_t OpenSprinkler::get_flow_pulse_rate_100() {
+	return (uint16_t)(((uint16_t)iopts[IOPT_PULSE_RATE_1] << 8) | iopts[IOPT_PULSE_RATE_0]);
+}
+
+uint16_t OpenSprinkler::get_flow_pulse_divisor() {
+	uint16_t div = (uint16_t)(((uint16_t)iopts[IOPT_FLOW_PULSE_DIV_1] << 8) | iopts[IOPT_FLOW_PULSE_DIV_0]);
+	return div ? div : 1;
+}
+
+float OpenSprinkler::get_flow_volume_per_pulse() {
+	return (float)get_flow_pulse_rate_100() / (100.0f * (float)get_flow_pulse_divisor());
+}
+
 uint16_t OpenSprinkler::get_flow_alert_setpoint(unsigned char sid) {
 	return attrib_fas[sid];
 }
@@ -3695,6 +3714,9 @@ void OpenSprinkler::iopts_load() {
 	}
 	// California restriction is now indicated in wto and no longer by the highest bit of uwt. So we force that bit to 0
 	iopts[IOPT_USE_WEATHER] &= 0x7F;
+	if (iopts[IOPT_FLOW_PULSE_DIV_0] == 0 && iopts[IOPT_FLOW_PULSE_DIV_1] == 0) {
+		iopts[IOPT_FLOW_PULSE_DIV_0] = 1;
+	}
 }
 
 void OpenSprinkler::populate_master() {
@@ -4114,6 +4136,13 @@ void OpenSprinkler::lcd_print_option(int i) {
 		lcd.print(fpr%10);
 		}
 		break;
+	case IOPT_FLOW_PULSE_DIV_0:
+		{
+		uint16_t div = (unsigned int)(iopts[i+1]<<8)+iopts[i];
+		if(!div) div = 1;
+		lcd.print(div);
+		}
+		break;
 	case IOPT_LCD_CONTRAST:
 		lcd_set_contrast();
 		lcd.print((int)iopts[i]);
@@ -4253,6 +4282,7 @@ void OpenSprinkler::ui_set_options(int oid)
 			if (i==IOPT_FW_VERSION || i==IOPT_HW_VERSION || i==IOPT_FW_MINOR ||
 					i==IOPT_HTTPPORT_0 || i==IOPT_HTTPPORT_1 ||
 					i==IOPT_PULSE_RATE_0 || i==IOPT_PULSE_RATE_1 ||
+					i==IOPT_FLOW_PULSE_DIV_0 || i==IOPT_FLOW_PULSE_DIV_1 ||
 					i==IOPT_WIFI_MODE) break; // ignore non-editable options
 			if (pgm_read_byte(iopt_max+i) != iopts[i]) iopts[i] ++;
 			break;
@@ -4261,6 +4291,7 @@ void OpenSprinkler::ui_set_options(int oid)
 			if (i==IOPT_FW_VERSION || i==IOPT_HW_VERSION || i==IOPT_FW_MINOR ||
 					i==IOPT_HTTPPORT_0 || i==IOPT_HTTPPORT_1 ||
 					i==IOPT_PULSE_RATE_0 || i==IOPT_PULSE_RATE_1 ||
+					i==IOPT_FLOW_PULSE_DIV_0 || i==IOPT_FLOW_PULSE_DIV_1 ||
 					i==IOPT_WIFI_MODE) break; // ignore non-editable options
 			if (iopts[i] != 0) iopts[i] --;
 			break;
@@ -4277,6 +4308,7 @@ void OpenSprinkler::ui_set_options(int oid)
 				if (i==IOPT_USE_DHCP && iopts[i]) i += 9; // if use DHCP, skip static ip set
 				else if (i==IOPT_HTTPPORT_0) i+=2; // skip IOPT_HTTPPORT_1
 				else if (i==IOPT_PULSE_RATE_0) i+=2; // skip IOPT_PULSE_RATE_1
+				else if (i==IOPT_FLOW_PULSE_DIV_0) i+=2; // skip IOPT_FLOW_PULSE_DIV_1
 				else if (i==IOPT_MASTER_STATION && iopts[i]==0) i+=3; // if not using master station, skip master on/off adjust including two retired options
 				else if (i==IOPT_MASTER_STATION_2&& iopts[i]==0) i+=3; // if not using master2, skip master2 on/off adjust
 				else	{

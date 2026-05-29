@@ -155,7 +155,7 @@ using ArduinoJson::JsonVariant;
 // ether_buffer and tmp_buffer declared in sensors.h
 extern OpenSprinkler os;
 extern ProgramData pd;
-extern ulong flow_count;
+extern volatile ulong flow_count;
 
 #if !defined(USE_OTF)
 static unsigned char return_code;
@@ -1961,6 +1961,11 @@ void server_change_options(OTF_PARAMS_DEF)
 			if (oid>=IOPT_SENSOR1_TYPE && oid<=IOPT_SENSOR2_OFF_DELAY) sensor_change = true;
 			if (oid==IOPT_TARGET_PD_VOLTAGE) tpdv_change = true;
 		}
+	}
+
+	// Flow pulse divisor must be a positive integer.
+	if (os.iopts[IOPT_FLOW_PULSE_DIV_0] == 0 && os.iopts[IOPT_FLOW_PULSE_DIV_1] == 0) {
+		os.iopts[IOPT_FLOW_PULSE_DIV_0] = 1;
 	}
 
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("loc"), true)) {
@@ -4444,7 +4449,7 @@ void server_gardena_query_locations(OTF_PARAMS_DEF) {
 	if (!data.isNull()) {
 		for (JsonVariantConst variant : data) {
 			JsonObjectConst item = variant.as<JsonObjectConst>();
-			JsonObject entry = result.createNestedObject();
+			JsonObject entry = result.add<JsonObject>();
 			entry["id"] = item["id"] | "";
 			entry["name"] = item["attributes"]["name"] | "";
 		}
@@ -5262,7 +5267,7 @@ void server_sensor_types(OTF_PARAMS_DEF) {
  * jw
  * Monthly water usage data
  * Command: /jw
- * Returns JSON: {"pr":pulse_rate, "curr":{"ym":X,"flow":X}, "records":[{"ym":X,"flow":X},...]}
+ * Returns JSON: {"pr":pulse_rate_100, "pd":pulse_divisor, "curr":{"ym":X,"flow":X}, "records":[{"ym":X,"flow":X},...]}
  */
 void server_json_water(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -5274,9 +5279,10 @@ void server_json_water(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	uint16_t pulse_rate = (uint16_t)(os.iopts[IOPT_PULSE_RATE_1] << 8) + os.iopts[IOPT_PULSE_RATE_0];
-	bfill.emit_p(PSTR("{\"pr\":$D,\"curr\":{\"ym\":$D,\"flow\":$L},\"records\":["),
-		pulse_rate, os.mwdata.curr_ym, (unsigned long)os.mwdata.curr_flow);
+	uint16_t pulse_rate = os.get_flow_pulse_rate_100();
+	uint16_t pulse_div = os.get_flow_pulse_divisor();
+	bfill.emit_p(PSTR("{\"pr\":$D,\"pd\":$D,\"curr\":{\"ym\":$D,\"flow\":$L},\"records\":["),
+		pulse_rate, pulse_div, os.mwdata.curr_ym, (unsigned long)os.mwdata.curr_flow);
 
 	for(uint8_t i = 0; i < os.mwdata.nrecords; i++) {
 		if(i) bfill.emit_p(PSTR(","));
@@ -6168,6 +6174,27 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		}
 		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"remove\",\"ieee\":\"$S\",\"unbound_sensors\":$D}"),
 		             ieee_str, unbound);
+
+	} else if (strcmp(action, "rejoin_device") == 0) {
+		// Force rejoin + sequence reset for a device
+		char ieee_str[24] = "";
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		// Trigger rejoin + sequence reset
+		bool ok = sensor_zigbee_gw_rejoin_device(addr);
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"rejoin_device\",\"ieee\":\"$S\",\"message\":\"$S\"}"),
+		             ok ? 1 : 0, ieee_str, ok ? "Device rejoin initiated with seq reset (60s window)" : "Failed to initiate rejoin");
 
 	} else {
 		// Default: list devices

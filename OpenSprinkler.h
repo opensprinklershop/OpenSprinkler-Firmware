@@ -374,6 +374,9 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void set_station_name(unsigned char sid, char buf[]); // set station name
 	static unsigned char get_station_type(unsigned char sid); // get station type
 	static unsigned char is_sequential_station(unsigned char sid);
+	static uint16_t get_flow_pulse_rate_100();
+	static uint16_t get_flow_pulse_divisor();
+	static float get_flow_volume_per_pulse();
     uint16_t get_flow_alert_setpoint(unsigned char sid);
     void set_flow_alert_setpoint(unsigned char sid, uint16_t value);
     uint16_t get_flow_avg_value(unsigned char sid);

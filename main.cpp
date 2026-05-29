@@ -183,7 +183,7 @@ NotifQueue notif; // NotifQueue object
  * flow_gallons - total # of gallons+1 from flow_start to flow_stop
  * flow_last_gpm - last flow rate measured (averaged over flow_gallons) from last valve stopped (used to write to log file). */
 ulong flow_begin, flow_start, flow_stop, flow_gallons, flow_rt_reset, last_flow_rt;
-ulong flow_count = 0;
+volatile ulong flow_count = 0;
 unsigned char prev_flow_state = HIGH;
 float flow_last_gpm=0;
 int32_t flow_rt_period = -1;
@@ -200,19 +200,100 @@ static ulong pipeburst_check_time = 0;    // millis timestamp when to check for 
 static ulong pipeburst_flow_snapshot = 0; // flow_count baseline when all stations off
 #define FLOW_ANOMALY_DELAY_MS 10000       // 10 seconds delay for both checks
 
-void flow_poll() {
-	ulong curr = millis();
+#if defined(ESP32)
+static volatile uint32_t flow_irq_pulses = 0;
+static bool flow_irq_enabled = false;
 
-	// Resets counter if timeout occurs
+static void IRAM_ATTR flow_sensor_isr() {
+	flow_irq_pulses = flow_irq_pulses + 1;
+}
+
+static uint32_t flow_take_irq_pulses() {
+	uint32_t pulses;
+	noInterrupts();
+	pulses = flow_irq_pulses;
+	flow_irq_pulses = 0;
+	interrupts();
+	return pulses;
+}
+
+static void flow_update_input_mode() {
+	bool want_irq = (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_FLOW);
+	if (want_irq == flow_irq_enabled) return;
+
+	if (want_irq) {
+		pinMode(PIN_SENSOR1, INPUT_PULLUP);
+		attachInterrupt(digitalPinToInterrupt(PIN_SENSOR1), flow_sensor_isr, FALLING);
+		flow_irq_enabled = true;
+		prev_flow_state = HIGH;
+	} else {
+		detachInterrupt(digitalPinToInterrupt(PIN_SENSOR1));
+		flow_irq_enabled = false;
+		flow_irq_pulses = 0;
+	}
+}
+#else
+static inline void flow_update_input_mode() {}
+#endif
+
+static void flow_update_timeout(ulong curr) {
 	if (flow_rt_reset && curr > flow_rt_reset) {
 		os.flowcount_rt = 0;
 		flow_rt_period = -1;
 		flow_rt_reset = 0;
 	}
+}
+
+static void flow_process_pulses(ulong curr, uint32_t pulses) {
+	if (!pulses) return;
 
 	if (flow_rt_period < 0) {
 		last_flow_rt = curr;
 	}
+
+	flow_count += pulses;
+
+	/* RAH implementation of flow sensor */
+	if (flow_start == 0) {
+		flow_gallons = 0;
+		flow_start = curr;
+	}
+
+	if ((curr-flow_start)<90000) {
+		flow_gallons=0;
+	} else if (flow_gallons==1) {
+		flow_begin = curr;
+	}
+
+	ulong elapsed = curr - last_flow_rt;
+	ulong curr_period = (elapsed > 0) ? (elapsed / pulses) : 0;
+	if (curr_period == 0 && elapsed > 0) curr_period = 1;
+
+	if (curr_period > 0) {
+		if (flow_rt_period > 0) {
+			flow_rt_period = (curr_period  / 5 + flow_rt_period * 4 / 5);
+		} else {
+			flow_rt_period = curr_period;
+		}
+	}
+
+	if (flow_rt_period > 0) {
+		os.flowcount_rt = (ulong) (FLOWCOUNT_RT_WINDOW * 1000L / flow_rt_period);
+		flow_rt_reset = curr + flow_rt_period * 10;
+	} else {
+		os.flowcount_rt = 0;
+		flow_rt_reset = 0;
+	}
+
+	last_flow_rt = curr;
+	flow_stop = curr;
+	flow_gallons += pulses;
+	/* End of RAH implementation of flow sensor */
+}
+
+void flow_poll() {
+	ulong curr = millis();
+	flow_update_timeout(curr);
 
 	#if defined(ESP8266) || defined(ESP32)
 	if(os.hw_rev>=2) {
@@ -228,46 +309,7 @@ void flow_poll() {
 		return;
 	}
 	prev_flow_state = curr_flow_state;
-	flow_count++;
-
-	/* RAH implementation of flow sensor */
-	if (flow_start == 0) {
-		flow_gallons = 0;
-		flow_start = curr;
-	} // if first pulse, record time
-
-	if ((curr-flow_start)<90000) {
-		flow_gallons=0;
-	} // wait 90 seconds before recording flow_begin
-	else {
-		if (flow_gallons==1) {
-			flow_begin = curr;
-		}
-	}
-
-	// Use exponential moving average (alpha=0.2) if flow has been previosuly calculated, otherwise just set the value
-	ulong curr_period = curr - last_flow_rt;
-	if (flow_rt_period > 0) {
-		flow_rt_period = (curr_period  / 5 + flow_rt_period * 4 / 5);
-	} else {
-		flow_rt_period = curr_period;
-	}
-
-	// calculates the flow rate scaled by the window size to simulated a fixed point number
-	if (flow_rt_period > 0) {
-		os.flowcount_rt = (ulong) (FLOWCOUNT_RT_WINDOW * 1000L / flow_rt_period);
-		// Sets the timeout to be 10x the last period
-		flow_rt_reset = curr + (curr - last_flow_rt) * 10;
-	} else {
-		os.flowcount_rt = 0;
-		flow_rt_reset = 0;
-	}
-
-	last_flow_rt = curr;
-
-	flow_stop = curr; // get time in ms for stop
-	flow_gallons++;  // increment gallon count for each poll
-	/* End of RAH implementation of flow sensor */
+	flow_process_pulses(curr, 1);
 }
 
 #if defined(USE_DISPLAY)
@@ -948,15 +990,24 @@ void do_loop()
 
 	// BLE und Matter werden jetzt direkt nach WiFi-Verbindung initialisiert (siehe OS_STATE_CONNECTING)
 	// Keine verzögerte Initialisierung mehr nötig
+	flow_update_input_mode();
 
 	static ulong flowpoll_timeout=0;
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
-	// handle flow sensor using polling. Maximum freq is 1/(2*FLOWPOLL_INTERVAL)
-	// e.g. if FLOWPOLL_INTERVAL is 3ms, maximum freq is 166Hz
+	// handle flow sensor with ESP32 interrupt + poll-drain hybrid, fallback to polling elsewhere.
 		ulong tm = millis();
 		if((long)(tm-flowpoll_timeout) > 0) { // overflow proof timeout
 			flowpoll_timeout = tm+FLOWPOLL_INTERVAL;
+			flow_update_timeout(tm);
+			#if defined(ESP32)
+			if (flow_irq_enabled) {
+				flow_process_pulses(tm, flow_take_irq_pulses());
+			} else {
+				flow_poll();
+			}
+			#else
 			flow_poll();
+			#endif
 		}
 	}
 
@@ -1378,7 +1429,13 @@ void do_loop()
 	if (curr_time != last_time) {
 		#if defined(ESP8266) || defined(ESP32)
 		if(os.hw_rev>=2) {
+			#if defined(ESP32)
+			if (!(flow_irq_enabled && os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW)) {
+				pinMode(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
+			}
+			#else
 			pinMode(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
+			#endif
 			pinMode(PIN_SENSOR2, INPUT_PULLUP);
 		}
 		#endif
@@ -1499,8 +1556,7 @@ void do_loop()
 				// if month changed and we had a valid previous month, send notification
 				if(prev_ym != 0 && prev_ym != os.mwdata.curr_ym && os.mwdata.nrecords > 0) {
 					MonthlyWaterEntry &last = os.mwdata.records[os.mwdata.nrecords - 1];
-					uint32_t flowrate100 = ((uint32_t)os.iopts[IOPT_PULSE_RATE_1] << 8) + os.iopts[IOPT_PULSE_RATE_0];
-					float volume = last.flow_count * flowrate100 / 100.f;
+					float volume = last.flow_count * os.get_flow_volume_per_pulse();
 					notif.add(NOTIFY_MONTHLY_REPORT, last.flow_count, volume);
 				}
 			}

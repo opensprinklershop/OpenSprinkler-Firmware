@@ -50,6 +50,13 @@ void sensor_zigbee_gw_loop();
 void sensor_zigbee_gw_open_network(uint16_t duration);
 
 /**
+ * @brief Trigger a forced rejoin for a device and reset Tuya sequence counter
+ * @param device_ieee Device IEEE address
+ * @return true if rejoin initiated successfully
+ */
+bool sensor_zigbee_gw_rejoin_device(uint64_t device_ieee);
+
+/**
  * @brief Remaining gateway permit-join window in seconds
  */
 uint16_t sensor_zigbee_gw_get_join_window_remaining();

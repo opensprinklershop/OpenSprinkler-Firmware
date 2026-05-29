@@ -423,8 +423,6 @@ void OSInfluxDB::push_message(uint32_t type, uint32_t lval, float fval, const ch
     if (!isEnabled())
         return;
 
-    uint32_t volume;
-
    	switch(type) {
 		case  NOTIFY_STATION_ON:
 			influxdb_send_station("station", lval, 1);
@@ -456,10 +454,7 @@ void OSInfluxDB::push_message(uint32_t type, uint32_t lval, float fval, const ch
 			break;
 
 		case NOTIFY_FLOWSENSOR:
-			volume = os.iopts[IOPT_PULSE_RATE_1];
-			volume = (volume<<8)+os.iopts[IOPT_PULSE_RATE_0];
-			volume = lval*volume;
-			influxdb_send_flowsensor("flowsensor", lval, (float)volume/100);
+            influxdb_send_flowsensor("flowsensor", lval, (float)lval * os.get_flow_volume_per_pulse());
 			break;
 
 		case NOTIFY_WEATHER_UPDATE:

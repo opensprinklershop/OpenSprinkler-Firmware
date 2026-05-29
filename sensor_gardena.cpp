@@ -149,7 +149,7 @@ static bool gardena_fill_services(JsonDocument &raw, JsonDocument &out) {
 		}
 
 		if (strcmp(type, "SENSOR") == 0) {
-			JsonObject entry = sensors.createNestedObject();
+			JsonObject entry = sensors.add<JsonObject>();
 			entry["id"] = sensorIndex++;
 			entry["serviceId"] = serviceId;
 			entry["name"] = name;
@@ -158,7 +158,7 @@ static bool gardena_fill_services(JsonDocument &raw, JsonDocument &out) {
 			entry["ambientTemperature"] = attrs["ambientTemperature"]["value"] | nullptr;
 			entry["lightIntensity"] = attrs["lightIntensity"]["value"] | nullptr;
 		} else if (strcmp(type, "VALVE") == 0) {
-			JsonObject entry = valves.createNestedObject();
+			JsonObject entry = valves.add<JsonObject>();
 			entry["id"] = valveIndex++;
 			entry["serviceId"] = serviceId;
 			entry["name"] = name;
