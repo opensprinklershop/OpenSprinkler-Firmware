@@ -198,7 +198,7 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	// Register for switch-failure verification: if the device doesn't echo
 	// the expected DP state within ZB_VERIFY_TIMEOUT_MS, an MQTT alert is
 	// published on station/{sid}/alert/switch.
-	if (use_tuya && command_sent && ieee != 0) {
+	if (use_tuya && command_sent && ieee != 0 && !is_gx02) {
 		sensor_zigbee_station_verify_register(sid, ieee, ep, dp_id, turnon);
 	}
 #endif

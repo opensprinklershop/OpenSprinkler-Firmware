@@ -3087,43 +3087,9 @@ static bool gw_send_tuya_dp_value_write_cmd(uint64_t device_ieee, uint8_t endpoi
 
 static bool gw_send_giex_water_valve_state_cmd(uint64_t device_ieee, uint8_t endpoint, bool turnon,
                                                bool queue_on_unavailable, uint16_t dur = 0) {
-    if (!turnon) {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Sending OFF via DP2 using TY_DATA_SEND (cmd 0x04)"));
-        return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, false,
-                                              TUYA_CMD_DATA_SEND, queue_on_unavailable);
-    }
-
-    // For ON sequence (DP1 -> DP104 -> DP2), ensure the device is reachable once
-    // up front. This avoids triple "short addr unknown" failures per retry loop.
-    if (queue_on_unavailable) {
-        uint64_t ieee_probe = device_ieee;
-        uint16_t short_probe = 0;
-        if (!gw_resolve_tuya_short_addr(&ieee_probe, &short_probe, "GX02 ON preflight",
-                                        true, endpoint, 2, true)) {
-            return false;
-        }
-        device_ieee = ieee_probe;
-    }
-
-    // If a non-zero scheduled duration is passed, send it as DP104 target (in seconds),
-    // and set the mode (DP1) to duration.
-    // If dur is 0, we treat it as infinite/unspecified (or set to 0/default matching earlier behavior).
-    uint32_t target_seconds = dur;
-    DEBUG_PRINTF(F("[ZIGBEE-GW][GX02] Preparing ON: mode=duration (DP1=0), target=%u seconds (DP104), then state=ON (DP2) using TY_DATA_SEND (cmd 0x04)\n"), (unsigned)target_seconds);
-    
-    // Explicitly write DP1 = 0 (Enum value 0 for duration-based mode). 
-    // In Tuya/z2m: 'mode' (DP1) is an ENUM. Let's send TUYA_TYPE_ENUM with value 0.
-    uint8_t enum_zero[1] = { 0x00 };
-    gw_send_tuya_dp_raw_cmd(device_ieee, endpoint, 1, TUYA_TYPE_ENUM,
-                            enum_zero, sizeof(enum_zero), TUYA_CMD_DATA_SEND,
-                            false, false);
-
-    // If duration is 0, let's fall back to 0 or infinite. Giex QT06 usually runs on DP104 in seconds.
-    gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, 104, target_seconds,
-                                    TUYA_CMD_DATA_SEND, false);
-                                    
-    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, true,
-                                          TUYA_CMD_DATA_SEND, queue_on_unavailable);
+    DEBUG_PRINTF(F("[ZIGBEE-GW][GX02] Sending ONE command (DP2=%d) using TY_DATA_REQUEST (cmd 0x00) - No retries, no duration\n"), turnon ? 1 : 0);
+    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, turnon,
+                                          TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
 }
 
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
@@ -3134,7 +3100,7 @@ bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, ui
         }
         return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true, 0);
     }
-    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_SEND, true);
+    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_REQUEST, true);
 }
 
 bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) {
@@ -3147,10 +3113,8 @@ bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, ui
 
 void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on) {
     if (gw_is_giex_water_valve(ieee)) {
-        if (dp_id != 2) {
-            DEBUG_PRINTF(F("[ZIGBEE-GW] GIEX verify override: DP %u forced to 2 for sid=%u\n"), (unsigned)dp_id, (unsigned)sid);
-            dp_id = 2;
-        }
+        DEBUG_PRINTF(F("[ZIGBEE-GW] GIEX/GX02 device on sid=%u: skipping verify/retry registration entirely\n"), (unsigned)sid);
+        return;
     }
     gw_station_switch_error_set(sid, false);
     gw_station_switch_waiting_set(sid, true);
