@@ -105,7 +105,7 @@ void OpenSprinkler::switch_modbusStation(ModbusStationData *data, bool turnon) {
 #endif
 }
 
-void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, uint8_t sid) {
+void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, uint8_t sid, uint16_t dur) {
 	uint64_t ieee = parse_ieee_hex(data->device_ieee);
 
 	uint8_t ep = (uint8_t)hex_to_ulong((unsigned char*)data->endpoint, sizeof(data->endpoint));
@@ -187,7 +187,7 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	bool command_sent = false;
 	if (use_tuya) {
 		if (is_gx02 && dp_id == 2) {
-			command_sent = sensor_zigbee_send_giex_water_valve_state(ieee, ep, turnon);
+			command_sent = sensor_zigbee_send_giex_water_valve_state_with_dur(ieee, ep, turnon, dur);
 		} else {
 			command_sent = sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
 		}

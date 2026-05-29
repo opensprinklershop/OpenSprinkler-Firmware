@@ -6172,8 +6172,14 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				}
 			}
 		}
-		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"remove\",\"ieee\":\"$S\",\"unbound_sensors\":$D}"),
-		             ieee_str, unbound);
+		int cleared_runtime = 0;
+		bool removed = sensor_zigbee_gw_remove_device_from_stack(addr);
+		// Reset Tuya sequence when removing a device
+		sensor_zigbee_gw_reset_tuya_seq();
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"remove\",\"ieee\":\"$S\",\"unbound_sensors\":$D,\"cleared_runtime\":$D,\"seq_reset\":true}"),
+		             removed ? 1 : 0, ieee_str, unbound, cleared_runtime);
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
 
 	} else if (strcmp(action, "rejoin_device") == 0) {
 		// Force rejoin + sequence reset for a device
@@ -6195,6 +6201,8 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		bool ok = sensor_zigbee_gw_rejoin_device(addr);
 		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"rejoin_device\",\"ieee\":\"$S\",\"message\":\"$S\"}"),
 		             ok ? 1 : 0, ieee_str, ok ? "Device rejoin initiated with seq reset (60s window)" : "Failed to initiate rejoin");
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
 
 	} else {
 		// Default: list devices

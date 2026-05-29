@@ -64,7 +64,7 @@
 #   OS_HASH         Admin password already as MD5 hash
 #   MONITOR_SPEED   Serial monitor baud rate (default: 115200)
 #   MONITOR_LOGS    Enable saving monitor logs to /tmp/ (automatic with 'monitor' flag)
-#   FW_UPLOAD_METHOD auto|ip|usb (default: auto; auto prefers IP for a reachable device)
+#   FW_UPLOAD_METHOD auto|ip|usb (default: usb; IP only when explicitly selected)
 # =============================================================================
 
 set -euo pipefail
@@ -144,7 +144,7 @@ MATTER_PRODUCT_ID="0x8000"
 ENV_C5_MATTER="esp32-c5-matter"
 ENV_C5_ZIGBEE="esp32-c5-zigbee"
 ENV_ESP8266="os3x_esp8266"
-FW_UPLOAD_METHOD="${FW_UPLOAD_METHOD:-auto}"
+FW_UPLOAD_METHOD="${FW_UPLOAD_METHOD:-usb}"
 
 # Determine password hash
 _get_hash() {
@@ -321,16 +321,20 @@ upload_env_auto() {
 
 upload_env_fast_debug() {
     local env="$1"
+    local method="${FW_UPLOAD_METHOD,,}"
 
-    # Debug deploy should be as fast as possible: prefer IP upload first,
-    # then fall back to USB if device is currently not reachable.
-    if _device_reachable_quiet; then
-        info "Debug deploy: device reachable at ${DEVICE_IP}; using fast IP upload."
-        upload_ip_env "$env"
-        return
+    # Keep debug deploy deterministic on USB by default.
+    # IP upload is used only when explicitly requested.
+    if [[ "$method" == "ip" ]]; then
+        if _device_reachable_quiet; then
+            info "Debug deploy: FW_UPLOAD_METHOD=ip and device reachable at ${DEVICE_IP}; using IP upload."
+            upload_ip_env "$env"
+            return
+        fi
+        warn "Debug deploy: FW_UPLOAD_METHOD=ip but device not reachable; falling back to USB upload."
     fi
 
-    warn "Debug deploy: fast IP upload unavailable (device not reachable), falling back to USB upload."
+    info "Debug deploy: using USB upload (default)."
     upload_env "$env"
 }
 
@@ -2283,8 +2287,8 @@ ${BOLD}Environment variables:${NC}
     OS_IP=<IP>              Device IP        (default: 192.168.0.151)
     OS_PASSWORD=<password>  Admin password   (will be MD5 hashed)
     OS_HASH=<md5>           MD5 hash direct  (overrides OS_PASSWORD)
-    FW_UPLOAD_METHOD=<mode> Upload mode: auto | ip | usb  (default: auto)
-                                                    auto prefers IP/REST when OS_IP is reachable
+    FW_UPLOAD_METHOD=<mode> Upload mode: auto | ip | usb  (default: usb)
+                                                    use ip only when explicitly requested
     UPLOAD_PORT=<port>      Serial port      (auto-detected if not set)
   UPLOAD_SPEED=<baud>     Upload baud rate  (default: 460800)
   ERASE_FLASH=1           Erase entire flash before full-flash

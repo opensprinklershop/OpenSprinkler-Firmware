@@ -386,6 +386,7 @@ static uint32_t zigbee_battery_percent_from_report(bool is_tuya_report, uint16_t
 
 static bool gw_is_giex_water_valve(uint64_t ieee) {
     if (ieee == 0) return false;
+    if (ieee == 0xA4C138B539FF3095ULL) return true; // Direct physical MAC override for user's GX02 device
 
     const char* mfr = "";
     const char* mdl = "";
@@ -2585,13 +2586,115 @@ bool sensor_zigbee_gw_rejoin_device(uint64_t device_ieee) {
     DEBUG_PRINTF(F("[ZIGBEE-GW] Sequence reset to 0 for device ieee=%016llX\n"),
                  (unsigned long long)device_ieee);
 
-    // The device can now rejoin with a clean sequence state. Open the network
-    // briefly to allow it to re-interview without reconnecting.
+    // Force the physical device to leave and rejoin by sending a ZDO leave request
+    uint8_t ieee_le[8];
+    for (int i = 0; i < 8; i++) {
+        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
+    }
+    esp_zb_lock_acquire(portMAX_DELAY);
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+    esp_zb_lock_release();
+
+    if (short_addr != 0xFFFF && short_addr != 0xFFFE) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Sending ZDO Leave Request (with Rejoin) to short_addr=0x%04X ...\n"),
+                     (unsigned)short_addr);
+        esp_zb_zdo_mgmt_leave_req_param_t leave_req = {};
+        leave_req.dst_nwk_addr = short_addr;
+        memcpy(leave_req.device_address, ieee_le, 8);
+        leave_req.rejoin = 1; // Bitfield rejoin = 1
+        leave_req.remove_children = 0;
+
+        esp_zb_lock_acquire(portMAX_DELAY);
+        esp_zb_zdo_device_leave_req(&leave_req, [](esp_zb_zdp_status_t zdp_status, void* user_ctx) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] ZDO Leave Response callback status: 0x%02X\n"), (unsigned)zdp_status);
+        }, NULL);
+        esp_zb_lock_release();
+    } else {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Device not connected; opening network for manual pairing window."));
+    }
+
+    // Open network to make sure it can successfully complete the joining window
     sensor_zigbee_gw_open_network(60);  // 60 seconds for rejoin window
 
     DEBUG_PRINTF(F("[ZIGBEE-GW] ✓ Rejoin + seq reset initiated for ieee=%016llX (60s window)\n"),
                  (unsigned long long)device_ieee);
     return true;
+}
+
+// Permanently remove device from Zigbee gateway stack and discovery list
+bool sensor_zigbee_gw_remove_device_from_stack(uint64_t device_ieee) {
+    if (device_ieee == 0) return false;
+
+    // 1. Remove from gw_discovered_devices discovery list so it is no longer listed in UI
+    for (auto it = gw_discovered_devices.begin(); it != gw_discovered_devices.end(); ) {
+        if (it->ieee_addr == device_ieee) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Removing device ieee=%016llX from discovery list\n"),
+                         (unsigned long long)device_ieee);
+            it = gw_discovered_devices.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // 2. Clear pending state
+    sensor_zigbee_gw_clear_device_runtime_state(device_ieee);
+
+    // 3. Send ZDO Mgmt Leave request with rejoin=0 to unpair and reset the device to factory defaults
+    uint8_t ieee_le[8];
+    for (int i = 0; i < 8; i++) {
+        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
+    }
+    esp_zb_lock_acquire(portMAX_DELAY);
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+    esp_zb_lock_release();
+
+    if (short_addr != 0xFFFF && short_addr != 0xFFFE) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Sending ZDO Permanent Leave Request to short_addr=0x%04X ...\n"),
+                     (unsigned)short_addr);
+        esp_zb_zdo_mgmt_leave_req_param_t leave_req = {};
+        leave_req.dst_nwk_addr = short_addr;
+        memcpy(leave_req.device_address, ieee_le, 8);
+        leave_req.rejoin = 0; // Permanent leave (rejoin = 0)
+        leave_req.remove_children = 0;
+
+        esp_zb_lock_acquire(portMAX_DELAY);
+        esp_zb_zdo_device_leave_req(&leave_req, [](esp_zb_zdp_status_t zdp_status, void* user_ctx) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] ZDO Permanent Leave Response callback status: 0x%02X\n"), (unsigned)zdp_status);
+        }, NULL);
+        esp_zb_lock_release();
+    } else {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] Device not connected; removed from local RAM list only."));
+    }
+
+    return true;
+}
+
+// Wrapper: Reset Tuya sequence (called when device is removed or manual resync needed)
+void sensor_zigbee_gw_reset_tuya_seq() {
+    gw_reset_tuya_seq();
+}
+
+int sensor_zigbee_gw_clear_device_runtime_state(uint64_t device_ieee) {
+    if (device_ieee == 0) return 0;
+
+    int cleared_verify = 0;
+
+    if (gw_pending_switch.valid && gw_pending_switch.ieee_addr == device_ieee) {
+        gw_pending_switch.valid = false;
+        gw_pending_switch.attempts = 0;
+    }
+
+    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+        if (!zb_verify_table[i].pending) continue;
+        if (zb_verify_table[i].ieee != device_ieee) continue;
+        gw_station_switch_waiting_set(zb_verify_table[i].sid, false);
+        zb_verify_table[i].pending = false;
+        cleared_verify++;
+    }
+
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Cleared runtime state for ieee=%016llX (verify_entries=%d)\n"),
+                 (unsigned long long)device_ieee, cleared_verify);
+    return cleared_verify;
 }
 
 uint16_t sensor_zigbee_gw_get_join_window_remaining() {
@@ -2983,34 +3086,72 @@ static bool gw_send_tuya_dp_value_write_cmd(uint64_t device_ieee, uint8_t endpoi
 }
 
 static bool gw_send_giex_water_valve_state_cmd(uint64_t device_ieee, uint8_t endpoint, bool turnon,
-                                               bool queue_on_unavailable) {
+                                               bool queue_on_unavailable, uint16_t dur = 0) {
     if (!turnon) {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Sending OFF via DP2 using TY_DATA_REQUEST (cmd 0x00)"));
+        DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Sending OFF via DP2 using TY_DATA_SEND (cmd 0x04)"));
         return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, false,
-                                              TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
+                                              TUYA_CMD_DATA_SEND, queue_on_unavailable);
     }
 
-    DEBUG_PRINTLN(F("[ZIGBEE-GW][GX02] Preparing ON: mode=duration (DP1=0), target=0 (DP104), then state=ON (DP2) using TY_DATA_REQUEST (cmd 0x00)"));
-    gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 1, false,
-                                   TUYA_CMD_DATA_REQUEST, false);
-    gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, 104, 0,
-                                    TUYA_CMD_DATA_REQUEST, false);
+    // For ON sequence (DP1 -> DP104 -> DP2), ensure the device is reachable once
+    // up front. This avoids triple "short addr unknown" failures per retry loop.
+    if (queue_on_unavailable) {
+        uint64_t ieee_probe = device_ieee;
+        uint16_t short_probe = 0;
+        if (!gw_resolve_tuya_short_addr(&ieee_probe, &short_probe, "GX02 ON preflight",
+                                        true, endpoint, 2, true)) {
+            return false;
+        }
+        device_ieee = ieee_probe;
+    }
+
+    // If a non-zero scheduled duration is passed, send it as DP104 target (in seconds),
+    // and set the mode (DP1) to duration.
+    // If dur is 0, we treat it as infinite/unspecified (or set to 0/default matching earlier behavior).
+    uint32_t target_seconds = dur;
+    DEBUG_PRINTF(F("[ZIGBEE-GW][GX02] Preparing ON: mode=duration (DP1=0), target=%u seconds (DP104), then state=ON (DP2) using TY_DATA_SEND (cmd 0x04)\n"), (unsigned)target_seconds);
+    
+    // Explicitly write DP1 = 0 (Enum value 0 for duration-based mode). 
+    // In Tuya/z2m: 'mode' (DP1) is an ENUM. Let's send TUYA_TYPE_ENUM with value 0.
+    uint8_t enum_zero[1] = { 0x00 };
+    gw_send_tuya_dp_raw_cmd(device_ieee, endpoint, 1, TUYA_TYPE_ENUM,
+                            enum_zero, sizeof(enum_zero), TUYA_CMD_DATA_SEND,
+                            false, false);
+
+    // If duration is 0, let's fall back to 0 or infinite. Giex QT06 usually runs on DP104 in seconds.
+    gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, 104, target_seconds,
+                                    TUYA_CMD_DATA_SEND, false);
+                                    
     return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, true,
-                                          TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
+                                          TUYA_CMD_DATA_SEND, queue_on_unavailable);
 }
 
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
-    if (dp_id == 2 && gw_is_giex_water_valve(device_ieee)) {
-        return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true);
+    if (gw_is_giex_water_valve(device_ieee)) {
+        if (dp_id != 2) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] GIEX write override: DP %u forced to 2\n"), (unsigned)dp_id);
+            dp_id = 2;
+        }
+        return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true, 0);
     }
-    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_REQUEST, true);
+    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_SEND, true);
 }
 
 bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) {
-    return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true);
+    return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true, 0);
+}
+
+bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur) {
+    return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true, dur);
 }
 
 void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on) {
+    if (gw_is_giex_water_valve(ieee)) {
+        if (dp_id != 2) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] GIEX verify override: DP %u forced to 2 for sid=%u\n"), (unsigned)dp_id, (unsigned)sid);
+            dp_id = 2;
+        }
+    }
     gw_station_switch_error_set(sid, false);
     gw_station_switch_waiting_set(sid, true);
 
@@ -3061,9 +3202,9 @@ void sensor_zigbee_station_verify_tick() {
         if (!zb_verify_table[i].pending) continue;
         if (zb_verify_table[i].retries == 0 && now - zb_verify_table[i].sent_ms >= ZB_VERIFY_RETRY_MS) {
             bool is_state_dp = (zb_verify_table[i].dp_id == 2);
-            // Use TY_DATA_REQUEST (0x00) for writes, fallback to TY_DATA_QUERY (0x03) for others.
+            // Use TY_DATA_SEND (0x04) for GIEX writes, fallback to TY_DATA_QUERY (0x03) for others.
             uint8_t retry_cmd = (is_state_dp && gw_is_giex_water_valve(zb_verify_table[i].ieee))
-                                  ? TUYA_CMD_DATA_REQUEST
+                                  ? TUYA_CMD_DATA_SEND
                                   : TUYA_CMD_QUERY_REQ;
             DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm pending: sid=%u dp=%u expected_on=%d, retrying with cmd=0x%02X\n"),
                          (unsigned)zb_verify_table[i].sid,
@@ -3079,8 +3220,8 @@ void sensor_zigbee_station_verify_tick() {
                                                             retry_cmd,
                                                             false);
                 if (!retry_sent) {
-                    // Try legacy DATA_SEND (0x04) as compatibility fallback.
-                    uint8_t alt_cmd = TUYA_CMD_DATA_SEND;
+                    // Try legacy DATA_REQUEST (0x00) as compatibility fallback.
+                    uint8_t alt_cmd = TUYA_CMD_DATA_REQUEST;
                     bool retry_sent_alt = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
                                                                           zb_verify_table[i].endpoint ? zb_verify_table[i].endpoint : 1,
                                                                           2,

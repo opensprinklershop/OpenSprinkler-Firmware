@@ -2512,7 +2512,7 @@ void OpenSprinkler::switch_special_station(unsigned char sid, unsigned char valu
 			break;
 
 		case STN_TYPE_ZIGBEE:
-			switch_zigbeestation((ZigbeeStationData *)pdata->sped, value, sid);
+			switch_zigbeestation((ZigbeeStationData *)pdata->sped, value, sid, dur);
 			break;
 
 		case STN_TYPE_GARDENA:

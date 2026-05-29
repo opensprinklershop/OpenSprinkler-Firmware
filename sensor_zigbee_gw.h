@@ -57,6 +57,25 @@ void sensor_zigbee_gw_open_network(uint16_t duration);
 bool sensor_zigbee_gw_rejoin_device(uint64_t device_ieee);
 
 /**
+ * @brief Reset Tuya sequence counter to 0 (for device removal or manual resync)
+ */
+void sensor_zigbee_gw_reset_tuya_seq();
+
+/**
+ * @brief Permanently remove device from Zigbee gateway stack and list
+ * @param device_ieee Device IEEE address
+ * @return true if remove initiated successfully
+ */
+bool sensor_zigbee_gw_remove_device_from_stack(uint64_t device_ieee);
+
+/**
+ * @brief Clear pending switch/retry state for one IEEE device.
+ * @param device_ieee Device IEEE address
+ * @return Number of cleared pending verify entries
+ */
+int sensor_zigbee_gw_clear_device_runtime_state(uint64_t device_ieee);
+
+/**
  * @brief Remaining gateway permit-join window in seconds
  */
 uint16_t sensor_zigbee_gw_get_join_window_remaining();

@@ -402,7 +402,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void switch_gpiostation(GPIOStationData *data, bool turnon); // switch gpio station
 	static void switch_httpstation(HTTPStationData *data, bool turnon, bool usessl=false); // switch http station
 	static void switch_modbusStation(ModbusStationData *data, bool turnon); // switch RS485 station
-	static void switch_zigbeestation(ZigbeeStationData *data, bool turnon, uint8_t sid); // switch Zigbee station
+	static void switch_zigbeestation(ZigbeeStationData *data, bool turnon, uint8_t sid, uint16_t dur = 0); // switch Zigbee station
 
 	// -- options and data storeage
 	static void nvdata_load();
