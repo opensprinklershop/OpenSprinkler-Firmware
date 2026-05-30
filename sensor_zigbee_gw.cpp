@@ -323,16 +323,30 @@ static uint8_t tuya_report_type(uint16_t attr_id) {
     return (attr_id & TUYA_REPORT_FLAG_PRESCALED) ? (uint8_t)((attr_id & TUYA_REPORT_TYPE_MASK) >> TUYA_REPORT_TYPE_SHIFT) : 0;
 }
 
-static bool gw_is_ignorable_unmatched_tuya_dp(uint16_t dp) {
-    // These DPs are commonly emitted as valve state / meta / unit / battery
-    // channels without dedicated user sensors. Treat them as non-actionable
-    // for NO MATCH diagnostics to keep logs readable.
-    return (dp == 2   ||   // valve switch state
-            dp == 9   ||   // unit selector
-            dp == 14  ||   // battery enum/value on some Tuya sensors
+static bool gw_is_ignorable_unmatched_tuya_dp(uint16_t dp, uint64_t ieee_addr) {
+    // Primary check: if this DP is registered as a secondary channel on any
+    // sensor with the same IEEE address (battery, unit, status, consumption),
+    // it is handled internally and should not produce a NO MATCH warning.
+    if (ieee_addr != 0) {
+        SensorIterator it = sensors_iterate_begin();
+        SensorBase* sensor;
+        while ((sensor = sensors_iterate_next(it)) != NULL) {
+            if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+            ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+            if (zb->device_ieee != ieee_addr) continue;
+            if ((zb->tuya_dp_battery    >= 0 && dp == (uint16_t)zb->tuya_dp_battery)    ||
+                (zb->tuya_dp_unit       >= 0 && dp == (uint16_t)zb->tuya_dp_unit)       ||
+                (zb->tuya_dp_status     >= 0 && dp == (uint16_t)zb->tuya_dp_status)     ||
+                (zb->tuya_dp_consumption >= 0 && dp == (uint16_t)zb->tuya_dp_consumption)) {
+                return true;
+            }
+        }
+    }
+    // Fallback: universally ignorable meta/vendor DPs emitted by many devices
+    // regardless of configuration (unit selectors, vendor meta channels).
+    return (dp == 9   ||   // unit selector (common across Tuya devices)
             dp == 0x65 ||  // vendor meta
             dp == 0x66 ||  // vendor meta
-            dp == 0x6B ||  // GX02 status/meta
             dp == 0x6F);   // vendor meta/status
 }
 
@@ -384,51 +398,7 @@ static uint32_t zigbee_battery_percent_from_report(bool is_tuya_report, uint16_t
     return (batt_pct > 100) ? 100 : batt_pct;
 }
 
-static bool gw_is_giex_water_valve(uint64_t ieee) {
-    if (ieee == 0) return false;
-    if (ieee == 0xA4C138B539FF3095ULL) return true; // Direct physical MAC override for user's GX02 device
-
-    const char* mfr = "";
-    const char* mdl = "";
-    const char* vnd = "";
-
-    for (const auto& dev : gw_discovered_devices) {
-        if (dev.ieee_addr != ieee) continue;
-        mfr = dev.manufacturer;
-        mdl = dev.model_id;
-        vnd = dev.vendor;
-        break;
-    }
-
-    if (mfr[0] == '\0' && mdl[0] == '\0' && vnd[0] == '\0') {
-        SensorIterator it = sensors_iterate_begin();
-        SensorBase* sensor;
-        while ((sensor = sensors_iterate_next(it)) != NULL) {
-            if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
-            ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
-            if (zb->device_ieee != ieee) continue;
-            mfr = zb->zb_manufacturer;
-            mdl = zb->zb_model;
-            vnd = zb->zb_vendor;
-            break;
-        }
-    }
-
-    bool looks_ts0601 = (mdl[0] == '\0') || strcmp(mdl, "TS0601") == 0;
-    bool known_giex_mfr = strstr(mfr, "sh1btabb") != NULL ||
-                          strstr(mfr, "a7sghmms") != NULL ||
-                          strstr(mfr, "7ytb3h8u") != NULL;
-    bool known_giex_vendor = strstr(vnd, "GIEX") != NULL;
-    return looks_ts0601 && (known_giex_mfr || known_giex_vendor);
-}
-
-static bool gw_is_giex_water_meter_sensor(ZigbeeSensor* sensor) {
-    if (!sensor) return false;
-    uint8_t unitid = getSensorUnitId(sensor);
-    return sensor->cluster_id == ZB_ZCL_CLUSTER_ID_METERING ||
-           unitid == UNIT_LITER || unitid == UNIT_GALLON ||
-           unitid == UNIT_LITER_CONSUMPTION || unitid == UNIT_GALLON_CONSUMPTION;
-}
+// Custom Tuya and standard battery report parser helper
 
 // Lazy-loading report cache
 struct ZigbeeAttributeReport {
@@ -758,25 +728,6 @@ static void gw_station_verify_process(uint64_t ieee, uint8_t dp_id, bool actual_
     }
 }
 
-static void gw_station_verify_process_giex_off_fallback(uint64_t ieee, uint8_t dp_id, int32_t value) {
-    if (ieee == 0 || !gw_is_giex_water_valve(ieee)) return;
-    bool off_indicator = (dp_id == 111) || (dp_id == 1 && value == 0);
-    if (!off_indicator) return;
-
-    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
-        if (!zb_verify_table[i].pending) continue;
-        if (zb_verify_table[i].ieee != ieee) continue;
-        if (zb_verify_table[i].expected_on) continue;
-
-        uint8_t sid = zb_verify_table[i].sid;
-        zb_verify_table[i].pending = false;
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u switch confirmed by GX02 off fallback DP%u value=%ld\n"),
-                     (unsigned)sid, (unsigned)dp_id, (long)value);
-        gw_station_physical_state_set(sid, false);
-        return;
-    }
-}
-
 static void gw_station_physical_state_set(uint8_t sid, bool actual_on) {
     if (sid >= os.nstations) return;
 
@@ -807,11 +758,20 @@ static void gw_station_status_process_tuya_dp(uint64_t ieee, uint8_t endpoint, u
 
         uint8_t station_ep = gw_parse_hex_u8(data->endpoint, sizeof(data->endpoint));
         if (station_ep == 0) station_ep = 1;
-        if (endpoint != 0 && station_ep != endpoint) continue;
 
         bool use_tuya = (data->use_tuya[0] == '1');
         uint8_t station_dp = gw_parse_hex_u8(data->tuya_dp, sizeof(data->tuya_dp));
         if (station_dp == 0) station_dp = 1;
+        ZigbeeStationControlConfig cfg = {};
+        bool has_cfg = sensor_zigbee_get_station_control_config(ieee, &cfg) && cfg.found;
+        if (has_cfg && cfg.control_mode != ZB_STATION_CTRL_AUTO) {
+            station_ep = cfg.endpoint ? cfg.endpoint : station_ep;
+            use_tuya = (cfg.control_mode == ZB_STATION_CTRL_TUYA);
+            if (cfg.dp_status != 0) {
+                station_dp = cfg.dp_status;
+            }
+        }
+        if (endpoint != 0 && station_ep != endpoint) continue;
 
         const char* mfr = "";
         const char* mdl = "";
@@ -844,12 +804,7 @@ static void gw_station_status_process_tuya_dp(uint64_t ieee, uint8_t endpoint, u
             }
         }
 
-        bool is_ts0601 = (strcmp(mdl, "TS0601") == 0);
-        bool gx02_by_mfr = (strstr(mfr, "sh1btabb") != NULL) || (strstr(mfr, "7ytb3h8u") != NULL);
-        bool gx02_by_vendor = (strstr(vnd, "GIEX") != NULL);
-        bool is_gx02 = is_ts0601 && (gx02_by_mfr || gx02_by_vendor);
-        if (!use_tuya && (dev_is_tuya || is_gx02)) use_tuya = true;
-        if (is_gx02) station_dp = 2;
+        if ((!has_cfg || cfg.control_mode == ZB_STATION_CTRL_AUTO) && !use_tuya && dev_is_tuya) use_tuya = true;
 
         if (!use_tuya || station_dp != dp_id) continue;
         DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u matched Tuya DP report: dp=%u on=%d\n"),
@@ -926,7 +881,6 @@ static void gw_cache_tuya_dp_report(uint64_t ieee_addr, uint8_t src_endpoint,
     gw_station_status_process_tuya_dp(ieee_addr, src_endpoint, dp_number, value != 0);
     // Check if this DP echoes a pending station switch command.
     gw_station_verify_process(ieee_addr, dp_number, value != 0);
-    gw_station_verify_process_giex_off_fallback(ieee_addr, dp_number, value);
 }
 
 // Tuya sequence counter for outgoing commands. Some Tuya MCU devices reject
@@ -2285,19 +2239,6 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                 ieee_match && ep_match && report_dp == (uint16_t)zb_sensor->tuya_dp_value) {
                 matches = true;
             }
-
-            if (!matches && is_tuya_dp_report && ieee_match && ep_match &&
-                report_dp == 111 && gw_is_giex_water_valve(report.ieee_addr) &&
-                gw_is_giex_water_meter_sensor(zb_sensor)) {
-                if (zb_sensor->tuya_dp_value != 111) {
-                    zb_sensor->tuya_dp_value = 111;
-                    if (zb_sensor->tuya_dp_battery < 0) zb_sensor->tuya_dp_battery = 108;
-                    sensor_save();
-                    DEBUG_PRINTF(F("[ZIGBEE-GW] Auto-mapped GIEX/GX02 water meter '%s': value DP=111 battery DP=%d\n"),
-                                 zb_sensor->name, (int)zb_sensor->tuya_dp_battery);
-                }
-                matches = true;
-            }
             
             if (matches) {
                 DEBUG_PRINTF(F("[ZIGBEE-GW]   ✓ Matched '%s': c=0x%04X a=0x%04X ieee=%08lX%08lX → raw=%ld\n"),
@@ -2321,7 +2262,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             bool suppress_nomatch = false;
             if (report.cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC &&
                 ((report.attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0)) {
-                suppress_nomatch = gw_is_ignorable_unmatched_tuya_dp(zigbee_report_attr_id(report.attr_id));
+                suppress_nomatch = gw_is_ignorable_unmatched_tuya_dp(zigbee_report_attr_id(report.attr_id), report.ieee_addr);
             }
 
             if (!suppress_nomatch) {
@@ -2375,15 +2316,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                     ZigbeeSensor* zb_batt = static_cast<ZigbeeSensor*>(batt_sensor);
                     if (zb_batt->device_ieee != report.ieee_addr) continue;
                     bool explicit_battery_dp = (zb_batt->tuya_dp_battery >= 0 && (uint16_t)zb_batt->tuya_dp_battery == report_dp);
-                    bool giex_battery_dp = (report_dp == 108 && gw_is_giex_water_valve(report.ieee_addr));
-                    if (!explicit_battery_dp && !giex_battery_dp) continue;
-
-                    if (giex_battery_dp && zb_batt->tuya_dp_battery < 0) {
-                        zb_batt->tuya_dp_battery = 108;
-                        sensor_save();
-                        DEBUG_PRINTF(F("[ZIGBEE-GW] Auto-mapped GIEX/GX02 battery '%s': battery DP=108\n"),
-                                     zb_batt->name);
-                    }
+                    if (!explicit_battery_dp) continue;
 
                     uint32_t battery_pct = zigbee_battery_percent_from_report(true, report_dp, tuya_report_type(report.attr_id), zb_batt->tuya_dp_battery, report.value);
                     zb_batt->last_battery = battery_pct;
@@ -3078,44 +3011,18 @@ static bool gw_send_tuya_dp_value_write_cmd(uint64_t device_ieee, uint8_t endpoi
         (uint8_t)(value >> 24),
         (uint8_t)(value >> 16),
         (uint8_t)(value >> 8),
-        (uint8_t)(value & 0xFF)
+        (uint8_t)(value & 0xFF) 
     };
     return gw_send_tuya_dp_raw_cmd(device_ieee, endpoint, dp_id, TUYA_TYPE_VALUE,
                                    value_bytes, sizeof(value_bytes), command_id,
                                    queue_on_unavailable, value != 0);
 }
 
-static bool gw_send_giex_water_valve_state_cmd(uint64_t device_ieee, uint8_t endpoint, bool turnon,
-                                               bool queue_on_unavailable, uint16_t dur = 0) {
-    DEBUG_PRINTF(F("[ZIGBEE-GW][GX02] Sending ONE command (DP2=%d) using TY_DATA_REQUEST (cmd 0x00) - No retries, no duration\n"), turnon ? 1 : 0);
-    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, 2, turnon,
-                                          TUYA_CMD_DATA_REQUEST, queue_on_unavailable);
-}
-
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
-    if (gw_is_giex_water_valve(device_ieee)) {
-        if (dp_id != 2) {
-            DEBUG_PRINTF(F("[ZIGBEE-GW] GIEX write override: DP %u forced to 2\n"), (unsigned)dp_id);
-            dp_id = 2;
-        }
-        return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true, 0);
-    }
     return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_REQUEST, true);
 }
 
-bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) {
-    return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true, 0);
-}
-
-bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur) {
-    return gw_send_giex_water_valve_state_cmd(device_ieee, endpoint, turnon, true, dur);
-}
-
 void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on) {
-    if (gw_is_giex_water_valve(ieee)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] GIEX/GX02 device on sid=%u: skipping verify/retry registration entirely\n"), (unsigned)sid);
-        return;
-    }
     gw_station_switch_error_set(sid, false);
     gw_station_switch_waiting_set(sid, true);
 
@@ -3139,7 +3046,6 @@ void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t e
             return;
         }
     }
-    // All slots full — silently skip (worst case: no alert for this switch).
 }
 
 uint8_t sensor_zigbee_station_status_code(uint8_t sid) {
@@ -3165,43 +3071,17 @@ void sensor_zigbee_station_verify_tick() {
     for (int i = 0; i < ZB_VERIFY_MAX; i++) {
         if (!zb_verify_table[i].pending) continue;
         if (zb_verify_table[i].retries == 0 && now - zb_verify_table[i].sent_ms >= ZB_VERIFY_RETRY_MS) {
-            bool is_state_dp = (zb_verify_table[i].dp_id == 2);
-            // Use TY_DATA_SEND (0x04) for GIEX writes, fallback to TY_DATA_QUERY (0x03) for others.
-            uint8_t retry_cmd = (is_state_dp && gw_is_giex_water_valve(zb_verify_table[i].ieee))
-                                  ? TUYA_CMD_DATA_SEND
-                                  : TUYA_CMD_QUERY_REQ;
             DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm pending: sid=%u dp=%u expected_on=%d, retrying with cmd=0x%02X\n"),
                          (unsigned)zb_verify_table[i].sid,
                          (unsigned)zb_verify_table[i].dp_id,
                          zb_verify_table[i].expected_on ? 1 : 0,
-                         (unsigned)retry_cmd);
-            bool retry_sent = false;
-            if (is_state_dp && gw_is_giex_water_valve(zb_verify_table[i].ieee)) {
-                retry_sent = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
-                                                            zb_verify_table[i].endpoint ? zb_verify_table[i].endpoint : 1,
-                                                            2,
-                                                            zb_verify_table[i].expected_on,
-                                                            retry_cmd,
-                                                            false);
-                if (!retry_sent) {
-                    // Try legacy DATA_REQUEST (0x00) as compatibility fallback.
-                    uint8_t alt_cmd = TUYA_CMD_DATA_REQUEST;
-                    bool retry_sent_alt = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
-                                                                          zb_verify_table[i].endpoint ? zb_verify_table[i].endpoint : 1,
-                                                                          2,
-                                                                          zb_verify_table[i].expected_on,
-                                                                          alt_cmd,
-                                                                          false);
-                    retry_sent = retry_sent || retry_sent_alt;
-                }
-            } else {
-                retry_sent = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
+                         (unsigned)TUYA_CMD_QUERY_REQ);
+            bool retry_sent = gw_send_tuya_dp_bool_write_cmd(zb_verify_table[i].ieee,
                                                             zb_verify_table[i].endpoint ? zb_verify_table[i].endpoint : 1,
                                                             zb_verify_table[i].dp_id,
                                                             zb_verify_table[i].expected_on,
-                                                            retry_cmd,
+                                                            TUYA_CMD_QUERY_REQ,
                                                             false);
-            }
             if (retry_sent) {
                 zb_verify_table[i].retries = 1;
                 zb_verify_table[i].sent_ms = now;

@@ -1756,6 +1756,30 @@ const char* ZigbeeSensor::getIeeeString(char* buffer, size_t bufferSize) const {
     return buffer;
 }
 
+bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config) {
+    if (!config) return false;
+
+    *config = ZigbeeStationControlConfig{};
+    if (device_ieee == 0) return false;
+
+    SensorIterator it = sensors_iterate_begin();
+    SensorBase* sensor;
+    while ((sensor = sensors_iterate_next(it)) != NULL) {
+        if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+        ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+        if (zb->device_ieee != device_ieee) continue;
+
+        config->found = true;
+        config->endpoint = zb->endpoint ? zb->endpoint : 1;
+        config->control_mode = zb->control_mode;
+        config->dp_value = (zb->tuya_dp_value >= 0) ? (uint8_t)zb->tuya_dp_value : 0;
+        config->dp_status = (zb->tuya_dp_status >= 0) ? (uint8_t)zb->tuya_dp_status : config->dp_value;
+        return true;
+    }
+
+    return false;
+}
+
 void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     // Capture current read_interval before base-class update so we can detect a change.
     uint old_ri = read_interval;
@@ -1818,6 +1842,28 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             attribute_id = val.as<uint16_t>();
         }
     }
+    if (obj.containsKey(F("control_mode"))) {
+        ArduinoJson::JsonVariantConst val = obj[F("control_mode")];
+        if (val.is<const char*>()) {
+            const char *mode_str = val.as<const char*>();
+            if (mode_str && mode_str[0]) {
+                if (!strcmp(mode_str, "tuya")) {
+                    control_mode = ZB_STATION_CTRL_TUYA;
+                } else if (!strcmp(mode_str, "standard")) {
+                    control_mode = ZB_STATION_CTRL_STANDARD;
+                } else {
+                    control_mode = (uint8_t)strtoul(mode_str, nullptr, 10);
+                }
+            }
+        } else {
+            control_mode = val.as<uint8_t>();
+        }
+        if (control_mode > ZB_STATION_CTRL_TUYA) {
+            control_mode = ZB_STATION_CTRL_AUTO;
+        }
+    } else if (obj.containsKey(F("use_tuya_control"))) {
+        control_mode = obj[F("use_tuya_control")].as<bool>() ? ZB_STATION_CTRL_TUYA : ZB_STATION_CTRL_STANDARD;
+    }
     // Optional per-sensor Tuya DP overrides
     if (obj.containsKey(F("tuya_dp"))) {
         tuya_dp_value = obj[F("tuya_dp")].as<int16_t>();
@@ -1843,6 +1889,16 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
         tuya_dp_unit = obj[F("unit_dp")].as<int16_t>();
     } else if (obj.containsKey(F("dp_unit"))) {
         tuya_dp_unit = obj[F("dp_unit")].as<int16_t>();
+    }
+    if (obj.containsKey(F("tuya_dp_status"))) {
+        tuya_dp_status = obj[F("tuya_dp_status")].as<int16_t>();
+    } else if (obj.containsKey(F("dp_status"))) {
+        tuya_dp_status = obj[F("dp_status")].as<int16_t>();
+    }
+    if (obj.containsKey(F("tuya_dp_consumption"))) {
+        tuya_dp_consumption = obj[F("tuya_dp_consumption")].as<int16_t>();
+    } else if (obj.containsKey(F("dp_consumption"))) {
+        tuya_dp_consumption = obj[F("dp_consumption")].as<int16_t>();
     }
     if (obj.containsKey(F("tuya_unit"))) {
         tuya_unit = obj[F("tuya_unit")].as<uint8_t>();
@@ -1925,11 +1981,14 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     char attr_hex[10];
     snprintf(attr_hex, sizeof(attr_hex), "0x%04X", attribute_id);
     obj[F("attribute_id")] = String(attr_hex);
+    obj[F("control_mode")] = control_mode;
 
     if (tuya_dp_value >= 0) obj[F("tuya_dp")] = tuya_dp_value;
     if (tuya_dp_battery >= 0) obj[F("tuya_dp_batt")] = tuya_dp_battery;
     if (tuya_dp_unit >= 0) obj[F("tuya_dp_unit")] = tuya_dp_unit;
     if (tuya_unit != 0xFF) obj[F("tuya_unit")] = tuya_unit;
+    if (tuya_dp_status >= 0) obj[F("tuya_dp_status")] = tuya_dp_status;
+    if (tuya_dp_consumption >= 0) obj[F("tuya_dp_consumption")] = tuya_dp_consumption;
     
     // Battery level — only persist when actually measured
     if (last_battery != UINT32_MAX) obj[F("battery")] = last_battery;

@@ -231,6 +231,20 @@ enum ZbCommMode : uint8_t {
     ZB_COMM_ACTIVE  = 2,  ///< Device only responds to active reads
 };
 
+enum ZbStationControlMode : uint8_t {
+    ZB_STATION_CTRL_AUTO = 0,
+    ZB_STATION_CTRL_STANDARD = 1,
+    ZB_STATION_CTRL_TUYA = 2,
+};
+
+struct ZigbeeStationControlConfig {
+    bool found = false;
+    uint8_t endpoint = 1;
+    uint8_t control_mode = ZB_STATION_CTRL_AUTO;
+    uint8_t dp_value = 0;
+    uint8_t dp_status = 0;
+};
+
 class ZigbeeSensor : public SensorBase {
 public:
     // Zigbee-specific fields
@@ -238,11 +252,15 @@ public:
     uint8_t endpoint = 1;             // Zigbee endpoint (usually 1)
     uint16_t cluster_id = 0x0408;     // Cluster ID (0x0408=soil moisture, 0x0402=temperature)
     uint16_t attribute_id = 0x0000;   // Attribute ID (0x0000=MeasuredValue)
+    uint8_t control_mode = ZB_STATION_CTRL_AUTO; // auto/standard/Tuya valve control selection
     // Optional Tuya DataPoint overrides (-1 = disabled / auto mapping)
-    int16_t tuya_dp_value = -1;       // DP ID that carries the primary measurement value
+    int16_t tuya_dp_value = -1;        // DP ID that carries the primary measurement value
     int16_t tuya_dp_battery = -1;     // DP ID that carries battery percentage/state
     int16_t tuya_dp_unit = -1;        // DP ID for unit selector (e.g. 0=C,1=F), informational
     uint8_t tuya_unit = 0xFF;         // Last seen unit enum for tuya_dp_unit (0=C,1=F, 0xFF=unknown)
+    int16_t tuya_dp_status = -1;      // DP ID for on/off valve status (BOOL), secondary channel
+    int16_t tuya_dp_consumption = -1; // DP ID for cumulative water consumption counter (VALUE);
+                                      // unit is determined by SensorBase::unit (UNIT_LITER / UNIT_GALLON)
     
     // NOTE: factor, divider, offset_mv, offset2 are inherited from SensorBase.
     // JSON keys: "fac", "div", "offset", "offset2" (handled by SensorBase::fromJson/toJson).
@@ -374,6 +392,7 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon);
 bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon);
 bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur = 0);
+bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config);
 
 #else // ESP32C5 && OS_ENABLE_ZIGBEE
 
@@ -381,6 +400,11 @@ inline bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bo
 inline bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) { return false; }
 inline bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
 inline bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur) { return false; }
+inline bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config) {
+    (void)device_ieee;
+    if (config) *config = ZigbeeStationControlConfig{};
+    return false;
+}
 
 #endif // ESP32C5 && OS_ENABLE_ZIGBEE
 
