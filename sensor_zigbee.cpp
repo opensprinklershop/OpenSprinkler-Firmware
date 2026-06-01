@@ -1762,6 +1762,21 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
     *config = ZigbeeStationControlConfig{};
     if (device_ieee == 0) return false;
 
+    auto score_candidate = [](const ZigbeeSensor* zb) -> int {
+        if (!zb) return -1;
+        int score = 0;
+        if (zb->control_mode == ZB_STATION_CTRL_TUYA) score += 50;
+        if (zb->zb_type == 1) score += 40;
+        if (zb->tuya_dp_status >= 0) score += 25;
+        if (zb->tuya_dp_value >= 0) score += 20;
+        if (zb->cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC) score += 10;
+        if (zb->endpoint != 0) score += 2;
+        return score;
+    };
+
+    ZigbeeSensor* best = nullptr;
+    int best_score = -1;
+
     SensorIterator it = sensors_iterate_begin();
     SensorBase* sensor;
     while ((sensor = sensors_iterate_next(it)) != NULL) {
@@ -1769,13 +1784,22 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
         ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
         if (zb->device_ieee != device_ieee) continue;
 
-        config->found = true;
-        config->endpoint = zb->endpoint ? zb->endpoint : 1;
-        config->control_mode = zb->control_mode;
-        config->dp_value = (zb->tuya_dp_value >= 0) ? (uint8_t)zb->tuya_dp_value : 0;
-        config->dp_status = (zb->tuya_dp_status >= 0) ? (uint8_t)zb->tuya_dp_status : config->dp_value;
-        return true;
+        int score = score_candidate(zb);
+        if (!best || score > best_score) {
+            best = zb;
+            best_score = score;
+        }
     }
+
+    if (!best) return false;
+
+    config->found = true;
+    config->endpoint = best->endpoint ? best->endpoint : 1;
+    config->control_mode = best->control_mode;
+    config->protocol_type = (best->zb_type <= 2) ? best->zb_type : 0;
+    config->dp_value = (best->tuya_dp_value >= 0) ? (uint8_t)best->tuya_dp_value : 0;
+    config->dp_status = (best->tuya_dp_status >= 0) ? (uint8_t)best->tuya_dp_status : config->dp_value;
+    return true;
 
     return false;
 }
@@ -1842,6 +1866,13 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             attribute_id = val.as<uint16_t>();
         }
     }
+    if (obj.containsKey(F("zb_type"))) {
+        uint8_t t = obj[F("zb_type")].as<uint8_t>();
+        zb_type = (t <= 2) ? t : 0;
+    } else if (obj.containsKey(F("zigbee_type"))) {
+        uint8_t t = obj[F("zigbee_type")].as<uint8_t>();
+        zb_type = (t <= 2) ? t : 0;
+    }
     if (obj.containsKey(F("control_mode"))) {
         ArduinoJson::JsonVariantConst val = obj[F("control_mode")];
         if (val.is<const char*>()) {
@@ -1859,7 +1890,7 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
             control_mode = val.as<uint8_t>();
         }
         if (control_mode > ZB_STATION_CTRL_TUYA) {
-            control_mode = ZB_STATION_CTRL_AUTO;
+            control_mode = ZB_STATION_CTRL_TUYA;;
         }
     } else if (obj.containsKey(F("use_tuya_control"))) {
         control_mode = obj[F("use_tuya_control")].as<bool>() ? ZB_STATION_CTRL_TUYA : ZB_STATION_CTRL_STANDARD;
@@ -1981,6 +2012,7 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     char attr_hex[10];
     snprintf(attr_hex, sizeof(attr_hex), "0x%04X", attribute_id);
     obj[F("attribute_id")] = String(attr_hex);
+    if (zb_type <= 2) obj[F("zb_type")] = zb_type;
     obj[F("control_mode")] = control_mode;
 
     if (tuya_dp_value >= 0) obj[F("tuya_dp")] = tuya_dp_value;
@@ -2209,44 +2241,6 @@ int sensor_zigbee_get_discovered_devices(ZigbeeDeviceInfo* devices, int max_devi
                     ? (int)client_discovered_devices.size() : max_devices;
         for (int i = 0; i < count; i++) {
             memcpy(&devices[i], &client_discovered_devices[i], sizeof(ZigbeeDeviceInfo));
-        }
-    }
-
-    // Supplement from saved sensors: add any paired ZigbeeSensor whose IEEE address is
-    // not already in the live list (e.g. after reboot before the device re-announces).
-    // This ensures /zd always returns known paired devices with their stored metadata.
-    if (count < max_devices) {
-        SensorIterator it = sensors_iterate_begin();
-        SensorBase* s;
-        while ((s = sensors_iterate_next(it)) != NULL && count < max_devices) {
-            if (!s || s->type != SENSOR_ZIGBEE) continue;
-            ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
-            if (zb->device_ieee == 0) continue;
-            // Check if this IEEE is already in the result list
-            bool already_present = false;
-            for (int i = 0; i < count; i++) {
-                if (devices[i].ieee_addr == zb->device_ieee) {
-                    already_present = true;
-                    break;
-                }
-            }
-            if (already_present) continue;
-            // Synthesise an entry from the saved sensor data
-            ZigbeeDeviceInfo info = {};
-            info.ieee_addr = zb->device_ieee;
-            info.short_addr = 0;
-            info.endpoint = zb->endpoint;
-            info.is_new = false;
-            info.app_version = 0xFF;
-            info.stack_version = 0xFF;
-            info.hw_version = 0xFF;
-            if (zb->zb_manufacturer[0])
-                strncpy(info.manufacturer, zb->zb_manufacturer, sizeof(info.manufacturer) - 1);
-            if (zb->zb_model[0])
-                strncpy(info.model_id, zb->zb_model, sizeof(info.model_id) - 1);
-            if (zb->zb_vendor[0])
-                strncpy(info.vendor, zb->zb_vendor, sizeof(info.vendor) - 1);
-            devices[count++] = info;
         }
     }
 

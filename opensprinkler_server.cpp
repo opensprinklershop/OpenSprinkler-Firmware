@@ -43,6 +43,7 @@
 #endif
 #include "sensor_mqtt.h"
 #include "LinkedMap.h"
+#include <new>
 #include <stdlib.h>
 
 #if defined(ESP32) && defined(OS_ENABLE_BLE)
@@ -3677,9 +3678,11 @@ void server_sensor_config(OTF_PARAMS_DEF)
 
 	DEBUG_PRINTLN(F("server_sensor_config2"));
 
-	// Build JSON configuration
-	JsonDocument doc;
-	JsonObject config = doc.to<JsonObject>();
+	// Build JSON configuration off the loop stack; ArduinoJson v7's
+	// JsonDocument object is large enough to trip stack protection here.
+	JsonDocument *doc = new (std::nothrow) JsonDocument();
+	if (!doc) handle_return(HTML_DATA_MISSING);
+	JsonObject config = doc->to<JsonObject>();
 
 	const OTF::LinkedMapNode<char *> * qp = FKV_SOURCE.getQueryParameters();
 	while (qp) {
@@ -3698,6 +3701,7 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	// Call sensor_define with JSON (don't save immediately to avoid OOM
 	// when rapid-fire requests arrive — schedule deferred save instead)
 	int ret = sensor_define(config, false);
+	delete doc;
 	if (ret == HTTP_RQT_SUCCESS) sensor_request_save();
 
 	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
@@ -6054,34 +6058,101 @@ static bool zigbee_device_is_registered(uint64_t ieee_addr) {
 	return false;
 }
 
-/**
- * @brief Enrich a ZigbeeDeviceInfo entry with manufacturer/model from a matching saved sensor.
- *
- * When the in-memory device list still has empty (or stale "unknown") strings — for instance
- * right after a firmware reboot before the Basic Cluster response has arrived — we fall back
- * to the values stored in the sensor file so the HTTP response is still meaningful.
- */
-static void enrich_device_info_from_sensor(ZigbeeDeviceInfo& dev) {
-	if (dev.ieee_addr == 0) return;
-	bool need_mfr = (dev.manufacturer[0] == '\0' || strcmp(dev.manufacturer, "unknown") == 0);
-	bool need_mdl = (dev.model_id[0] == '\0' || strcmp(dev.model_id, "unknown") == 0);
-	bool need_vnd = (dev.vendor[0] == '\0');
-	if (!need_mfr && !need_mdl && !need_vnd) return;
-
-	SensorIterator it = sensors_iterate_begin();
-	SensorBase* s;
-	while ((s = sensors_iterate_next(it)) != NULL) {
-		if (!s || s->type != SENSOR_ZIGBEE) continue;
-		ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
-		if (zb->device_ieee != dev.ieee_addr) continue;
-		if (need_mfr && zb->zb_manufacturer[0] != '\0')
-			strncpy(dev.manufacturer, zb->zb_manufacturer, sizeof(dev.manufacturer) - 1);
-		if (need_mdl && zb->zb_model[0] != '\0')
-			strncpy(dev.model_id, zb->zb_model, sizeof(dev.model_id) - 1);
-		if (need_vnd && zb->zb_vendor[0] != '\0')
-			strncpy(dev.vendor, zb->zb_vendor, sizeof(dev.vendor) - 1);
-		return;
+static bool zigbee_contains_ci(const char* haystack, const char* needle) {
+	if (!needle || !needle[0]) return true;
+	if (!haystack || !haystack[0]) return false;
+	size_t needle_len = strlen(needle);
+	if (needle_len == 0) return true;
+	for (const char* p = haystack; *p; ++p) {
+		if (strncasecmp(p, needle, needle_len) == 0) return true;
 	}
+	return false;
+}
+
+static bool zigbee_logical_matches_search(uint64_t ieee_addr, const char* search) {
+	if (!search || !search[0]) return true;
+	SensorIterator it = sensors_iterate_begin();
+	SensorBase* sensor;
+	while ((sensor = sensors_iterate_next(it)) != NULL) {
+		if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+		ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+		if (zb->device_ieee != ieee_addr) continue;
+		if (zigbee_contains_ci(zb->name, search)) return true;
+		if (zigbee_contains_ci(zb->zb_manufacturer, search)) return true;
+		if (zigbee_contains_ci(zb->zb_model, search)) return true;
+		if (zigbee_contains_ci(zb->zb_vendor, search)) return true;
+	}
+	return false;
+}
+
+static bool zigbee_device_matches_search(const ZigbeeDeviceInfo& dev, const char* search) {
+	if (!search || !search[0]) return true;
+	char ieee_str[20];
+	snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
+	         (unsigned long long)dev.ieee_addr);
+	if (zigbee_contains_ci(ieee_str, search)) return true;
+	if (zigbee_contains_ci(dev.model_id, search)) return true;
+	if (zigbee_contains_ci(dev.manufacturer, search)) return true;
+	if (zigbee_contains_ci(dev.vendor, search)) return true;
+	if (zigbee_contains_ci(dev.date_code, search)) return true;
+	if (zigbee_contains_ci(dev.sw_build_id, search)) return true;
+	return zigbee_logical_matches_search(dev.ieee_addr, search);
+}
+
+static const char* zigbee_logical_kind(const ZigbeeSensor* zb) {
+	if (!zb) return "unknown";
+	switch (zb->cluster_id) {
+		case 0x0402: return "temperature";
+		case 0x0405: return "humidity";
+		case 0x0408: return "soil_moisture";
+		case 0x0400: return "illuminance";
+		case 0x0403: return "pressure";
+		case 0x0702: return "metering";
+		case 0x0001: return "battery";
+		case 0xEF00:
+			if (zb->tuya_dp_status >= 0) return "switch";
+			if (zb->tuya_dp_value >= 0) return "value";
+			return "tuya";
+		default: return "unknown";
+	}
+}
+
+static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
+	bfill.emit_p(PSTR("\"logical_devices\":["));
+	bool first = true;
+	SensorIterator it = sensors_iterate_begin();
+	SensorBase* sensor;
+	while ((sensor = sensors_iterate_next(it)) != NULL) {
+		if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+		ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+		if (zb->device_ieee != ieee_addr) continue;
+		if (!first) bfill.emit_p(PSTR(","));
+		first = false;
+		long battery = (zb->last_battery == UINT32_MAX) ? -1L : (long)zb->last_battery;
+		bfill.emit_p(PSTR("{\"nr\":$D,\"name\":\"$S\",\"kind\":\"$S\",\"endpoint\":$D,"
+		                  "\"cluster_id\":$D,\"attribute_id\":$D,\"unit\":$D,"
+		                  "\"battery_dp\":$D,\"unit_dp\":$D,\"status_dp\":$D,\"consumption_dp\":$D,"
+		                  "\"battery\":$L,\"tuya_unit\":$D,\"control_mode\":$D,"
+		                  "\"manufacturer\":\"$S\",\"model\":\"$S\",\"vendor\":\"$S\"}"),
+		             zb->nr,
+		             zb->name,
+		             zigbee_logical_kind(zb),
+		             zb->endpoint ? zb->endpoint : 1,
+		             zb->cluster_id,
+		             zb->attribute_id,
+		             (int)zb->getUnitId(),
+		             zb->tuya_dp_battery,
+		             zb->tuya_dp_unit,
+		             zb->tuya_dp_status,
+		             zb->tuya_dp_consumption,
+		             battery,
+		             (int)zb->tuya_unit,
+		             (int)zb->control_mode,
+		             zb->zb_manufacturer,
+		             zb->zb_model,
+		             zb->zb_vendor);
+	}
+	bfill.emit_p(PSTR("]"));
 }
 
 void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
@@ -6136,9 +6207,33 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			endpoint = (uint8_t)atoi(tmp_buffer);
 			if (endpoint == 0) endpoint = 1;
 		}
-		bool ok = sensor_zigbee_gw_query_basic_cluster_by_ieee(addr, endpoint);
+		bool ok = sensor_zigbee_gw_query_basic_cluster_queued(addr, endpoint);
 		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"query_basic\",\"ieee\":\"$S\",\"endpoint\":$D}"),
 		             ok ? 1 : 0, ieee_str, endpoint);
+
+	} else if (strcmp(action, "query_device_data") == 0) {
+		char ieee_str[24] = "";
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint8_t endpoint = 1;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("endpoint"), true)) {
+			endpoint = (uint8_t)atoi(tmp_buffer);
+			if (endpoint == 0) endpoint = 1;
+		}
+		bool queued = sensor_zigbee_gw_query_device_data(addr, endpoint);
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"query_device_data\",\"ieee\":\"$S\",\"endpoint\":$D,\"queued\":$D}"),
+		             queued ? 1 : 0, ieee_str, endpoint, queued ? 1 : 0);
 
 	} else if (strcmp(action, "remove") == 0) {
 		// Remove a device by IEEE address
@@ -6209,6 +6304,11 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		ZigbeeDeviceInfo devices[10];
 		int count = sensor_zigbee_get_discovered_devices(devices, 10);
 
+		char search[64] = "";
+		findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("name"), true);
+		if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("search"), true);
+		if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("q"), true);
+
 		// Allow callers (UI sensor editor AND zone editor) to choose between
 		// "only devices already bound to a sensor" and the full discovery list.
 		// Default = full list, so the Zone editor can find a paired valve that
@@ -6221,14 +6321,14 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		int out_count = 0;
 		for (int i = 0; i < count; i++) {
 			if (only_registered && !zigbee_device_is_registered(devices[i].ieee_addr)) continue;
-			enrich_device_info_from_sensor(devices[i]);
+			if (!zigbee_device_matches_search(devices[i], search)) continue;
 			if (out_count > 0) bfill.emit_p(PSTR(","));
 			char ieee_str[20];
 			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 			         (unsigned long long)devices[i].ieee_addr);
 			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
 			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
-			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\"}"),
+			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
 			             ieee_str,
 			             devices[i].short_addr,
 			             devices[i].model_id,
@@ -6242,39 +6342,9 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			             devices[i].hw_version,
 			             devices[i].date_code,
 			             devices[i].sw_build_id);
+			emit_zigbee_logical_devices(devices[i].ieee_addr);
+			bfill.emit_p(PSTR("}"));
 			out_count++;
-		}
-		// Append registered (bound) sensors that are NOT in the in-memory
-		// discovered list. After a reboot, devices typically have not re-announced
-		// yet, so /zg would be empty and the Zone editor would lose the paired
-		// device. Synthesize entries from saved sensor data.
-		{
-			SensorIterator it = sensors_iterate_begin();
-			SensorBase* s;
-			while ((s = sensors_iterate_next(it)) != NULL) {
-				if (!s || s->type != SENSOR_ZIGBEE) continue;
-				ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
-				if (zb->device_ieee == 0) continue;
-				// Skip if already emitted from the discovered list.
-				bool already = false;
-				for (int j = 0; j < count; j++) {
-					if (devices[j].ieee_addr == zb->device_ieee) { already = true; break; }
-				}
-				if (already) continue;
-				if (out_count > 0) bfill.emit_p(PSTR(","));
-				char ieee_str[20];
-				snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
-				         (unsigned long long)zb->device_ieee);
-				bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":0,\"model\":\"$S\","
-				                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":0,\"is_new\":0,"
-				                  "\"app_version\":255,\"stack_version\":255,\"hw_version\":255,\"date_code\":\"\",\"sw_build_id\":\"\"}"),
-				             ieee_str,
-				             zb->zb_model[0] ? zb->zb_model : "",
-				             zb->zb_manufacturer[0] ? zb->zb_manufacturer : "",
-				             zb->zb_vendor[0] ? zb->zb_vendor : "",
-				             zb->endpoint ? zb->endpoint : 1);
-				out_count++;
-			}
 		}
 		bfill.emit_p(PSTR("],\"count\":$D}"), out_count);
 	}
@@ -6299,11 +6369,18 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 
 	ZigbeeDeviceInfo devices[10];
 	int count = sensor_zigbee_get_discovered_devices(devices, 10);
+	char search[64] = "";
+	findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("name"), true);
+	if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("search"), true);
+	if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("q"), true);
 
 	bfill.emit_p(PSTR("{\"devices\":["));
+	bool first = true;
+	int out_count = 0;
 	for (int i = 0; i < count; i++) {
-		if (i > 0) bfill.emit_p(PSTR(","));
-		enrich_device_info_from_sensor(devices[i]);
+		if (!zigbee_device_matches_search(devices[i], search)) continue;
+		if (!first) bfill.emit_p(PSTR(","));
+		first = false;
 		char ieee_str[20];
 		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
 		         (unsigned long long)devices[i].ieee_addr);
@@ -6314,7 +6391,7 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
 		                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
 		                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D,"
-		                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\"}"),
+		                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
 		             ieee_str,
 		             devices[i].short_addr,
 		             devices[i].model_id,
@@ -6331,9 +6408,12 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 		             devices[i].hw_version,
 		             devices[i].date_code,
 		             devices[i].sw_build_id);
+		emit_zigbee_logical_devices(devices[i].ieee_addr);
+		bfill.emit_p(PSTR("}"));
 		send_packet(OTF_PARAMS);
+		out_count++;
 	}
-	bfill.emit_p(PSTR("],\"count\":$D}"), count);
+	bfill.emit_p(PSTR("],\"count\":$D}"), out_count);
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);

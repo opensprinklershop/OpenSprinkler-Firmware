@@ -677,6 +677,50 @@ upload_env() {
     local env="$1"
     _find_usb_port "$(_env_to_chip "$env")"
     header "Uploading firmware: ${env} → ${USB_PORT}"
+
+    # ESP32-C5 uploads must not depend on PlatformIO's bundled esptool package,
+    # because ESP8266 builds can downgrade that package to a version without
+    # ESP32-C5 support inside the shared packages_dir.
+    if [[ "$env" == esp32-c5-* ]]; then
+        _find_esptool
+        local firmware_bin="${SCRIPT_DIR}/.pio/build/${env}/firmware.bin"
+        local dist_bin="${SCRIPT_DIR}/.pio/dist/firmware_${env}.bin"
+        local baud="${UPLOAD_SPEED:-460800}"
+        info "Using direct esptool upload path for ${env}"
+
+        if [[ ! -f "$firmware_bin" ]]; then
+            if [[ -f "$dist_bin" ]]; then
+                firmware_bin="$dist_bin"
+                info "Using dist fallback binary: ${firmware_bin}"
+            else
+                error "Firmware binary not found: ${firmware_bin}"
+                error "Missing dist fallback as well: ${dist_bin}"
+                error "Run build first: ./fw.sh build $(_env_to_variant "$env")"
+                exit 1
+            fi
+        fi
+
+        if [[ "$env" == *"-zigbee" ]]; then
+            "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud "$baud" \
+                --before default_reset --after hard_reset \
+                write_flash 0x10000 "$firmware_bin" \
+            || { error "Upload failed: ${env}"; exit 1; }
+        else
+            if [[ ! -f "$MATTER_KVS_BIN" ]]; then
+                warn "Matter KVS binary missing: ${MATTER_KVS_BIN}"
+                info "Generating Matter manufacturing data automatically …"
+                generate_matter_mfg
+            fi
+            "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud "$baud" \
+                --before default_reset --after hard_reset \
+                write_flash 0x3A0000 "$firmware_bin" 0x730000 "$MATTER_KVS_BIN" \
+            || { error "Upload failed: ${env}"; exit 1; }
+        fi
+
+        ok "Upload successful: ${env}"
+        return 0
+    fi
+
     if "$PIO_BIN" run --environment "$env" --target upload --upload-port "$USB_PORT"; then
         ok "Upload successful: ${env}"
     else

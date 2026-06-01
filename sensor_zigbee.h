@@ -50,6 +50,20 @@ struct ZigbeeDeviceInfo {
     char vendor[32];              // Human-readable vendor name from devices API (e.g. "GIEX")
 };
 
+enum ZbStationControlMode : uint8_t {
+    ZB_STATION_CTRL_STANDARD = 0,
+    ZB_STATION_CTRL_TUYA = 1,
+};
+
+struct ZigbeeStationControlConfig {
+    bool found = false;
+    uint8_t endpoint = 1;
+    uint8_t control_mode = ZB_STATION_CTRL_STANDARD;
+    uint8_t protocol_type = 0; // 0=standard Zigbee, 1=Tuya, 2=other
+    uint8_t dp_value = 0;
+    uint8_t dp_status = 0;
+};
+
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 
 #include "SensorBase.hpp"
@@ -231,20 +245,6 @@ enum ZbCommMode : uint8_t {
     ZB_COMM_ACTIVE  = 2,  ///< Device only responds to active reads
 };
 
-enum ZbStationControlMode : uint8_t {
-    ZB_STATION_CTRL_AUTO = 0,
-    ZB_STATION_CTRL_STANDARD = 1,
-    ZB_STATION_CTRL_TUYA = 2,
-};
-
-struct ZigbeeStationControlConfig {
-    bool found = false;
-    uint8_t endpoint = 1;
-    uint8_t control_mode = ZB_STATION_CTRL_AUTO;
-    uint8_t dp_value = 0;
-    uint8_t dp_status = 0;
-};
-
 class ZigbeeSensor : public SensorBase {
 public:
     // Zigbee-specific fields
@@ -252,7 +252,8 @@ public:
     uint8_t endpoint = 1;             // Zigbee endpoint (usually 1)
     uint16_t cluster_id = 0x0408;     // Cluster ID (0x0408=soil moisture, 0x0402=temperature)
     uint16_t attribute_id = 0x0000;   // Attribute ID (0x0000=MeasuredValue)
-    uint8_t control_mode = ZB_STATION_CTRL_AUTO; // auto/standard/Tuya valve control selection
+    uint8_t zb_type = 0;              // 0=standard Zigbee, 1=Tuya, 2=other
+    uint8_t control_mode = ZB_STATION_CTRL_STANDARD; // auto/standard/Tuya valve control selection
     // Optional Tuya DataPoint overrides (-1 = disabled / auto mapping)
     int16_t tuya_dp_value = -1;        // DP ID that carries the primary measurement value
     int16_t tuya_dp_battery = -1;     // DP ID that carries battery percentage/state

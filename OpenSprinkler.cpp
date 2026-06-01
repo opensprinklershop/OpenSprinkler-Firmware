@@ -1947,7 +1947,7 @@ void OpenSprinkler::detect_binarysensor_status(time_os_t curr_time) {
     time_os_t sensor_time = (time_os_t)(millis() / 1000UL);
 
 	// sensor_type: 0 if normally closed, 1 if normally open
-	if(iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_RAIN || iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_SOIL) {
+	if(iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_NONE || iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_RAIN || iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_SOIL) {
 		if(hw_rev>=2)	pinMode(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
 		unsigned char val = digitalReadExt(PIN_SENSOR1);
 		status.sensor1 = status.forced_sensor1 || ((val == iopts[IOPT_SENSOR1_OPTION]) ? 0 : 1);
@@ -1985,7 +1985,7 @@ void OpenSprinkler::detect_binarysensor_status(time_os_t curr_time) {
 
 	// ESP8266 is guaranteed to have sensor 2
 #if defined(ESP8266) || defined(ESP32) || defined(PIN_SENSOR2)
-	if(iopts[IOPT_SENSOR2_TYPE]==SENSOR_TYPE_RAIN || iopts[IOPT_SENSOR2_TYPE]==SENSOR_TYPE_SOIL) {
+	if(iopts[IOPT_SENSOR2_TYPE]==SENSOR_TYPE_NONE || iopts[IOPT_SENSOR2_TYPE]==SENSOR_TYPE_RAIN || iopts[IOPT_SENSOR2_TYPE]==SENSOR_TYPE_SOIL) {
 		if(hw_rev>=2)	pinMode(PIN_SENSOR2, INPUT_PULLUP); // this seems necessary for OS 3.2
 		unsigned char val = digitalReadExt(PIN_SENSOR2);
 		status.sensor2 = status.forced_sensor2 || ((val == iopts[IOPT_SENSOR2_OPTION]) ? 0 : 1);

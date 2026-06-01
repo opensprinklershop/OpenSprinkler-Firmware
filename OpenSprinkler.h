@@ -258,6 +258,43 @@ struct ZigbeeStationData {
 	char reserved[15];      // reserved/padding (matches 36 bytes)
 };
 
+/** ZigBee Logical Device — represents a sensor/actuator function on a ZigBee device
+ *  Multiple logical devices can exist for a single IEEE address (e.g., multi-channel valve)
+ *  Indexed in RAM as: IEEE#LogicalDeviceName for O(1) lookup
+ */
+struct ZigBeeLogicalDevice {
+	char ieee[17];                    // IEEE address (16-char hex + null)
+	char name[30];                    // Logical device name (e.g., "temperature", "valve_1")
+	uint8_t endpoint;                 // ZigBee endpoint (1-254)
+	uint16_t cluster_id;              // ZCL cluster ID (0x0402=temp, 0x0408=moisture, etc.)
+	uint16_t attr_id;                 // ZCL attribute ID
+	
+	// Tuya-specific fields (only used if is_tuya = true)
+	bool is_tuya;                     // true if device uses Tuya custom DP protocol
+	int16_t tuya_dp_value;            // Tuya DP for primary measurement
+	int16_t tuya_dp_battery;          // Tuya DP for battery level
+	int16_t tuya_dp_unit;             // Tuya DP for unit selector
+	int16_t tuya_dp_status;           // Tuya DP for valve status (secondary)
+	int16_t tuya_dp_consumption;      // Tuya DP for water consumption
+	
+	// Factor/divider for unit conversion
+	int16_t factor;
+	int16_t divider;
+	
+	// Unit information
+	char unit[8];                     // Unit string (e.g., "°C", "%")
+	uint8_t unitid;                   // Unit ID (UNIT_PERCENT, UNIT_DEGREE_F, etc.)
+	
+	// Reserved for future use
+	char reserved[32];
+	
+	// Compute hashable key for O(1) lookup
+	String getKey() const {
+		String k = String(ieee) + "#" + String(name);
+		return k;
+	}
+};
+
 /** Volatile controller status bits */
 struct ConStatus {
 	unsigned char enabled:1;         // operation enable (when set, controller operation is enabled)
@@ -403,6 +440,39 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void switch_httpstation(HTTPStationData *data, bool turnon, bool usessl=false); // switch http station
 	static void switch_modbusStation(ModbusStationData *data, bool turnon); // switch RS485 station
 	static void switch_zigbeestation(ZigbeeStationData *data, bool turnon, uint8_t sid, uint16_t dur = 0); // switch Zigbee station
+
+	// -- ZigBee Logical Device management
+	/** Register or update a logical device in the runtime cache
+	 *  Key: IEEE#LogicalDeviceName
+	 */
+	static bool zigbee_logical_register(const ZigBeeLogicalDevice& logdev);
+	
+	/** Lookup a logical device by IEEE and name
+	 *  Returns nullptr if not found
+	 */
+	static ZigBeeLogicalDevice* zigbee_logical_lookup(const char *ieee, const char *name);
+	
+	/** Remove a logical device
+	 */
+	static void zigbee_logical_unregister(const char *ieee, const char *name);
+	
+	/** Clear all logical devices for a given IEEE
+	 */
+	static void zigbee_logical_clear_ieee(const char *ieee);
+	
+	/** Clear all logical devices (used during scan/rejoin)
+	 */
+	static void zigbee_logical_clear_all();
+	
+	/** Get count of logical devices for an IEEE
+	 */
+	static uint16_t zigbee_logical_count_ieee(const char *ieee);
+
+	// ZigBee Logical Device storage (runtime-only, not persisted)
+	// Uses simple array with linear search, suitable for small device count
+	static constexpr uint16_t MAX_ZIGBEE_LOGICAL_DEVICES = 64;
+	static uint16_t zigbee_logical_device_count;
+	static ZigBeeLogicalDevice EXT_RAM_BSS_ATTR zigbee_logical_devices[MAX_ZIGBEE_LOGICAL_DEVICES];
 
 	// -- options and data storeage
 	static void nvdata_load();

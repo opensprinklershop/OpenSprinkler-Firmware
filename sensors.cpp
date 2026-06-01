@@ -25,6 +25,7 @@
 #include "sensors_util.h"
 #include "main.h"
 #include "TimeLib.h"
+#include <new>
 #include <stdlib.h>
 #if defined(ESP32)
 #include <esp_heap_caps.h>
@@ -852,17 +853,94 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     }
   }
   
+  // Gateway-managed Zigbee devices should not be duplicated as bare placeholder
+  // sensors. Keep real logical channel definitions, because station control uses
+  // those sensor rows for endpoint/control-mode/Tuya-DP mapping.
+  if (type == SENSOR_ZIGBEE) {
+    bool has_logical_config = json.containsKey("cluster_id") ||
+                              json.containsKey("attribute_id") ||
+                              json.containsKey("control_mode") ||
+                              json.containsKey("use_tuya_control") ||
+                              json.containsKey("tuya_dp") ||
+                              json.containsKey("tuya_dp_value") ||
+                              json.containsKey("tuya_dp_status") ||
+                              json.containsKey("tuya_dp_consumption") ||
+                              json.containsKey("tuya_dp_unit") ||
+                              json.containsKey("tuya_dp_batt") ||
+                              json.containsKey("zb_type") ||
+                              json.containsKey("zigbee_type") ||
+                              json.containsKey("dp") ||
+                              json.containsKey("dp_value") ||
+                              json.containsKey("dp_status") ||
+                              json.containsKey("dp_consumption") ||
+                              json.containsKey("dp_unit") ||
+                              json.containsKey("dp_battery");
+
+    if (!has_logical_config) {
+      uint64_t ieee_addr = 0;
+      const char *ieee_str = nullptr;
+      if (json.containsKey("device_ieee") && json["device_ieee"].is<const char*>()) {
+        ieee_str = json["device_ieee"];
+      } else if (json.containsKey("ieee") && json["ieee"].is<const char*>()) {
+        ieee_str = json["ieee"];
+      } else if (json.containsKey("ieee_addr") && json["ieee_addr"].is<const char*>()) {
+        ieee_str = json["ieee_addr"];
+      }
+      if (ieee_str && ieee_str[0]) {
+        if (strlen(ieee_str) == 16) {
+          for (int i = 0; i < 16; i++) {
+            char c = ieee_str[i];
+            ieee_addr = (ieee_addr << 4) | (uint64_t)((c >= '0' && c <= '9') ? (c - '0') : (c >= 'A' && c <= 'F') ? (10 + c - 'A') : (c >= 'a' && c <= 'f') ? (10 + c - 'a') : 0);
+          }
+        } else {
+          ieee_addr = strtoull(ieee_str, nullptr, 0);
+        }
+      } else if (json.containsKey("device_ieee")) {
+        ieee_addr = json["device_ieee"].as<uint64_t>();
+      } else if (json.containsKey("ieee_addr")) {
+        ieee_addr = json["ieee_addr"].as<uint64_t>();
+      }
+
+#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+      if (ieee_addr != 0) {
+        extern int sensor_zigbee_gw_get_discovered_devices(ZigbeeDeviceInfo* out, int max_devices);
+        extern int sensor_zigbee_get_discovered_devices(ZigbeeDeviceInfo* out, int max_devices);
+        const int max_devices = 128;
+        ZigbeeDeviceInfo *devs = new (std::nothrow) ZigbeeDeviceInfo[max_devices];
+        if (devs) {
+          bool found = false;
+          int n_gw = sensor_zigbee_gw_get_discovered_devices(devs, max_devices);
+          for (int i = 0; i < n_gw; i++) {
+            if (devs[i].ieee_addr == ieee_addr) { found = true; break; }
+          }
+          if (!found) {
+            int n_cli = sensor_zigbee_get_discovered_devices(devs, max_devices);
+            for (int i = 0; i < n_cli; i++) {
+              if (devs[i].ieee_addr == ieee_addr) { found = true; break; }
+            }
+          }
+          delete[] devs;
+          if (found) {
+            DEBUG_PRINTLN(F("[SENSOR] Zigbee gateway device already exists; skipping placeholder sensor."));
+            return HTTP_RQT_SUCCESS;
+          }
+        }
+      }
+#endif
+    }
+  }
+
   // Create new sensor
   boolean ip_based = json.containsKey("ip") && (json["ip"].as<uint32_t>() > 0);
   SensorBase *new_sensor = sensor_make_obj(type, ip_based);
-  
+
   if (!new_sensor) {
     return HTTP_RQT_NOT_RECEIVED;
   }
-  
+
   // Load from JSON
   new_sensor->fromJson(json);
-  
+
   sensorsMap[nr] = new_sensor;
   if (save) sensor_save();
   sensor_notify_zigbee(new_sensor);
@@ -3139,12 +3217,10 @@ void check_monitors() {
 
       case MONITOR_SENSOR12:
         if (mon->m.sensor12.sensor12 == 1)        
-      	  if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL)
-            mon->active = mon->m.sensor12.invers? !os.status.sensor1_active : os.status.sensor1_active;
-        if (mon->m.sensor12.sensor12 == 2)
-          if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL)
-            mon->active = mon->m.sensor12.invers? !os.status.sensor2_active : os.status.sensor2_active;
-        break;
+		  	if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL)
+	            mon->active = mon->m.sensor12.invers? !os.status.sensor1_active : os.status.sensor1_active;
+		  if (mon->m.sensor12.sensor12 == 2)
+	          if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL)
 
       case MONITOR_SET_SENSOR12:
         mon->active = get_monitor(mon->m.set_sensor12.monitor, false, false);

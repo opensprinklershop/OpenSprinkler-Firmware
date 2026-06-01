@@ -14,6 +14,7 @@
 #include "mcp_server.h"
 #include "OpenSprinkler.h"
 #include "program.h"
+#include "sensors.h"
 #include "opensprinkler_server.h"
 #include "ArduinoJson.hpp"
 #include "psram_utils.h"
@@ -707,6 +708,93 @@ static int tool_pause_queue(const ArduinoJson::JsonObjectConst& args) {
   return 1; // HTML_SUCCESS
 }
 
+// ─── Tool: configure_monitor ───────────────────────────────────────────────
+
+static int tool_configure_monitor(const ArduinoJson::JsonObjectConst& args) {
+  ArduinoJson::JsonObjectConst params = args["params"].as<ArduinoJson::JsonObjectConst>();
+  if (params.isNull()) return 16; // HTML_DATA_MISSING
+
+  if (!params.containsKey("nr") || !params.containsKey("type")) return 16;
+  uint16_t nr = params["nr"].as<uint16_t>();
+  uint16_t type = params["type"].as<uint16_t>();
+  if (nr == 0) return 16;
+
+  if (type == 0) {
+    monitor_delete(nr);
+    return 1;
+  }
+
+  uint16_t sensor = params["sensor"] | 0;
+  if (!params.containsKey("prog") || !params.containsKey("zone") || !params.containsKey("maxrun")) return 16;
+  uint16_t prog = params["prog"].as<uint16_t>();
+  uint16_t zone = params["zone"].as<uint16_t>();
+  ulong maxRuntime = params["maxrun"].as<ulong>();
+
+  char name[30] = {0};
+  if (params.containsKey("name")) {
+    strncpy(name, params["name"].as<const char*>(), sizeof(name) - 1);
+  }
+
+  uint8_t prio = params["prio"] | 0;
+  ulong reset_seconds = params["rs"] | 0;
+
+  double value1 = params["value1"] | 0.0;
+  double value2 = params["value2"] | 0.0;
+  uint16_t sensor12 = params["sensor12"] | 0;
+  bool invers = params["invers"] | false;
+
+  uint16_t monitor1 = params["monitor1"] | 0;
+  uint16_t monitor2 = params["monitor2"] | 0;
+  uint16_t monitor3 = params["monitor3"] | 0;
+  uint16_t monitor4 = params["monitor4"] | 0;
+  bool invers1 = params["invers1"] | false;
+  bool invers2 = params["invers2"] | false;
+  bool invers3 = params["invers3"] | false;
+  bool invers4 = params["invers4"] | false;
+
+  uint16_t monitor = params["monitor"] | 0;
+  uint16_t time_from = params["from"] | 0;
+  uint16_t time_to = params["to"] | 2400;
+  uint8_t wdays = params["wdays"] | 0xFF;
+  uint16_t rmonitor = params["rmonitor"] | 0;
+  uint32_t ip = params["ip"] | 0;
+  uint16_t port = params["port"] | 0;
+
+  Monitor_Union_t m;
+  switch (type) {
+    case MONITOR_MIN:
+    case MONITOR_MAX:
+      m = (Monitor_Union_t){.minmax = {.value1 = value1, .value2 = value2}};
+      break;
+    case MONITOR_SENSOR12:
+      m = (Monitor_Union_t){.sensor12 = {.sensor12 = sensor12, .invers = invers}};
+      break;
+    case MONITOR_SET_SENSOR12:
+      m = (Monitor_Union_t){.set_sensor12 = {.monitor = monitor, .sensor12 = sensor12}};
+      break;
+    case MONITOR_AND:
+    case MONITOR_OR:
+    case MONITOR_XOR:
+      m = (Monitor_Union_t){.andorxor = {.monitor1 = monitor1, .monitor2 = monitor2, .monitor3 = monitor3, .monitor4 = monitor4,
+        .invers1 = invers1, .invers2 = invers2, .invers3 = invers3, .invers4 = invers4}};
+      break;
+    case MONITOR_NOT:
+      m = (Monitor_Union_t){.mnot = {.monitor = monitor}};
+      break;
+    case MONITOR_TIME:
+      m = (Monitor_Union_t){.mtime = {.time_from = time_from, .time_to = time_to, .weekdays = wdays}};
+      break;
+    case MONITOR_REMOTE:
+      m = (Monitor_Union_t){.remote = {.rmonitor = rmonitor, .ip = ip, .port = port}};
+      break;
+    default:
+      return 18; // HTML_DATA_FORMATERROR
+  }
+
+  int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds);
+  return ret >= HTTP_RQT_SUCCESS ? 1 : 16;
+}
+
 // ─── tools/list ─────────────────────────────────────────────────────────────
 
 // Build the "inputSchema" for a tool with no parameters.
@@ -750,6 +838,19 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
     "List sensor-based program adjustments. Equivalent to /se.");
   add_ro("list_monitors",
     "List sensor monitors (threshold-based program triggers). Equivalent to /ml.");
+  {
+    auto t = tools.add<ArduinoJson::JsonObject>();
+    t["name"]        = "configure_monitor";
+    t["description"] = "Configure a sensor monitor (threshold trigger). Equivalent to /mc.";
+    auto schema = t["inputSchema"].to<ArduinoJson::JsonObject>();
+    schema["type"] = "object";
+    auto props = schema["properties"].to<ArduinoJson::JsonObject>();
+    auto params = props["params"].to<ArduinoJson::JsonObject>();
+    params["type"] = "object";
+    params["description"] = "Monitor parameters: nr, sensor, type, prog, zone, maxrun, value1, value2, sensor12, monitor1..4, from, to, wdays, rmonitor, ip, port, rs, prio.";
+    auto req_arr = schema["required"].to<ArduinoJson::JsonArray>();
+    req_arr.add("params");
+  }
   add_ro("backup_sensor_config",
     "Export full sensor/adjustment/monitor configuration backup. Equivalent to /sx.");
   add_ro("get_system_resources",
@@ -1069,6 +1170,17 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
 
     } else if (strcmp(tool_name, "list_monitors") == 0) {
       content_json = tool_list_monitors(req, res);
+
+    } else if (strcmp(tool_name, "configure_monitor") == 0) {
+      if (args.isNull()) {
+        mcp_build_error(resp_doc, rpc_id, RPC_ERR_INVALID_PARAMS, "arguments required");
+        mcp_send_response(res, resp_doc);
+        return;
+      }
+      int code = tool_configure_monitor(args);
+      mcp_build_code_result(resp_doc, rpc_id, code);
+      mcp_send_response(res, resp_doc);
+      return;
 
     } else if (strcmp(tool_name, "backup_sensor_config") == 0) {
       content_json = tool_backup_sensor_config(req, res);

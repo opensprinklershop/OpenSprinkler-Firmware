@@ -40,6 +40,47 @@ static uint64_t parse_ieee_hex(const char *hex16) {
 	return ieee;
 }
 
+ #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+static bool infer_tuya_from_sensor_rows(uint64_t ieee, uint8_t* inferred_dp) {
+	if (inferred_dp) *inferred_dp = 0;
+	if (ieee == 0) return false;
+
+	bool found_tuya_signature = false;
+	uint8_t first_dp = 0;
+	uint8_t first_dp_val = 0;
+
+	SensorIterator it = sensors_iterate_begin();
+	SensorBase* sensor;
+	while ((sensor = sensors_iterate_next(it)) != NULL) {
+		if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+		ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+		if (zb->device_ieee != ieee) continue;
+
+		if (zb->tuya_dp_status > 0 && first_dp == 0) first_dp = (uint8_t)zb->tuya_dp_status;
+		if (zb->tuya_dp_value > 0 && first_dp_val == 0) first_dp_val = (uint8_t)zb->tuya_dp_value;
+
+		if (zb->cluster_id == 0xEF00 ||
+			zb->tuya_dp_value >= 0 ||
+			zb->tuya_dp_status >= 0 ||
+			zb->tuya_dp_battery >= 0 ||
+			zb->tuya_dp_consumption >= 0 ||
+			zb->tuya_dp_unit >= 0 ||
+			(zb->zb_manufacturer[0] == '_' && zb->zb_manufacturer[1] == 'T')) {
+			found_tuya_signature = true;
+		}
+	}
+
+	// Prefer status DP for on/off control; fall back to value DP if no status DP configured.
+	if (first_dp == 0 && first_dp_val != 0) first_dp = first_dp_val;
+
+	if (found_tuya_signature && inferred_dp && first_dp != 0) {
+		*inferred_dp = first_dp;
+	}
+
+	return found_tuya_signature;
+}
+#endif
+
 } // namespace
 
 #if defined(ESP32)
@@ -116,17 +157,39 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	if (dp_id == 0) dp_id = 1;
 	ZigbeeStationControlConfig cfg = {};
 	bool has_cfg = sensor_zigbee_get_station_control_config(ieee, &cfg) && cfg.found;
-	if (has_cfg && cfg.control_mode != ZB_STATION_CTRL_AUTO) {
+	if (has_cfg) {
 		ep = cfg.endpoint ? cfg.endpoint : ep;
-		use_tuya = (cfg.control_mode == ZB_STATION_CTRL_TUYA);
-		if (use_tuya && cfg.dp_value != 0) {
-			dp_id = cfg.dp_value;
+		if (cfg.control_mode == ZB_STATION_CTRL_TUYA) {
+			use_tuya = true;
+		} else if (cfg.control_mode == ZB_STATION_CTRL_STANDARD) {
+			use_tuya = false;
+		} else if (!use_tuya && cfg.protocol_type == 1) {
+			// DB template marks this device as Tuya-specific.
+			use_tuya = true;
+		} else if (!use_tuya && (cfg.dp_value != 0 || cfg.dp_status != 0)) {
+			// AUTO mode with explicit DP mapping is effectively Tuya control.
+			use_tuya = true;
+		}
+		if (use_tuya) {
+			// Prefer dp_status (on/off DP) for valve control; fall back to dp_value.
+			if (cfg.dp_status != 0) dp_id = cfg.dp_status;
+			else if (cfg.dp_value != 0) dp_id = cfg.dp_value;
 		}
 	}
 
 	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	{
-		if (!has_cfg || cfg.control_mode == ZB_STATION_CTRL_AUTO) {
+		if (!use_tuya) {
+			uint8_t inferred_dp = 0;
+			if (infer_tuya_from_sensor_rows(ieee, &inferred_dp)) {
+				use_tuya = true;
+				if (inferred_dp != 0) dp_id = inferred_dp;
+				DEBUG_PRINTF(F("[ZIGBEE] Runtime inference: forcing Tuya DP for ieee=%016llX dp=%d\n"),
+				             (unsigned long long)ieee, dp_id);
+			}
+		}
+
+		if (!has_cfg) {
 			// Legacy fallback for stations that still rely on the station payload.
 			bool matched = false;
 			bool dev_is_tuya = false;
@@ -156,19 +219,120 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	}
 	#endif
 
-	bool command_sent = false;
 	if (use_tuya) {
-		command_sent = sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
+		sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
 	} else {
-		command_sent = sensor_zigbee_send_on_off(ieee, ep, turnon);
+		sensor_zigbee_send_on_off(ieee, ep, turnon);
 	}
-#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-	// Register for switch-failure verification: if the device doesn't echo
-	// the expected DP state within ZB_VERIFY_TIMEOUT_MS, an MQTT alert is
-	// published on station/{sid}/alert/switch.
-	// Only standard ZCL devices are registered here (Tuya is single-fire, zero-retry).
-	if (!use_tuya && command_sent && ieee != 0) {
-		sensor_zigbee_station_verify_register(sid, ieee, ep, dp_id, turnon);
+}
+
+// ============================================================================
+// ZigBee Logical Device Management
+// ============================================================================
+
+// Initialize static storage in OpenSprinkler class
+uint16_t OpenSprinkler::zigbee_logical_device_count = 0;
+ZigBeeLogicalDevice OpenSprinkler::zigbee_logical_devices[OpenSprinkler::MAX_ZIGBEE_LOGICAL_DEVICES];
+
+/** Register a logical device (insert or update) */
+bool OpenSprinkler::zigbee_logical_register(const ZigBeeLogicalDevice& logdev) {
+	if (zigbee_logical_device_count >= MAX_ZIGBEE_LOGICAL_DEVICES) {
+		DEBUG_PRINTF(F("[ZIGBEE] WARN: Logical device array full, cannot add %s#%s\n"),
+		             logdev.ieee, logdev.name);
+		return false;
 	}
-#endif
+
+	// Check if already exists (update case)
+	for (uint16_t i = 0; i < zigbee_logical_device_count; i++) {
+		if (strcmp(zigbee_logical_devices[i].ieee, logdev.ieee) == 0 &&
+		    strcmp(zigbee_logical_devices[i].name, logdev.name) == 0) {
+			zigbee_logical_devices[i] = logdev;
+			DEBUG_PRINTF(F("[ZIGBEE] Updated logical device: %s#%s\n"),
+			             logdev.ieee, logdev.name);
+			return true;
+		}
+	}
+
+	// New entry
+	zigbee_logical_devices[zigbee_logical_device_count] = logdev;
+	zigbee_logical_device_count++;
+	DEBUG_PRINTF(F("[ZIGBEE] Registered logical device: %s#%s (count=%d)\n"),
+	             logdev.ieee, logdev.name, zigbee_logical_device_count);
+	return true;
+}
+
+/** Lookup a logical device by IEEE and name */
+ZigBeeLogicalDevice* OpenSprinkler::zigbee_logical_lookup(const char *ieee, const char *name) {
+	if (!ieee || !name) return nullptr;
+
+	for (uint16_t i = 0; i < zigbee_logical_device_count; i++) {
+		if (strcmp(zigbee_logical_devices[i].ieee, ieee) == 0 &&
+		    strcmp(zigbee_logical_devices[i].name, name) == 0) {
+			return &zigbee_logical_devices[i];
+		}
+	}
+	return nullptr;
+}
+
+/** Unregister a specific logical device */
+void OpenSprinkler::zigbee_logical_unregister(const char *ieee, const char *name) {
+	if (!ieee || !name) return;
+
+	for (uint16_t i = 0; i < zigbee_logical_device_count; i++) {
+		if (strcmp(zigbee_logical_devices[i].ieee, ieee) == 0 &&
+		    strcmp(zigbee_logical_devices[i].name, name) == 0) {
+			// Swap with last and shrink
+			if (i < zigbee_logical_device_count - 1) {
+				zigbee_logical_devices[i] = zigbee_logical_devices[zigbee_logical_device_count - 1];
+			}
+			zigbee_logical_device_count--;
+			DEBUG_PRINTF(F("[ZIGBEE] Unregistered logical device: %s#%s (count=%d)\n"),
+			             ieee, name, zigbee_logical_device_count);
+			return;
+		}
+	}
+}
+
+/** Clear all logical devices for a given IEEE */
+void OpenSprinkler::zigbee_logical_clear_ieee(const char *ieee) {
+	if (!ieee) return;
+
+	uint16_t removed = 0;
+	for (uint16_t i = 0; i < zigbee_logical_device_count; ) {
+		if (strcmp(zigbee_logical_devices[i].ieee, ieee) == 0) {
+			// Swap with last and shrink
+			if (i < zigbee_logical_device_count - 1) {
+				zigbee_logical_devices[i] = zigbee_logical_devices[zigbee_logical_device_count - 1];
+			}
+			zigbee_logical_device_count--;
+			removed++;
+		} else {
+			i++;
+		}
+	}
+	if (removed > 0) {
+		DEBUG_PRINTF(F("[ZIGBEE] Cleared %d logical devices for IEEE %s (remaining=%d)\n"),
+		             removed, ieee, zigbee_logical_device_count);
+	}
+}
+
+/** Clear all logical devices (used during scan/rejoin) */
+void OpenSprinkler::zigbee_logical_clear_all() {
+	uint16_t old_count = zigbee_logical_device_count;
+	zigbee_logical_device_count = 0;
+	memset(zigbee_logical_devices, 0, sizeof(zigbee_logical_devices));
+	DEBUG_PRINTF(F("[ZIGBEE] Cleared all %d logical devices\n"), old_count);
+}
+
+/** Get count of logical devices for an IEEE */
+uint16_t OpenSprinkler::zigbee_logical_count_ieee(const char *ieee) {
+	if (!ieee) return 0;
+
+	uint16_t count = 0;
+	for (uint16_t i = 0; i < zigbee_logical_device_count; i++) {
+		if (strcmp(zigbee_logical_devices[i].ieee, ieee) == 0) {
+			count++;
+		}
+	}
+	return count;
 }

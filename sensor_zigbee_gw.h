@@ -1,3 +1,9 @@
+#include "sensor_zigbee.h"
+
+// Helper: Robustly detect if a discovered Zigbee device is a valve (ventil)
+// Returns true if device is Tuya (0xEF00), has sent DP2 (valve state), and endpoint matches (default 1),
+// or if model/manufacturer matches known valve patterns (TS0601, GX02, etc.)
+bool gw_is_zigbee_valve(const ZigbeeDeviceInfo& dev);
 /* OpenSprinkler Unified (ESP32-C5) Firmware
  * Copyright (C) 2026 by OpenSprinkler Shop Ltd.
  *
@@ -127,6 +133,23 @@ void sensor_zigbee_gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint)
  * @return true if the read request was sent
  */
 bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t endpoint);
+
+/**
+ * @brief Queue a Basic Cluster query with gateway spacing rules.
+ * @param device_ieee IEEE address of target device
+ * @param endpoint Target endpoint
+ * @return true if the request was queued
+ */
+bool sensor_zigbee_gw_query_basic_cluster_queued(uint64_t device_ieee, uint8_t endpoint);
+
+/**
+ * @brief Query a device's Basic Cluster and Tuya datapoints in one-shot steps.
+ * @param device_ieee IEEE address of target device
+ * @param endpoint Target endpoint
+ * @return true if the request was queued
+ * @note Commands are spaced at least 5 seconds apart.
+ */
+bool sensor_zigbee_gw_query_device_data(uint64_t device_ieee, uint8_t endpoint);
 
 /**
  * @brief Actively read one attribute from a remote device in Gateway mode

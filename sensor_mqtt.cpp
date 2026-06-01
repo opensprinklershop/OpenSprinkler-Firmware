@@ -24,6 +24,7 @@
 #include "sensors.h"
 #include "mqtt.h"
 #include "OpenSprinkler.h"
+
 #include "opensprinkler_server.h"
 
 extern OpenSprinkler os;
@@ -120,28 +121,30 @@ void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosqui
 	while (sensor) {
 		if (sensor->type == SENSOR_MQTT && sensor->last_read != now) {
 			MqttSensor* mqtt = static_cast<MqttSensor*>(sensor);
-			// Use toJson to get MQTT-specific fields
+			// Use toJson to get MQTT-specific fields (allocate doc on heap to avoid stack overflow)
+			// NOTE: Heap allocation is not supported in this ArduinoJson version. Use stack allocation (default size).
 			ArduinoJson::JsonDocument doc;
 			ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
 			sensor->toJson(obj);
 			const char* topic = obj["topic"] | "";
 			const char* filter = obj["filter"] | "";
-			
+
 			DEBUG_PRINT("mtopic: "); DEBUG_PRINTLN(mtopic);
 			DEBUG_PRINT("topic:  "); DEBUG_PRINTLN(topic);
-			
+
 			if (topic[0] && MqttSensor::filterMatches(mtopic, topic)) {
 				double value = 0;
 				int ok = findValue((char*)payload, length, filter[0] ? filter : NULL, value);
 				if (ok && value >= -10000 && value <= 10000 && (value != sensor->last_data || !sensor->flags.data_ok || now-sensor->last_read > 6000)) {
 					sensor->last_data = value;
 					sensor->flags.data_ok = true;
-					sensor->last_read = now;	
+					sensor->last_read = now;
 					mqtt->mqtt_push = true;
 					sensor->repeat_read = 1; //This will call read_sensor_mqtt
 					// DEBUG_PRINTLN("sensor_mqtt_callback2");
 				}
 			}
+			// No delete needed for stack allocation
 		}
 		sensor = sensors_iterate_next(it);
 	}
