@@ -247,7 +247,13 @@ enum ZbCommMode : uint8_t {
 
 class ZigbeeSensor : public SensorBase {
 public:
-    // Zigbee-specific fields
+    // NEW: Logical Device reference (preferred way after refactoring)
+    // Sensor now refers to a Logical Device instead of storing ZigBee parameters directly
+    char zigbee_device_ieee[17] = {0};      // IEEE address (16-char hex + null) to lookup in registry
+    char zigbee_logical_name[30] = {0};     // Logical device name to lookup in registry
+    
+    // DEPRECATED: Zigbee-specific fields (kept for backward compatibility / migration)
+    // These fields are now superseded by lookups via OpenSprinkler::zigbee_logical_lookup()
     uint64_t device_ieee = 0;         // IEEE address as 64-bit integer (e.g., 0x00124b001f8e5678)
     uint8_t endpoint = 1;             // Zigbee endpoint (usually 1)
     uint16_t cluster_id = 0x0408;     // Cluster ID (0x0408=soil moisture, 0x0402=temperature)
@@ -296,6 +302,13 @@ public:
     }
     
     virtual ~ZigbeeSensor() {}
+    
+    /**
+     * @brief Get logical device configuration for this sensor
+     * @return ZigBeeLogicalDevice pointer if found, nullptr if not
+     * @note Prefers new reference method (IEEE + name lookup); falls back to deprecated direct fields
+     */
+    ZigBeeLogicalDevice* getLogicalDevice() const;
     
     /**
      * @brief Initialize Zigbee sensor

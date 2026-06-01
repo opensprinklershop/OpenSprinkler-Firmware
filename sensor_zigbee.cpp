@@ -1809,6 +1809,23 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     uint old_ri = read_interval;
     SensorBase::fromJson(obj);
     
+    // NEW: Load logical device reference (preferred method)
+    if (obj.containsKey(F("zb_ieee_ref"))) {
+        const char *ieee_ref = obj[F("zb_ieee_ref")].as<const char*>();
+        if (ieee_ref && ieee_ref[0]) {
+            strncpy(zigbee_device_ieee, ieee_ref, sizeof(zigbee_device_ieee) - 1);
+            zigbee_device_ieee[sizeof(zigbee_device_ieee) - 1] = '\0';
+        }
+    }
+    if (obj.containsKey(F("zb_logical_name"))) {
+        const char *logical_name = obj[F("zb_logical_name")].as<const char*>();
+        if (logical_name && logical_name[0]) {
+            strncpy(zigbee_logical_name, logical_name, sizeof(zigbee_logical_name) - 1);
+            zigbee_logical_name[sizeof(zigbee_logical_name) - 1] = '\0';
+        }
+    }
+    
+    // DEPRECATED: Load old fields (for backward compatibility)
     if (obj.containsKey(F("device_ieee"))) {
         ArduinoJson::JsonVariantConst val = obj[F("device_ieee")];
         if (val.is<const char*>()) {
@@ -1997,6 +2014,15 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
 void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     SensorBase::toJson(obj);
     
+    // NEW: Save logical device reference (preferred)
+    if (zigbee_device_ieee[0] != '\0') {
+        obj[F("zb_ieee_ref")] = zigbee_device_ieee;
+    }
+    if (zigbee_logical_name[0] != '\0') {
+        obj[F("zb_logical_name")] = zigbee_logical_name;
+    }
+    
+    // DEPRECATED: Keep saving old fields for fallback/migration
     if (device_ieee != 0) {
         char ieee_str[20];
         getIeeeString(ieee_str, sizeof(ieee_str));
@@ -2041,6 +2067,36 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
     if (zb_vendor[0] != '\0') {
         obj[F("zb_vendor")] = zb_vendor;
     }
+}
+
+ZigBeeLogicalDevice* ZigbeeSensor::getLogicalDevice() const {
+    // Try new method first: lookup by IEEE string + logical name
+    if (zigbee_device_ieee[0] != '\0' && zigbee_logical_name[0] != '\0') {
+        ZigBeeLogicalDevice* logdev = OpenSprinkler::zigbee_logical_lookup(zigbee_device_ieee, zigbee_logical_name);
+        if (logdev) {
+            return logdev;
+        }
+        // If not found, log warning but don't fail silently — requires migration
+        DEBUG_PRINTF(F("[ZIGBEE] WARN: Logical device not found for sensor %d: %s#%s\n"),
+                     nr, zigbee_device_ieee, zigbee_logical_name);
+    }
+     
+    // Fallback: try deprecated fields (for backward compatibility during migration)
+    if (device_ieee != 0) {
+        char ieee_str[17];
+        snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)device_ieee);
+        // Use cluster_id as part of a fallback name (temporary)
+        char fallback_name[30];
+        snprintf(fallback_name, sizeof(fallback_name), "fallback_%04X_%04X", cluster_id, attribute_id);
+        ZigBeeLogicalDevice* logdev = OpenSprinkler::zigbee_logical_lookup(ieee_str, fallback_name);
+        if (logdev) {
+            DEBUG_PRINTF(F("[ZIGBEE] Using fallback logical device for sensor %d: %s#%s\n"),
+                         nr, ieee_str, fallback_name);
+            return logdev;
+        }
+    }
+     
+    return nullptr;
 }
 
 bool ZigbeeSensor::init() {
