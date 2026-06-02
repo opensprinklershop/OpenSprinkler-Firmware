@@ -4159,6 +4159,11 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 		int n = sensorlog_load2(log, idx, BLOCKSIZE, sensorlog);
 		if (n <= 0) break;
 
+#if defined(USE_OTF) && defined(ARDUINO)
+		// Yield slightly to prevent watchdogs and allow background network tasks to run
+		delay(2);
+#endif
+
 		for (int i = 0; i < n; i++) {
 			idx++;
 			if (nr && sensorlog[i].nr != nr)
