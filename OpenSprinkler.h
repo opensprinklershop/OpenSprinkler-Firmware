@@ -364,7 +364,13 @@ public:
 		#else
 			void *ptr = malloc(n * sizeof(T));
 		#endif
-		if (!ptr) throw std::bad_alloc();
+		if (!ptr) {
+			#if defined(__EXCEPTIONS) || defined(__cpp_exceptions)
+				throw std::bad_alloc();
+			#else
+				return nullptr;
+			#endif
+		}
 		return static_cast<pointer>(ptr);
 	}
 

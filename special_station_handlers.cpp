@@ -12,6 +12,7 @@
 #endif
 
 #include <vector>
+#include <new>
 
 namespace {
 
@@ -321,13 +322,13 @@ OpenSprinkler::LogicalDeviceMap* OpenSprinkler::zigbee_logical_devices_map = nul
 // Helper: Get or create the logical devices map
 static OpenSprinkler::LogicalDeviceMap& _get_logical_devices_map() {
 	if (!OpenSprinkler::zigbee_logical_devices_map) {
-		try {
-			OpenSprinkler::zigbee_logical_devices_map = new OpenSprinkler::LogicalDeviceMap();
-			DEBUG_PRINTF(F("[ZIGBEE] Logical device map allocated in PSRAM\n"));
-		} catch (const std::exception& e) {
-			DEBUG_PRINTF(F("[ZIGBEE] ERROR: Failed to allocate logical device map: %s\n"), e.what());
-			// Fallback: allocate on heap (might be in regular RAM)
-			OpenSprinkler::zigbee_logical_devices_map = new OpenSprinkler::LogicalDeviceMap();
+		OpenSprinkler::zigbee_logical_devices_map = new (std::nothrow) OpenSprinkler::LogicalDeviceMap();
+		if (OpenSprinkler::zigbee_logical_devices_map) {
+			DEBUG_PRINTF(F("[ZIGBEE] Logical device map allocated in PSRAM/Heap\n"));
+		} else {
+			DEBUG_PRINTF(F("[ZIGBEE] ERROR: Failed to allocate logical device map\n"));
+			static OpenSprinkler::LogicalDeviceMap fallback_map;
+			return fallback_map;
 		}
 	}
 	return *OpenSprinkler::zigbee_logical_devices_map;
@@ -381,23 +382,18 @@ bool OpenSprinkler::zigbee_logical_register(const ZigBeeLogicalDevice& logdev) {
 	snprintf(key_buf, sizeof(key_buf), "%s#%s", logdev.ieee, logdev.name);
 	std::string key(key_buf);
 	
-	try {
-		LogicalDeviceEntry entry;
-		entry.device = logdev;
-		entry.key = key;
-		
-		map[key] = entry;
-		if (!zigbee_logical_save()) {
-			DEBUG_PRINTF(F("[ZIGBEE] WARN: Persisting logical device failed: %s\n"), key_buf);
-			return false;
-		}
-		DEBUG_PRINTF(F("[ZIGBEE] Registered logical device: %s (map size=%u)\n"),
-		             key_buf, (unsigned int)map.size());
-		return true;
-	} catch (const std::exception& e) {
-		DEBUG_PRINTF(F("[ZIGBEE] ERROR: Failed to register %s: %s\n"), key_buf, e.what());
+	LogicalDeviceEntry entry;
+	entry.device = logdev;
+	entry.key = key;
+	
+	map[key] = entry;
+	if (!zigbee_logical_save()) {
+		DEBUG_PRINTF(F("[ZIGBEE] WARN: Persisting logical device failed: %s\n"), key_buf);
 		return false;
 	}
+	DEBUG_PRINTF(F("[ZIGBEE] Registered logical device: %s (map size=%u)\n"),
+	             key_buf, (unsigned int)map.size());
+	return true;
 }
 
 /** Lookup a logical device by IEEE and name */
@@ -465,6 +461,7 @@ void OpenSprinkler::zigbee_logical_clear_ieee(const char *ieee) {
 void OpenSprinkler::zigbee_logical_clear_all() {
 	auto& map = _get_logical_devices_map();
 	uint16_t old_count = map.size();
+	(void)old_count;
 	map.clear();
 	DEBUG_PRINTF(F("[ZIGBEE] Cleared all %d logical devices\n"), old_count);
 	zigbee_logical_save();
