@@ -2029,6 +2029,8 @@ void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
         char ieee_str[20];
         getIeeeString(ieee_str, sizeof(ieee_str));
         obj[F("device_ieee")] = String(ieee_str);  // String() forces ArduinoJson to copy
+    } else if (zigbee_device_ieee[0] != '\0') {
+        obj[F("device_ieee")] = String(zigbee_device_ieee);
     }
     obj[F("endpoint")] = endpoint;
     
