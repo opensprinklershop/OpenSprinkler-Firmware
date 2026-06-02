@@ -87,6 +87,21 @@ int sensor_zigbee_gw_clear_device_runtime_state(uint64_t device_ieee);
 uint16_t sensor_zigbee_gw_get_join_window_remaining();
 
 /**
+ * @brief Get the currently active channel of the running Zigbee network
+ */
+uint8_t sensor_zigbee_gw_get_channel();
+
+/**
+ * @brief Get the custom channel configured in LittleFS (11-26, or 0 for default)
+ */
+uint8_t sensor_zigbee_gw_get_configured_channel();
+
+/**
+ * @brief Set the custom channel in LittleFS
+ */
+bool sensor_zigbee_gw_set_configured_channel(uint8_t channel);
+
+/**
  * @brief Force a factory reset of Zigbee NVRAM for gateway mode
  */
 void sensor_zigbee_gw_factory_reset();
@@ -133,6 +148,15 @@ void sensor_zigbee_gw_query_basic_cluster(uint16_t short_addr, uint8_t endpoint)
  * @return true if the read request was sent
  */
 bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t endpoint);
+
+/**
+ * @brief Query a specific single Basic Cluster attribute by IEEE address
+ * @param device_ieee IEEE address of target device
+ * @param endpoint Target endpoint
+ * @param attr_id Zigbee attribute ID to query (e.g. 0x0004 or 0x0005)
+ * @return true if the read request was sent
+ */
+bool sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(uint64_t device_ieee, uint8_t endpoint, uint16_t attr_id);
 
 /**
  * @brief Queue a Basic Cluster query with gateway spacing rules.

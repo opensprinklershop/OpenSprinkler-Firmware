@@ -34,6 +34,14 @@
 #include "RCSwitch.h"
 #include "osinfluxdb.h"
 
+// STL includes for ZigBee Logical Device management
+#include <unordered_map>
+#include <string>
+#include <memory>
+#include <functional>
+#include <limits>
+#include <exception>
+
 
 #if defined(ARDUINO) // headers for Arduino
        #include <Arduino.h>
@@ -280,13 +288,14 @@ struct ZigBeeLogicalDevice {
 	// Factor/divider for unit conversion
 	int16_t factor;
 	int16_t divider;
+	int16_t offset;
 	
 	// Unit information
 	char unit[8];                     // Unit string (e.g., "°C", "%")
 	uint8_t unitid;                   // Unit ID (UNIT_PERCENT, UNIT_DEGREE_F, etc.)
 	
 	// Reserved for future use
-	char reserved[32];
+	char reserved[30];
 	
 	// Compute hashable key for O(1) lookup
 	String getKey() const {
@@ -330,6 +339,58 @@ struct OTCConfig {
 
 extern const char iopt_json_names[];
 extern const uint8_t iopt_max[];
+
+// PSRAM allocator for STL containers
+template <typename T>
+class PSRAM_Allocator {
+public:
+	typedef T value_type;
+	typedef T* pointer;
+	typedef const T* const_pointer;
+	typedef T& reference;
+	typedef const T& const_reference;
+	typedef std::size_t size_type;
+	typedef std::ptrdiff_t difference_type;
+
+	template <typename U>
+	struct rebind {
+		typedef PSRAM_Allocator<U> other;
+	};
+
+	pointer allocate(size_type n, const void* = 0) {
+		if (n == 0) return nullptr;
+		#if defined(ESP32)
+			void *ptr = ps_malloc(n * sizeof(T));
+		#else
+			void *ptr = malloc(n * sizeof(T));
+		#endif
+		if (!ptr) throw std::bad_alloc();
+		return static_cast<pointer>(ptr);
+	}
+
+	void deallocate(pointer p, size_type n = 0) {
+		if (p != nullptr) {
+			free(p);
+		}
+	}
+
+	size_type max_size() const {
+		return std::numeric_limits<size_type>::max() / sizeof(T);
+	}
+
+	template <typename U, typename... Args>
+	void construct(U* p, Args&&... args) {
+		new (p) U(std::forward<Args>(args)...);
+	}
+
+	void destroy(pointer p) {
+		p->~T();
+	}
+
+	PSRAM_Allocator() {}
+	template <typename U>
+	PSRAM_Allocator(const PSRAM_Allocator<U>&) {}
+};
 
 class OpenSprinkler {
 public:
@@ -463,16 +524,26 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	/** Clear all logical devices (used during scan/rejoin)
 	 */
 	static void zigbee_logical_clear_all();
+
+	/** Load/save the persisted logical device registry */
+	static bool zigbee_logical_load();
+	static bool zigbee_logical_save();
 	
 	/** Get count of logical devices for an IEEE
 	 */
 	static uint16_t zigbee_logical_count_ieee(const char *ieee);
 
-	// ZigBee Logical Device storage (runtime-only, not persisted)
-	// Uses simple array with linear search, suitable for small device count
-	static constexpr uint16_t MAX_ZIGBEE_LOGICAL_DEVICES = 64;
-	static uint16_t zigbee_logical_device_count;
-	static ZigBeeLogicalDevice EXT_RAM_BSS_ATTR zigbee_logical_devices[MAX_ZIGBEE_LOGICAL_DEVICES];
+	// ZigBee Logical Device storage (RAM cache backed by LittleFS persistence)
+	// Uses unordered_map with PSRAM allocation for dynamic, scalable storage
+	// Key format: "IEEE#LogicalDeviceName" (e.g., "00124B001F8E5678#temperature")
+	typedef struct {
+		ZigBeeLogicalDevice device;
+		std::string key;  // IEEE#LogicalDeviceName for fast lookup
+	} LogicalDeviceEntry;
+	typedef std::unordered_map<std::string, LogicalDeviceEntry, std::hash<std::string>,
+	                            std::equal_to<std::string>,
+	                            PSRAM_Allocator<std::pair<const std::string, LogicalDeviceEntry>>> LogicalDeviceMap;
+	static LogicalDeviceMap* zigbee_logical_devices_map;
 
 	// -- options and data storeage
 	static void nvdata_load();

@@ -6,6 +6,37 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(206)] — 2026-06-01
+
+### Fixed
+- **Zigbee one-shot device discovery** (GX02 invisible after join): newly-announced devices were only added to the discovered-devices list once they answered a Basic Cluster read. Sleepy/slow devices such as the GIEX GX02 valve usually respond via the address-less `zbReadBasicCluster` callback (or miss the single query entirely) and were therefore lost, while livelier devices like the GX04 came through fine.
+  - `findEndpoint()` now pre-registers the device immediately on `DEVICE_ANNCE` using the IEEE resolved from its new short address.
+  - `zbReadBasicCluster()` now correlates the response with the pending Basic Cluster read context and registers the device (plus stores manufacturer/model strings) even when no source address is provided.
+- **Diagnostic**: `sensor_zigbee_gw_open_network()` now logs the actual `esp_zb_bdb_open_network()` return value, current channel and PAN, plus stack `started/connected` flags so failed permit-join attempts can be diagnosed from the serial monitor.
+
+---
+
+## [2.4.0(205)] — 2026-06-01
+
+### Fixed
+- **Zigbee pairing window too short**: `/zo` capped duration at 10 s, which was insufficient to pair physical devices such as the GX02 valve. Raised the upper clamp to 180 s and increased the default to 60 s. `duration=0` still acts as an explicit close.
+- **UI Zigbee scanner**: increased the permit-join window and scan timeout from 10 s to 60 s so the GX02 (and similar Tuya/Zigbee devices) actually has time to be discovered and joined.
+
+---
+
+## [2.4.0(204)] — 2026-06-01
+
+### Added
+- **Zigbee Logical Devices**: decoupled Zigbee sensor configuration from raw cluster/attribute/DP parameters by introducing a Logical Device abstraction. Sensors now reference Logical Devices by IEEE address + name, enabling multi-output devices (e.g., GX03 with 2 separate valves) to be properly configured as independent sensors.
+- **Sensor-to-Logical-Device Migration**: automatic on-boot migration of legacy sensors with deprecated direct cluster/attribute parameters into new Logical Device references, ensuring seamless upgrades for existing installations.
+- **Logical Device Registry**: firmware-side registry and lookup infrastructure for Logical Devices with O(1) string-based access (IEEE#LogicalDeviceName keys).
+
+### Changed
+- **UI ZigBee Device Editor**: updated `_rebuildLogicalDevices()` to save new reference fields (`zb_ieee_ref`, `zb_logical_name`) alongside deprecated fields for backward compatibility during transition.
+- **Sensor Persistence**: sensors now store logical device references instead of raw ZigBee parameters (cluster_id, attr_id, endpoint, Tuya DPs); fallback mechanism ensures old sensors continue to work during migration.
+
+---
+
 ## [2.4.0(203)] — 2026-05-26
 
 ### Fixed

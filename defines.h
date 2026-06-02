@@ -87,7 +87,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      203  // Firmware minor version
+#define OS_FW_MINOR      206  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -111,6 +111,7 @@ typedef unsigned long ulong;
 #define PROG_FILENAME         "prog.dat"    // program data file
 #define DONE_FILENAME         "done.dat"    // used to indicate the completion of all files
 #define MWATER_FILENAME       "mwater.dat"   // monthly water usage data file
+#define ZIGBEE_LOGICAL_FILENAME "zigbee_logical_devices.json" // persisted ZigBee logical device registry
 #else
 #define IOPTS_FILENAME        "/iopts.dat"   // integer options data file
 #define SOPTS_FILENAME        "/sopts.dat"   // string options data file
@@ -121,6 +122,7 @@ typedef unsigned long ulong;
 #define PROG_FILENAME         "/prog.dat"    // program data file
 #define DONE_FILENAME         "/done.dat"    // used to indicate the completion of all files
 #define MWATER_FILENAME       "/mwater.dat"   // monthly water usage data file
+#define ZIGBEE_LOGICAL_FILENAME "/zigbee_logical_devices.json" // persisted ZigBee logical device registry
 #endif
 
 /** Station macro defines */

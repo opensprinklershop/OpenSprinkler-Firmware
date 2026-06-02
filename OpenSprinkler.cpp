@@ -3225,6 +3225,9 @@ void OpenSprinkler::factory_reset() {
 		sopt_save(i, sopts[i]);
 	}
 
+	zigbee_logical_clear_all();
+	remove_file(ZIGBEE_LOGICAL_FILENAME);
+
 	// 2. write default station data
 	StationData *pdata=(StationData*)tmp_buffer;
 	pdata->name[0]='S';
@@ -3357,6 +3360,9 @@ void OpenSprinkler::options_setup() {
 		#endif
 
 		attribs_load();
+		if (!zigbee_logical_load()) {
+			DEBUG_PRINTLN(F("[ZIGBEE] WARN: Failed to load persisted logical device registry"));
+		}
 	}
 
 #if defined(ARDUINO)	// handle AVR buttons

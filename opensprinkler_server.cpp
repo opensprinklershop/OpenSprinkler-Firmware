@@ -5947,13 +5947,16 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 	}
 
 	bfill.emit_p(PSTR("{\"result\":1,\"active\":$D,\"connected\":$D,\"factory_new\":$D,"
-	                   "\"mode\":\"$S\",\"coex\":\"$S\",\"join_window_remaining\":$D"),
+	                   "\"mode\":\"$S\",\"coex\":\"$S\",\"join_window_remaining\":$D,"
+	                   "\"channel\":$D,\"configured_channel\":$D"),
 	             sensor_zigbee_is_active() ? 1 : 0,
 	             sensor_zigbee_is_connected() ? 1 : 0,
 	             sensor_zigbee_client_factory_new() ? 1 : 0,
 	             ieee802154_is_zigbee_gw() ? "gateway" : "client",
 	             "disabled",
-	             sensor_zigbee_get_join_window_remaining());
+	             sensor_zigbee_get_join_window_remaining(),
+	             (int)sensor_zigbee_gw_get_channel(),
+	             (int)sensor_zigbee_gw_get_configured_channel());
 
 	// SN1/SN2 binary sensor status (if rain or soil sensor)
 	if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
@@ -6041,6 +6044,8 @@ void server_zigbee_leave_network(OTF_PARAMS_DEF) {
  *   action=list      - List all known devices
  *   action=permit&duration=N - Open network for N seconds (default 60)
  *   action=remove&ieee=0x... - Remove a device by IEEE address
+ *   action=clear_logical_devices[&ieee=0x...] - Wipe persisted logical-device
+ *       registry (full registry, or only entries for one IEEE)
  * Returns JSON with device list or action result
  */
 
@@ -6071,16 +6076,15 @@ static bool zigbee_contains_ci(const char* haystack, const char* needle) {
 
 static bool zigbee_logical_matches_search(uint64_t ieee_addr, const char* search) {
 	if (!search || !search[0]) return true;
-	SensorIterator it = sensors_iterate_begin();
-	SensorBase* sensor;
-	while ((sensor = sensors_iterate_next(it)) != NULL) {
-		if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
-		ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
-		if (zb->device_ieee != ieee_addr) continue;
-		if (zigbee_contains_ci(zb->name, search)) return true;
-		if (zigbee_contains_ci(zb->zb_manufacturer, search)) return true;
-		if (zigbee_contains_ci(zb->zb_model, search)) return true;
-		if (zigbee_contains_ci(zb->zb_vendor, search)) return true;
+	char ieee_str[17];
+	snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)ieee_addr);
+	auto* map = OpenSprinkler::zigbee_logical_devices_map;
+	if (!map) return false;
+	for (const auto& entry : *map) {
+		const ZigBeeLogicalDevice& dev = entry.second.device;
+		if (strncmp(dev.ieee, ieee_str, 16) != 0) continue;
+		if (zigbee_contains_ci(dev.name, search)) return true;
+		if (zigbee_contains_ci(dev.unit, search)) return true;
 	}
 	return false;
 }
@@ -6099,9 +6103,13 @@ static bool zigbee_device_matches_search(const ZigbeeDeviceInfo& dev, const char
 	return zigbee_logical_matches_search(dev.ieee_addr, search);
 }
 
-static const char* zigbee_logical_kind(const ZigbeeSensor* zb) {
-	if (!zb) return "unknown";
-	switch (zb->cluster_id) {
+static const char* zigbee_logical_kind_reg(const ZigBeeLogicalDevice& dev) {
+	if (dev.is_tuya) {
+		if (dev.tuya_dp_status >= 0) return "switch";
+		if (dev.tuya_dp_value >= 0) return "value";
+		return "tuya";
+	}
+	switch (dev.cluster_id) {
 		case 0x0402: return "temperature";
 		case 0x0405: return "humidity";
 		case 0x0408: return "soil_moisture";
@@ -6109,48 +6117,44 @@ static const char* zigbee_logical_kind(const ZigbeeSensor* zb) {
 		case 0x0403: return "pressure";
 		case 0x0702: return "metering";
 		case 0x0001: return "battery";
-		case 0xEF00:
-			if (zb->tuya_dp_status >= 0) return "switch";
-			if (zb->tuya_dp_value >= 0) return "value";
-			return "tuya";
-		default: return "unknown";
+		default:     return "unknown";
 	}
 }
 
 static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 	bfill.emit_p(PSTR("\"logical_devices\":["));
 	bool first = true;
-	SensorIterator it = sensors_iterate_begin();
-	SensorBase* sensor;
-	while ((sensor = sensors_iterate_next(it)) != NULL) {
-		if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
-		ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
-		if (zb->device_ieee != ieee_addr) continue;
-		if (!first) bfill.emit_p(PSTR(","));
-		first = false;
-		long battery = (zb->last_battery == UINT32_MAX) ? -1L : (long)zb->last_battery;
-		bfill.emit_p(PSTR("{\"nr\":$D,\"name\":\"$S\",\"kind\":\"$S\",\"endpoint\":$D,"
-		                  "\"cluster_id\":$D,\"attribute_id\":$D,\"unit\":$D,"
-		                  "\"battery_dp\":$D,\"unit_dp\":$D,\"status_dp\":$D,\"consumption_dp\":$D,"
-		                  "\"battery\":$L,\"tuya_unit\":$D,\"control_mode\":$D,"
-		                  "\"manufacturer\":\"$S\",\"model\":\"$S\",\"vendor\":\"$S\"}"),
-		             zb->nr,
-		             zb->name,
-		             zigbee_logical_kind(zb),
-		             zb->endpoint ? zb->endpoint : 1,
-		             zb->cluster_id,
-		             zb->attribute_id,
-		             (int)zb->getUnitId(),
-		             zb->tuya_dp_battery,
-		             zb->tuya_dp_unit,
-		             zb->tuya_dp_status,
-		             zb->tuya_dp_consumption,
-		             battery,
-		             (int)zb->tuya_unit,
-		             (int)zb->control_mode,
-		             zb->zb_manufacturer,
-		             zb->zb_model,
-		             zb->zb_vendor);
+	char ieee_str[17];
+	snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)ieee_addr);
+	auto* map = OpenSprinkler::zigbee_logical_devices_map;
+	if (map) {
+		int nr = 0;
+		for (const auto& entry : *map) {
+			const ZigBeeLogicalDevice& dev = entry.second.device;
+			if (strncmp(dev.ieee, ieee_str, 16) != 0) continue;
+			if (!first) bfill.emit_p(PSTR(","));
+			first = false;
+			bfill.emit_p(PSTR("{\"nr\":$D,\"name\":\"$S\",\"kind\":\"$S\",\"endpoint\":$D,"
+			                  "\"cluster_id\":$D,\"attribute_id\":$D,\"unit\":$D,"
+			                  "\"value_dp\":$D,\"battery_dp\":$D,\"unit_dp\":$D,\"status_dp\":$D,\"consumption_dp\":$D,"
+			                  "\"control_mode\":$D,\"factor\":$D,\"divider\":$D,\"offset\":$D}"),
+			             nr++,
+			             dev.name,
+			             zigbee_logical_kind_reg(dev),
+			             (int)dev.endpoint,
+			             (int)dev.cluster_id,
+			             (int)dev.attr_id,
+			             (int)dev.unitid,
+			             (int)dev.tuya_dp_value,
+			             (int)dev.tuya_dp_battery,
+			             (int)dev.tuya_dp_unit,
+			             (int)dev.tuya_dp_status,
+			             (int)dev.tuya_dp_consumption,
+			             dev.is_tuya ? 1 : 0,
+			             (int)dev.factor,
+			             (int)dev.divider,
+			             (int)dev.offset);
+		}
 	}
 	bfill.emit_p(PSTR("]"));
 }
@@ -6173,7 +6177,7 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 	}
 
 	// Default action is "list"
-	char action[16] = "list";
+	char action[32] = "list";
 	findKeyVal(FKV_SOURCE, action, sizeof(action), PSTR("action"), true);
 
 	if (strcmp(action, "permit") == 0) {
@@ -6299,54 +6303,168 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		send_packet(OTF_PARAMS);
 		handle_return(HTML_OK);
 
+	} else if (strcmp(action, "clear_logical_devices") == 0) {
+		// Clear the persisted logical-device registry. Optional ieee=<16hex>
+		// limits the operation to a single device; without ieee the full
+		// registry is wiped (use to recover from orphan / stale entries).
+		char ieee_param[24] = "";
+		findKeyVal(FKV_SOURCE, ieee_param, sizeof(ieee_param), PSTR("ieee"), true);
+		const char* ieee_str = ieee_param;
+		if (ieee_str[0] == '0' && (ieee_str[1] == 'x' || ieee_str[1] == 'X')) ieee_str += 2;
+		if (ieee_str[0]) {
+			if (strlen(ieee_str) != 16) {
+				bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee\",\"action\":\"clear_logical_devices\"}"));
+				send_packet(OTF_PARAMS);
+				handle_return(HTML_OK);
+				return;
+			}
+			OpenSprinkler::zigbee_logical_clear_ieee(ieee_str);
+			bfill.emit_p(PSTR("{\"result\":1,\"action\":\"clear_logical_devices\",\"ieee\":\"$S\"}"), ieee_str);
+		} else {
+			OpenSprinkler::zigbee_logical_clear_all();
+			bfill.emit_p(PSTR("{\"result\":1,\"action\":\"clear_logical_devices\",\"scope\":\"all\"}"));
+		}
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+
+	} else if (strcmp(action, "save_logical_devices") == 0) {
+		// Save logical device registry entries for a device.
+		// Params: ieee=0x<16hex>, n=<count>,
+		//         ld{i}_name, ld{i}_ep, ld{i}_cluster, ld{i}_attr,
+		//         ld{i}_tuya, ld{i}_dp_val, ld{i}_dp_bat, ld{i}_dp_unit,
+		//         ld{i}_dp_stat, ld{i}_dp_cons, ld{i}_factor, ld{i}_div, ld{i}_offset, ld{i}_unitid
+		char ieee_param[24] = "";
+		findKeyVal(FKV_SOURCE, ieee_param, sizeof(ieee_param), PSTR("ieee"), true);
+		const char* ieee_str = ieee_param;
+		if (ieee_str[0] == '0' && (ieee_str[1] == 'x' || ieee_str[1] == 'X')) ieee_str += 2;
+		if (strlen(ieee_str) != 16) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee\",\"action\":\"save_logical_devices\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("n"), true);
+		int n = atoi(tmp_buffer);
+		if (n < 0 || n > 15) n = 0;
+
+		OpenSprinkler::zigbee_logical_clear_ieee(ieee_str);
+		int registered = 0;
+		char key[24];
+		for (int i = 0; i < n; i++) {
+			ZigBeeLogicalDevice dev = {};
+			strncpy(dev.ieee, ieee_str, sizeof(dev.ieee) - 1);
+			dev.tuya_dp_value = -1;
+			dev.tuya_dp_battery = -1;
+			dev.tuya_dp_unit = -1;
+			dev.tuya_dp_status = -1;
+			dev.tuya_dp_consumption = -1;
+
+			snprintf(key, sizeof(key), "ld%d_name", i);
+			if (!findKeyVal(FKV_SOURCE, dev.name, sizeof(dev.name), key)) continue;
+			if (!dev.name[0]) continue;
+
+			snprintf(key, sizeof(key), "ld%d_ep", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.endpoint = tmp_buffer[0] ? (uint8_t)atoi(tmp_buffer) : 1;
+
+			snprintf(key, sizeof(key), "ld%d_cluster", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.cluster_id = tmp_buffer[0] ? (uint16_t)atoi(tmp_buffer) : 0;
+
+			snprintf(key, sizeof(key), "ld%d_attr", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.attr_id = tmp_buffer[0] ? (uint16_t)atoi(tmp_buffer) : 0;
+
+			snprintf(key, sizeof(key), "ld%d_tuya", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.is_tuya = tmp_buffer[0] && (atoi(tmp_buffer) != 0);
+
+			snprintf(key, sizeof(key), "ld%d_dp_val", i);
+			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_value = (int16_t)atoi(tmp_buffer);
+			snprintf(key, sizeof(key), "ld%d_dp_bat", i);
+			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_battery = (int16_t)atoi(tmp_buffer);
+			snprintf(key, sizeof(key), "ld%d_dp_unit", i);
+			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_unit = (int16_t)atoi(tmp_buffer);
+			snprintf(key, sizeof(key), "ld%d_dp_stat", i);
+			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_status = (int16_t)atoi(tmp_buffer);
+			snprintf(key, sizeof(key), "ld%d_dp_cons", i);
+			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_consumption = (int16_t)atoi(tmp_buffer);
+
+			snprintf(key, sizeof(key), "ld%d_factor", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.factor = tmp_buffer[0] ? (int16_t)atoi(tmp_buffer) : 0;
+			snprintf(key, sizeof(key), "ld%d_div", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.divider = tmp_buffer[0] ? (int16_t)atoi(tmp_buffer) : 0;
+			snprintf(key, sizeof(key), "ld%d_offset", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.offset = tmp_buffer[0] ? (int16_t)atoi(tmp_buffer) : 0;
+			snprintf(key, sizeof(key), "ld%d_unitid", i);
+			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
+			dev.unitid = tmp_buffer[0] ? (uint8_t)atoi(tmp_buffer) : 0;
+
+			if (OpenSprinkler::zigbee_logical_register(dev)) registered++;
+		}
+		OpenSprinkler::zigbee_logical_save();
+		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"save_logical_devices\",\"ieee\":\"$S\",\"registered\":$D}"),
+		             ieee_param, registered);
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+
 	} else {
 		// Default: list devices
-		ZigbeeDeviceInfo devices[10];
-		int count = sensor_zigbee_get_discovered_devices(devices, 10);
+		const int max_devices = 64;
+		ZigbeeDeviceInfo *devices = new (std::nothrow) ZigbeeDeviceInfo[max_devices];
+		if (devices) {
+			int count = sensor_zigbee_get_discovered_devices(devices, max_devices);
 
-		char search[64] = "";
-		findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("name"), true);
-		if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("search"), true);
-		if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("q"), true);
+			char search[64] = "";
+			findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("name"), true);
+			if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("search"), true);
+			if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("q"), true);
 
-		// Allow callers (UI sensor editor AND zone editor) to choose between
-		// "only devices already bound to a sensor" and the full discovery list.
-		// Default = full list, so the Zone editor can find a paired valve that
-		// does not yet have a sensor configured (e.g. GX02 single-zone valve).
-		bool only_registered = false;
-		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("only_registered"), true)) {
-			only_registered = (atoi(tmp_buffer) != 0);
+			// Allow callers (UI sensor editor AND zone editor) to choose between
+			// "only devices already bound to a sensor" and the full discovery list.
+			// Default = full list, so the Zone editor can find a paired valve that
+			// does not yet have a sensor configured (e.g. GX02 single-zone valve).
+			bool only_registered = false;
+			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("only_registered"), true)) {
+				only_registered = (atoi(tmp_buffer) != 0);
+			}
+			bfill.emit_p(PSTR("{\"result\":1,\"action\":\"list\",\"devices\":["));
+			int out_count = 0;
+			for (int i = 0; i < count; i++) {
+				if (only_registered && !zigbee_device_is_registered(devices[i].ieee_addr)) continue;
+				if (!zigbee_device_matches_search(devices[i], search)) continue;
+				if (out_count > 0) bfill.emit_p(PSTR(","));
+				char ieee_str[20];
+				snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
+				         (unsigned long long)devices[i].ieee_addr);
+				bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
+				                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
+				                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
+				             ieee_str,
+				             devices[i].short_addr,
+				             devices[i].model_id,
+				             devices[i].manufacturer,
+				             devices[i].vendor,
+				             devices[i].endpoint,
+				             devices[i].device_id,
+				             devices[i].is_new ? 1 : 0,
+				             devices[i].app_version,
+				             devices[i].stack_version,
+				             devices[i].hw_version,
+				             devices[i].date_code,
+				             devices[i].sw_build_id);
+				emit_zigbee_logical_devices(devices[i].ieee_addr);
+				bfill.emit_p(PSTR("}"));
+				out_count++;
+			}
+			bfill.emit_p(PSTR("],\"count\":$D,\"channel\":$D,\"configured_channel\":$D}"), out_count, (int)sensor_zigbee_gw_get_channel(), (int)sensor_zigbee_gw_get_configured_channel());
+			delete[] devices;
+		} else {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"out of memory\"}"));
 		}
-		bfill.emit_p(PSTR("{\"result\":1,\"action\":\"list\",\"devices\":["));
-		int out_count = 0;
-		for (int i = 0; i < count; i++) {
-			if (only_registered && !zigbee_device_is_registered(devices[i].ieee_addr)) continue;
-			if (!zigbee_device_matches_search(devices[i], search)) continue;
-			if (out_count > 0) bfill.emit_p(PSTR(","));
-			char ieee_str[20];
-			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
-			         (unsigned long long)devices[i].ieee_addr);
-			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
-			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
-			             ieee_str,
-			             devices[i].short_addr,
-			             devices[i].model_id,
-			             devices[i].manufacturer,
-			             devices[i].vendor,
-			             devices[i].endpoint,
-			             devices[i].device_id,
-			             devices[i].is_new ? 1 : 0,
-			             devices[i].app_version,
-			             devices[i].stack_version,
-			             devices[i].hw_version,
-			             devices[i].date_code,
-			             devices[i].sw_build_id);
-			emit_zigbee_logical_devices(devices[i].ieee_addr);
-			bfill.emit_p(PSTR("}"));
-			out_count++;
-		}
-		bfill.emit_p(PSTR("],\"count\":$D}"), out_count);
 	}
 
 	send_packet(OTF_PARAMS);
@@ -6367,53 +6485,59 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	ZigbeeDeviceInfo devices[10];
-	int count = sensor_zigbee_get_discovered_devices(devices, 10);
-	char search[64] = "";
-	findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("name"), true);
-	if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("search"), true);
-	if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("q"), true);
+	const int max_devices = 64;
+	ZigbeeDeviceInfo *devices = new (std::nothrow) ZigbeeDeviceInfo[max_devices];
+	if (devices) {
+		int count = sensor_zigbee_get_discovered_devices(devices, max_devices);
+		char search[64] = "";
+		findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("name"), true);
+		if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("search"), true);
+		if (!search[0]) findKeyVal(FKV_SOURCE, search, sizeof(search), PSTR("q"), true);
 
-	bfill.emit_p(PSTR("{\"devices\":["));
-	bool first = true;
-	int out_count = 0;
-	for (int i = 0; i < count; i++) {
-		if (!zigbee_device_matches_search(devices[i], search)) continue;
-		if (!first) bfill.emit_p(PSTR(","));
-		first = false;
-		char ieee_str[20];
-		snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
-		         (unsigned long long)devices[i].ieee_addr);
-		unsigned long last_rx_age_s = (devices[i].last_rx_at_ms > 0)
-		    ? (millis() - devices[i].last_rx_at_ms) / 1000UL : 65535UL;
-		int is_online = (devices[i].last_rx_at_ms > 0) &&
-		    (millis() - devices[i].last_rx_at_ms) < 15UL * 60UL * 1000UL ? 1 : 0;
-		bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
-		                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
-		                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D,"
-		                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
-		             ieee_str,
-		             devices[i].short_addr,
-		             devices[i].model_id,
-		             devices[i].manufacturer,
-		             devices[i].vendor,
-		             devices[i].endpoint,
-		             devices[i].device_id,
-		             devices[i].is_new ? 1 : 0,
-		             (unsigned long)devices[i].discovered_at,
-		             last_rx_age_s,
-		             is_online,
-		             devices[i].app_version,
-		             devices[i].stack_version,
-		             devices[i].hw_version,
-		             devices[i].date_code,
-		             devices[i].sw_build_id);
-		emit_zigbee_logical_devices(devices[i].ieee_addr);
-		bfill.emit_p(PSTR("}"));
-		send_packet(OTF_PARAMS);
-		out_count++;
+		bfill.emit_p(PSTR("{\"devices\":["));
+		bool first = true;
+		int out_count = 0;
+		for (int i = 0; i < count; i++) {
+			if (!zigbee_device_matches_search(devices[i], search)) continue;
+			if (!first) bfill.emit_p(PSTR(","));
+			first = false;
+			char ieee_str[20];
+			snprintf(ieee_str, sizeof(ieee_str), "0x%016llX",
+			         (unsigned long long)devices[i].ieee_addr);
+			unsigned long last_rx_age_s = (devices[i].last_rx_at_ms > 0)
+			    ? (millis() - devices[i].last_rx_at_ms) / 1000UL : 65535UL;
+			int is_online = (devices[i].last_rx_at_ms > 0) &&
+			    (millis() - devices[i].last_rx_at_ms) < 15UL * 60UL * 1000UL ? 1 : 0;
+			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
+			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
+			                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D,"
+			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
+			             ieee_str,
+			             devices[i].short_addr,
+			             devices[i].model_id,
+			             devices[i].manufacturer,
+			             devices[i].vendor,
+			             devices[i].endpoint,
+			             devices[i].device_id,
+			             devices[i].is_new ? 1 : 0,
+			             (unsigned long)devices[i].discovered_at,
+			             last_rx_age_s,
+			             is_online,
+			             devices[i].app_version,
+			             devices[i].stack_version,
+			             devices[i].hw_version,
+			             devices[i].date_code,
+			             devices[i].sw_build_id);
+			emit_zigbee_logical_devices(devices[i].ieee_addr);
+			bfill.emit_p(PSTR("}"));
+			send_packet(OTF_PARAMS);
+			out_count++;
+		}
+		bfill.emit_p(PSTR("],\"count\":$D}"), out_count);
+		delete[] devices;
+	} else {
+		bfill.emit_p(PSTR("{\"error\":\"out of memory\"}"));
 	}
-	bfill.emit_p(PSTR("],\"count\":$D}"), out_count);
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
@@ -6434,17 +6558,44 @@ void server_zigbee_open_network(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	uint16_t duration = 10;
+	uint16_t duration = 60;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("duration"), true)) {
 		int parsed = atoi(tmp_buffer);
 		if (parsed < 0) parsed = 0;
-		if (parsed > 10) parsed = 10;
+		// duration=0 keeps semantics of explicit close (handled in
+		// sensor_zigbee_open_network). Pairing physical devices like the
+		// GX02 valve typically needs 30-90s, so cap at 180s.
+		if (parsed > 180) parsed = 180;
 		duration = (uint16_t)parsed;
+	}
+
+	bool channel_changed = false;
+	uint8_t requested_channel = 0;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("channel"), true)) {
+		int parsed = atoi(tmp_buffer);
+		if (parsed == 0 || (parsed >= 11 && parsed <= 26)) {
+			requested_channel = (uint8_t)parsed;
+			uint8_t current_conf = sensor_zigbee_gw_get_configured_channel();
+			if (requested_channel != current_conf) {
+				channel_changed = true;
+				sensor_zigbee_gw_set_configured_channel(requested_channel);
+				// Erase NVRAM to force network creation/rebuild on new channel
+				sensor_zigbee_gw_factory_reset();
+			}
+		}
+	}
+
+	if (channel_changed) {
+		bfill.emit_p(PSTR("{\"result\":1,\"rebooting\":1,\"channel\":$D}"), (int)requested_channel);
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+		reboot_in(1500, REBOOT_CAUSE_WEB);
+		return;
 	}
 
 	sensor_zigbee_open_network(duration);
 
-	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D}"), duration);
+	bfill.emit_p(PSTR("{\"result\":1,\"duration\":$D,\"channel\":$D}"), duration, (int)sensor_zigbee_gw_get_channel());
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);

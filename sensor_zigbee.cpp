@@ -1756,15 +1756,18 @@ const char* ZigbeeSensor::getIeeeString(char* buffer, size_t bufferSize) const {
     return buffer;
 }
 
-bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config) {
+bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config, uint8_t target_endpoint, uint8_t target_dp) {
     if (!config) return false;
 
     *config = ZigbeeStationControlConfig{};
     if (device_ieee == 0) return false;
 
-    auto score_candidate = [](const ZigbeeSensor* zb) -> int {
+    auto score_candidate = [target_endpoint, target_dp](const ZigbeeSensor* zb) -> int {
         if (!zb) return -1;
         int score = 0;
+        if (target_endpoint != 0 && zb->endpoint == target_endpoint) score += 100;
+        if (target_dp != 0 && (zb->tuya_dp_value == target_dp || zb->tuya_dp_status == target_dp)) score += 200;
+
         if (zb->control_mode == ZB_STATION_CTRL_TUYA) score += 50;
         if (zb->zb_type == 1) score += 40;
         if (zb->tuya_dp_status >= 0) score += 25;
@@ -1800,8 +1803,6 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
     config->dp_value = (best->tuya_dp_value >= 0) ? (uint8_t)best->tuya_dp_value : 0;
     config->dp_status = (best->tuya_dp_status >= 0) ? (uint8_t)best->tuya_dp_status : config->dp_value;
     return true;
-
-    return false;
 }
 
 void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
@@ -2009,6 +2010,7 @@ void ZigbeeSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     if (zb_manufacturer[0] != '\0' && zb_model[0] != '\0' && zb_vendor[0] == '\0') {
         zb_vendor_pending = true;
     }
+   
 }
 
 void ZigbeeSensor::toJson(ArduinoJson::JsonObject obj) const {
@@ -2097,7 +2099,8 @@ ZigBeeLogicalDevice* ZigbeeSensor::getLogicalDevice() const {
     }
      
     return nullptr;
-}
+ }
+
 
 bool ZigbeeSensor::init() {
     return true;
