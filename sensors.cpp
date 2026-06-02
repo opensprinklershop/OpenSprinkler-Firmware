@@ -1747,6 +1747,13 @@ void read_all_sensors(boolean online) {
   // Flush deferred MQTT pushes when network is back
   if (online) flush_deferred_mqtt();
 
+  // Do not read or log sensors if NTP is enabled but system time is not yet synced
+  #if defined(ARDUINO)
+  if (os.iopts[IOPT_USE_NTP] && (time(NULL) < 1704067200UL)) {
+    return;
+  }
+  #endif
+
   if (sensorsMap.empty()) {
     static unsigned long last_warn = 0;
     if (millis() - last_warn > 120000) {

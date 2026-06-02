@@ -1973,11 +1973,22 @@ void check_weather() {
 	if (os.checkwt_success_lasttime && (ntz > os.checkwt_success_lasttime + CHECK_WEATHER_SUCCESS_TIMEOUT)) {
 		// if last successful weather call timestamp is more than allowed threshold
 		// and if the selected adjustment method is not one of the manual methods
-		// reset watering percentage to 100
+		// reset watering percentage to the monthly baseline (instead of hardcoded 100% fail-active)
 		os.checkwt_success_lasttime = 0;
 		unsigned char method = os.iopts[IOPT_USE_WEATHER];
 		if(!(method==WEATHER_METHOD_MANUAL || method==WEATHER_METHOD_AUTORAINDELAY || method==WEATHER_METHOD_MONTHLY)) {
-			os.iopts[IOPT_WATER_PERCENTAGE] = 100; // reset watering percentage to 100%
+#if defined(ARDUINO)
+			unsigned char m = month(ntz) - 1;
+#else
+			time_os_t ct = ntz;
+			struct tm *ti = gmtime(&ct);
+			unsigned char m = ti->tm_mon; // tm_mon ranges from [0,11]
+#endif
+			if (m < 12) {
+				os.iopts[IOPT_WATER_PERCENTAGE] = wt_monthly[m];
+			} else {
+				os.iopts[IOPT_WATER_PERCENTAGE] = 100;
+			}
 			wt_restricted = 0; // reset wt_rawData, errCode, and md_scales array
 			wt_rawData[0] = 0;
 			wt_errCode = HTTP_RQT_STALE;

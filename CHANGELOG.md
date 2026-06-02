@@ -6,6 +6,19 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(207)] — 2026-06-02
+
+### Added
+- **High-Precision Flow Meter**: Added support for up to 5-decimal flow precision to accurately track micro-drip setups. Integrated across history timelines, summaries, and rates. (Ticket #205)
+- **Boot Zimmerman Fail-safe**: Fall back to the user's monthly budget baseline instead of defaulting to 100% when weather checks timeout/fail on boot. (Ticket #207)
+
+### Fixed
+- **Logic Monitor "NICHT" saving**: Resolved Modal elements overlapping selectors in jQuery Mobile to ensure "NOT" state saves correctly in Safari and Firefox. (Ticket #215)
+- **Zimmerman Adjustment Bounds**: Extended sliders and input bounds to 250% (previously 100%) for custom terraces. (Ticket #207)
+- **Virtual Sensor Offsets**: Resolved non-hour timezone minute sum corruption in `getTimezoneOffsetOS()`, preventing shifted/future-logged virtual sensor points, and protected logs from recording invalid times before NTP synchronization completes. (Tickets #212, #214)
+
+---
+
 ## [2.4.0(206)] — 2026-06-01
 
 ### Fixed

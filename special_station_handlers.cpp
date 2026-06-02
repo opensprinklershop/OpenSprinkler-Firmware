@@ -50,6 +50,11 @@ static uint64_t parse_ieee_hex(const char *hex16) {
 
  static void fill_logical_device_from_json(ZigBeeLogicalDevice& dev, ArduinoJson::JsonObjectConst obj) {
  	dev = ZigBeeLogicalDevice{};
+	dev.tuya_dp_value = -1;
+	dev.tuya_dp_battery = -1;
+	dev.tuya_dp_unit = -1;
+	dev.tuya_dp_status = -1;
+	dev.tuya_dp_consumption = -1;
 
  	const char* ieee = "";
  	if (obj.containsKey("ieee") && obj["ieee"].is<const char*>()) {

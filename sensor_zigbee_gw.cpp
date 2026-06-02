@@ -387,18 +387,105 @@ static void gw_tuya_scheduled_send(uint8_t slot) {
                  (unsigned)slot, (unsigned)tsn, (unsigned)cmd.dp_id, (unsigned)cmd.seq, cmd.short_addr);
 }
 
+struct ZigbeeDeviceAccessTime {
+    uint64_t ieee_addr;
+    uint16_t short_addr;
+    uint32_t last_write_ms;
+    uint32_t last_read_ms;
+};
+static std::vector<ZigbeeDeviceAccessTime> gw_device_access_times;
+
+static uint64_t gw_find_ieee_by_short_addr(uint16_t short_addr) {
+    if (short_addr == 0 || short_addr == 0xFFFF || short_addr == 0xFFFE) return 0;
+    for (const auto& dev : gw_discovered_devices) {
+        if (dev.short_addr == short_addr) return dev.ieee_addr;
+    }
+    return 0;
+}
+
+static ZigbeeDeviceAccessTime& gw_get_or_create_device_access(uint64_t ieee_addr, uint16_t short_addr) {
+    if (ieee_addr == 0 && short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE) {
+        ieee_addr = gw_find_ieee_by_short_addr(short_addr);
+    }
+    for (auto& entry : gw_device_access_times) {
+        if ((ieee_addr != 0 && entry.ieee_addr == ieee_addr) || 
+            (short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE && entry.short_addr == short_addr)) {
+            if (ieee_addr != 0 && entry.ieee_addr == 0) entry.ieee_addr = ieee_addr;
+            if (short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE && entry.short_addr == 0) {
+                entry.short_addr = short_addr;
+            }
+            return entry;
+        }
+    }
+    gw_device_access_times.push_back({ieee_addr, short_addr, 0, 0});
+    return gw_device_access_times.back();
+}
+
+static void gw_record_device_access(uint64_t ieee_addr, uint16_t short_addr, bool is_write) {
+    uint32_t now = millis();
+    auto& entry = gw_get_or_create_device_access(ieee_addr, short_addr);
+    if (is_write) {
+        entry.last_write_ms = now;
+    } else {
+        entry.last_read_ms = now;
+    }
+}
+
+static bool gw_is_device_access_allowed(uint64_t ieee_addr, uint16_t short_addr, bool is_write, uint32_t cooldown_ms = 5000UL) {
+    uint32_t now = millis();
+    if (ieee_addr == 0 && short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE) {
+        ieee_addr = gw_find_ieee_by_short_addr(short_addr);
+    }
+    for (const auto& entry : gw_device_access_times) {
+        if ((ieee_addr != 0 && entry.ieee_addr == ieee_addr) || 
+            (short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE && entry.short_addr == short_addr)) {
+            if (is_write) {
+                if (entry.last_read_ms != 0 && (now - entry.last_read_ms < cooldown_ms)) {
+                    return false;
+                }
+                if (entry.last_write_ms != 0 && (now - entry.last_write_ms < cooldown_ms)) {
+                    return false;
+                }
+            } else {
+                if (entry.last_write_ms != 0 && (now - entry.last_write_ms < cooldown_ms)) {
+                    return false;
+                }
+                if (entry.last_read_ms != 0 && (now - entry.last_read_ms < cooldown_ms)) {
+                    return false;
+                }
+            }
+            break;
+        }
+    }
+    return true;
+}
+
 static void gw_tuya_schedule_next() {
     uint32_t now = millis();
     if (gw_tuya_next_due_ms != 0 && (int32_t)(now - gw_tuya_next_due_ms) < 0) return;
 
+    bool found_any_used = false;
     for (uint8_t slot = 0; slot < (sizeof(gw_tuya_schedule) / sizeof(gw_tuya_schedule[0])); slot++) {
         if (!gw_tuya_schedule[slot].used) continue;
+        found_any_used = true;
+
+        uint16_t short_addr = gw_tuya_schedule[slot].short_addr;
+        if (!gw_is_device_access_allowed(0, short_addr, true, 5000UL)) {
+            continue; // Space commands/accesses by at least 5s per device
+        }
+
         gw_tuya_scheduled_send(slot);
-        gw_tuya_next_due_ms = millis() + 250UL;
+        gw_record_device_access(0, short_addr, true);
+        gw_tuya_next_due_ms = millis() + 250UL; // general small spacing (250ms) to not flood Zigbee stack
         return;
     }
 
-    gw_tuya_next_due_ms = 0;
+    if (found_any_used) {
+        // Pending commands exist but are rate-limited per device, recheck in 50ms
+        gw_tuya_next_due_ms = millis() + 50UL;
+    } else {
+        gw_tuya_next_due_ms = 0;
+    }
 }
 
 static bool gw_schedule_tuya_dp_cmd(uint16_t short_addr, uint8_t endpoint, uint8_t command_id,
@@ -1537,7 +1624,14 @@ bool sensor_zigbee_gw_request_dp_query(uint64_t device_ieee, uint8_t endpoint) {
         return false;
     }
 
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
+                     (unsigned long long)device_ieee);
+        return false;
+    }
+
     gw_tuya_send_dp_query(short_addr, endpoint);
+    gw_record_device_access(device_ieee, short_addr, false);
     return true;
 }
 
@@ -2362,12 +2456,19 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t 
         ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
     }
 
-    esp_zb_zcl_read_attr_cmd_t read_req;
-    memset(&read_req, 0, sizeof(read_req));
-
     esp_zb_lock_acquire(portMAX_DELAY);
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
     esp_zb_lock_release();
+
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
+                     (unsigned long long)device_ieee);
+        return false;
+    }
+
+    esp_zb_zcl_read_attr_cmd_t read_req;
+    memset(&read_req, 0, sizeof(read_req));
+
     if (short_addr != 0xFFFF && short_addr != 0xFFFE) {
         read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
         read_req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
@@ -2389,6 +2490,8 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t 
     gw_read_pending_ieee = device_ieee;
     gw_read_pending_cluster = ZB_ZCL_CLUSTER_ID_BASIC;
     esp_zb_lock_release();
+
+    gw_record_device_access(device_ieee, short_addr, false);
 
     DEBUG_PRINTF(F("[ZIGBEE-GW] Basic query sent: ieee=%016llX short=0x%04X ep=%d\n"),
                  (unsigned long long)device_ieee, short_addr, endpoint);
@@ -2423,12 +2526,19 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(uint64_t device_ieee, uin
         ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
     }
 
-    esp_zb_zcl_read_attr_cmd_t read_req;
-    memset(&read_req, 0, sizeof(read_req));
-
     esp_zb_lock_acquire(portMAX_DELAY);
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
     esp_zb_lock_release();
+
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic single-attr query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
+                     (unsigned long long)device_ieee);
+        return false;
+    }
+
+    esp_zb_zcl_read_attr_cmd_t read_req;
+    memset(&read_req, 0, sizeof(read_req));
+
     if (short_addr != 0xFFFF && short_addr != 0xFFFE) {
         read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
         read_req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
@@ -2456,6 +2566,8 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(uint64_t device_ieee, uin
     gw_read_pending_cluster = ZB_ZCL_CLUSTER_ID_BASIC;
     gw_read_attr_id = attr_id;
     esp_zb_lock_release();
+
+    gw_record_device_access(device_ieee, short_addr, false);
 
     DEBUG_PRINTF(F("[ZIGBEE-GW] Basic single-attr query sent: ieee=%016llX short=0x%04X ep=%d attr=0x%04X\n"),
                  (unsigned long long)device_ieee, short_addr, endpoint, attr_id);
@@ -2518,14 +2630,22 @@ bool sensor_zigbee_gw_read_attribute(uint64_t device_ieee, uint8_t endpoint,
         ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
     }
 
+    esp_zb_lock_acquire(portMAX_DELAY);
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+    esp_zb_lock_release();
+
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Active read blocked: rate-limited/cooldown (5s) for ieee=%016llX cluster=0x%04X\n"),
+                     (unsigned long long)device_ieee, cluster_id);
+        return false;
+    }
+
     gw_read_attr_id = attribute_id;
 
     esp_zb_zcl_read_attr_cmd_t read_req;
     memset(&read_req, 0, sizeof(read_req));
 
     esp_zb_lock_acquire(portMAX_DELAY);
-    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
-
     if (short_addr != 0xFFFF && short_addr != 0xFFFE) {
         // Short address known: use 16-bit unicast (lower overhead)
         read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
@@ -2552,6 +2672,8 @@ bool sensor_zigbee_gw_read_attribute(uint64_t device_ieee, uint8_t endpoint,
     gw_read_pending_ieee = device_ieee;
     gw_read_pending_cluster = cluster_id;
     esp_zb_lock_release();
+
+    gw_record_device_access(device_ieee, short_addr, false);
 
     DEBUG_PRINTF(F("[ZIGBEE-GW] ✓ Active read SENT: ieee=%016llX short=0x%04X ep=%d cluster=0x%04X attr=0x%04X\n"),
                  (unsigned long long)device_ieee, short_addr, endpoint, cluster_id, attribute_id);
@@ -3909,6 +4031,15 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
         return false;
     }
 
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, true, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Standard On/Off rate-limited/cooldown for ieee=%016llX. Deferring.\n"),
+                     (unsigned long long)device_ieee);
+        if (!gw_pending_switch.valid || gw_pending_switch.ieee_addr != device_ieee) {
+            gw_queue_pending_switch(false, device_ieee, endpoint, 1, turnon);
+        }
+        return false;
+    }
+
     esp_zb_zcl_on_off_cmd_t req = {};
     req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
     req.zcl_basic_cmd.dst_endpoint = endpoint;
@@ -3923,6 +4054,7 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
     esp_zb_zcl_on_off_cmd_req(&req);
     esp_zb_lock_release();
 
+    gw_record_device_access(device_ieee, short_addr, true);
     return true;
 }
 
