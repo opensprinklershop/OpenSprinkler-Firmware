@@ -11,6 +11,7 @@ nav:
     - 'API Reference': '2.2.1/221_4_api.md'
   - 'OpenSprinklerPro Extensions':
     - 'Overview': 'opensprinklerpro.md'
+    - 'Zigbee Configuration': 'zigbee.md'
     - 'Analog Sensor Config': 'analog-sensor-config.md'
     - 'API and platform addendum': 'pro-api-endpoints.md'
   - 'MCP and AI':
