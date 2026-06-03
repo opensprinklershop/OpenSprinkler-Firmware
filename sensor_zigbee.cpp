@@ -1762,6 +1762,49 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
     *config = ZigbeeStationControlConfig{};
     if (device_ieee == 0) return false;
 
+    // 1. Try to find the configuration in the Logical Devices map first
+    if (OpenSprinkler::zigbee_logical_devices_map) {
+        char ieee_str[17];
+        snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)device_ieee);
+        
+        const ZigBeeLogicalDevice* best_logdev = nullptr;
+        int best_logdev_score = -1;
+        
+        for (const auto& entry : *OpenSprinkler::zigbee_logical_devices_map) {
+            const ZigBeeLogicalDevice& dev = entry.second.device;
+            if (strncmp(dev.ieee, ieee_str, 16) != 0) continue;
+            
+            int score = 0;
+            if (target_endpoint != 0 && dev.endpoint == target_endpoint) score += 100;
+            if (target_dp != 0 && (dev.tuya_dp_value == target_dp || dev.tuya_dp_status == target_dp)) score += 200;
+            
+            // Check if it is a valve/switch/control device by its name or kind
+            bool is_control = (strstr(dev.name, "valve") != nullptr || strstr(dev.name, "switch") != nullptr || strstr(dev.name, "state") != nullptr);
+            if (is_control) score += 50;
+            
+            if (score > best_logdev_score) {
+                best_logdev = &dev;
+                best_logdev_score = score;
+            }
+        }
+        
+        if (best_logdev) {
+            config->found = true;
+            config->endpoint = best_logdev->endpoint ? best_logdev->endpoint : 1;
+            config->control_mode = best_logdev->is_tuya ? ZB_STATION_CTRL_TUYA : ZB_STATION_CTRL_STANDARD;
+            config->protocol_type = best_logdev->is_tuya ? 1 : 0;
+            
+            // "Wenn es für den Status kein DP gibt bzw DP < 0 ist, dann das DP des Values verwenden."
+            config->dp_value = (best_logdev->tuya_dp_value >= 0) ? (uint8_t)best_logdev->tuya_dp_value : 0;
+            config->dp_status = (best_logdev->tuya_dp_status >= 0) ? (uint8_t)best_logdev->tuya_dp_status : config->dp_value;
+            
+            DEBUG_PRINTF(F("[ZIGBEE] Resolved station control config from logical device: %s (ep=%d dp_val=%d dp_stat=%d)\n"),
+                         best_logdev->name, config->endpoint, config->dp_value, config->dp_status);
+            return true;
+        }
+    }
+
+    // 2. Fall back to existing sensor-iteration code
     auto score_candidate = [target_endpoint, target_dp](const ZigbeeSensor* zb) -> int {
         if (!zb) return -1;
         int score = 0;
@@ -1800,8 +1843,16 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
     config->endpoint = best->endpoint ? best->endpoint : 1;
     config->control_mode = best->control_mode;
     config->protocol_type = (best->zb_type <= 2) ? best->zb_type : 0;
-    config->dp_value = (best->tuya_dp_value >= 0) ? (uint8_t)best->tuya_dp_value : 0;
-    config->dp_status = (best->tuya_dp_status >= 0) ? (uint8_t)best->tuya_dp_status : config->dp_value;
+    
+    // Only use best sensor's Tuya DP mappings if they actually match target_dp,
+    // or if target_dp is 0.
+    if (target_dp == 0 || best->tuya_dp_value == target_dp || best->tuya_dp_status == target_dp) {
+        config->dp_value = (best->tuya_dp_value >= 0) ? (uint8_t)best->tuya_dp_value : 0;
+        config->dp_status = (best->tuya_dp_status >= 0) ? (uint8_t)best->tuya_dp_status : config->dp_value;
+    } else {
+        config->dp_value = target_dp;
+        config->dp_status = target_dp;
+    }
     return true;
 }
 

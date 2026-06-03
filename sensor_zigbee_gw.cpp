@@ -624,6 +624,21 @@ static std::vector<GwOneShotThrottleEntry> gw_oneshot_throttle;
 static constexpr unsigned long GW_ONESHOT_MIN_DELAY_MS = 5000UL;
 
 static bool gw_allow_oneshot_for_device(uint64_t ieee_addr, const char* kind) {
+    if (ieee_addr == 0) return true;
+    uint32_t now = millis();
+    for (auto& entry : gw_oneshot_throttle) {
+        if (entry.ieee_addr == ieee_addr) {
+            if (now - entry.last_sent_ms < GW_ONESHOT_MIN_DELAY_MS) {
+                unsigned long remaining = GW_ONESHOT_MIN_DELAY_MS - (now - entry.last_sent_ms);
+                DEBUG_PRINTF(F("[ZIGBEE-GW][ONESHOT] BLOCKED: ieee=%016llX kind=%s remaining=%lums\n"),
+                             (unsigned long long)ieee_addr, kind, remaining);
+                return false;
+            }
+            entry.last_sent_ms = now;
+            return true;
+        }
+    }
+    gw_oneshot_throttle.push_back({ieee_addr, now});
     return true;
 }
 
@@ -1250,6 +1265,33 @@ static void gw_station_physical_state_set(uint8_t sid, bool actual_on) {
 
     DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u physical state from Tuya DP: on=%d\n"),
                  (unsigned)sid, actual_on ? 1 : 0);
+}
+
+static void gw_station_status_process_standard_onoff(uint64_t ieee, uint8_t endpoint, bool actual_on) {
+    if (ieee == 0 || os.nstations == 0) return;
+
+    for (uint8_t sid = 0; sid < os.nstations; sid++) {
+        if (os.get_station_type(sid) != STN_TYPE_ZIGBEE) continue;
+
+        StationData station = {};
+        os.get_station_data(sid, &station);
+        ZigbeeStationData* data = (ZigbeeStationData*)station.sped;
+
+        uint64_t station_ieee = gw_parse_ieee_hex(data->device_ieee);
+        if (!gw_ieee_matches_station(station_ieee, ieee)) continue;
+
+        uint8_t station_ep = gw_parse_hex_u8(data->endpoint, sizeof(data->endpoint));
+        if (station_ep == 0) station_ep = 1;
+
+        bool use_tuya = (data->use_tuya[0] == '1');
+        if (use_tuya) continue; // Skip Tuya stations here since they have their own DP processor
+
+        if (endpoint != 0 && station_ep != endpoint) continue;
+
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u matched standard On/Off report: on=%d\n"),
+                 (unsigned)sid, actual_on ? 1 : 0);
+        gw_station_physical_state_set(sid, actual_on);
+    }
 }
 
 static void gw_station_status_process_tuya_dp(uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool actual_on) {
@@ -2088,6 +2130,12 @@ public:
                 // DEBUG_PRINTLN(F("[ZIGBEE-GW] Metering cluster 0x0702 added (CLIENT)"));
             }
 
+            esp_zb_attribute_list_t *on_off_client_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+            if (on_off_client_cluster) {
+                esp_zb_cluster_list_add_custom_cluster(_cluster_list, on_off_client_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+                // DEBUG_PRINTLN(F("[ZIGBEE-GW] On/Off cluster 0x0006 added (CLIENT)"));
+            }
+
             // Tuya manufacturer-specific cluster (0xEF00) as CLIENT so we receive
             // incoming DP reports from Tuya devices (GIEX GX-04, etc.)
             esp_zb_attribute_list_t *tuya_cluster = esp_zb_zcl_attr_list_create(ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC);
@@ -2235,6 +2283,10 @@ public:
         
         int32_t value = extractAttributeValue(attribute);
         
+        if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF && attribute->id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+            gw_station_status_process_standard_onoff(ieee_addr, src_endpoint, value != 0);
+        }
+
         // DEBUG_PRINTF(F("[ZIGBEE-GW] >>> resolved ieee=%08lX%08lX value=%ld\n"),
                     // (unsigned long)(ieee_addr >> 32), (unsigned long)(ieee_addr & 0xFFFFFFFF), value);
         
@@ -2931,6 +2983,45 @@ bool sensor_zigbee_gw_ensure_started() {
     return gw_zigbee_initialized;
 }
 
+static bool is_zigbee_battery_report(const ZigbeeAttributeReport& report, uint64_t ieee, int16_t& out_battery_dp) {
+    bool is_tuya_report = (report.attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0;
+    uint16_t raw_attr = zigbee_report_attr_id(report.attr_id);
+
+    if (report.cluster_id == ZB_ZCL_CLUSTER_ID_POWER_CONFIG && raw_attr == 0x0021) {
+        out_battery_dp = -1;
+        return true;
+    }
+
+    if (is_tuya_report && report.cluster_id == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC) {
+        // 1. Check if any configured sensor for this IEEE has this DP as tuya_dp_battery
+        SensorIterator it = sensors_iterate_begin();
+        SensorBase* sensor;
+        while ((sensor = sensors_iterate_next(it)) != NULL) {
+            if (!sensor || sensor->type != SENSOR_ZIGBEE) continue;
+            ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(sensor);
+            if (zb->device_ieee == ieee && zb->tuya_dp_battery >= 0 && raw_attr == (uint16_t)zb->tuya_dp_battery) {
+                out_battery_dp = zb->tuya_dp_battery;
+                return true;
+            }
+        }
+
+        // 2. Check if any registered logical device for this IEEE has this DP as tuya_dp_battery
+        if (OpenSprinkler::zigbee_logical_devices_map) {
+            char ieee_str[17];
+            snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)ieee);
+            for (const auto& entry : *OpenSprinkler::zigbee_logical_devices_map) {
+                const ZigBeeLogicalDevice& dev = entry.second.device;
+                if (strncmp(dev.ieee, ieee_str, 16) == 0 && dev.is_tuya && dev.tuya_dp_battery >= 0 && raw_attr == (uint16_t)dev.tuya_dp_battery) {
+                    out_battery_dp = dev.tuya_dp_battery;
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                                        uint16_t cluster_id, uint16_t attr_id,
                                        int32_t value, uint8_t lqi) {
@@ -2965,6 +3056,33 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
         bool report_solicited = gw_read_pending &&
                                 gw_read_pending_ieee    == report.ieee_addr &&
                                 gw_read_pending_cluster == report.cluster_id;
+
+        // ─── Short-circuit battery report processing ───
+        int16_t configured_battery_dp = -1;
+        if (is_zigbee_battery_report(report, report.ieee_addr, configured_battery_dp)) {
+            bool is_tuya_report = (report.attr_id & TUYA_REPORT_FLAG_PRESCALED) != 0;
+            uint16_t raw_attr = zigbee_report_attr_id(report.attr_id);
+            uint32_t batt_pct = zigbee_battery_percent_from_report(is_tuya_report, raw_attr, tuya_report_type(report.attr_id), configured_battery_dp, report.value);
+            
+            SensorIterator it_batt = sensors_iterate_begin();
+            SensorBase* s_batt;
+            bool updated_any = false;
+            while ((s_batt = sensors_iterate_next(it_batt)) != NULL) {
+                if (!s_batt || s_batt->type != SENSOR_ZIGBEE) continue;
+                ZigbeeSensor* zb_s = static_cast<ZigbeeSensor*>(s_batt);
+                if (zb_s->device_ieee == report.ieee_addr) {
+                    zb_s->last_battery = batt_pct;
+                    zb_s->last_lqi = report.lqi;
+                    updated_any = true;
+                    DEBUG_PRINTF(F("[ZIGBEE-GW] Short-circuit battery update for '%s': %u%%\n"),
+                                 zb_s->name, (unsigned)batt_pct);
+                }
+            }
+            if (updated_any) {
+                report.consumed = true;
+                continue;
+            }
+        }
 
         SensorIterator it = sensors_iterate_begin();
         SensorBase* sensor;
