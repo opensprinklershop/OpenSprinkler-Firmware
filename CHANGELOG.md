@@ -6,6 +6,14 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(208)] — 2026-06-03
+
+### Fixed
+- **Zigbee Station Control & State Routing**: Resolved physical valve close failures and mismatched state display bugs (red/grey error badge sequence) on the Tuya GX02 Smart Water Valve and other custom DP devices. Station control configurations now prioritize full logical device definition maps first. Added a fallback mechanism that automatically maps status verification to the primary control DP (`tuya_dp_value`) if the status DP's ID is missing or negative.
+- **Zigbee Global Battery Routing**: Restored missing battery percentage indicators on multi-sensor Zigbee and Tuya systems (such as the GX02 valve when only its auxiliary temperature sensor is registered). Multi-sensor batteries reported via DP 108 or ZCL Power Configuration endpoints are now immediately propagated to all active virtual and logical sensors sharing the reporting device's IEEE address.
+
+---
+
 ## [2.4.0(207)] — 2026-06-02
 
 ### Added
