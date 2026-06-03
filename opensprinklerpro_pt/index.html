@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/opensprinklerpro_pt/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Extensão OpenSprinklerPro - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Extens\u00e3o OpenSprinklerPro";
+        var mkdocs_page_input_path = "opensprinklerpro_pt.md";
+        var mkdocs_page_url = "/opensprinklerpro_pt/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Extensão OpenSprinklerPro</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/opensprinklerpro_pt.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="extensao-opensprinklerpro">Extensão OpenSprinklerPro</h1>
+<p>O OpenSprinklerPro é de um conjunto estendido de funções do OpenSprinkler para instalações que necessitam de integrações modernas de rádio, sensores enriquecidos, atualizações online, acesso a IA/MCP e monitoramento avançado. Ele se baseia nas funções de irrigação existentes: zonas, programas, ajuste de clima, logs, acesso remoto e interface gráfica web/app.</p>
+<p>A linha de firmware OpenSprinklerShop (incluindo o OpenSprinklerPro) usa sua própria versão independente. A versão de firmware atual é <strong>2.4.0(208)</strong>.</p>
+<p>Esta página é autônoma, mas faz referências a manuais mais detalhados se necessário.</p>
+<h2 id="visao-geral">Visão Geral</h2>
+<p>O OpenSprinklerPro adiciona estas extensões:</p>
+<ul>
+<li><strong>Atualizações Online OTA</strong> com verificação de manifestos, status de atualização e endpoints de backups.</li>
+<li><strong>Funções de rádio ESP32-C5</strong>: Modo Gateway/Cliente Zigbee e chaveamento de rádio IEEE 802.15.4.</li>
+<li><strong>Sensores BLE</strong> para builds ESP32 suportados e sistemas OSPi com Bluetooth.</li>
+<li><strong>Sensores em nuvem FYTA</strong> de temperatura e umidade.</li>
+<li><strong>Matter e ESP RainMaker</strong> para integrações de casa inteligente no ESP32.</li>
+<li><strong>Acesso MCP</strong> para assistentes de IA diretamente na firmware ou no servidor web Node.js externo.</li>
+<li><strong>Eventos de notificação</strong> para MQTT, e-mail, IFTTT e relatórios de monitoramento.</li>
+</ul>
+<h2 id="disponibilidade-da-plataforma">Disponibilidade da plataforma</h2>
+<table>
+<thead>
+<tr>
+<th>Recurso</th>
+<th style="text-align: center;">ESP32-C5 Zigbee</th>
+<th style="text-align: center;">ESP32-C5 Matter</th>
+<th style="text-align: center;">ESP32 / non-C5</th>
+<th style="text-align: center;">ESP8266</th>
+<th style="text-align: center;">OSPi</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Irrigação básica, programas, UI web, logs</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>Online OTA via UI web</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Atualizações via terminal/Git</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>Certificados HTTPS / ACME</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">dependente de ESP32</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Zigbee / IEEE 802.15.4</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Sensores BLE</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">dependente de flag de compilação</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅ via Linux</td>
+</tr>
+<tr>
+<td>Integração Matter</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">dependente de rádio</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>ESP RainMaker</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">dependente de ESP32</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Sensores FYTA</td>
+<td style="text-align: center;">✅ HTTPS</td>
+<td style="text-align: center;">✅ HTTPS</td>
+<td style="text-align: center;">✅ HTTPS</td>
+<td style="text-align: center;">✅ apenas HTTP</td>
+<td style="text-align: center;">✅ HTTPS</td>
+</tr>
+<tr>
+<td>MCP integrado <code>/mcp</code></td>
+<td style="text-align: center;">✅ ESP32 + <code>USE_OTF</code></td>
+<td style="text-align: center;">✅ ESP32 + <code>USE_OTF</code></td>
+<td style="text-align: center;">✅ ESP32 + <code>USE_OTF</code></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Servidor MCP Node.js externo</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+</tbody>
+</table>
+<p>Notas:</p>
+<ul>
+<li>As variantes ESP32-C5 Zigbee e Matter são escolhas de firmware separadas. Zigbee e Matter não podem estar ativos ao mesmo tempo no mesmo rádio do ESP32-C5.</li>
+<li>Endpoints Zigbee exigem ESP32-C5 e <code>OS_ENABLE_ZIGBEE</code>.</li>
+<li>Endpoints BLE exigem ESP32 e <code>OS_ENABLE_BLE</code>; o ESP8266 não oferece suporte a BLE.</li>
+<li>O OSPi possui os endpoints REST comuns, sensores, FYTA e monitor comuns, mas não os endpoints de hardware do rádio do ESP32.</li>
+</ul>
+<p>Veja também: <a href="../pro-api-endpoints-pt/">Adendo de API e plataforma</a>, <a href="../CHANGELOG/">CHANGELOG</a>.</p>
+<h2 id="nomes-de-funcoes-de-ui-e-capturas-de-tela-moveis">Nomes de funções de UI e capturas de tela móveis</h2>
+<p>As extensões do OpenSprinklerPro são operadas na interface web normal. Os endpoints REST destinam-se principalmente a automação, diagnósticos e integrações; o fluxo do usuário começa nestas telas da interface.</p>
+<table>
+<thead>
+<tr>
+<th>Extensão</th>
+<th>Função / Caminho na Tela</th>
+<th>Screenshot</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Online firmware update</td>
+<td>Side menu → <strong>Online Update</strong></td>
+<td><img alt="Online Update" class="mobile-screenshot" src="../assets/screenshots/pro/en/online-update.png" /></td>
+</tr>
+<tr>
+<td>ESP32-C5 radio mode / Matter selection</td>
+<td>Side menu → <strong>Setup ESP32 Mode</strong></td>
+<td><img alt="Setup ESP32 Mode" class="mobile-screenshot" src="../assets/screenshots/pro/en/esp32-mode.png" /></td>
+</tr>
+<tr>
+<td>Zigbee Gateway</td>
+<td>Side menu → <strong>ZigBee Gateway</strong></td>
+<td><img alt="ZigBee Gateway" class="mobile-screenshot" src="../assets/screenshots/pro/en/zigbee-gateway.png" /></td>
+</tr>
+<tr>
+<td>ESP RainMaker</td>
+<td>Side menu → <strong>RainMaker</strong></td>
+<td><img alt="RainMaker" class="mobile-screenshot" src="../assets/screenshots/pro/en/rainmaker.png" /></td>
+</tr>
+<tr>
+<td>MQTT, email, IFTTT e notificações</td>
+<td>Footer menu → <strong>Edit Options</strong> → <strong>Integrations</strong></td>
+<td><img alt="Integrations" class="mobile-screenshot" src="../assets/screenshots/pro/en/options-integrations.png" /></td>
+</tr>
+<tr>
+<td>Configuração de sensores e monitores</td>
+<td>Footer menu → <strong>Analog Sensor Configuration</strong></td>
+<td><img alt="Sensor config" class="mobile-screenshot" src="../assets/screenshots/pro/en/sensor-config.png" /></td>
+</tr>
+</tbody>
+</table>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/fyta-sensors/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>FYTA Sensors - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "FYTA Sensors";
+        var mkdocs_page_input_path = "fyta-sensors.md";
+        var mkdocs_page_url = "/fyta-sensors/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">FYTA Sensors</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#quick-setup-english">Quick setup (English)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#einrichtung-deutsch">Einrichtung (Deutsch)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#voraussetzungen">Voraussetzungen</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#schritt-1-fyta-anmeldedaten-hinterlegen">Schritt 1: FYTA-Anmeldedaten hinterlegen</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#api-token-empfohlen">API-Token (empfohlen)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#in-opensprinkler-eintragen">In OpenSprinkler eintragen</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#schritt-2-fyta-sensor-anlegen">Schritt 2: FYTA-Sensor anlegen</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#schritt-3-pflanze-auswahlen">Schritt 3: Pflanze auswählen</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#messwerte-und-abfrage-intervall">Messwerte und Abfrage-Intervall</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#sensor-in-bewasserungsprogramme-integrieren">Sensor in Bewässerungsprogramme integrieren</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#programmanpassungen-adjustments">Programmanpassungen (Adjustments)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#monitore-monitors">Monitore (Monitors)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#mehrere-fyta-sensoren">Mehrere FYTA-Sensoren</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#fehlerbehebung">Fehlerbehebung</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#plattform-verfugbarkeit">Plattform-Verfügbarkeit</a>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">FYTA Sensors</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/fyta-sensors.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="fyta-plant-sensors-fyta-pflanzensensoren">FYTA plant sensors / FYTA Pflanzensensoren</h1>
+<h2 id="quick-setup-english">Quick setup (English)</h2>
+<p>FYTA sensors integrate soil moisture and soil temperature from the FYTA cloud into OpenSprinkler. The values can be used for sensor-program adjustments, monitors and notifications.</p>
+<ol>
+<li>Open <a href="https://web.fyta.de/api-token">https://web.fyta.de/api-token</a>, sign in and copy an API token.</li>
+<li>In the OpenSprinkler UI, open <strong>Settings -&gt; Sensor Settings -&gt; FYTA Setup</strong> and enter either the API token (recommended) or FYTA email/password.</li>
+<li>Add a new sensor and choose <strong>FYTA Moisture</strong> or <strong>FYTA Temperature</strong>.</li>
+<li>Click <strong>Select FYTA plant and sensor</strong>, choose a plant with an assigned FYTA sensor and save.</li>
+<li>Use the value in program adjustments or monitors. Recommended polling interval: 15-60 minutes.</li>
+</ol>
+<p>Platform notes: ESP32/ESP32-C5 and OSPi use HTTPS; ESP8266 uses HTTP because of platform TLS limits.</p>
+<hr />
+<h2 id="einrichtung-deutsch">Einrichtung (Deutsch)</h2>
+<p>FYTA-Sensoren ermöglichen es, Bodenfeuchtigkeit und Temperatur direkt aus dem FYTA-Cloud-Dienst in OpenSprinkler zu integrieren. Die Messwerte können dann für automatische Bewässerungsanpassungen oder Monitore genutzt werden.</p>
+<hr />
+<h2 id="voraussetzungen">Voraussetzungen</h2>
+<ul>
+<li><strong>FYTA-Konto</strong> mit mindestens einer registrierten Pflanze und einem zugeordneten FYTA-Sensor</li>
+<li>OpenSprinkler ESP32 oder OSPi (ESP8266 wird unterstützt, aber nur via HTTP)</li>
+<li>Aktive WLAN-/Netzwerkverbindung des Controllers</li>
+</ul>
+<hr />
+<h2 id="schritt-1-fyta-anmeldedaten-hinterlegen">Schritt 1: FYTA-Anmeldedaten hinterlegen</h2>
+<p>Die Verbindung zur FYTA-Cloud erfordert entweder einen <strong>API-Token</strong> (empfohlen) oder deine FYTA-Login-Daten (E-Mail + Passwort).</p>
+<h3 id="api-token-empfohlen">API-Token (empfohlen)</h3>
+<ol>
+<li>Öffne <a href="https://web.fyta.de/api-token">https://web.fyta.de/api-token</a> in deinem Browser.</li>
+<li>Melde dich mit deinem FYTA-Konto an.</li>
+<li>Kopiere den angezeigten Token.</li>
+</ol>
+<h3 id="in-opensprinkler-eintragen">In OpenSprinkler eintragen</h3>
+<ol>
+<li>Öffne die OpenSprinkler-Weboberfläche.</li>
+<li>Navigiere zu <strong>Einstellungen → Sensor-Einstellungen</strong>.</li>
+<li>Klappe den Bereich <strong>„FYTA Setup"</strong> aus.</li>
+<li>Klicke auf <strong>„Setup FYTA credentials"</strong>.</li>
+</ol>
+<p>Der Dialog fragt die folgenden Felder ab:</p>
+<p>Im Dialog:</p>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Beschreibung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>API Token</strong></td>
+<td>Füge hier deinen Token aus web.fyta.de ein <em>(empfohlen)</em></td>
+</tr>
+<tr>
+<td><strong>E-Mail</strong></td>
+<td>Alternativ: deine FYTA-Login-E-Mail</td>
+</tr>
+<tr>
+<td><strong>Passwort</strong></td>
+<td>Alternativ: dein FYTA-Passwort</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Hinweis:</strong> Wenn ein API-Token eingetragen ist, werden E-Mail und Passwort ignoriert. Lasse E-Mail und Passwort leer, wenn du einen Token verwendest.</p>
+</blockquote>
+<ol>
+<li>Klicke auf <strong>„Submit"</strong> – die Zugangsdaten werden gespeichert.</li>
+</ol>
+<hr />
+<h2 id="schritt-2-fyta-sensor-anlegen">Schritt 2: FYTA-Sensor anlegen</h2>
+<ol>
+<li>Gehe zu <strong>Einstellungen → Sensor-Einstellungen → Neuer Sensor</strong>.</li>
+<li>Wähle als Typ:</li>
+<li><strong>„FYTA Moisture"</strong> – für Bodenfeuchte (Einheit: %)</li>
+<li><strong>„FYTA Temperature"</strong> – für Bodentemperatur (Einheit: °C oder °F je nach FYTA-Kontoeinstellung)</li>
+<li>Klicke auf den Button <strong>„Select FYTA plant and sensor"</strong>.</li>
+</ol>
+<p>OpenSprinkler verbindet sich nun mit der FYTA-Cloud und lädt deine Pflanzenliste.</p>
+<hr />
+<h2 id="schritt-3-pflanze-auswahlen">Schritt 3: Pflanze auswählen</h2>
+<p>Nach dem Klick auf „Select FYTA plant and sensor" erscheint eine Liste aller Pflanzen deines FYTA-Kontos mit Vorschaubild, Spitzname und wissenschaftlichem Namen.</p>
+<blockquote>
+<p>Es werden nur Pflanzen angezeigt, denen ein FYTA-Sensor zugeordnet ist.</p>
+</blockquote>
+<ol>
+<li>Klicke auf die gewünschte Pflanze.</li>
+<li>Der <strong>Name</strong> und die <strong>Pflanzen-ID</strong> werden automatisch im Sensor-Formular eingetragen.</li>
+<li>Passe den Sensor-Namen bei Bedarf an.</li>
+<li>Klicke auf <strong>Speichern</strong>.</li>
+</ol>
+<hr />
+<h2 id="messwerte-und-abfrage-intervall">Messwerte und Abfrage-Intervall</h2>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bodenfeuchte</td>
+<td>0–100 %</td>
+</tr>
+<tr>
+<td>Temperatur</td>
+<td>°C oder °F (gemäß FYTA-Kontoeinstellung)</td>
+</tr>
+<tr>
+<td>Abfrage-Quelle</td>
+<td>FYTA Cloud API (HTTPS)</td>
+</tr>
+<tr>
+<td>Abfrage-Intervall</td>
+<td>Konfigurierbar im Sensor-Dialog (Empfehlung: 15–60 Minuten)</td>
+</tr>
+</tbody>
+</table>
+<p>Die Daten werden <strong>nicht</strong> direkt vom Sensor abgerufen, sondern von der FYTA-Cloud. Das Intervall sollte daher nicht zu kurz gewählt werden, um das FYTA-API-Limit nicht zu überschreiten.</p>
+<hr />
+<h2 id="sensor-in-bewasserungsprogramme-integrieren">Sensor in Bewässerungsprogramme integrieren</h2>
+<p>Sobald ein FYTA-Sensor angelegt ist, kann er in zwei Arten von Automatisierungen genutzt werden:</p>
+<h3 id="programmanpassungen-adjustments">Programmanpassungen (Adjustments)</h3>
+<p>Passt die Bewässerungsdauer automatisch an den aktuellen Messwert an.</p>
+<p>→ <strong>Einstellungen → Sensor-Einstellungen → Programmanpassungen</strong></p>
+<p>Beispiel: Bewässerung bei hoher Bodenfeuchte reduzieren.</p>
+<h3 id="monitore-monitors">Monitore (Monitors)</h3>
+<p>Startet oder stoppt ein Programm, wenn ein Schwellenwert über- oder unterschritten wird.</p>
+<p>→ <strong>Einstellungen → Sensor-Einstellungen → Monitore</strong></p>
+<p>Beispiel: Bewässerung starten, wenn Bodenfeuchte unter 30 % fällt.</p>
+<hr />
+<h2 id="mehrere-fyta-sensoren">Mehrere FYTA-Sensoren</h2>
+<p>Du kannst für jede Pflanze/jeden Sensor-Typ einen eigenen Sensor-Eintrag anlegen:</p>
+<ul>
+<li>Pflanze A → FYTA Moisture (ID: 12345)</li>
+<li>Pflanze A → FYTA Temperature (ID: 12345)</li>
+<li>Pflanze B → FYTA Moisture (ID: 67890)</li>
+</ul>
+<p>Alle Sensoren teilen dieselben Zugangsdaten (Token/Login) aus den FYTA-Einstellungen.</p>
+<hr />
+<h2 id="fehlerbehebung">Fehlerbehebung</h2>
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Ursache / Lösung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pflanzenliste leer</td>
+<td>Keine FYTA-Zugangsdaten hinterlegt oder Token abgelaufen → Schritt 1 wiederholen</td>
+</tr>
+<tr>
+<td>Kein Messwert</td>
+<td>Pflanze hat keinen aktiven FYTA-Sensor → in der FYTA-App prüfen</td>
+</tr>
+<tr>
+<td>Temperatursensor zeigt falsches °C/°F</td>
+<td>Wird automatisch aus der FYTA-Kontoeinstellung übernommen → in der FYTA-App unter Kontoeinstellungen ändern</td>
+</tr>
+<tr>
+<td>Verbindungsfehler</td>
+<td>Netzwerkverbindung des Controllers prüfen; FYTA-API unter <a href="https://web.fyta.de">web.fyta.de</a> erreichbar?</td>
+</tr>
+<tr>
+<td>ESP8266: Keine HTTPS-Verbindung</td>
+<td>ESP8266 verwendet HTTP statt HTTPS – sicherheitsbedingte Einschränkung der Plattform</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="plattform-verfugbarkeit">Plattform-Verfügbarkeit</h2>
+<table>
+<thead>
+<tr>
+<th>Plattform</th>
+<th>Unterstützt</th>
+<th>Protokoll</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ESP32</td>
+<td>✅</td>
+<td>HTTPS</td>
+</tr>
+<tr>
+<td>ESP8266</td>
+<td>✅</td>
+<td>HTTP (kein TLS)</td>
+</tr>
+<tr>
+<td>OSPi (Linux)</td>
+<td>✅</td>
+<td>HTTPS</td>
+</tr>
+</tbody>
+</table>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../rainmaker-provisioning/" class="btn btn-neutral float-left" title="RainMaker Provisioning"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../troubleshooting/" class="btn btn-neutral float-right" title="Troubleshooting">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../rainmaker-provisioning/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../troubleshooting/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

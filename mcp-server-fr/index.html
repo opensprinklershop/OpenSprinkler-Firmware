@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/mcp-server-fr/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Serveur MCP — accès IA pour OpenSprinkler - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Serveur MCP \u2014 acc\u00e8s IA pour OpenSprinkler";
+        var mkdocs_page_input_path = "mcp-server-fr.md";
+        var mkdocs_page_url = "/mcp-server-fr/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Serveur MCP — accès IA pour OpenSprinkler</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/mcp-server-fr.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="serveur-mcp-acces-ia-pour-opensprinkler">Serveur MCP — accès IA pour OpenSprinkler</h1>
+<p>L’intégration MCP (Model Context Protocol) permet à des assistants IA d’interroger et de piloter un contrôleur OpenSprinkler via des outils documentés.</p>
+<p>Cette page couvre seulement la configuration MCP et les modes d’exécution. Les autres sujets sont séparés :</p>
+<ul>
+<li><a href="../ai-programming-fr/">Création de programmes par IA</a></li>
+<li><a href="../sensor-automation-fr/">Automatisation capteurs et monitors</a></li>
+</ul>
+<h2 id="modes-de-fonctionnement">Modes de fonctionnement</h2>
+<h3 id="mcp-integre-au-firmware">MCP intégré au firmware</h3>
+<p>Le serveur MCP intégré fonctionne directement dans les firmwares ESP32 avec <code>USE_OTF</code> :</p>
+<pre><code class="language-http">POST http://&lt;controller-ip&gt;/mcp
+Content-Type: application/json
+</code></pre>
+<p>L’authentification utilise le même hash du mot de passe administrateur que l’API REST : <code>?pw=</code>, en-tête <code>X-OS-Password</code> ou bearer token.</p>
+<p>Disponibilité : <strong>ESP32 / ESP32-C5 uniquement</strong> avec <code>USE_OTF</code>; pas ESP8266 ni OSPi.</p>
+<h3 id="serveur-mcp-nodejs-externe">Serveur MCP Node.js externe</h3>
+<p>Le serveur externe dans <code>tools/mcp-server/</code> tourne hors du firmware et publie l’API REST via stdio. Il fonctionne avec ESP8266, ESP32 et OSPi, avec des outils pour capteurs, monitors, Zigbee, BLE et ressources système lorsque le contrôleur les prend en charge.</p>
+<h2 id="configuration">Configuration</h2>
+<pre><code class="language-bash">cd tools/mcp-server
+npm install
+npm run build
+</code></pre>
+<p>Exemple VS Code / GitHub Copilot :</p>
+<pre><code class="language-json">{
+  &quot;servers&quot;: {
+    &quot;opensprinkler&quot;: {
+      &quot;type&quot;: &quot;stdio&quot;,
+      &quot;command&quot;: &quot;node&quot;,
+      &quot;args&quot;: [&quot;tools/mcp-server/dist/index.js&quot;],
+      &quot;env&quot;: {
+        &quot;OS_BASE_URL&quot;: &quot;http://&lt;CONTROLLER-IP&gt;&quot;,
+        &quot;OS_PASSWORD_HASH&quot;: &quot;&lt;MD5-HASH&gt;&quot;
+      }
+    }
+  }
+}
+</code></pre>
+<p>Calcul du hash :</p>
+<pre><code class="language-bash">echo -n &quot;votre_mot_de_passe_admin&quot; | md5sum | awk '{print $1}'
+</code></pre>
+<h2 id="vue-des-outils">Vue des outils</h2>
+<table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Outils exemples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>État contrôleur</td>
+<td><code>get_all</code>, <code>get_controller_variables</code>, <code>get_options</code>, <code>get_debug</code>, <code>get_system_resources</code></td>
+</tr>
+<tr>
+<td>Stations et programmes</td>
+<td><code>get_stations</code>, <code>get_station_status</code>, <code>get_programs</code>, <code>manual_station_run</code>, <code>change_program</code></td>
+</tr>
+<tr>
+<td>Capteurs et logs</td>
+<td><code>get_sensors</code>, <code>get_sensor_values</code>, <code>get_sensor_log</code>, <code>backup_sensor_config</code></td>
+</tr>
+<tr>
+<td>Radios OpenSprinklerPro</td>
+<td><code>get_ieee802154_config</code>, <code>get_zigbee_devices</code>, <code>get_zigbee_status</code>, <code>get_ble_devices</code>, <code>get_rainmaker_status</code></td>
+</tr>
+<tr>
+<td>Automatisation</td>
+<td><code>list_adjustments</code>, <code>configure_adjustment</code>, <code>list_monitors</code>, <code>configure_monitor</code></td>
+</tr>
+</tbody>
+</table>
+<p>Le serveur MCP n’a pas d’écran UI propre. Pour le diagnostic local, utiliser <strong>Diagnostics du système</strong>.</p>
+<p><img alt="Diagnostics du système" class="mobile-screenshot" src="../assets/screenshots/pro/fr/system-diagnostics.png" /></p>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/troubleshooting-pt/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Troubleshooting pt - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Troubleshooting pt";
+        var mkdocs_page_input_path = "troubleshooting-pt.md";
+        var mkdocs_page_url = "/troubleshooting-pt/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Troubleshooting pt</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/troubleshooting-pt.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h2 id="instrucoes-de-solucao-de-problemas">Instruções de Solução de Problemas</h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Esta página cobre as etapas mais comuns de solução de problemas. Para suporte técnico adicional, visite o <a href="https://support.openthings.io">Portal de Suporte</a> ou os <a href="https://opensprinkler.com/forums/">Fóruns da Comunidade</a>. Antes de abrir um tíquete de suporte, certifique-se de ler atentamente o <a href="../2.2.1/221_4_manual_pt/">Manual do Usuário</a>, as <a href="../faq-pt/">Perguntas Frequentes (FAQs)</a> e os problemas comuns listados nesta página.</p>
+</div>
+<h3 id="identifique-seu-hardware-e-firmware">Identifique seu Hardware e Firmware</h3>
+<p>Antes de buscar suporte, você deve identificar as versões de hardware e firmware do seu OpenSprinkler.</p>
+<p><strong>Encontre sua Versão de Hardware</strong></p>
+<ul>
+<li><strong>Pelo App/Web UI:</strong> Na página inicial, deslize da esquerda para a direita para abrir o menu lateral. Toque em <strong>Sobre</strong>; você verá a versão do hardware listada lá.</li>
+<li><strong>Durante a Inicialização:</strong> Desligue e ligue o controlador; a versão do hardware é exibida brevemente no LCD durante a inicialização.</li>
+<li><strong>Verifique a Etiqueta:</strong> O painel traseiro do seu controlador normalmente possui uma etiqueta mostrando a versão.</li>
+<li><strong>Caso contrário:</strong> Verifique os detalhes do seu pedido ou anexe uma foto nítida do seu controlador em um tíquete de suporte.</li>
+</ul>
+<hr />
+<p><strong>Encontre sua Versão de Firmware</strong></p>
+<ul>
+<li><strong>Pelo App/Web UI:</strong> Na página inicial, deslize da esquerda para a direita para abrir o menu lateral. Toque em <strong>Sobre</strong>; você verá a versão do firmware listada lá.</li>
+<li><strong>Durante a Inicialização:</strong> Desligue e ligue o controlador; a versão do firmware é exibida brevemente no LCD durante a inicialização.</li>
+</ul>
+<hr />
+<p><strong>Entendendo as Versões de Hardware, Firmware e Aplicativo</strong>
+<span class="vsp1"></span>
+A página <strong>Sobre</strong> mostra três números de versão diferentes:</p>
+<ul>
+<li><strong>Hardware</strong> refere-se à versão física. Exemplo: <code>v3.3</code>, <code>OSPi</code>. A única maneira de atualizar o hardware é comprando um novo controlador.</li>
+<li><strong>Firmware</strong> refere-se ao software executado no controlador. Exemplo: <code>2.2.1(3)</code>. Consiste em uma <strong>versão com pontos</strong> (ex: <code>2.2.1</code>) e um <strong>número de compilação (build)</strong> entre parênteses. O firmware pode ser atualizado, embora não seja automático: você deve carregar manualmente um novo firmware para ele.</li>
+<li><strong>App</strong> refere-se ao aplicativo móvel ou interface web em execução no seu telefone ou navegador. Exemplo: <code>2.4.90</code>. O aplicativo/UI é atualizado automaticamente no seu celular quando uma nova versão é lançada na loja.</li>
+</ul>
+<hr class="double">
+
+<h3 id="fiacao-e-solenoides">Fiação e Solenoides</h3>
+<p><strong>Teste de Resistência do Solenoide</strong>
+<span class="vsp1"></span>
+Antes de ligar o sistema pela primeira vez, realize um teste de resistência do solenoide. Este teste pode determinar de forma rápida e eficaz se o problema é com solenoides ou fiação defeituosa. Você precisará de um <strong>multímetro</strong> configurado para medir <strong>Resistência</strong> (Ω).</p>
+<ol>
+<li>Desligue o sistema. <strong>NÃO</strong> meça a resistência com o sistema sob tensão.</li>
+<li>Meça a resistência entre o fio <strong>COM</strong> (comum) e <strong>cada fio de zona</strong> individualmente.</li>
+<li>Verifique os resultados:<ul>
+<li>Um solenoide de 24VAC <strong>Normal</strong> deve medir entre 20 a 60 Ω.</li>
+<li>Uma resistência <strong>muito baixa</strong> (~0 Ω) indica um curto-circuito no solenoide ou na fiação.</li>
+<li>Uma resistência <strong>muito alta</strong> (&gt;1000 Ω) indica um solenoide queimado ou fio rompido.</li>
+<li>Uma resistência <strong>baixa, mas não 0</strong> (4-10 Ω) indica válvulas solenoides do tipo Latching (Travamento). Você deve confirmar verificando o corpo da válvula para ver se há alguma etiqueta como 'Latch/Latching'.</li>
+</ul>
+</li>
+</ol>
+<hr />
+<p><strong>A tensão AC está presente entre o COM e uma zona mesmo quando essa zona está DESLIGADA.</strong>
+<span class="vsp1"></span>
+Se não houver carga (ou seja, solenoide) conectada ao controlador, é normal medir uma <strong>tensão parasita (flutuante)</strong>, mesmo quando nenhuma zona estiver ligada. Isso <strong>NÃO</strong> indica um controlador defeituoso. A tensão flutuante desaparece assim que os solenoides são devidamente conectados.</p>
+<hr />
+<p><strong>Múltiplas zonas ligam assim que a energia é aplicada.</strong>
+<span class="vsp1"></span>
+Provavelmente você usou uma <strong>fonte DC</strong> em um controlador projetado para <strong>AC</strong>. Os modelos AC requerem uma fonte de <strong>saída AC</strong>: verifique a etiqueta da fonte para ver se especifica <strong>AC</strong> na tensão de saída (ex: 24V<strong>AC</strong>). Se não tiver certeza, verifique com um multímetro.</p>
+<hr />
+<p><strong>As zonas ligam, mas não desligam a menos que a energia seja removida.</strong>
+<span class="vsp1"></span>
+Mesma causa raiz acima: você provavelmente usou uma <strong>fonte DC</strong> em uma unidade <strong>AC</strong>.</p>
+<hr />
+<p><strong>Nenhuma das minhas zonas liga, ou o consumo de corrente é muito baixo (ex: &lt;100mA).</strong></p>
+<ul>
+<li>Verifique se o controlador ainda liga (por exemplo, se o visor LCD acende ou mostra dados). Se não, a fonte de alimentação pode estar queimada e precisa ser substituída. Verifique com um multímetro.</li>
+<li>Verifique duas vezes o fio <strong>COM</strong> (comum) - um fio COM solto ou quebrado impede que todas as zonas sejam ativadas.</li>
+<li>Inspecione o <strong>fusível</strong> dentro do controlador: desligue a energia, abra a carcaça e inspecione o fusível na parte inferior esquerda da placa de circuito. Se o fusível estiver queimado, substitua-o por um de especificação semelhante.</li>
+<li>Geralmente, um fusível queimado indica um curto-circuito no solenoide, fiação ou abertura de muitas zonas ao mesmo tempo. Faça um <a href="#fiação-e-solenoides">teste de resistência do solenoide</a> imediatamente.</li>
+</ul>
+<hr />
+<p><strong>Algumas zonas ligam, mas outras não.</strong>
+<span class="vsp1"></span>
+Primeiro, faça um <a href="#fiação-e-solenoides">teste de resistência do solenoide</a> para descartar falhas no solenoide ou na fiação. Se as leituras estiverem normais, abra a carcaça do controlador, tire uma foto nítida e verifique se há danos visíveis na placa (marcas de queimadura/descoloração, componentes estufados). Se tiver dúvidas, abra um tíquete de suporte e anexe a foto — inclua as versões de hardware/firmware e descreva os sintomas.</p>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

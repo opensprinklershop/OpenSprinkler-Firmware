@@ -1,0 +1,170 @@
+.vsp1 { display:block; margin: 6px 0; }
+.vsp2 { display:block; margin: 50px 0; }
+p + ul,
+p + ol {
+    margin-top: -0.5em; /* Or try 0 or 0.5rem. Adjust as needed! */
+}
+hr.double {
+  height: 3px;
+  border-top: 4px double #ccc;
+  border-bottom: none; /* Ensure no other borders interfere */
+}
+.hl {
+  background-color: #d0ead0; /* Light Green */
+}
+.hllight {
+  background-color: #e0e0e0; /* Light Green */
+}
+.hltitle {
+  background-color: #d0ead0; /* A light green color */
+  padding: 6px 8px;
+  border-radius: 4px;
+  display: inline-block; /* Makes the background fit the text */
+}
+.hl_purple {
+  background-color: #A000A0;
+  color: white;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.hl_yellow {
+  background-color: #F0F020;
+  color: black;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.hl_red {
+  color: #C02020;
+}
+.hl_orange {
+  color: #F28500;
+}
+.hl_green {
+  background-color: #209020;
+  color: white;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+table th,
+table td {
+  padding: 6px 10px;
+}
+.rst-content :not(pre) > code {
+  border: none;
+  background-color: #f4f4f4;
+  color: #A04020;
+  font-size: 85%;
+}
+.center {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  width: 350px;
+}
+.center_wider {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  width: 500px;
+}
+ul > li {
+  margin-bottom: 0.25em; /* Adjust this value as needed */
+}
+.custom-box {
+  background-color: #d0ead0;
+  padding: 0.7em;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+.img-border {
+  border: 1px solid #ccc;  /* A light gray border */
+  border-radius: 4px;       /* Optional: nice rounded corners */
+  padding: 4px;             /* Optional: space between image and border */
+}
+/* You could also make a class for a shadow, which often looks nicer */
+.img-shadow {
+  box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+.language-selector {
+  align-items: center;
+  background: #f4f8fb;
+  border: 1px solid #d6e2ea;
+  border-radius: 4px;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin: 0 0 1rem auto;
+  padding: 0.5rem 0.75rem;
+}
+
+.language-selector label {
+  color: #404040;
+  font-weight: 600;
+  margin: 0;
+}
+
+.language-selector select {
+  border: 1px solid #b8c7d1;
+  border-radius: 3px;
+  padding: 0.2rem 0.5rem;
+}
+
+.wy-menu-vertical li.current > ul[data-generated-heading-links] {
+  display: block;
+}
+
+.wy-menu-vertical ul[data-generated-heading-links] a {
+  color: #404040;
+}
+
+.wy-menu-vertical ul[data-generated-heading-links] a:hover {
+  color: #2980b9;
+}
+
+img.mobile-screenshot,
+.rst-content img.mobile-screenshot,
+.wy-table-responsive table td img.mobile-screenshot {
+  display: block;
+  width: 300px !important;
+  min-width: 300px !important;
+  max-width: 300px !important;
+  height: auto;
+  margin: 0.75rem auto 1.25rem auto;
+  border: 1px solid #ccc;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  cursor: zoom-in;
+}
+
+.screenshot-lightbox {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.88);
+  cursor: zoom-out;
+  display: none;
+  inset: 0;
+  justify-content: center;
+  padding: 16px;
+  position: fixed;
+  z-index: 9999;
+}
+
+.screenshot-lightbox.is-open {
+  display: flex;
+}
+
+.screenshot-lightbox img {
+  max-height: 96vh;
+  max-width: 96vw;
+  object-fit: contain;
+}
+
+.screenshot-lightbox__close {
+  color: #fff;
+  font-size: 32px;
+  line-height: 1;
+  position: fixed;
+  right: 18px;
+  top: 12px;
+}

@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/rainmaker-provisioning-fr/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Provisionnement ESP RainMaker - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Provisionnement ESP RainMaker";
+        var mkdocs_page_input_path = "rainmaker-provisioning-fr.md";
+        var mkdocs_page_url = "/rainmaker-provisioning-fr/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Provisionnement ESP RainMaker</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/rainmaker-provisioning-fr.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="provisionnement-esp-rainmaker">Provisionnement ESP RainMaker</h1>
+<p>Cette page décrit le provisionnement ESP RainMaker pour OpenSprinklerPro. Les noms techniques, événements et champs API restent inchangés.</p>
+<p>This document describes how OpenSprinkler firmware handles ESP RainMaker provisioning, covering both <strong>BLE Claiming</strong> and <strong>On-Network</strong> methods.</p>
+<h2 id="vue-densemble">Vue d’ensemble</h2>
+<p>ESP RainMaker requires two things before a device can be controlled from the cloud:</p>
+<ol>
+<li><strong>Claiming</strong> — The device obtains TLS certificates from Espressif's claiming server. These certificates authenticate the device for MQTT communication with the RainMaker cloud.</li>
+<li><strong>User-Node Mapping</strong> — The device is linked to a user's RainMaker account so they can control it from the phone app.</li>
+</ol>
+<h2 id="methodes-de-provisionnement">Méthodes de provisionnement</h2>
+<h3 id="claiming-ble-premiere-configuration">Claiming BLE (première configuration)</h3>
+<p>Used when the device has <strong>no TLS certificates</strong> (first boot, or after factory reset).</p>
+<p><strong>Flux :</strong></p>
+<ol>
+<li>Firmware detects no TLS client cert in factory NVS (<code>esp_rmaker_factory_get("client_cert")</code>)</li>
+<li>RainMaker core is started (<code>RMaker.start()</code>)</li>
+<li>BLE provisioning begins via <code>WiFiProv.beginProvision(NETWORK_PROV_SCHEME_BLE, ...)</code></li>
+<li>Device advertises as a BLE device (service name: <code>PROV_XXXXXX</code>)</li>
+<li>User opens ESP RainMaker phone app → "Add Device" → scans BLE</li>
+<li>Phone app connects via BLE and:</li>
+<li>Proxies the CSR (Certificate Signing Request) to Espressif's claiming server</li>
+<li>Returns the signed TLS certificate to the device</li>
+<li>Optionally provides WiFi credentials</li>
+<li>Device stores TLS certs in factory NVS</li>
+<li><code>RMAKER_EVENT_CLAIM_SUCCESSFUL</code> fires</li>
+<li>Device connects to MQTT via WiFi or Ethernet</li>
+</ol>
+<p><strong>Priorité :</strong> During BLE claiming, the BLE radio is exclusively used for provisioning. Sensor BLE scanning (<code>sensor_radio_early_init()</code>) is <strong>deferred</strong> until claiming completes. After the <code>CLAIM_SUCCESSFUL</code> event, BLE resources are released and sensor scanning resumes.</p>
+<h3 id="provisionnement-on-network-association-utilisateur-node">Provisionnement On-Network (association utilisateur-node)</h3>
+<p>Used when TLS certificates exist but the device needs to be linked to a user account.</p>
+<p><strong>Flux :</strong></p>
+<ol>
+<li>Firmware detects valid TLS client cert → normal mode</li>
+<li>RainMaker core starts and connects MQTT</li>
+<li>Local control service starts (<code>esp_local_ctrl</code>) on a TCP port</li>
+<li>mDNS advertises <code>_esp_local_ctrl._tcp</code> for phone app discovery</li>
+<li>User opens ESP RainMaker app → "Add Device" → "On Network"</li>
+<li>Phone finds device via mDNS on the local network</li>
+<li>User enters the PoP (Proof of Possession) PIN</li>
+<li>User-node mapping request is sent to RainMaker cloud</li>
+</ol>
+<p><strong>Condition :</strong> Phone and device must be on the same network (WiFi or Ethernet).</p>
+<h2 id="support-ethernet">Support Ethernet</h2>
+<p>Both provisioning methods work with Ethernet:</p>
+<ul>
+<li>
+<p><strong>Ethernet + BLE Claiming:</strong> The device has network via Ethernet. BLE is used only for the claiming handshake (phone proxies CSR). The web UI remains accessible on Ethernet during BLE claiming. After claiming, MQTT connects via Ethernet.</p>
+</li>
+<li>
+<p><strong>Ethernet + On-Network:</strong> Local control and mDNS are advertised on both the WiFi STA and Ethernet interfaces. Phone app discovers the device on the local network via either interface.</p>
+</li>
+</ul>
+<h2 id="priorite-des-capteurs">Priorité des capteurs</h2>
+<p>During BLE claiming, sensors that use BLE (e.g., BLE temperature sensors) are deferred:</p>
+<ul>
+<li><code>sensor_radio_early_init()</code> is <strong>skipped</strong> when <code>OSRainMaker::sensors_deferred()</code> returns true</li>
+<li><code>sensor_api_connect()</code> is <strong>delayed</strong> until claiming completes</li>
+<li>After <code>CLAIM_SUCCESSFUL</code>, a 3-second grace period allows BLE cleanup (<code>HANDLER_FREE_BLE</code>)</li>
+<li>Then <code>sensor_radio_early_init()</code> runs automatically, followed by <code>sensor_api_connect()</code></li>
+</ul>
+<p>This is a one-time delay during the initial device setup. On subsequent boots (certs exist), sensors initialize immediately.</p>
+<h2 id="endpoint-api">Endpoint API</h2>
+<p><code>GET /rk?pw=&lt;hash&gt;</code> returns provisioning state:</p>
+<table>
+<thead>
+<tr>
+<th>Champ</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>provisioning</code></td>
+<td>0/1</td>
+<td>Any provisioning active (BLE or On-Network)</td>
+</tr>
+<tr>
+<td><code>ble_claiming</code></td>
+<td>0/1</td>
+<td>BLE assisted claiming in progress</td>
+</tr>
+<tr>
+<td><code>sensors_deferred</code></td>
+<td>0/1</td>
+<td>Sensor BLE init waiting for provisioning</td>
+</tr>
+<tr>
+<td><code>local_ctrl_active</code></td>
+<td>0/1</td>
+<td>On-Network discovery available</td>
+</tr>
+<tr>
+<td><code>pop</code></td>
+<td>string</td>
+<td>Proof of Possession PIN (from eFuse)</td>
+</tr>
+<tr>
+<td><code>prov_service</code></td>
+<td>string</td>
+<td>BLE service name for phone app</td>
+</tr>
+</tbody>
+</table>
+<h2 id="pop-proof-of-possession">PoP (Proof of Possession)</h2>
+<p>The PoP is derived from the device's eFuse MAC address and is unique per device. It is always displayed:</p>
+<ul>
+<li>In the serial log at boot</li>
+<li>On the LCD during BLE provisioning</li>
+<li>In the web UI (RainMaker popup → PoP PIN)</li>
+<li>Via the <code>/rk</code> API endpoint</li>
+</ul>
+<h2 id="timeout-et-repli">Timeout et repli</h2>
+<ul>
+<li>BLE provisioning has a <strong>5-minute timeout</strong> in the WiFi state machine</li>
+<li>If the phone app doesn't connect within 5 minutes, the device falls back to STA+AP mode</li>
+<li>The web UI becomes accessible via the AP (192.168.4.1) or via Ethernet</li>
+<li>A reboot retries BLE claiming if certs still don't exist</li>
+</ul>
+<h2 id="journalisation-de-debug">Journalisation de debug</h2>
+<p>All provisioning events are logged with the <code>RMAKER</code> tag at INFO level using <code>RM_LOGI</code> / <code>RM_LOGW</code> / <code>RM_LOGE</code> macros. Key log messages:</p>
+<pre><code>I (xxx) RMAKER: === RainMaker BLE CLAIMING mode ===
+I (xxx) RMAKER: BLE provisioning has PRIORITY over sensor BLE — sensors deferred
+I (xxx) RMAKER: Starting BLE provisioning: service=PROV_XXXXXX pop=XXXXXXXX
+I (xxx) RMAKER: Event: CLAIM_STARTED — contacting claiming server...
+I (xxx) RMAKER: Event: CLAIM_SUCCESSFUL — TLS certs provisioned!
+I (xxx) RMAKER: === Claiming successful — TLS certs received ===
+I (xxx) RMAKER: Sensor BLE init will resume after BLE cleanup (~3s)
+</code></pre>
+<h2 id="fichiers-source">Fichiers source</h2>
+<ul>
+<li><code>opensprinkler_rainmaker.h</code> / <code>.cpp</code> — RainMaker integration, provisioning logic</li>
+<li><code>main.cpp</code> — WiFi state machine, sensor init deferral</li>
+<li><code>opensprinkler_server.cpp</code> — <code>/rk</code> API endpoint</li>
+<li><code>sensors.cpp</code> — <code>sensor_radio_early_init()</code>, <code>is_radio_early_init_done()</code></li>
+</ul>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

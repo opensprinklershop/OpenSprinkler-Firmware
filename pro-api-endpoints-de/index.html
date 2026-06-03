@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/pro-api-endpoints-de/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>OpenSprinklerPro API- und Plattformergänzung - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "OpenSprinklerPro API- und Plattformerg\u00e4nzung";
+        var mkdocs_page_input_path = "pro-api-endpoints-de.md";
+        var mkdocs_page_url = "/pro-api-endpoints-de/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">OpenSprinklerPro API- und Plattformergänzung</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/pro-api-endpoints-de.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="opensprinklerpro-api-und-plattformerganzung">OpenSprinklerPro API- und Plattformergänzung</h1>
+<p>Diese Seite ist die vollständige deutsche Fassung der OpenSprinklerPro-API- und Plattformergänzung. API-Pfade und Parameter bleiben unverändert.</p>
+<p>This addendum documents firmware endpoints and platform details that were added after the original 2.2.1 manual pages.</p>
+<p>The OpenSprinklerShop firmware, including OpenSprinklerPro, uses its own firmware version numbering independent of upstream OpenSprinkler releases. Current OpenSprinklerShop firmware version: <strong>2.4.0(199)</strong>.</p>
+<h2 id="plattformkorrekturen">Plattformkorrekturen</h2>
+<table>
+<thead>
+<tr>
+<th>Endpunkt</th>
+<th>Unterstützte Plattformen</th>
+<th>Hinweise</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/uc</code>, <code>/uu</code>, <code>/us</code>, <code>/ub</code></td>
+<td>ESP32, ESP8266</td>
+<td>Firmware online update and full backup endpoints. Not available on OSPi/Linux builds.</td>
+</tr>
+<tr>
+<td><code>/sx</code></td>
+<td>ESP32, ESP8266, OSPi</td>
+<td>Sensor-only configuration backup/import. Distinct from <code>/ub</code>.</td>
+</tr>
+<tr>
+<td><code>/jw</code></td>
+<td>ESP32, ESP8266, OSPi</td>
+<td>Monthly water-usage data.</td>
+</tr>
+<tr>
+<td><code>/tg</code>, <code>/tl</code>, <code>/ta</code>, <code>/tc</code>, <code>/tx</code></td>
+<td>ESP32</td>
+<td>HTTPS certificate and ACME/Let's Encrypt management.</td>
+</tr>
+<tr>
+<td><code>/rk</code>, <code>/rp</code>, <code>/ru</code></td>
+<td>ESP32 with <code>ENABLE_RAINMAKER</code></td>
+<td>ESP RainMaker status, provisioning and unlink/reset flows.</td>
+</tr>
+<tr>
+<td><code>/jm</code>, <code>/mm</code></td>
+<td>ESP32 with <code>ENABLE_MATTER</code></td>
+<td>Matter pairing information and commissioning window.</td>
+</tr>
+<tr>
+<td><code>/bd</code>, <code>/bs</code>, <code>/bc</code></td>
+<td>ESP32 with <code>OS_ENABLE_BLE</code></td>
+<td>BLE scan and discovered-device management.</td>
+</tr>
+<tr>
+<td><code>/ir</code>, <code>/iw</code>, <code>/zj</code>, <code>/zs</code>, <code>/zg</code>, <code>/zd</code>, <code>/zo</code>, <code>/zc</code></td>
+<td>ESP32-C5 with Zigbee/IEEE 802.15.4 support</td>
+<td>Radio mode and Zigbee gateway/client endpoints.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="online-update-und-backup">Online-Update und Backup</h2>
+<table>
+<thead>
+<tr>
+<th>Endpunkt</th>
+<th>Zweck</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /uc?pw=...</code></td>
+<td>Check update manifest and report whether a newer firmware is available.</td>
+</tr>
+<tr>
+<td><code>GET /uu?pw=...</code></td>
+<td>Start firmware update. Advanced parameters can override URLs and hashes: <code>zu</code>, <code>mu</code>, <code>fu</code>, <code>zs</code>, <code>ms</code>; <code>vt</code> selects <code>zigbee</code> or <code>matter</code>.</td>
+</tr>
+<tr>
+<td><code>GET /us?pw=...</code></td>
+<td>Read update status and progress.</td>
+</tr>
+<tr>
+<td><code>GET /ub?pw=...</code></td>
+<td>Export full controller configuration for app-side backup before update.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="https-zertifikate-und-acme">HTTPS-Zertifikate und ACME</h2>
+<table>
+<thead>
+<tr>
+<th>Endpunkt</th>
+<th>Zweck</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /tg?pw=...</code></td>
+<td>Read active certificate type, subject, issuer and validity.</td>
+</tr>
+<tr>
+<td><code>POST /tl?pw=...</code></td>
+<td>Upload custom PEM certificate and key. Reboot afterwards.</td>
+</tr>
+<tr>
+<td><code>GET /ta?pw=...</code></td>
+<td>Read ACME configuration and status.</td>
+</tr>
+<tr>
+<td><code>POST /tc?pw=...</code></td>
+<td>Save ACME settings and optionally request a certificate.</td>
+</tr>
+<tr>
+<td><code>GET /tx?pw=...</code></td>
+<td>Delete ACME data and return to the internal certificate.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="rainmaker-und-matter">RainMaker und Matter</h2>
+<table>
+<thead>
+<tr>
+<th>Endpunkt</th>
+<th>Zweck</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /rk?pw=...</code></td>
+<td>Read RainMaker status. Optional <code>reset_mapping=1</code> or <code>factory_reset=1</code> perform maintenance actions.</td>
+</tr>
+<tr>
+<td><code>GET /rp?pw=...&amp;uid=...&amp;key=...</code></td>
+<td>Start RainMaker provisioning.</td>
+</tr>
+<tr>
+<td><code>GET /ru?pw=...</code></td>
+<td>Unlink RainMaker account and trigger reset/reboot behavior.</td>
+</tr>
+<tr>
+<td><code>GET /jm?pw=...</code></td>
+<td>Read Matter commissioning state, QR-code URL and manual pairing code.</td>
+</tr>
+<tr>
+<td><code>GET /mm?pw=...&amp;t=300</code></td>
+<td>Open Matter commissioning window; <code>t</code> is optional timeout in seconds, max <code>900</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="wasserverbrauch-und-sensoren">Wasserverbrauch und Sensoren</h2>
+<table>
+<thead>
+<tr>
+<th>Endpunkt</th>
+<th>Zweck</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /jw?pw=...</code></td>
+<td>Read monthly water usage: pulse rate, current month and stored records.</td>
+</tr>
+<tr>
+<td><code>GET /sf?pw=...</code></td>
+<td>List supported sensor types for the current build.</td>
+</tr>
+<tr>
+<td><code>GET /sx?pw=...</code></td>
+<td>Export/import sensor configuration only.</td>
+</tr>
+<tr>
+<td><code>GET /mc</code>, <code>/ml</code>, <code>/mt</code></td>
+<td>Configure, list and discover monitor types.</td>
+</tr>
+</tbody>
+</table>
+<p>Die vollständige Legacy-API-Referenz finden Sie unter <a href="../2.2.1/221_4_api_de/">Firmware 2.2.1 API-Referenz</a>.</p>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

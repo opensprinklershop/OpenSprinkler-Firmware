@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/analog-sensor-config-fr/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Configuration des capteurs analogiques - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Configuration des capteurs analogiques";
+        var mkdocs_page_input_path = "analog-sensor-config-fr.md";
+        var mkdocs_page_url = "/analog-sensor-config-fr/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Configuration des capteurs analogiques</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/analog-sensor-config-fr.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="configuration-des-capteurs-analogiques">Configuration des capteurs analogiques</h1>
+<p><strong>Analog Sensor Configuration</strong> est la zone UI OpenSprinklerPro pour définir les sources de capteurs et utiliser leurs valeurs dans l’automatisation de l’arrosage. Elle s’ouvre depuis le menu inférieur avec <strong>Analog Sensor Configuration</strong>.</p>
+<p><img alt="Configuration capteurs" class="mobile-screenshot" src="../assets/screenshots/pro/fr/sensor-config.png" /></p>
+<p>Pages liées : <a href="../sensor-automation-fr/">Automatisation capteurs et monitors</a>, <a href="../fyta-sensors/">Capteurs FYTA</a>, <a href="../opensprinklerpro_fr/#monitors-et-alertes-locales">Extension OpenSprinklerPro</a>, <a href="../pro-api-endpoints/">addendum API et plateformes</a>.</p>
+<h2 id="definitions-de-capteurs">Définitions de capteurs</h2>
+<p>La première section définit la liste des capteurs. Chaque ligne contient numéro, nom, valeur actuelle et état actif. <strong>Add Sensor</strong> ouvre l’éditeur d’un nouveau capteur; les capteurs existants se modifient en touchant leur nom.</p>
+<p><img alt="Nouveau capteur" class="mobile-screenshot" src="../assets/screenshots/pro/fr/analog-sensor-editor.png" /></p>
+<h3 id="champs-de-lediteur">Champs de l’éditeur</h3>
+<table>
+<thead>
+<tr>
+<th>Champ</th>
+<th>Signification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Numéro, nom et groupe</td>
+<td>Identifient le capteur dans les listes, graphiques, ajustements de programme et monitors. Les groupes servent à trier et filtrer des capteurs liés.</td>
+</tr>
+<tr>
+<td>Type</td>
+<td>Sélectionne le pilote ou la source virtuelle. Le type détermine les champs supplémentaires affichés.</td>
+</tr>
+<tr>
+<td>Unité et format</td>
+<td>Définissent l’affichage, la journalisation et les comparaisons. Choisissez une unité correspondant à la valeur physique ou à la source externe.</td>
+</tr>
+<tr>
+<td>Intervalle, log et affichage</td>
+<td>L’intervalle règle la fréquence de lecture. Log active l’historique pour les graphiques; l’affichage contrôle la visibilité dans les vues UI.</td>
+</tr>
+<tr>
+<td>Bus, adresse et canal</td>
+<td>Utilisés par RS485/Modbus, ASB et les entrées analogiques OSPi pour choisir bus matériel, adresse d’appareil ou canal analogique.</td>
+</tr>
+<tr>
+<td>Mise à l’échelle utilisateur</td>
+<td>Pour les capteurs analogiques personnalisés, convertit la tension/valeur ADC brute en valeur finale.</td>
+</tr>
+<tr>
+<td>Topic MQTT et filtre</td>
+<td>Les capteurs MQTT s’abonnent à un topic et peuvent extraire une valeur d’un JSON ou d’un texte.</td>
+</tr>
+<tr>
+<td>Liste de capteurs sources</td>
+<td>Les groupes calculent une nouvelle valeur à partir des capteurs sélectionnés. Les sources doivent avoir des unités compatibles.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="rs485-modbus">RS485 / Modbus</h3>
+<p>Ces types servent aux capteurs câblés sur bus RS485 ou à un appareil Modbus RTU générique. Configurez bus, adresse esclave, registre/canal et intervalle selon l’appareil connecté.</p>
+<table>
+<thead>
+<tr>
+<th>Type de capteur</th>
+<th>Explication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Truebner SMT100 RS485 Modbus, mode humidité</td>
+<td>Lit l’humidité du sol d’un Truebner SMT100 via RS485/Modbus. À utiliser pour les décisions d’arrosage basées sur la teneur volumique en eau.</td>
+</tr>
+<tr>
+<td>Truebner SMT100 RS485 Modbus, mode température</td>
+<td>Lit le canal température du SMT100 pour journalisation ou règles de monitor.</td>
+</tr>
+<tr>
+<td>Truebner SMT100 RS485 Modbus, mode permittivité</td>
+<td>Lit la permittivité diélectrique du SMT100 pour diagnostic ou modèles de sol avancés.</td>
+</tr>
+<tr>
+<td>Truebner TH100 RS485 Modbus, mode humidité</td>
+<td>Lit l’humidité relative d’un Truebner TH100, par exemple en serre ou pour l’ambiance.</td>
+</tr>
+<tr>
+<td>Truebner TH100 RS485 Modbus, mode température</td>
+<td>Lit la température du TH100 pour surveiller l’air ou la zone d’installation.</td>
+</tr>
+<tr>
+<td>Capteur générique RS485/MODBUS RTU</td>
+<td>Lit une valeur Modbus RTU configurable sur un équipement tiers. Adresse, registre, format de données et échelle doivent suivre le manuel.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="carte-de-capteurs-analogiques-asb">Carte de capteurs analogiques (ASB)</h3>
+<p>Les types ASB lisent les entrées tension de la carte analogique OpenSprinkler et les convertissent en valeur physique. Sélectionnez le bon canal et uniquement un mode adapté au câblage et à la tension d’alimentation.</p>
+<table>
+<thead>
+<tr>
+<th>Type de capteur</th>
+<th>Explication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ASB - mode tension 0..5V</td>
+<td>Retourne directement la tension d’entrée ASB mesurée entre 0 et 5 V. Utile pour l’étalonnage ou les capteurs avec conversion externe.</td>
+</tr>
+<tr>
+<td>ASB - 0..3,3V vers 0..100%</td>
+<td>Convertit une tension de 0 à 3,3 V en pourcentage pour signaux analogiques génériques.</td>
+</tr>
+<tr>
+<td>ASB - SMT50 mode humidité</td>
+<td>Convertit la sortie analogique d’un Truebner SMT50 en humidité du sol.</td>
+</tr>
+<tr>
+<td>ASB - SMT50 mode température</td>
+<td>Convertit la sortie température du SMT50.</td>
+</tr>
+<tr>
+<td>ASB - SMT100 analogique mode humidité</td>
+<td>Convertit la sortie humidité analogique d’un Truebner SMT100.</td>
+</tr>
+<tr>
+<td>ASB - SMT100 analogique mode température</td>
+<td>Convertit la sortie température analogique d’un Truebner SMT100.</td>
+</tr>
+<tr>
+<td>ASB - Vegetronix VH400</td>
+<td>Convertit la sortie du Vegetronix VH400 en humidité du sol.</td>
+</tr>
+<tr>
+<td>ASB - Vegetronix THERM200</td>
+<td>Convertit la sortie du Vegetronix THERM200 en température.</td>
+</tr>
+<tr>
+<td>ASB - Vegetronix AquaPlumb</td>
+<td>Convertit la sortie Vegetronix AquaPlumb pour présence d’eau ou mesure de niveau.</td>
+</tr>
+<tr>
+<td>ASB - capteur défini par l’utilisateur</td>
+<td>Applique une mise à l’échelle personnalisée pour les capteurs sans conversion intégrée. Définissez unité, format et conversion avant toute automatisation.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="entrees-analogiques-ospi">Entrées analogiques OSPi</h3>
+<p>Ces types concernent les installations OSPi/Raspberry Pi avec entrées analogiques. Ils ne s’appliquent pas aux contrôleurs ESP seuls sans matériel analogique correspondant.</p>
+<table>
+<thead>
+<tr>
+<th>Type de capteur</th>
+<th>Explication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entrée analogique OSPi - mode tension 0..3,3V</td>
+<td>Retourne directement la tension mesurée entre 0 et 3,3 V.</td>
+</tr>
+<tr>
+<td>Entrée analogique OSPi - 0..3,3V vers 0..100%</td>
+<td>Convertit une entrée 0 à 3,3 V en pourcentage pour capteurs analogiques génériques.</td>
+</tr>
+<tr>
+<td>Entrée analogique OSPi - SMT50 mode humidité</td>
+<td>Convertit la sortie humidité d’un SMT50 connecté à OSPi.</td>
+</tr>
+<tr>
+<td>Entrée analogique OSPi - SMT50 mode température</td>
+<td>Convertit la sortie température d’un SMT50 connecté à OSPi.</td>
+</tr>
+<tr>
+<td>Température interne Raspberry Pi</td>
+<td>Lit la température CPU du Raspberry Pi. Utile comme diagnostic thermique d’un boîtier OSPi.</td>
+</tr>
+<tr>
+<td>Température interne ESP32</td>
+<td>Lit le capteur de température interne ESP32 lorsque disponible. À considérer comme diagnostic contrôleur, pas comme température ambiante étalonnée.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sources-sans-fil-cloud-et-distantes">Sources sans fil, cloud et distantes</h3>
+<p>Ces types reçoivent des valeurs depuis radios, services cloud, MQTT ou un autre contrôleur OpenSprinkler. Vérifiez la disponibilité plateforme : Zigbee et BLE exigent des builds ESP32 compatibles, FYTA exige des identifiants cloud, MQTT exige un broker.</p>
+<table>
+<thead>
+<tr>
+<th>Type de capteur</th>
+<th>Explication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Capteur Zigbee</td>
+<td>Associe une valeur publiée par un appareil Zigbee appairé, comme température, humidité ou humidité du sol. Choisissez l’appareil et la mesure exposée.</td>
+</tr>
+<tr>
+<td>Capteur BLE</td>
+<td>Lit un capteur Bluetooth Low Energy pris en charge. Réglez intervalle de scan et appareil pour équilibrer fraîcheur et charge radio.</td>
+</tr>
+<tr>
+<td>Capteur d’humidité FYTA</td>
+<td>Importe l’humidité du sol d’un capteur plante FYTA après configuration FYTA.</td>
+</tr>
+<tr>
+<td>Capteur de température FYTA</td>
+<td>Importe la température d’un capteur plante FYTA après configuration FYTA.</td>
+</tr>
+<tr>
+<td>Capteur d’humidité Gardena</td>
+<td>Importe l’humidité du sol d’un capteur smart Gardena via l’API cloud Gardena.</td>
+</tr>
+<tr>
+<td>Capteur de température Gardena</td>
+<td>Importe la température d’un capteur smart Gardena via l’API cloud Gardena.</td>
+</tr>
+<tr>
+<td>Abonnement MQTT</td>
+<td>S’abonne à un topic MQTT et analyse la valeur reçue. Configurez topic, filtre JSON/texte optionnel, unité et comportement en cas de timeout.</td>
+</tr>
+<tr>
+<td>Capteur OpenSprinkler distant</td>
+<td>Lit un capteur depuis un autre contrôleur OpenSprinkler. Configurez l’URL/le contrôleur distant et le numéro du capteur source.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="donnees-meteo">Données météo</h3>
+<p>Les capteurs météo exposent les valeurs déjà connues par le contrôleur via le service météo configuré. Choisissez le type d’unité correspondant à vos règles et graphiques.</p>
+<table>
+<thead>
+<tr>
+<th>Type de capteur</th>
+<th>Explication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Données météo - température (°F)</td>
+<td>Température du service météo en degrés Fahrenheit.</td>
+</tr>
+<tr>
+<td>Données météo - température (°C)</td>
+<td>Température du service météo en degrés Celsius.</td>
+</tr>
+<tr>
+<td>Données météo - humidité (%)</td>
+<td>Humidité relative du service météo en pourcentage.</td>
+</tr>
+<tr>
+<td>Données météo - précipitations (inch)</td>
+<td>Précipitations du service météo en pouces.</td>
+</tr>
+<tr>
+<td>Données météo - précipitations (mm)</td>
+<td>Précipitations du service météo en millimètres.</td>
+</tr>
+<tr>
+<td>Données météo - vent (mph)</td>
+<td>Vitesse du vent en miles par heure.</td>
+</tr>
+<tr>
+<td>Données météo - vent (kmh)</td>
+<td>Vitesse du vent en kilomètres par heure.</td>
+</tr>
+<tr>
+<td>Données météo - ETO</td>
+<td>Évapotranspiration de référence utilisée comme contexte d’arrosage.</td>
+</tr>
+<tr>
+<td>Données météo - rayonnement</td>
+<td>Rayonnement solaire de la source météo, si disponible.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="capteurs-de-groupe">Capteurs de groupe</h3>
+<p>Les groupes créent une valeur agrégée à partir d’autres capteurs. Choisissez des sources avec unités et intervalles comparables pour obtenir un résultat utile.</p>
+<table>
+<thead>
+<tr>
+<th>Type de capteur</th>
+<th>Explication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Groupe de capteurs avec valeur min</td>
+<td>Retourne la plus petite valeur actuelle parmi les sources sélectionnées.</td>
+</tr>
+<tr>
+<td>Groupe de capteurs avec valeur max</td>
+<td>Retourne la plus grande valeur actuelle parmi les sources sélectionnées.</td>
+</tr>
+<tr>
+<td>Groupe de capteurs avec valeur moyenne</td>
+<td>Retourne la moyenne arithmétique des sources sélectionnées.</td>
+</tr>
+<tr>
+<td>Groupe de capteurs avec valeur somme</td>
+<td>Retourne la somme des sources sélectionnées, par exemple pluie cumulée ou valeurs de type débit.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="diagnostics">Diagnostics</h3>
+<p>Les capteurs de diagnostic rendent l’état du contrôleur disponible dans le même système de graphiques et monitors que les capteurs environnementaux.</p>
+<table>
+<thead>
+<tr>
+<th>Type de capteur</th>
+<th>Explication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mémoire libre</td>
+<td>Indique la RAM actuellement libre. Des monitors peuvent détecter pression mémoire ou fuites lors de tests longs.</td>
+</tr>
+<tr>
+<td>Stockage libre</td>
+<td>Indique l’espace de stockage restant lorsque la plateforme le prend en charge. Utile avant que logs ou configuration ne remplissent le système de fichiers.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="ajustements-de-programme">Ajustements de programme</h2>
+<p>Les <strong>Program Adjustments</strong> adaptent la durée d’arrosage d’un programme à partir d’une valeur capteur. Exemples typiques : réduire l’arrosage quand le sol est humide ou l’augmenter quand la température est élevée.</p>
+<p><img alt="Program Adjustments" class="mobile-screenshot" src="../assets/screenshots/pro/fr/analog-program-adjustments.png" /></p>
+<p><img alt="Nouvel ajustement" class="mobile-screenshot" src="../assets/screenshots/pro/fr/analog-program-adjustment-editor.png" /></p>
+<h3 id="modele-dajustement">Modèle d’ajustement</h3>
+<p>Chaque ajustement relie un capteur à un programme d’arrosage et calcule un modificateur en pourcentage. Activez d’abord la journalisation du capteur et vérifiez sa plage avant d’influencer l’arrosage réel.</p>
+<h3 id="types-dajustement">Types d’ajustement</h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Usage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LINEAR</code></td>
+<td>Échelle continue entre deux points bas et haut configurés.</td>
+</tr>
+<tr>
+<td><code>DIGITAL_MIN</code></td>
+<td>Déclenche une réduction ou coupure binaire quand le capteur est sous un seuil.</td>
+</tr>
+<tr>
+<td><code>DIGITAL_MAX</code></td>
+<td>Déclenche une réduction ou coupure binaire quand le capteur est au-dessus d’un seuil.</td>
+</tr>
+<tr>
+<td><code>DIGITAL_MINMAX</code></td>
+<td>Applique un comportement binaire à l’intérieur ou à l’extérieur d’une plage.</td>
+</tr>
+</tbody>
+</table>
+<p>Voir <a href="../sensor-automation-fr/#ajustements-de-programme">Automatisation capteurs et monitors</a> pour le modèle fonctionnel et <a href="../pro-api-endpoints/">addendum API</a> pour l’automatisation REST/MCP.</p>
+<h2 id="monitors-et-alertes-locales">Monitors et alertes locales</h2>
+<p><strong>Monitoring and Control</strong> crée des règles de seuil et de logique à partir des capteurs. Les monitors peuvent générer des avertissements locaux, alimenter les notifications et combiner des conditions comme « sol sec » et « créneau du matin ».</p>
+<p><img alt="Monitoring and Control" class="mobile-screenshot" src="../assets/screenshots/pro/fr/monitors.png" /></p>
+<p><img alt="Nouveau monitor" class="mobile-screenshot" src="../assets/screenshots/pro/fr/analog-monitor-editor.png" /></p>
+<h3 id="structure-des-regles">Structure des règles</h3>
+<p>Une règle choisit un capteur, le compare à un seuil ou état, puis définit l’action lorsque la condition est vraie. Des noms clairs rendent les alertes compréhensibles.</p>
+<h3 id="logique-et-fenetres-horaires">Logique et fenêtres horaires</h3>
+<p>Les types de monitors couvrent seuils, règles pluie/sol numériques, combinaisons logiques, fenêtres horaires et états de monitors distants. Voir <a href="../sensor-automation-fr/#monitors">Automatisation capteurs et monitors</a>.</p>
+<h2 id="graphiques-et-donnees-capteur">Graphiques et données capteur</h2>
+<p><strong>Sensor Chart</strong> affiche les valeurs journalisées. Utilisez-le pour vérifier la plausibilité des mesures avant les ajustements ou monitors. L’UI peut aussi télécharger les logs ou ouvrir la table de données.</p>
+<p><img alt="Sensor Chart" class="mobile-screenshot" src="../assets/screenshots/pro/fr/analog-sensor-chart.png" /></p>
+<h3 id="lire-les-graphiques">Lire les graphiques</h3>
+<p>Cherchez échantillons manquants, pics inattendus et erreurs d’unité. Comparez les capteurs liés du même groupe avant toute décision automatique.</p>
+<h3 id="telecharger-les-donnees">Télécharger les données</h3>
+<p>Les données journalisées peuvent être téléchargées ou consultées en tableau. C’est utile pour l’étalonnage, le diagnostic et le partage de traces.</p>
+<h2 id="configuration-fyta">Configuration FYTA</h2>
+<p><strong>FYTA Setup</strong> stocke le jeton API ou les identifiants FYTA et mappe les capteurs de plantes vers OpenSprinkler. Voir <a href="../fyta-sensors/">Capteurs FYTA</a>.</p>
+<p><img alt="FYTA Setup" class="mobile-screenshot" src="../assets/screenshots/pro/fr/fyta-setup.png" /></p>
+<p><img alt="Identifiants FYTA" class="mobile-screenshot" src="../assets/screenshots/pro/fr/analog-fyta-credentials.png" /></p>
+<h3 id="identifiants">Identifiants</h3>
+<p>Saisissez le jeton API ou les identifiants requis par votre firmware. Gardez-les privés et mettez-les à jour si l’accès FYTA change.</p>
+<h3 id="association-des-plantes">Association des plantes</h3>
+<p>Après authentification, associez humidité et température FYTA à des capteurs OpenSprinkler pour les afficher, surveiller et utiliser dans les ajustements.</p>
+<h2 id="sauvegarde-et-restauration">Sauvegarde et restauration</h2>
+<p><strong>Backup and Restore</strong> exporte ou restaure configuration capteurs, ajustements de programme et monitors séparément de la sauvegarde générale.</p>
+<p><img alt="Backup and Restore" class="mobile-screenshot" src="../assets/screenshots/pro/fr/analog-backup-restore.png" /></p>
+<h3 id="contenu-inclus">Contenu inclus</h3>
+<p>Les sauvegardes incluent définitions de capteurs, règles d’ajustement et règles de monitor. Elles ne remplacent pas une sauvegarde complète du contrôleur pour les autres réglages.</p>
+<h3 id="restauration-sure">Restauration sûre</h3>
+<p>Exportez une sauvegarde avant de modifier de nombreux capteurs, restaurez seulement des fichiers de confiance et vérifiez les valeurs après restauration avant de réactiver les automatismes.</p>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/CHANGELOG/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Changelog - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Changelog";
+        var mkdocs_page_input_path = "CHANGELOG.md";
+        var mkdocs_page_url = "/CHANGELOG/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Changelog</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/CHANGELOG.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="changelog">Changelog</h1>
+<p>All notable changes are documented here, grouped by release version.</p>
+<hr />
+<h2 id="240-build-208-2026-06-03">2.4.0 (Build 208) — 2026-06-03</h2>
+<h3 id="zigbee-gateway-stationssteuerung">Zigbee-Gateway &amp; Stationssteuerung</h3>
+<ul>
+<li><strong>Zigbee Stationssteuerung &amp; Status-Routing</strong>: Fehler beim physischen Schließen von Ventilen und falsche Statusanzeigen (rot/graue Fehler-Badge-Sequenz) beim Tuya GX02 Smart Water Valve und anderen benutzerdefinierten DP-Geräten behoben. Stationssteuerungs-Konfigurationen priorisieren nun die vollständige logische Gerätedefinition. Übergangsweise greift eine Fallback-Logik auf den primären Steuerungs-DP (<code>tuya_dp_value</code>) zurück, falls die Status-DP-ID fehlt oder negativ ist.</li>
+<li><strong>Globales Zigbee Batterie-Routing</strong>: Fehlende Batterieprozentanzeigen bei Multi-Sensor-Zigbee- und Tuya-Systemen (wie dem GX02 Ventil, wenn nur der Temperatursensor registriert ist) wiederhergestellt. Akku-Berichte über DP 108 oder ZCL Power Configuration werden nun sofort auf alle aktiven virtuellen und logischen Sensoren übertragen, die dieselbe IEEE-Adresse teilen.</li>
+</ul>
+<hr />
+<h2 id="240-build-207-2026-06-02">2.4.0 (Build 207) — 2026-06-02</h2>
+<h3 id="sensoren-ui-funktionen">Sensoren &amp; UI-Funktionen</h3>
+<ul>
+<li><strong>Präzisions-Durchflussmesser</strong>: Unterstützung von bis zu 5 Nachkommastellen für die genaue Erfassung von Mikrotropfsystemen in Verläufen, Übersichten und Raten hinzugefügt. (Ticket #205)</li>
+<li><strong>Zimmerman Boot-Sicherung</strong>: Bei Timeout oder Fehler der Wetterdaten beim Booten wird nun auf das monatliche Budget-Baseline-Modell ausgewichen, statt standardmäßig auf 100% zu setzen. (Ticket #207)</li>
+<li><strong>Problem "NICHT" Speichern im Logik-Monitor</strong>: Überlappende jQuery-Mobile-Modalen im Safari- und Firefox-Browser behoben, sodass der Zustand "NOT" (NICHT) korrekt gespeichert wird. (Ticket #215)</li>
+<li><strong>Zimmerman Anpassungs-Grenzen</strong>: Erhöhung der Eingabegrenzen für benutzerdefinierte Terrassen auf bis zu 250% (vorher 100%). (Ticket #207)</li>
+<li><strong>Virtuelle Sensor-Offsets</strong>: Verfälschungen bei Zeitzonen mit Minutenversatz in <code>getTimezoneOffsetOS()</code> behoben, was verschobene Messpunkte verhinderte und Logs vor ungültigen Zeiten vor der NTP-Synchronisierung schützt. (Tickets #212, #214)</li>
+</ul>
+<hr />
+<h2 id="240-build-204-2026-06-01">2.4.0 (Build 204) — 2026-06-01</h2>
+<h3 id="zigbee-logische-gerate">Zigbee logische Geräte</h3>
+<ul>
+<li><strong>Logische Zigbee-Geräte</strong>: Entkopplung der Zigbee-Sensorkonfiguration von rohen Clustern/Attribute/DP-Parametern durch eine übergeordnete logische Geräte-Abstraktion (Logical Devices). Sensoren verweisen nun per IEEE-Adresse + logischem Namen auf Geräte, was Multi-Auslass-Geräte (z.B. Ventile wie das Tuya GX03 mit mehreren Ausgängen) als unabhängige Sensoren ermöglicht.</li>
+<li><strong>Sensor-Migration</strong>: Automatisches Boot-Upgrade alter Sensoren mit alten Direktparametern in das neue Logical-Devices-Format für reibungslose Upgrades.</li>
+</ul>
+<hr />
+<h2 id="240-build-202-2026-05-25">2.4.0 (Build 202) — 2026-05-25</h2>
+<h3 id="gardena-api-zonen-steuerung">Gardena API &amp; Zonen-Steuerung</h3>
+<ul>
+<li><strong>Gardena Cloud API Integration (nur ESP32)</strong>: Unterstützung für das Gardena Smart Gateway zur Remote-Ventilkoordination über die offizielle Gardena Cloud-API. Gardena Bodenfeuchte- und Temperatursensoren sind nun vollständig in der UI integriert.</li>
+<li><strong>Direkte Zigbee &amp; Tuya Zonen-Steuerung</strong>: Native Steuerung von drahtlosen Ventilen, Schaltern und Relais über Zigbee- und Matter-Netzwerke direkt in der Firmware.</li>
+<li><strong>Spezielle Stationssymbole</strong>: Vektorgrafik-Badges im Dashboard für Modbus/RS485, Zigbee und Gardena Zonen bleiben persistent sichtbar.</li>
+<li><strong>Gardena OAuth-Assistent</strong>: Ein vollständig lokalisierter Assistent in den Analogsensor-Optionen hilft bei der Einrichtung der API-Credentials über einen OAuth 2.0 Login.</li>
+</ul>
+<hr />
+<h2 id="240-build-200-2026-05-19">2.4.0 (Build 200) — 2026-05-19</h2>
+<h3 id="optimierungen-und-diagnostics">Optimierungen und Diagnostics</h3>
+<ul>
+<li><strong>Live-Monitor über MCP</strong>: Neuer API-Befehl <code>get_monitor_log</code> integriert, über den die Live-Konsolen-Logs des Zigbee/Matter-Subsystems direkt im MCP-Server für KI-Assistenten abgefragt werden können.</li>
+<li><strong>Veraltete Sensoren</strong>: Implementierung von Fallback-Richtlinien für abgelaufene Sensorwerte (Stale Sensors), damit diese die automatische Programmanpassung nicht dauerhaft blockieren oder verfälschen.</li>
+<li><strong>Impuls-Durchflussmesser</strong>: Pulse-basierte Wassermengenprotokollierung und -einheiten hinzugefügt.</li>
+</ul>
+<hr />
+<h2 id="240-build-196-2026-04-17">2.4.0 (Build 196) — 2026-04-17</h2>
+<h3 id="ventilstrommessung-esp32-c5">Ventilstrommessung (ESP32-C5)</h3>
+<ul>
+<li><strong>Dynamische Strommessung</strong>: Laufende Messung des Ruhestroms des Systems und automatische Subtraktion, um im Betrieb exakt den reinen Ventilstrom in mA anzuzeigen.</li>
+<li><strong>API Felder <code>vcurr</code> und <code>blcurr</code></strong>: Bereitstellung von Ventilstrom und Ruhestrom über <code>/jc</code> für detailgenaue Diagnosen.</li>
+<li><strong>Effektive Signalglättung</strong>: Abtastung von 20 ADC-Messungen über eine volle 50Hz-Wechselstromwelle (20 ms) zur Beseitigung von Phasenrauschen. Zwei-Stufen-EMA-Dämpfung sorgt für stabilisierte Anzeigen.</li>
+</ul>
+<hr />
+<h2 id="240-build-194-2026-04-06">2.4.0 (Build 194) — 2026-04-06</h2>
+<h3 id="programmier-speicher-tuning">Programmier- &amp; Speicher-Tuning</h3>
+<ul>
+<li><strong>Inverses Gruppen-Scheduling</strong>: Neuer logischer Gruppenmodus: Stationen derselben Gruppe können parallel laufen, während verschiedene Gruppen nacheinander schalten (Gruppe P bleibt sequentiell).</li>
+<li><strong>Steuerung über MCP per Name</strong>: Direkter Start von Programmen und Zonen per Klartextname via MCP/Sprachassistenten.</li>
+</ul>
+<hr />
+<h2 id="240-build-186-2026-03-15">2.4.0 (Build 186) — 2026-03-15</h2>
+<h3 id="firmware-binaries">Firmware-Binaries</h3>
+<ul>
+<li><code>firmware_zigbee.bin</code> — ESP32-C5 ZigBee + BLE Variante</li>
+<li><code>firmware_matter.bin</code> — ESP32-C5 Matter + BLE Variante</li>
+<li><code>firmware_esp8266.bin</code> — ESP8266 (OS 3.x)</li>
+</ul>
+<hr />
+<h3 id="neue-features">Neue Features</h3>
+<h4 id="matter-chip-protokoll">Matter (CHIP) Protokoll</h4>
+<ul>
+<li>Vollständige Matter-Protokoll-Unterstützung für ESP32-C5 hinzugefügt.</li>
+<li>Commissioning-Fenster-Steuerung und QR-Code-Ausgabe implementiert.</li>
+<li>Matter Pairing-Informationen werden per JSON-API bereitgestellt.</li>
+</ul>
+<h4 id="zigbee-gateway-modus">ZigBee Gateway-Modus</h4>
+<ul>
+<li>Neue API für die Konfiguration des IEEE 802.15.4-Radios: Laufzeit-Umschaltung zwischen Matter- und ZigBee-Modus.</li>
+<li>ZigBee Gateway-Modus für ESP32-C5: Devices joinen, verwalten und abfragen.</li>
+<li>Konfigurationspersistenz im LittleFS im JSON-Format.</li>
+<li>Neue Endpoints: Radio-Modus lesen/setzen, ZigBee-Netzwerk joinen, Geräte im Gateway-Modus verwalten.</li>
+</ul>
+<h4 id="zigbee-client-modus-lokale-datenpunkte">ZigBee Client-Modus — Lokale Datenpunkte</h4>
+<ul>
+<li>OpenSprinkler meldet eigene Sensordaten, Zonen, Programme und Regensensorstatus an einen ZigBee-Coordinator.</li>
+<li>ZCL-Endpoints für Temperatur, Feuchte, Durchfluss, Analogsensoren, Zonen, Programme und Regensensoren.</li>
+<li>Periodische Synchronisierung der Sensorwerte und Zonenzustände mit dem ZigBee-Coordinator.</li>
+</ul>
+<h4 id="online-ota-firmware-updates">Online OTA Firmware-Updates</h4>
+<ul>
+<li>Online-Update-Verwaltung in <code>online_update.cpp</code> / <code>online_update.h</code>.</li>
+<li>Manifest-Prüfung: automatische Erkennung verfügbarer Firmware-Versionen.</li>
+<li>Neue Endpoints zum Abfragen des Update-Status, Starten eines Updates und Abrufen von Backup-Daten.</li>
+</ul>
+<h4 id="mcp-server">MCP Server</h4>
+<ul>
+<li>OpenSprinkler MCP-Server unter <code>tools/mcp-server/</code> implementiert.</li>
+<li>Stellt die gesamte OpenSprinkler REST-API als MCP-Tools für KI-Assistenten (z. B. GitHub Copilot) bereit.</li>
+<li>Unterstützte Tools: <code>get_all</code>, <code>get_debug</code>, <code>get_sensors</code>, <code>get_zigbee_devices</code>, <code>get_ble_devices</code>, <code>get_system_resources</code>, <code>get_station_status</code>, <code>get_options</code> und weitere.</li>
+</ul>
+<hr />
+<h3 id="ble-zigbee-koexistenz">BLE &amp; ZigBee Koexistenz</h3>
+<h4 id="radio-coexistence-manager">Radio Coexistence Manager</h4>
+<ul>
+<li>Neues Modul <code>radio_coex.h</code> / <code>radio_arbiter</code> für WiFi/ZigBee/BLE-Koexistenz auf ESP32-C5.</li>
+<li>Radio-Arbiter für priorisierte Steuerung: Web-Traffic hat Vorrang, periodische BLE-Scans werden parallel ermöglicht.</li>
+<li>ZigBee wird während BLE-Scans in niedrigerer Priorität betrieben (<code>sensor_zigbee_pause</code> / <code>sensor_zigbee_resume</code>).</li>
+<li>Frühzeitige Initialisierung von BLE und ZigBee in <code>sensors.cpp</code>, um korrekte Ressourcen-Allokation sicherzustellen.</li>
+</ul>
+<h4 id="zigbee-device-info-anreicherung">ZigBee Device Info Anreicherung</h4>
+<ul>
+<li>Hersteller- und Modellinformationen werden aus gespeicherten Sensordaten in <code>ZigbeeDeviceInfo</code> übernommen.</li>
+<li>Basic Cluster (ZCL): <code>ManufacturerName</code> und <code>ModelIdentifier</code> werden für ZigBee-Geräte abgefragt und persistiert.</li>
+<li>Vendor API-Lookups für bekannte ZigBee-Sensorhersteller implementiert.</li>
+<li>Profil-Hinting für Tuya-Geräte hinzugefügt.</li>
+</ul>
+<h4 id="ble-verbesserungen">BLE Verbesserungen</h4>
+<ul>
+<li><code>BLEDeviceInfo</code> erweitert um Geräteinformations-Service (DIS)-Felder (Hersteller, Modell).</li>
+<li><code>adv_data_pending_push</code>-Flag für Management von Advertisement-Data-Pushes.</li>
+<li>Thread-sicherer Zugriff auf <code>discovered_ble_devices</code> mittels Mutex in <code>sensor_ble.cpp</code>.</li>
+<li>Batteriestatus-Initialisierung auf <code>UINT32_MAX</code> für noch nicht gemessene Werte.</li>
+</ul>
+<hr />
+<h3 id="sensoren-sensor-api">Sensoren &amp; Sensor-API</h3>
+<h4 id="verbesserungen">Verbesserungen</h4>
+<ul>
+<li>Neue Scratch-Tests für ADS1115 und SC16IS752 zur zuverlässigeren Sensor-Erkennung.</li>
+<li><code>detect_asb_board</code>-Funktion auf neue Erkennungsmethoden für ADS1115 aktualisiert.</li>
+<li>I2C-Erkennungslogik für ADS1115 angepasst, um falsche Negative auf ESP8266 zu vermeiden.</li>
+<li>Sensor-Unit-ID-Mapping überarbeitet; neue Einheit „Liter" hinzugefügt; maximale Anzahl der Sensor-Einheitsnamen erhöht.</li>
+<li>Internen Sensor-Daten-Handler verbessert: <code>data_ok</code>-Flag wird auch gesetzt, wenn Daten unverändert bleiben.</li>
+</ul>
+<h4 id="tuya-protokoll">Tuya Protokoll</h4>
+<ul>
+<li>Tuya-spezifisches ZigBee-Protokoll implementiert: DP-Reports werden verarbeitet und auf Standardattribute gemappt.</li>
+<li>Verbesserte Gateway-Logik für Geräteanmeldungen und Basic-Cluster-Abfragen.</li>
+</ul>
+<h4 id="mqtt-deferred-push-koordination">MQTT Deferred Push &amp; Koordination</h4>
+<ul>
+<li>MQTT-Nachrichten werden bei Netzwerkausfall in einer Warteschlange gepuffert und nach Verbindungswiederherstellung gesendet.</li>
+<li>MQTT-Start wird während ZigBee-Join-Mode oder ZigBee-Lock übersprungen, um Interferenzen zu vermeiden.</li>
+<li>Verbesserte ZigBee-Sensor-Reportlogik mit Boost-Management und Join-Mode-Berücksichtigung.</li>
+</ul>
+<hr />
+<h3 id="web-api-http-server">Web-API / HTTP-Server</h3>
+<h4 id="neuer-endpoint-monatlicher-wasserverbrauch-jw">Neuer Endpoint: Monatlicher Wasserverbrauch (<code>/jw</code>)</h4>
+<ul>
+<li>Gibt monatliche Wasserverbrauchsdaten zurück, inkl. Pulzrate und aktuellen Durchfluss-Aufzeichnungen.</li>
+<li><code>server_json_matter</code> und <code>server_zigbee_status</code> enthalten nun Sensor-Status für SN1/SN2 und Wetterdaten.</li>
+</ul>
+<h4 id="matter-pairing">Matter Pairing</h4>
+<ul>
+<li>JSON-Ausgabe für Matter Pairing-Informationen (QR-Code und manueller Pairing-Code) über die API verfügbar.</li>
+</ul>
+<hr />
+<h3 id="esp32-c5-speicher-optimierungen">ESP32-C5 Speicher-Optimierungen</h3>
+<h4 id="psram">PSRAM</h4>
+<ul>
+<li>PSRAM-Analyse-Utilities eingeführt (<code>psram_debug.cpp</code>, <code>analyze_psram.py</code>).</li>
+<li>UI-Animationsarray und Reboot-Ticker nutzen <code>EXT_RAM_BSS_ATTR</code> für bessere Speicherverwaltung.</li>
+</ul>
+<h4 id="tls-13">TLS 1.3</h4>
+<ul>
+<li>TLS 1.3 aktiviert; ältere Protokolle (TLS 1.2, DTLS) deaktiviert.</li>
+<li>Hardware-Beschleunigung für AES, SHA, ECC und MPI konfiguriert.</li>
+<li>Nur notwendige ECC-Kurven und kryptographische Algorithmen für TLS 1.3 beibehalten.</li>
+</ul>
+<h4 id="aes-software-fallback">AES Software-Fallback</h4>
+<ul>
+<li><code>aes_sw_fallback.cpp</code>: AES-Software-Fallback-Wrapper für Situationen mit niedrigem internem RAM.</li>
+<li>Eigene mbedTLS-Memory-Allocatoren nutzen SPIRAM, wenn interner RAM erschöpft ist.</li>
+<li>Pre-Build-Skript <code>pre_build_sdkconfig.py</code> zur automatischen sdkconfig-Optimierung.</li>
+</ul>
+<hr />
+<h3 id="bugfixes">Bugfixes</h3>
+<table>
+<thead>
+<tr>
+<th>Bereich</th>
+<th>Beschreibung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Netzwerk</td>
+<td>WiFi-State-Machine: Unmögliche STA-Bedingung im AP-Modus-Zweig entfernt; verhinderte korrekte Reconnect-Logik (IP <code>0.0.0.0</code> nach Verbindungsabbruch).</td>
+</tr>
+<tr>
+<td>Sensoren</td>
+<td>Legacy-Binär-Ladelogik für Sensoren entfernt; beschädigte Sensor-Dateien werden beim Laden umbenannt statt abgestürzt.</td>
+</tr>
+<tr>
+<td>ESP8266</td>
+<td>Pin-Definitionen für ESP8266 in <code>defines.cpp</code> / <code>defines.h</code> ergänzt.</td>
+</tr>
+<tr>
+<td>Zigbee</td>
+<td>Nicht unterstützte Sensortypen werden beim Laden korrekt behandelt; Roh-JSON-Daten werden beibehalten.</td>
+</tr>
+<tr>
+<td>Build</td>
+<td><code>platformio.ini</code> Upload-Befehle und Konfigurationen korrigiert.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="bekannte-einschrankungen">Bekannte Einschränkungen</h3>
+<ul>
+<li>Die ZigBee- und Matter-Varianten können auf ESP32-C5 nicht gleichzeitig aktiv sein; der Radio-Modus muss per API umgeschaltet werden.</li>
+<li>Online-Updates erfordern eine aktive Internetverbindung und ein erreichbares Update-Manifest.</li>
+</ul>
+<hr />
+<h2 id="altere-versionen">Ältere Versionen</h2>
+<p>Für Changelogs älterer Versionen (2.3.x und früher) siehe <a href="../archive/"><code>archive.md</code></a> bzw. die <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/releases">GitHub Releases-Seite</a>.</p>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://opensprinklershop.github.io/analog-sensor-config-pt/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Configuração de Sensor Analógico - OpenSprinkler Shop Documentation</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Configura\u00e7\u00e3o de Sensor Anal\u00f3gico";
+        var mkdocs_page_input_path = "analog-sensor-config-pt.md";
+        var mkdocs_page_url = "/analog-sensor-config-pt/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> OpenSprinkler Shop Documentation
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Base Manual v2.2.1(4)</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_manual/">User Manual</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../2.2.1/221_4_api/">API Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">OpenSprinklerPro Extensions</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../opensprinklerpro/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../analog-sensor-config/">Analog Sensor Config</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pro-api-endpoints/">API and platform addendum</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">MCP and AI</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../mcp-server/">MCP Server</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ai-programming/">AI Program Creation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../sensor-automation/">Sensor Automation</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../rainmaker-provisioning/">RainMaker Provisioning</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../fyta-sensors/">FYTA Sensors</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../troubleshooting/">Troubleshooting</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Archived</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../archive/">Previous Manuals and API docs</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../faq/">FAQ</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">OpenSprinkler Shop Documentation</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Configuração de Sensor Analógico</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware/edit/master/docs/analog-sensor-config-pt.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="configuracao-de-sensor-analogico">Configuração de Sensor Analógico</h1>
+<p>A <strong>Configuração de Sensor Analógico</strong> é a área da interface do OpenSprinklerPro para definir fontes de sensores e usar seus valores na automação da irrigação. Abra a partir do menu inferior em <strong>Analog Sensor Configuration</strong>.</p>
+<p><img alt="Configuração de Sensor Analógico" class="mobile-screenshot" src="../assets/screenshots/pro/en/sensor-config.png" /></p>
+<p>Páginas relacionadas: <a href="../sensor-automation-pt/">Automação e Monitores de Sensores</a>, <a href="../fyta-sensors-pt/">Sensores FYTA</a>, <a href="../opensprinklerpro_pt/#monitors-and-local-alerts">Extensões OpenSprinklerPro</a>, <a href="../pro-api-endpoints-pt/">Adendo de API e plataforma</a>.</p>
+<h2 id="definicoes-de-sensores">Definições de sensores</h2>
+<p>A primeira seção define a lista de sensores. Cada linha possui um número de sensor, nome, valor atual e estado de ativação. <strong>Add Sensor</strong> abre o editor para um novo sensor; os sensores existentes são editados tocando no nome do sensor.</p>
+<p><img alt="Novo Sensor" class="mobile-screenshot" src="../assets/screenshots/pro/en/analog-sensor-editor.png" /></p>
+<h3 id="campos-do-editor">Campos do Editor</h3>
+<table>
+<thead>
+<tr>
+<th>Campo</th>
+<th>Significado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Número, nome e grupo</td>
+<td>Identificam o sensor em listas, gráficos, ajustes de programa e monitores. Os grupos são rótulos para classificar e filtrar sensores relacionados.</td>
+</tr>
+<tr>
+<td>Tipo</td>
+<td>Seleciona o driver ou fonte virtual. O tipo determina quais campos adicionais aparecem.</td>
+</tr>
+<tr>
+<td>Unidade e formato</td>
+<td>Define como os valores são exibidos, registrados e comparados. Escolha uma unidade compatível com o valor físico ou a carga de dados.</td>
+</tr>
+<tr>
+<td>Intervalo, log e exibição</td>
+<td>O intervalo controla a frequência com que o valor é atualizado. O Log ativa o armazenamento de histórico/gráfico; show controla a visibilidade no painel da interface de usuário.</td>
+</tr>
+<tr>
+<td>Barramento, endereço e canal</td>
+<td>Usado por fontes analógicas RS485/Modbus, ASB e OSPi para selecionar o barramento de hardware, endereço do dispositivo ou canal analógico.</td>
+</tr>
+<tr>
+<td>Calibração definida pelo usuário</td>
+<td>Para sensores analógicos definidos pelo usuário, insira a fórmula de conversão de tensão bruta/ADC para o valor físico final.</td>
+</tr>
+<tr>
+<td>Tópico MQTT e filtro</td>
+<td>Os sensores MQTT assinam um tópico e, opcionalmente, extraem um valor de um JSON ou carga de texto.</td>
+</tr>
+<tr>
+<td>Lista de sensores de origem</td>
+<td>Os sensores de grupo calculam um novo valor a partir dos sensores de origem selecionados. Todas as origens devem usar unidades compatíveis.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="rs485-modbus">RS485 / Modbus</h3>
+<p>Use estes tipos para sensores com fio em um barramento RS485 ou um dispositivo Modbus RTU genérico. Configure o barramento, endereço escravo, registro/canal e intervalo de leitura de acordo com o dispositivo conectado.</p>
+<table>
+<thead>
+<tr>
+<th>Tipo de sensor</th>
+<th>Explicação</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Truebner SMT100 RS485 Modbus, modo umidade</td>
+<td>Lê o valor da umidade do solo de um Truebner SMT100 via RS485/Modbus. Use para decisões de irrigação baseadas no teor volumétrico de água.</td>
+</tr>
+<tr>
+<td>Truebner SMT100 RS485 Modbus, modo temperatura</td>
+<td>Lê o canal de temperatura do SMT100. Use quando a temperatura do solo deve ser registrada ou usada em regras de monitoramento.</td>
+</tr>
+<tr>
+<td>Truebner SMT100 RS485 Modbus, modo permissividade</td>
+<td>Lê o canal de permissividade dielétrica do SMT100 para diagnósticos ou modelos de solo avançados.</td>
+</tr>
+<tr>
+<td>Truebner TH100 RS485 Modbus, modo umidade</td>
+<td>Lê a umidade relativa de um Truebner TH100. Útil para monitoramento em estufas ou umidade ambiente.</td>
+</tr>
+<tr>
+<td>Truebner TH100 RS485 Modbus, modo temperatura</td>
+<td>Lê o valor de temperatura do TH100 para monitoramento da temperatura ambiente ou da área de instalação.</td>
+</tr>
+<tr>
+<td>Sensor genérico RS485/MODBUS RTU</td>
+<td>Lê um valor Modbus RTU configurável de equipamentos de terceiros. Defina o endereço, registro, formato de dados e calibração para corresponder ao manual do dispositivo.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="analog-sensor-board-asb">Analog Sensor Board (ASB)</h3>
+<p>Os tipos ASB lêem entradas de tensão da placa de sensor analógio do OpenSprinkler e as convertem em um valor físico. Selecione o canal correto e use apenas modos de sensor compatíveis com a fiação e a tensão de alimentação.</p>
+<table>
+<thead>
+<tr>
+<th>Tipo de sensor</th>
+<th>Explicação</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ASB - modo tensão 0..5V</td>
+<td>Relata a tensão de entrada medida na ASB diretamente na faixa de 0 a 5 V. Use para calibração ou sensores externos com sua própria conversão.</td>
+</tr>
+<tr>
+<td>ASB - 0..3.3V para 0..100%</td>
+<td>Converte uma tensão de entrada de 0 a 3,3 V em uma porcentagem. Útil para sinais analógicos genéricos de nível ou umidade.</td>
+</tr>
+<tr>
+<td>ASB - SMT50 modo umidade</td>
+<td>Converte a saída analógica de um Truebner SMT50 em umidade do solo.</td>
+</tr>
+<tr>
+<td>ASB - SMT50 modo temperatura</td>
+<td>Converte a saída de temperatura do SMT50 em um valor de temperatura física.</td>
+</tr>
+<tr>
+<td>ASB - SMT100-analog modo umidade</td>
+<td>Converte a saída analógica de umidade de um Truebner SMT100.</td>
+</tr>
+<tr>
+<td>ASB - SMT100-analog modo temperatura</td>
+<td>Converte a saída analógica de temperatura de um Truebner SMT100.</td>
+</tr>
+<tr>
+<td>ASB - Vegetronix VH400</td>
+<td>Converte a saída do Vegetronix VH400 em umidade do solo.</td>
+</tr>
+<tr>
+<td>ASB - Vegetronix THERM200</td>
+<td>Converte a saída do Vegetronix THERM200 em temperatura.</td>
+</tr>
+<tr>
+<td>ASB - Vegetronix AquaPlumb</td>
+<td>Converte a saída do Vegetronix AquaPlumb para presença de água ou medições estilo nível.</td>
+</tr>
+<tr>
+<td>ASB - sensor definido pelo usuário</td>
+<td>Usa calibração personalizada para sensores não cobertos por uma conversão embutida. Defina a unidade, o formato de exibição e a conversão cuidadosamente.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="entradas-analogicas-ospi">Entradas analógicas OSPi</h3>
+<p>Estes tipos são para entradas analógicas disponíveis em instalações baseadas em OSPi/Raspberry Pi. Eles não são usados em controladores apenas ESP sem o hardware de entrada analógica correspondente.</p>
+<table>
+<thead>
+<tr>
+<th>Tipo de sensor</th>
+<th>Explicação</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entrada analógica OSPi - modo tensão 0..3.3V</td>
+<td>Relata a tensão de entrada analógica medida diretamente na faixa de 0 a 3,3 V.</td>
+</tr>
+<tr>
+<td>Entrada analógica OSPi - 0..3.3V para 0..100%</td>
+<td>Converte uma entrada de 0 a 3,3 V em uma porcentagem para sensores analógicos genéricos.</td>
+</tr>
+<tr>
+<td>Entrada analógica OSPi - SMT50 modo umidade</td>
+<td>Converte uma saída de umidade SMT50 conectada a uma entrada analógica OSPi.</td>
+</tr>
+<tr>
+<td>Entrada analógica OSPi - SMT50 modo temperatura</td>
+<td>Converte uma saída de temperatura SMT50 conectada a uma entrada analógica OSPi.</td>
+</tr>
+<tr>
+<td>Temperatura interna do Raspberry Pi</td>
+<td>Lê a temperatura da CPU do Raspberry Pi. Use-o como um sensor de diagnóstico para gabinete OSPi ou verificações térmicas.</td>
+</tr>
+<tr>
+<td>Temperatura interna do ESP32</td>
+<td>Lê o sensor de temperatura interna do ESP32 onde for suportado. Trate-o como diagnóstico do controlador, e não como temperatura ambiente calibrada.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="fontes-sem-fio-na-nuvem-e-remotas">Fontes sem fio, na nuvem e remotas</h3>
+<p>Estes tipos recebem valores de integrações de rádio, serviços em nuvem, MQTT ou outro controlador OpenSprinkler. Confirme a disponibilidade da plataforma antes de selecioná-los: Zigbee e BLE requerem builds ESP32 compatíveis; FYTA requer credenciais de nuvem; MQTT requer uma configuração de corretor (broker).</p>
+<table>
+<thead>
+<tr>
+<th>Tipo de sensor</th>
+<th>Explicação</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sensor Zigbee</td>
+<td>Mapeia um valor relatado por um dispositivo Zigbee emparelhado, como temperatura, umidade ou umidade do solo. Selecione o dispositivo e a medição exposta.</td>
+</tr>
+<tr>
+<td>Sensor BLE</td>
+<td>Lê um sensor Bluetooth Low Energy compatível. Use o intervalo de varredura e a seleção do dispositivo para equilibrar a atualização e a carga de rádio.</td>
+</tr>
+<tr>
+<td>Sensor de umidade FYTA</td>
+<td>Importa a umidade do solo de um sensor de planta FYTA após a configuração do FYTA.</td>
+</tr>
+<tr>
+<td>Sensor de temperatura FYTA</td>
+<td>Importa a temperatura de um sensor de planta FYTA após a configuração do FYTA.</td>
+</tr>
+<tr>
+<td>Sensor de umidade Gardena</td>
+<td>Importa a umidade do solo de um sensor inteligente Gardena via API de nuvem da Gardena.</td>
+</tr>
+<tr>
+<td>Sensor de temperatura Gardena</td>
+<td>Importa a temperatura de um sensor inteligente Gardena via API de nuvem da Gardena.</td>
+</tr>
+<tr>
+<td>Assinatura MQTT</td>
+<td>Subscreve a um tópico MQTT e analisa o valor recebido. Configure o tópico, expressão JSON/filtro opcional, unidade e comportamento de timeout.</td>
+</tr>
+<tr>
+<td>Sensor OpenSprinkler remoto</td>
+<td>Lê um sensor de outro controlador OpenSprinkler. Configure a URL/controlador remoto e o número do sensor de origem.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dados-meteorologicos">Dados meteorológicos</h3>
+<p>Os sensores meteorológicos expõem valores já conhecidos pelo controlador a partir do serviço meteorológico configurado. Use o tipo específico da unidade que corresponda às suas regras de automação e gráficos.</p>
+<table>
+<thead>
+<tr>
+<th>Tipo de sensor</th>
+<th>Explicação</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dados climáticos - temperatura (°F)</td>
+<td>Temperatura do serviço meteorológico em graus Fahrenheit.</td>
+</tr>
+<tr>
+<td>Dados climáticos - temperatura (°C)</td>
+<td>Temperatura do serviço meteorológico em graus Celsius.</td>
+</tr>
+<tr>
+<td>Dados climáticos - umidade (%)</td>
+<td>Umidade relativa do serviço meteorológico em porcentagem.</td>
+</tr>
+<tr>
+<td>Dados climáticos - precip (inch)</td>
+<td>Precipitação do serviço meteorológico em polegadas.</td>
+</tr>
+<tr>
+<td>Dados climáticos - precip (mm)</td>
+<td>Precipitação do serviço meteorológico em milímetros.</td>
+</tr>
+<tr>
+<td>Dados climáticos - vento (mph)</td>
+<td>Velocidade do vento do serviço meteorológico em milhas por hora.</td>
+</tr>
+<tr>
+<td>Dados climáticos - vento (kmh)</td>
+<td>Velocidade do vento do serviço meteorológico em quilômetros por hora.</td>
+</tr>
+<tr>
+<td>Dados climáticos - ETO</td>
+<td>Valor de evapotranspiração de referência usado para o contexto de irrigação.</td>
+</tr>
+<tr>
+<td>Dados climáticos - radiação</td>
+<td>Valor de radiação solar da fonte meteorológica, quando disponível.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="grupo-de-sensores">Grupo de sensores</h3>
+<p>Os sensores de grupo criam um valor agregado a partir de outros sensores. Escolha sensores de origem com unidades e intervalos de registro comparáveis para que o resultado seja significativo.</p>
+<table>
+<thead>
+<tr>
+<th>Tipo de sensor</th>
+<th>Explicação</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Grupo de sensores com valor mínimo</td>
+<td>Relata o valor atual mais baixo entre os sensores de origem selecionados.</td>
+</tr>
+<tr>
+<td>Grupo de sensores com valor máximo</td>
+<td>Relata o valor atual mais alto entre os sensores de origem selecionados.</td>
+</tr>
+<tr>
+<td>Grupo de sensores com valor médio</td>
+<td>Relata a média aritmética dos sensores de origem selecionados.</td>
+</tr>
+<tr>
+<td>Grupo de sensores com valor de soma</td>
+<td>Relata a soma de sensores de origem selecionados, por exemplo, totais combinados de chuva ou fluxo.</td>
+</tr>
+</tbody>
+</table>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/opensprinklershop/OpenSprinkler-Firmware" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../custom.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
