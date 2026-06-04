@@ -5,9 +5,15 @@ This site contains documentation for OpenSprinkler firmware and the OpenSprinkle
 !!! info "OpenSprinklerShop firmware version"
     The OpenSprinklerShop firmware, including OpenSprinklerPro, uses its own firmware version numbering independent of the upstream OpenSprinkler firmware line. The current OpenSprinklerShop firmware version is **2.4.0(208)**.
 
-* User manual: [English](2.2.1/221_4_manual.md), [Deutsch](2.2.1/221_4_manual_de.md), [Français](2.2.1/221_4_manual_fr.md), [Italiano](2.2.1/221_4_manual_it.md).
-* OpenSprinklerPro extensions: [English](opensprinklerpro.md), [Deutsch](opensprinklerpro_de.md), [Français](opensprinklerpro_fr.md), [Italiano](opensprinklerpro_it.md).
-* Firmware release notes: [OpenSprinklerShop Firmware Releases](https://github.com/opensprinklershop/OpenSprinkler-Firmware/releases).
+!!! tip "Firmware Upgrades & Portal"
+    Firmware downloads, archives, changelogs, and upgrade guidelines are hosted at the [OpenSprinklerShop Upgrade Portal](https://opensprinklershop.de/upgrade).
+
+!!! note "Original Upstream Firmware"
+    The official, upstream OpenSprinkler open-source firmware and documentation can be found at: [https://opensprinkler.github.io/OpenSprinkler-Firmware](https://opensprinkler.github.io/OpenSprinkler-Firmware)
+
+* User manual: [English](2.2.1/221_4_manual.md), [Deutsch](2.2.1/221_4_manual_de.md), [Français](2.2.1/221_4_manual_fr.md), [Italiano](2.2.1/221_4_manual_it.md), [Português](2.2.1/221_4_manual_pt.md), [Magyar](2.2.1/221_4_manual_hu.md), [Polski](2.2.1/221_4_manual_pl.md).
+* OpenSprinklerPro extensions: [English](opensprinklerpro.md), [Deutsch](opensprinklerpro_de.md), [Français](opensprinklerpro_fr.md), [Italiano](opensprinklerpro_it.md), [Português](opensprinklerpro_pt.md), [Magyar](opensprinklerpro_hu.md), [Polski](opensprinklerpro_pl.md).
+* Firmware release notes: [OpenSprinklerShop Firmware Releases](https://opensprinklershop.de/upgrade/).
 
 <hr class="double">
 
