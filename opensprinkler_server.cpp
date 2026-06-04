@@ -6142,7 +6142,7 @@ static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 			bfill.emit_p(PSTR("{\"nr\":$D,\"name\":\"$S\",\"desc\":\"$S\",\"kind\":\"$S\",\"endpoint\":$D,"
 			                  "\"cluster_id\":$D,\"attribute_id\":$D,\"unit\":$D,"
 			                  "\"value_dp\":$D,\"battery_dp\":$D,\"unit_dp\":$D,\"status_dp\":$D,\"consumption_dp\":$D,"
-			                  "\"control_mode\":$D,\"factor\":$D,\"divider\":$D,\"offset\":$D}"),
+			                  "\"status_on\":\"$S\",\"control_mode\":$D,\"factor\":$D,\"divider\":$D,\"offset\":$D}"),
 			             nr++,
 			             dev.name,
 			             dev.desc,
@@ -6156,6 +6156,7 @@ static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 			             (int)dev.tuya_dp_unit,
 			             (int)dev.tuya_dp_status,
 			             (int)dev.tuya_dp_consumption,
+			             dev.tuya_status_on,
 			             dev.is_tuya ? 1 : 0,
 			             (int)dev.factor,
 			             (int)dev.divider,
@@ -6398,6 +6399,9 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_status = (int16_t)atoi(tmp_buffer);
 			snprintf(key, sizeof(key), "ld%d_dp_cons", i);
 			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_consumption = (int16_t)atoi(tmp_buffer);
+
+			snprintf(key, sizeof(key), "ld%d_status_on", i);
+			findKeyVal(FKV_SOURCE, dev.tuya_status_on, sizeof(dev.tuya_status_on), key);
 
 			snprintf(key, sizeof(key), "ld%d_factor", i);
 			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);

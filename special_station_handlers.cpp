@@ -318,9 +318,10 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 			use_tuya = true;
 		}
 		if (use_tuya) {
-			// Prefer dp_status (on/off DP) for valve control; fall back to dp_value.
-			if (cfg.dp_status != 0) dp_id = cfg.dp_status;
-			else if (cfg.dp_value != 0) dp_id = cfg.dp_value;
+			// Write command should go to the writable control DP first (dp_value), 
+			// and fall back to dp_status (on/off DP) only if dp_value is zero.
+			if (cfg.dp_value != 0) dp_id = cfg.dp_value;
+			else if (cfg.dp_status != 0) dp_id = cfg.dp_status;
 		}
 	}
 

@@ -3812,6 +3812,7 @@ static void sensor_zigbee_gw_do_lookups() {
                 int16_t battery_dp = -1;
                 int16_t unit_dp = -1;
 
+                // 1a. Try to find exact battery name matches first (to prefer exact '%' level over 'battery_state')
                 for (ArduinoJson::JsonVariantConst val : sensors) {
                     if (!val.is<ArduinoJson::JsonObjectConst>()) continue;
                     ArduinoJson::JsonObjectConst s = val.as<ArduinoJson::JsonObjectConst>();
@@ -3832,10 +3833,36 @@ static void sensor_zigbee_gw_do_lookups() {
                             name_lower[idx] = tolower((unsigned char)name_lower[idx]);
                         }
 
-                        if (strcmp(name_lower, "battery") == 0 || strstr(name_lower, "battery")) {
-                            if (battery_dp == -1) {
-                                battery_dp = dp_val;
-                            }
+                        if (strcmp(name_lower, "battery") == 0 || strcmp(name_lower, "battery_percentage_remaining") == 0) {
+                            battery_dp = dp_val;
+                            break;
+                        }
+                    }
+                }
+
+                // 1b. Fallback to substring and unit searches if not found yet
+                for (ArduinoJson::JsonVariantConst val : sensors) {
+                    if (!val.is<ArduinoJson::JsonObjectConst>()) continue;
+                    ArduinoJson::JsonObjectConst s = val.as<ArduinoJson::JsonObjectConst>();
+
+                    const char* s_name = s["name"] | s["description"] | "";
+                    int dp_val = -1;
+                    if (s["dp"].is<int>()) {
+                        dp_val = s["dp"].as<int>();
+                    } else if (s["tuya_dp"].is<int>()) {
+                        dp_val = s["tuya_dp"].as<int>();
+                    }
+
+                    if (dp_val >= 0) {
+                        char name_lower[64];
+                        strncpy(name_lower, s_name, sizeof(name_lower) - 1);
+                        name_lower[sizeof(name_lower) - 1] = '\0';
+                        for (int idx = 0; name_lower[idx]; idx++) {
+                            name_lower[idx] = tolower((unsigned char)name_lower[idx]);
+                        }
+
+                        if (battery_dp == -1 && (strcmp(name_lower, "battery_state") == 0 || strstr(name_lower, "battery"))) {
+                            battery_dp = dp_val;
                         }
                         if (strcmp(name_lower, "temperature_unit") == 0 || strstr(name_lower, "unit") || strstr(name_lower, "quantity")) {
                             if (unit_dp == -1) {
