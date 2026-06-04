@@ -122,6 +122,8 @@ static void gw_reset_discovered_devices_runtime_fields(ZigbeeDeviceInfo& dev) {
     dev.silent_query_count = 0;
     dev.basic_query_attempts = 0;
     dev.logical_lookup_done = false;
+    dev.battery = 255;
+    dev.lqi = 0;
 }
 
 static void gw_clear_discovered_devices_cache(bool remove_persisted_file) {
@@ -197,6 +199,8 @@ static bool gw_load_discovered_devices() {
         strncpy(info.vendor, vendor, sizeof(info.vendor) - 1);
 
         gw_reset_discovered_devices_runtime_fields(info);
+        info.battery = obj["battery"] | 255U;
+        info.lqi = obj["lqi"] | 0U;
         if (info.ieee_addr == 0) continue;
 
         ZigbeeDeviceInfo* existing = gw_find_discovered_device(info.ieee_addr);
@@ -234,6 +238,8 @@ static bool gw_save_discovered_devices() {
         if (dev.date_code[0] != '\0') obj["date_code"] = dev.date_code;
         if (dev.sw_build_id[0] != '\0') obj["sw_build_id"] = dev.sw_build_id;
         if (dev.vendor[0] != '\0') obj["vendor"] = dev.vendor;
+        if (dev.battery != 255) obj["battery"] = dev.battery;
+        if (dev.lqi != 0) obj["lqi"] = dev.lqi;
     }
 
     LittleFS.remove(GW_DISCOVERED_DEVICES_TMP_FILE);
@@ -271,7 +277,7 @@ struct GwDeviceQueryRequest {
 };
 
 static std::vector<GwDeviceQueryRequest> gw_device_query_queue;
-static constexpr unsigned long GW_DEVICE_QUERY_SPACING_MS = 250UL;
+static constexpr unsigned long GW_DEVICE_QUERY_SPACING_MS = 2000UL;
 
 static void gw_queue_device_query(uint64_t ieee_addr, uint8_t endpoint, bool need_basic, bool need_tuya) {
     if (ieee_addr == 0) return;
@@ -431,7 +437,7 @@ static void gw_record_device_access(uint64_t ieee_addr, uint16_t short_addr, boo
     }
 }
 
-static bool gw_is_device_access_allowed(uint64_t ieee_addr, uint16_t short_addr, bool is_write, uint32_t cooldown_ms = 5000UL) {
+static bool gw_is_device_access_allowed(uint64_t ieee_addr, uint16_t short_addr, bool is_write, uint32_t cooldown_ms = 1000UL) {
     uint32_t now = millis();
     if (ieee_addr == 0 && short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE) {
         ieee_addr = gw_find_ieee_by_short_addr(short_addr);
@@ -470,8 +476,8 @@ static void gw_tuya_schedule_next() {
         found_any_used = true;
 
         uint16_t short_addr = gw_tuya_schedule[slot].short_addr;
-        if (!gw_is_device_access_allowed(0, short_addr, true, 5000UL)) {
-            continue; // Space commands/accesses by at least 5s per device
+        if (!gw_is_device_access_allowed(0, short_addr, true, 1000UL)) {
+            continue; // Space commands/accesses by at least 1s per device
         }
 
         gw_tuya_scheduled_send(slot);
@@ -675,6 +681,9 @@ static std::vector<GwConfigReportRequest> gw_config_report_queue;
 static unsigned long gw_last_config_report_ms = 0;
 #define GW_CONFIG_REPORT_STAGGER_MS 600  // ms between successive configure-report sends
 
+// Tuya manufacturer-specific cluster (manuSpecificTuya)
+#define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
+
 struct GwBasicQueryRequest {
     uint64_t ieee_addr;
     uint16_t short_addr;
@@ -682,6 +691,7 @@ struct GwBasicQueryRequest {
     uint8_t attempts;
     unsigned long next_query_ms;
     uint16_t target_attr_id; // 0xFFFF for all, otherwise specific attribute ID
+    bool tuya_tried;
 };
 static std::vector<GwBasicQueryRequest> gw_basic_query_queue;
 #define GW_BASIC_QUERY_RETRY_MS 15000UL
@@ -722,6 +732,7 @@ static void gw_queue_basic_cluster_query_attr(uint64_t ieee_addr, uint16_t short
     item.attempts = 0;
     item.next_query_ms = next_query_ms;
     item.target_attr_id = attr_id;
+    item.tuya_tried = false;
     gw_basic_query_queue.push_back(item);
 }
 
@@ -738,7 +749,38 @@ static void gw_process_basic_query_queue() {
     auto& item = gw_basic_query_queue.front();
     if ((int32_t)(now - item.next_query_ms) < 0) return;
 
-    if (sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(item.ieee_addr, item.endpoint, item.target_attr_id)) {
+    bool is_tuya_dev = false;
+    ZigbeeDeviceInfo* dev = gw_find_discovered_device(item.ieee_addr);
+    if (dev && dev->is_tuya) {
+        is_tuya_dev = true;
+    }
+
+    if (item.target_attr_id == 0xFFFF && is_tuya_dev && !item.tuya_tried) {
+        item.tuya_tried = true;
+        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Device ieee=%016llX is known to be Tuya. Querying Tuya DP data first!\n"),
+                     (unsigned long long)item.ieee_addr);
+        if (sensor_zigbee_gw_request_dp_query(item.ieee_addr, item.endpoint)) {
+            gw_read_pending = true;
+            gw_read_time = millis();
+            gw_read_pending_ieee = item.ieee_addr;
+            gw_read_pending_cluster = ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC;
+            gw_read_attr_id = 0xFFFF;
+            item.next_query_ms = now + GW_READ_TIMEOUT_MS + 500;
+            return;
+        } else {
+            DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Tuya DP query send failed for ieee=%016llX. Falling back immediately to ZigBee basic query.\n"),
+                         (unsigned long long)item.ieee_addr);
+        }
+    }
+
+    bool ok = false;
+    if (item.target_attr_id == 0xFFFF) {
+        ok = sensor_zigbee_gw_query_basic_cluster_by_ieee(item.ieee_addr, item.endpoint);
+    } else {
+        ok = sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(item.ieee_addr, item.endpoint, item.target_attr_id);
+    }
+
+    if (ok) {
         gw_basic_query_queue.erase(gw_basic_query_queue.begin());
         return;
     }
@@ -753,9 +795,6 @@ static void gw_process_basic_query_queue() {
 
     item.next_query_ms = now + GW_BASIC_QUERY_RETRY_MS;
 }
-
-// Tuya manufacturer-specific cluster (manuSpecificTuya)
-#define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
 
 // Tuya DP command IDs on Zigbee private cluster 0xEF00.
 // Reference: Tuya "Zigbee Generic Interfaces" private command table.
@@ -1003,6 +1042,8 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     info.app_version = 0xFF;
     info.stack_version = 0xFF;
     info.hw_version = 0xFF;
+    info.battery = 255;
+    info.lqi = 0;
     
     gw_discovered_devices.push_back(info);
     gw_mark_discovered_devices_dirty();
@@ -1364,7 +1405,78 @@ static void gw_station_status_process_tuya_dp(uint64_t ieee, uint8_t endpoint, u
 
         if (!has_cfg || !use_tuya && dev_is_tuya) use_tuya = true;
 
-        if (!use_tuya || station_dp != dp_id) continue;
+        if (!use_tuya) continue;
+
+        char ieee_str[17];
+        snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)ieee);
+
+        bool is_match = (station_dp == dp_id);
+
+        if (!is_match) {
+            int valve_index = 0;
+            // 1. Try to find the valve index for this station's configuration using logical devices
+            for (int i = 1; i <= 8; i++) {
+                char valve_name[32];
+                snprintf(valve_name, sizeof(valve_name), "valve_%d", i);
+                ZigBeeLogicalDevice* log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, valve_name);
+                if (log_valve && (log_valve->tuya_dp_value == station_dp || log_valve->tuya_dp_status == station_dp)) {
+                    valve_index = i;
+                    break;
+                }
+                char state_name[32];
+                snprintf(state_name, sizeof(state_name), "state_%d", i);
+                ZigBeeLogicalDevice* log_state = OpenSprinkler::zigbee_logical_lookup(ieee_str, state_name);
+                if (log_state && (log_state->tuya_dp_value == station_dp || log_state->tuya_dp_status == station_dp)) {
+                    valve_index = i;
+                    break;
+                }
+            }
+            if (valve_index == 0) {
+                ZigBeeLogicalDevice* log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve");
+                if (log_valve && (log_valve->tuya_dp_value == station_dp || log_valve->tuya_dp_status == station_dp)) {
+                    valve_index = 1;
+                }
+                ZigBeeLogicalDevice* log_state = OpenSprinkler::zigbee_logical_lookup(ieee_str, "state");
+                if (log_state && (log_state->tuya_dp_value == station_dp || log_state->tuya_dp_status == station_dp)) {
+                    valve_index = 1;
+                }
+            }
+
+            // 2. If found, check if direct DP or status DP matches the incoming dp_id
+            if (valve_index > 0) {
+                char valve_name[32];
+                snprintf(valve_name, sizeof(valve_name), "valve_%d", valve_index);
+                ZigBeeLogicalDevice* log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, valve_name);
+                if (!log_valve && valve_index == 1) {
+                    log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve");
+                }
+                if (log_valve && (log_valve->tuya_dp_value == dp_id || log_valve->tuya_dp_status == dp_id)) {
+                    is_match = true;
+                }
+
+                if (!is_match) {
+                    char state_name[32];
+                    snprintf(state_name, sizeof(state_name), "state_%d", valve_index);
+                    ZigBeeLogicalDevice* log_state = OpenSprinkler::zigbee_logical_lookup(ieee_str, state_name);
+                    if (!log_state && valve_index == 1) {
+                        log_state = OpenSprinkler::zigbee_logical_lookup(ieee_str, "state");
+                    }
+                    if (log_state && (log_state->tuya_dp_value == dp_id || log_state->tuya_dp_status == dp_id)) {
+                        is_match = true;
+                    }
+                }
+            } else {
+                // Symmetrical fallbacks when logical devices map isn't fully initialized / present
+                if ((station_dp == 1 || station_dp == 104) && (dp_id == 1 || dp_id == 104)) {
+                    is_match = true;
+                } else if ((station_dp == 2 || station_dp == 105) && (dp_id == 2 || dp_id == 105)) {
+                    is_match = true;
+                }
+            }
+        }
+
+        if (!is_match) continue;
+
         DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u matched Tuya DP report: dp=%u on=%d\n"),
                  (unsigned)sid, (unsigned)dp_id, actual_on ? 1 : 0);
         gw_station_physical_state_set(sid, actual_on);
@@ -1428,17 +1540,67 @@ static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
     }
 }
 
+static bool gw_is_tuya_status_on(uint64_t ieee, uint8_t dp_number, int32_t value, uint8_t dp_type) {
+    char ieee_str[17];
+    snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)ieee);
+    
+    if (OpenSprinkler::zigbee_logical_devices_map) {
+        for (const auto& entry : *OpenSprinkler::zigbee_logical_devices_map) {
+            const ZigBeeLogicalDevice& dev = entry.second.device;
+            if (strncmp(dev.ieee, ieee_str, 16) == 0 && dev.tuya_dp_status == dp_number) {
+                if (dev.tuya_status_on[0] != '\0') {
+                    char buf[32];
+                    strncpy(buf, dev.tuya_status_on, sizeof(buf) - 1);
+                    buf[sizeof(buf) - 1] = '\0';
+                    char* token = strtok(buf, ",");
+                    while (token != NULL) {
+                        if (atoi(token) == value) {
+                            return true;
+                        }
+                        token = strtok(NULL, ",");
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+
+    if (dp_type == TUYA_TYPE_ENUM) {
+        if (dp_number == 104 || dp_number == 105) {
+            return (value == 1 || value == 2);
+        }
+    }
+    return (value != 0);
+}
+
 static void gw_cache_tuya_dp_report(uint64_t ieee_addr, uint8_t src_endpoint,
                                     uint8_t dp_number, int32_t value, int lqi, uint8_t dp_type) {
     gw_cache_tuya_report(ieee_addr, src_endpoint,
                          ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC,
                          (uint16_t)dp_number,
                          value, lqi, dp_type);
+    
+    // Check if this DP report satisfies a pending query for Tuya data
+    if (gw_read_pending && gw_read_pending_cluster == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC &&
+        gw_read_pending_ieee == ieee_addr) {
+        gw_read_pending = false;
+        DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Received Tuya DP report successfully, clearing basic query queue for this device"));
+        // Remove basic query requests from the queue for this IEEE
+        for (auto it = gw_basic_query_queue.begin(); it != gw_basic_query_queue.end(); ) {
+            if (it->ieee_addr == ieee_addr) {
+                it = gw_basic_query_queue.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     // Keep the dashboard's Zigbee physical-state icon in sync when a valve is
     // operated manually on the device and reports its switch DP back.
-    gw_station_status_process_tuya_dp(ieee_addr, src_endpoint, dp_number, value != 0);
+    bool actual_on = gw_is_tuya_status_on(ieee_addr, dp_number, value, dp_type);
+    gw_station_status_process_tuya_dp(ieee_addr, src_endpoint, dp_number, actual_on);
     // Check if this DP echoes a pending station switch command.
-    gw_station_verify_process(ieee_addr, dp_number, value != 0);
+    gw_station_verify_process(ieee_addr, dp_number, actual_on);
 }
 
 // Tuya sequence counter for outgoing commands. Some Tuya MCU devices reject
@@ -1666,8 +1828,8 @@ bool sensor_zigbee_gw_request_dp_query(uint64_t device_ieee, uint8_t endpoint) {
         return false;
     }
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP query blocked: rate-limited/cooldown (1s) for ieee=%016llX\n"),
                      (unsigned long long)device_ieee);
         return false;
     }
@@ -2512,8 +2674,8 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t 
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
     esp_zb_lock_release();
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic query blocked: rate-limited/cooldown (1s) for ieee=%016llX\n"),
                      (unsigned long long)device_ieee);
         return false;
     }
@@ -2582,8 +2744,8 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(uint64_t device_ieee, uin
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
     esp_zb_lock_release();
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic single-attr query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic single-attr query blocked: rate-limited/cooldown (1s) for ieee=%016llX\n"),
                      (unsigned long long)device_ieee);
         return false;
     }
@@ -2686,8 +2848,8 @@ bool sensor_zigbee_gw_read_attribute(uint64_t device_ieee, uint8_t endpoint,
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
     esp_zb_lock_release();
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Active read blocked: rate-limited/cooldown (5s) for ieee=%016llX cluster=0x%04X\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Active read blocked: rate-limited/cooldown (1s) for ieee=%016llX cluster=0x%04X\n"),
                      (unsigned long long)device_ieee, cluster_id);
         return false;
     }
@@ -3017,6 +3179,12 @@ static bool is_zigbee_battery_report(const ZigbeeAttributeReport& report, uint64
                 }
             }
         }
+
+        // 3. Fallback for well-known Tuya battery DPs
+        if (raw_attr == 15 || raw_attr == 108 || raw_attr == 115 || raw_attr == 18) {
+            out_battery_dp = raw_attr;
+            return true;
+        }
     }
 
     return false;
@@ -3064,6 +3232,21 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             uint16_t raw_attr = zigbee_report_attr_id(report.attr_id);
             uint32_t batt_pct = zigbee_battery_percent_from_report(is_tuya_report, raw_attr, tuya_report_type(report.attr_id), configured_battery_dp, report.value);
             
+            // Try to find the device in gw_discovered_devices and update its battery level and LQI
+            ZigbeeDeviceInfo* dev = gw_find_discovered_device(report.ieee_addr);
+            if (dev) {
+                bool changed = false;
+                if (dev->battery != batt_pct) {
+                    dev->battery = batt_pct;
+                    changed = true;
+                }
+                if (report.lqi != 0 && dev->lqi != report.lqi) {
+                    dev->lqi = report.lqi;
+                    changed = true;
+                }
+                if (changed) gw_mark_discovered_devices_dirty();
+            }
+
             SensorIterator it_batt = sensors_iterate_begin();
             SensorBase* s_batt;
             bool updated_any = false;
@@ -3078,10 +3261,9 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                                  zb_s->name, (unsigned)batt_pct);
                 }
             }
-            if (updated_any) {
-                report.consumed = true;
-                continue;
-            }
+            // Always consume the battery report so it doesn't trigger "✗ NO MATCH" warnings
+            report.consumed = true;
+            continue;
         }
 
         SensorIterator it = sensors_iterate_begin();
@@ -3691,6 +3873,9 @@ static void sensor_zigbee_gw_do_lookups() {
                     ZigBeeLogicalDevice logdev = {};
                     strncpy(logdev.ieee, ieee_buf, sizeof(logdev.ieee) - 1);
                     strncpy(logdev.name, s_name, sizeof(logdev.name) - 1);
+                    const char* s_desc = s["description"] | s["desc"] | "";
+                    strncpy(logdev.desc, s_desc, sizeof(logdev.desc) - 1);
+                    logdev.desc[sizeof(logdev.desc) - 1] = '\0';
 
                     logdev.endpoint = s["endpoint"] | 1;
 
@@ -3739,8 +3924,12 @@ static void sensor_zigbee_gw_do_lookups() {
                     logdev.tuya_dp_unit = unit_dp;
 
                     // Other secondary DP fields
-                    logdev.tuya_dp_status = s["tuya_dp_status"] | -1;
-                    logdev.tuya_dp_consumption = s["tuya_dp_consumption"] | -1;
+                    logdev.tuya_dp_status = s["tuya_dp_status"] | s["status_dp"] | -1;
+                    logdev.tuya_dp_consumption = s["tuya_dp_consumption"] | s["consumption_dp"] | -1;
+
+                    const char* status_on_str = s["tuya_status_on"] | s["status_on"] | "";
+                    strncpy(logdev.tuya_status_on, status_on_str, sizeof(logdev.tuya_status_on) - 1);
+                    logdev.tuya_status_on[sizeof(logdev.tuya_status_on) - 1] = '\0';
 
                     // Factor / Divider / Offset
                     logdev.factor = s["factor"] | 1;
@@ -4118,7 +4307,9 @@ void sensor_zigbee_gw_loop() {
 
 bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon) {
     if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW] Standard On/Off command failed: Zigbee not initialized or not connected"));
+        if (gw_zigbee_initialized) {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW] Standard On/Off command failed: Zigbee not initialized or not connected"));
+        }
         return false;
     }
     if (device_ieee == 0) return false;
@@ -4149,8 +4340,8 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
         return false;
     }
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, true, 5000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Standard On/Off rate-limited/cooldown for ieee=%016llX. Deferring.\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, true, 1000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Standard On/Off rate-limited/cooldown (1s) for ieee=%016llX. Deferring.\n"),
                      (unsigned long long)device_ieee);
         if (!gw_pending_switch.valid || gw_pending_switch.ieee_addr != device_ieee) {
             gw_queue_pending_switch(false, device_ieee, endpoint, 1, turnon);
@@ -4179,7 +4370,9 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
 static bool gw_resolve_tuya_short_addr(uint64_t* device_ieee, uint16_t* short_addr, const char* context,
                                        bool queue_on_unavailable, uint8_t endpoint, uint8_t dp_id, bool turnon) {
     if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] %s failed: Zigbee not initialized or not connected\n"), context);
+        if (gw_zigbee_initialized) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] %s failed: Zigbee not initialized or not connected\n"), context);
+        }
         if (queue_on_unavailable && device_ieee) gw_queue_pending_switch(true, *device_ieee, endpoint, dp_id, turnon);
         return false;
     }
@@ -4274,17 +4467,129 @@ static bool gw_send_tuya_dp_value_write_cmd(uint64_t device_ieee, uint8_t endpoi
                                    queue_on_unavailable, value != 0);
 }
 
+static bool gw_send_tuya_dp_enum_write_cmd(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, uint8_t value,
+                                           uint8_t command_id, bool queue_on_unavailable) {
+    uint8_t value_byte[1] = { value };
+    return gw_send_tuya_dp_raw_cmd(device_ieee, endpoint, dp_id, TUYA_TYPE_ENUM,
+                                   value_byte, sizeof(value_byte), command_id,
+                                   queue_on_unavailable, value != 0);
+}
+
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
     return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_REQUEST, false);
 }
 
+bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur, uint8_t dp_id) {
+    char ieee_str[17];
+    snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)device_ieee);
+
+    uint8_t active_dp = dp_id;
+    if (active_dp == 0) {
+        ZigBeeLogicalDevice* log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve_1");
+        if (!log_valve) log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve");
+        if (log_valve) {
+            active_dp = log_valve->tuya_dp_value;
+        } else {
+            active_dp = 2; // Default fallback to DP 2 for single-zone valves
+        }
+    }
+
+    int valve_index = 0;
+    // Step 1: Detect valve index by searching logical devices with matching DP
+    for (int i = 1; i <= 8; i++) {
+        char valve_name[32];
+        snprintf(valve_name, sizeof(valve_name), "valve_%d", i);
+        ZigBeeLogicalDevice* log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, valve_name);
+        if (log_valve && log_valve->tuya_dp_value == active_dp) {
+            valve_index = i;
+            break;
+        }
+    }
+    if (valve_index == 0) {
+        // Fallback check for "valve" (no index)
+        ZigBeeLogicalDevice* log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve");
+        if (log_valve && log_valve->tuya_dp_value == active_dp) {
+            valve_index = 1;
+        }
+    }
+    if (valve_index == 0) {
+        // Ultimate fallback based on common DP IDs if not registered in map
+        if (active_dp == 1) valve_index = 1;
+        else if (active_dp == 2) valve_index = 2;
+        else valve_index = 1;
+    }
+
+    // Step 2: Check support for different modes based on logical device names presence
+    ZigBeeLogicalDevice* log_valve_mode = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve_mode");
+    ZigBeeLogicalDevice* log_irrigation_target = OpenSprinkler::zigbee_logical_lookup(ieee_str, "irrigation_target");
+
+    // Let's look for countdown or timer for this specific valve_index
+    ZigBeeLogicalDevice* log_countdown = nullptr;
+    
+    // Construct names to search
+    char name_countdown_idx[32];
+    char name_timer_idx[32];
+    char name_countdown_l_idx[32];
+    
+    snprintf(name_countdown_idx, sizeof(name_countdown_idx), "countdown_%d", valve_index);
+    snprintf(name_timer_idx, sizeof(name_timer_idx), "timer_%d", valve_index);
+    snprintf(name_countdown_l_idx, sizeof(name_countdown_l_idx), "countdown_l%d", valve_index);
+    
+    log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, name_countdown_idx);
+    if (!log_countdown) log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, name_timer_idx);
+    if (!log_countdown) log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, name_countdown_l_idx);
+    
+    // Standard alternative names for index 1
+    if (!log_countdown && valve_index == 1) {
+        log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, "countdown_left");
+        if (!log_countdown) log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, "countdown");
+        if (!log_countdown) log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, "timer");
+    }
+
+    bool mode_used = (log_valve_mode != nullptr);
+    bool target_used = (log_irrigation_target != nullptr);
+    bool countdown_used = (log_countdown != nullptr);
+
+    if (turnon && dur > 0) {
+        if (mode_used) {
+            uint8_t mode_dp = log_valve_mode->tuya_dp_value;
+            // Mode 0 = raw duration mode
+            bool m_ok = gw_send_tuya_dp_enum_write_cmd(device_ieee, endpoint, mode_dp, 0, TUYA_CMD_DATA_REQUEST, false);
+            if (!m_ok) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending valve_mode (DP %d) = 0\n"), mode_dp);
+            }
+        }
+        
+        if (target_used) {
+            uint8_t target_dp = log_irrigation_target->tuya_dp_value;
+            bool t_ok = gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, target_dp, (uint32_t)dur, TUYA_CMD_DATA_REQUEST, false);
+            if (!t_ok) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending irrigation_target (DP %d) = %u\n"), target_dp, dur);
+            }
+        }
+        
+        if (countdown_used) {
+            uint8_t countdown_dp = log_countdown->tuya_dp_value;
+            bool c_ok = gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, countdown_dp, (uint32_t)dur, TUYA_CMD_DATA_REQUEST, false);
+            if (!c_ok) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending countdown (DP %d) = %u\n"), countdown_dp, dur);
+            }
+        }
+    }
+    
+    // Switch the valve (using the calculated active_dp)
+    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, active_dp, turnon, TUYA_CMD_DATA_REQUEST, false);
+}
+
+bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) {
+    return sensor_zigbee_send_giex_water_valve_state_with_dur(device_ieee, endpoint, turnon, 0, 0);
+}
+
 void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on) {
-    (void)sid;
     (void)ieee;
     (void)endpoint;
     (void)dp_id;
-    (void)expected_on;
-    // One-shot station switching mode: verification is intentionally disabled.
+    gw_station_physical_state_set(sid, expected_on);
 }
 
 uint8_t sensor_zigbee_station_status_code(uint8_t sid) {

@@ -49,6 +49,8 @@ struct ZigbeeDeviceInfo {
     uint8_t  basic_query_attempts;// Basic Cluster requery attempts while mfr/model still empty
     char vendor[32];              // Human-readable vendor name from devices API (e.g. "GIEX")
     bool logical_lookup_done;    // whether logical devices lookup has been performed
+    uint8_t battery;              // Battery percentage (0-100), 255 = unknown
+    uint8_t lqi;                  // Link quality indicator (0-255), 0 = unknown
 };
 
 enum ZbStationControlMode : uint8_t {
@@ -406,7 +408,7 @@ public:
 bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon);
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon);
 bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon);
-bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur = 0);
+bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur = 0, uint8_t dp_id = 0);
 bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config, uint8_t target_endpoint = 0, uint8_t target_dp = 0);
 
 #else // ESP32C5 && OS_ENABLE_ZIGBEE
@@ -414,7 +416,7 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
 inline bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
 inline bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) { return false; }
 inline bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
-inline bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur) { return false; }
+inline bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur, uint8_t dp_id = 0) { return false; }
 inline bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config, uint8_t target_endpoint = 0, uint8_t target_dp = 0) {
     (void)device_ieee;
     (void)target_endpoint;

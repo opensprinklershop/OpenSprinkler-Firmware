@@ -294,8 +294,11 @@ struct ZigBeeLogicalDevice {
 	char unit[8];                     // Unit string (e.g., "°C", "%")
 	uint8_t unitid;                   // Unit ID (UNIT_PERCENT, UNIT_DEGREE_F, etc.)
 	
-	// Reserved for future use
-	char reserved[30];
+	// Description
+	char desc[30];
+	
+	// Tuya status active (ON) mapping (e.g. "1,2")
+	char tuya_status_on[16];
 	
 	// Compute hashable key for O(1) lookup
 	String getKey() const {

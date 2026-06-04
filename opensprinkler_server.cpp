@@ -6139,12 +6139,13 @@ static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 			if (strncmp(dev.ieee, ieee_str, 16) != 0) continue;
 			if (!first) bfill.emit_p(PSTR(","));
 			first = false;
-			bfill.emit_p(PSTR("{\"nr\":$D,\"name\":\"$S\",\"kind\":\"$S\",\"endpoint\":$D,"
+			bfill.emit_p(PSTR("{\"nr\":$D,\"name\":\"$S\",\"desc\":\"$S\",\"kind\":\"$S\",\"endpoint\":$D,"
 			                  "\"cluster_id\":$D,\"attribute_id\":$D,\"unit\":$D,"
 			                  "\"value_dp\":$D,\"battery_dp\":$D,\"unit_dp\":$D,\"status_dp\":$D,\"consumption_dp\":$D,"
 			                  "\"control_mode\":$D,\"factor\":$D,\"divider\":$D,\"offset\":$D}"),
 			             nr++,
 			             dev.name,
+			             dev.desc,
 			             zigbee_logical_kind_reg(dev),
 			             (int)dev.endpoint,
 			             (int)dev.cluster_id,
@@ -6368,6 +6369,9 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			if (!findKeyVal(FKV_SOURCE, dev.name, sizeof(dev.name), key)) continue;
 			if (!dev.name[0]) continue;
 
+			snprintf(key, sizeof(key), "ld%d_desc", i);
+			findKeyVal(FKV_SOURCE, dev.desc, sizeof(dev.desc), key);
+
 			snprintf(key, sizeof(key), "ld%d_ep", i);
 			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
 			dev.endpoint = tmp_buffer[0] ? (uint8_t)atoi(tmp_buffer) : 1;
@@ -6447,7 +6451,8 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				         (unsigned long long)devices[i].ieee_addr);
 				bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
 				                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
-				                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
+				                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","
+				                  "\"battery\":$D,\"lqi\":$D,"),
 				             ieee_str,
 				             devices[i].short_addr,
 				             devices[i].model_id,
@@ -6460,7 +6465,9 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				             devices[i].stack_version,
 				             devices[i].hw_version,
 				             devices[i].date_code,
-				             devices[i].sw_build_id);
+				             devices[i].sw_build_id,
+				             (int)devices[i].battery,
+				             (int)devices[i].lqi);
 				emit_zigbee_logical_devices(devices[i].ieee_addr);
 				bfill.emit_p(PSTR("}"));
 				out_count++;
@@ -6516,7 +6523,8 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 			bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
 			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
 			                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D,"
-			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","),
+			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","
+			                  "\"battery\":$D,\"lqi\":$D,"),
 			             ieee_str,
 			             devices[i].short_addr,
 			             devices[i].model_id,
@@ -6532,7 +6540,9 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 			             devices[i].stack_version,
 			             devices[i].hw_version,
 			             devices[i].date_code,
-			             devices[i].sw_build_id);
+			             devices[i].sw_build_id,
+			             (int)devices[i].battery,
+			             (int)devices[i].lqi);
 			emit_zigbee_logical_devices(devices[i].ieee_addr);
 			bfill.emit_p(PSTR("}"));
 			send_packet(OTF_PARAMS);

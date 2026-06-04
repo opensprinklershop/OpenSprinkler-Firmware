@@ -205,7 +205,12 @@ static volatile uint32_t flow_irq_pulses = 0;
 static bool flow_irq_enabled = false;
 
 static void IRAM_ATTR flow_sensor_isr() {
-	flow_irq_pulses = flow_irq_pulses + 1;
+	static uint32_t last_interrupt_time = 0;
+	uint32_t interrupt_time = millis();
+	if (interrupt_time - last_interrupt_time > 20) { // 20ms debounce to filter contact bounces and high-frequency RF ripple
+		flow_irq_pulses = flow_irq_pulses + 1;
+		last_interrupt_time = interrupt_time;
+	}
 }
 
 static uint32_t flow_take_irq_pulses() {

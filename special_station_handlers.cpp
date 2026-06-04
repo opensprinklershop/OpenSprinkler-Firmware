@@ -72,6 +72,14 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  	dev.ieee[sizeof(dev.ieee) - 1] = '\0';
  	strncpy(dev.name, name, sizeof(dev.name) - 1);
  	dev.name[sizeof(dev.name) - 1] = '\0';
+ 	const char* desc = "";
+ 	if (obj.containsKey("desc") && obj["desc"].is<const char*>()) {
+ 		desc = obj["desc"].as<const char*>();
+ 	} else if (obj.containsKey("description") && obj["description"].is<const char*>()) {
+ 		desc = obj["description"].as<const char*>();
+ 	}
+ 	strncpy(dev.desc, desc, sizeof(dev.desc) - 1);
+ 	dev.desc[sizeof(dev.desc) - 1] = '\0';
  	dev.endpoint = obj.containsKey("endpoint") ? obj["endpoint"].as<uint8_t>() : 1U;
  	dev.cluster_id = obj.containsKey("cluster_id") ? obj["cluster_id"].as<uint16_t>() : 0U;
  	if (obj.containsKey("attr_id")) {
@@ -99,6 +107,15 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  	if (obj.containsKey("tuya_dp_consumption")) {
  		dev.tuya_dp_consumption = obj["tuya_dp_consumption"].as<int16_t>();
  	}
+ 	const char* status_on = "";
+ 	if (obj.containsKey("tuya_status_on") && obj["tuya_status_on"].is<const char*>()) {
+ 		status_on = obj["tuya_status_on"].as<const char*>();
+ 	} else if (obj.containsKey("status_on") && obj["status_on"].is<const char*>()) {
+ 		status_on = obj["status_on"].as<const char*>();
+ 	}
+ 	strncpy(dev.tuya_status_on, status_on, sizeof(dev.tuya_status_on) - 1);
+ 	dev.tuya_status_on[sizeof(dev.tuya_status_on) - 1] = '\0';
+
  	dev.factor = obj.containsKey("factor") ? obj["factor"].as<int16_t>() : 0;
  	dev.divider = obj.containsKey("divider") ? obj["divider"].as<int16_t>() : 0;
  	dev.offset = obj.containsKey("offset") ? obj["offset"].as<int16_t>() : 0;
@@ -115,6 +132,7 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  	ArduinoJson::JsonObject obj = arr.createNestedObject();
  	obj["ieee"] = dev.ieee;
  	obj["name"] = dev.name;
+ 	if (dev.desc[0] != '\0') obj["desc"] = dev.desc;
  	obj["endpoint"] = dev.endpoint;
  	obj["cluster_id"] = dev.cluster_id;
  	obj["attr_id"] = dev.attr_id;
@@ -124,6 +142,7 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  	if (dev.tuya_dp_unit >= 0) obj["tuya_dp_unit"] = dev.tuya_dp_unit;
  	if (dev.tuya_dp_status >= 0) obj["tuya_dp_status"] = dev.tuya_dp_status;
  	if (dev.tuya_dp_consumption >= 0) obj["tuya_dp_consumption"] = dev.tuya_dp_consumption;
+ 	if (dev.tuya_status_on[0] != '\0') obj["tuya_status_on"] = dev.tuya_status_on;
  	obj["factor"] = dev.factor;
  	obj["divider"] = dev.divider;
  	obj["offset"] = dev.offset;
@@ -246,6 +265,43 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	bool use_tuya = (data->use_tuya[0] == '1');
 	uint8_t dp_id = (uint8_t)hex_to_ulong((unsigned char*)data->tuya_dp, sizeof(data->tuya_dp));
 	if (dp_id == 0) dp_id = 1;
+
+	bool is_giex = false;
+
+	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+	{
+		static ZigbeeDeviceInfo devices[64];
+		int count = sensor_zigbee_get_discovered_devices(devices, 64);
+		for (int i = 0; i < count; i++) {
+			if (devices[i].ieee_addr == 0 || devices[i].ieee_addr == ieee) continue;
+			if ((devices[i].ieee_addr >> 8) == ieee || (ieee >> 8) == devices[i].ieee_addr) {
+				DEBUG_PRINTF(F("[ZIGBEE] Corrected station IEEE before metadata lookup: %016llX -> %016llX\n"),
+				             (unsigned long long)ieee, (unsigned long long)devices[i].ieee_addr);
+				ieee = devices[i].ieee_addr;
+				break;
+			}
+		}
+
+		for (int i = 0; i < count; i++) {
+			if (devices[i].ieee_addr != ieee) continue;
+			if (strstr(devices[i].manufacturer, "_TZE200_sh1btabb") ||
+			    strstr(devices[i].manufacturer, "_TZE284_7ytb3h8u") ||
+			    strstr(devices[i].manufacturer, "_TZE200_7ytb3h8u") ||
+			    strstr(devices[i].manufacturer, "_TZE204_7ytb3h8u") ||
+			    strstr(devices[i].manufacturer, "_TZE200_a7sghmms") ||
+			    strstr(devices[i].manufacturer, "_TZE204_a7sghmms") ||
+			    strstr(devices[i].manufacturer, "_TZE284_8zizsafo") ||
+			    strstr(devices[i].manufacturer, "_TZE284_iilebqoo") ||
+			    strcasecmp(devices[i].vendor, "GIEX") == 0 ||
+			    strcasecmp(devices[i].model_id, "QT06_1") == 0 ||
+			    strcasecmp(devices[i].model_id, "QT06_2") == 0) {
+				is_giex = true;
+			}
+			break;
+		}
+	}
+	#endif
+
 	ZigbeeStationControlConfig cfg = {};
 	bool has_cfg = sensor_zigbee_get_station_control_config(ieee, &cfg, ep, dp_id) && cfg.found;
 	if (has_cfg) {
@@ -270,7 +326,7 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 
 	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	{
-		if (!use_tuya) {
+		if (!use_tuya && !is_giex) {
 			uint8_t inferred_dp = 0;
 			if (infer_tuya_from_sensor_rows(ieee, &inferred_dp)) {
 				use_tuya = true;
@@ -280,21 +336,12 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 			}
 		}
 
-		if (!has_cfg) {
+		if (!has_cfg && !is_giex) {
 			// Legacy fallback for stations that still rely on the station payload.
 			bool matched = false;
 			bool dev_is_tuya = false;
 			static ZigbeeDeviceInfo devices[64];
 			int count = sensor_zigbee_get_discovered_devices(devices, 64);
-			for (int i = 0; i < count; i++) {
-				if (devices[i].ieee_addr == 0 || devices[i].ieee_addr == ieee) continue;
-				if ((devices[i].ieee_addr >> 8) == ieee || (ieee >> 8) == devices[i].ieee_addr) {
-					DEBUG_PRINTF(F("[ZIGBEE] Corrected station IEEE before metadata lookup: %016llX -> %016llX\n"),
-					             (unsigned long long)ieee, (unsigned long long)devices[i].ieee_addr);
-					ieee = devices[i].ieee_addr;
-					break;
-				}
-			}
 			for (int i = 0; i < count; i++) {
 				if (devices[i].ieee_addr != ieee) continue;
 				dev_is_tuya = devices[i].is_tuya;
@@ -310,11 +357,16 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	}
 	#endif
 
-	if (use_tuya) {
+	if (is_giex) {
+		sensor_zigbee_send_giex_water_valve_state_with_dur(ieee, ep, turnon, dur, dp_id);
+	} else if (use_tuya) {
 		sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
 	} else {
 		sensor_zigbee_send_on_off(ieee, ep, turnon);
 	}
+	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
+	sensor_zigbee_station_verify_register(sid, ieee, ep, dp_id, turnon);
+	#endif
 }
 
 // ============================================================================
