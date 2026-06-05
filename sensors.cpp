@@ -3222,12 +3222,18 @@ void check_monitors() {
         }
         break; }
 
-      case MONITOR_SENSOR12:
-        if (mon->m.sensor12.sensor12 == 1)        
-		  	if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL)
-	            mon->active = mon->m.sensor12.invers? !os.status.sensor1_active : os.status.sensor1_active;
-		  if (mon->m.sensor12.sensor12 == 2)
-	          if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL)
+      case MONITOR_SENSOR12: {
+        if (mon->m.sensor12.sensor12 == 1) {
+          if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
+            mon->active = mon->m.sensor12.invers ? !os.status.sensor1_active : os.status.sensor1_active;
+          }
+        } else if (mon->m.sensor12.sensor12 == 2) {
+          if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL) {
+            mon->active = mon->m.sensor12.invers ? !os.status.sensor2_active : os.status.sensor2_active;
+          }
+        }
+        break;
+      }
 
       case MONITOR_SET_SENSOR12:
         mon->active = get_monitor(mon->m.set_sensor12.monitor, false, false);
@@ -3260,14 +3266,9 @@ void check_monitors() {
         mon->active = get_monitor(mon->m.mnot.monitor, true, false);
         break;
       case MONITOR_TIME: {
-        uint16_t time = hour(timeNow) * 100 + minute(timeNow); //HHMM
-#if defined(ARDUINO)       
-        uint8_t wday = (weekday(timeNow)+5)%7; //Monday = 0
-#else
-        time_os_t ct = timeNow;
-	struct tm *ti = gmtime(&ct);
-	uint8_t wday = (ti->tm_wday+6)%7; 
-#endif
+        uint32_t seconds_of_day = timeNow % 86400L;
+        uint16_t time = (seconds_of_day / 3600) * 100 + (seconds_of_day % 3600) / 60; //HHMM
+        uint8_t wday = (timeNow / 86400L + 3) % 7; //Monday = 0
         mon->active  = (mon->m.mtime.weekdays >> wday) & 0x01;
         if (mon->m.mtime.time_from > mon->m.mtime.time_to) // FROM > TO ? Over night value
           mon->active &= time >= mon->m.mtime.time_from || time <= mon->m.mtime.time_to;
