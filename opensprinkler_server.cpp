@@ -6367,11 +6367,11 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			dev.tuya_dp_consumption = -1;
 
 			snprintf(key, sizeof(key), "ld%d_name", i);
-			if (!findKeyVal(FKV_SOURCE, dev.name, sizeof(dev.name), key)) continue;
+			if (!findKeyVal(FKV_SOURCE, dev.name, sizeof(dev.name), key, true)) continue;
 			if (!dev.name[0]) continue;
 
 			snprintf(key, sizeof(key), "ld%d_desc", i);
-			findKeyVal(FKV_SOURCE, dev.desc, sizeof(dev.desc), key);
+			findKeyVal(FKV_SOURCE, dev.desc, sizeof(dev.desc), key, true);
 
 			snprintf(key, sizeof(key), "ld%d_ep", i);
 			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);
@@ -6401,7 +6401,7 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 			if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key)) dev.tuya_dp_consumption = (int16_t)atoi(tmp_buffer);
 
 			snprintf(key, sizeof(key), "ld%d_status_on", i);
-			findKeyVal(FKV_SOURCE, dev.tuya_status_on, sizeof(dev.tuya_status_on), key);
+			findKeyVal(FKV_SOURCE, dev.tuya_status_on, sizeof(dev.tuya_status_on), key, true);
 
 			snprintf(key, sizeof(key), "ld%d_factor", i);
 			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);

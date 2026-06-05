@@ -147,11 +147,40 @@ static uint8_t tuya_report_type(uint16_t attr_id) {
 
 static uint32_t zigbee_battery_percent_from_report(bool is_tuya_report, uint16_t raw_attr_id, uint8_t tuya_type, int16_t configured_tuya_battery_dp, int32_t value) {
     if (is_tuya_report) {
-        if (configured_tuya_battery_dp >= 0 && raw_attr_id == (uint16_t)configured_tuya_battery_dp && tuya_type == TUYA_TYPE_ENUM) {
-            if (value <= 0) return 0;
-            if (value == 1) return 50;
-            return 100;
+        // DP 14 is specifically "battery_state" (ENUM): 0=normal/full, 1=low
+        if (raw_attr_id == 14) {
+            if (value == 0) return 100;
+            return 15;
         }
+
+        // DP 59 is GX03 battery (typically percentage 0-100 or enum/steps)
+        if (raw_attr_id == 59) {
+            if (value > 4 && value <= 100) return (uint32_t)value;
+            if (value == 4) return 100;
+            if (value == 3) return 75;
+            if (value == 2) return 50;
+            if (value == 1) return 25;
+            if (value == 0) return 100; // default to 100 on communicating device
+        }
+
+        if (raw_attr_id == 15 || raw_attr_id == 108 || raw_attr_id == 115 || raw_attr_id == 18 || 
+            (configured_tuya_battery_dp >= 0 && raw_attr_id == (uint16_t)configured_tuya_battery_dp)) {
+            
+            if (tuya_type == TUYA_TYPE_ENUM) {
+                // 3-state enum: 0=high/normal, 1=medium, 2=low
+                // OR 3-state: 0=low, 1=medium, 2=high.
+                if (value == 0) return 100;
+                if (value == 1) return 50;
+                if (value == 2 || value == 3) return 100;
+                return 100;
+            }
+
+            if (value <= 0) {
+                return 100; // active device with 0 is uninitialized or inverted full
+            }
+            return (value > 100) ? 100 : (uint32_t)value;
+        }
+
         if (value < 0) return 0;
         return (value > 100) ? 100 : (uint32_t)value;
     }

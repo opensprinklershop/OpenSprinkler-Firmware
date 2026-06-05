@@ -906,11 +906,40 @@ static bool gw_ieee_matches_station(uint64_t station_ieee, uint64_t report_ieee)
 
 static uint32_t zigbee_battery_percent_from_report(bool is_tuya_report, uint16_t raw_attr_id, uint8_t tuya_type, int16_t configured_tuya_battery_dp, int32_t value) {
     if (is_tuya_report) {
-        if (configured_tuya_battery_dp >= 0 && raw_attr_id == (uint16_t)configured_tuya_battery_dp && tuya_type == TUYA_TYPE_ENUM) {
-            if (value <= 0) return 0;
-            if (value == 1) return 50;
-            return 100;
+        // DP 14 is specifically "battery_state" (ENUM): 0=normal/full, 1=low
+        if (raw_attr_id == 14) {
+            if (value == 0) return 100;
+            return 15;
         }
+
+        // DP 59 is GX03 battery (typically percentage 0-100 or enum/steps)
+        if (raw_attr_id == 59) {
+            if (value > 4 && value <= 100) return (uint32_t)value;
+            if (value == 4) return 100;
+            if (value == 3) return 75;
+            if (value == 2) return 50;
+            if (value == 1) return 25;
+            if (value == 0) return 100; // default to 100 on communicating device
+        }
+
+        if (raw_attr_id == 15 || raw_attr_id == 108 || raw_attr_id == 115 || raw_attr_id == 18 || 
+            (configured_tuya_battery_dp >= 0 && raw_attr_id == (uint16_t)configured_tuya_battery_dp)) {
+            
+            if (tuya_type == TUYA_TYPE_ENUM) {
+                // 3-state enum: 0=high/normal, 1=medium, 2=low
+                // OR 3-state: 0=low, 1=medium, 2=high.
+                if (value == 0) return 100;
+                if (value == 1) return 50;
+                if (value == 2 || value == 3) return 100;
+                return 100;
+            }
+
+            if (value <= 0) {
+                return 100; // active device with 0 is uninitialized or inverted full
+            }
+            return (value > 100) ? 100 : (uint32_t)value;
+        }
+
         if (value < 0) return 0;
         return (value > 100) ? 100 : (uint32_t)value;
     }
@@ -1011,6 +1040,13 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
         dev->has_responded = true;
         dev->last_rx_at_ms = millis();     // stamp last reception
         dev->silent_query_count = 0;       // device is alive — reset silence counter
+
+        // If the device's manufacturer or model is empty/unknown, reset attempts and retry query
+        if (gw_device_needs_basic_info(*dev)) {
+            dev->basic_query_attempts = 0;
+            gw_queue_basic_cluster_query(ieee_addr, short_addr, endpoint, 1000UL);
+        }
+
         if (changed) gw_mark_discovered_devices_dirty();
         // Device re-announced (e.g. after power cycle / re-join).
         // Re-schedule Configure Reporting so sleeping end-devices
@@ -3181,7 +3217,7 @@ static bool is_zigbee_battery_report(const ZigbeeAttributeReport& report, uint64
         }
 
         // 3. Fallback for well-known Tuya battery DPs
-        if (raw_attr == 15 || raw_attr == 108 || raw_attr == 115 || raw_attr == 18) {
+        if (raw_attr == 14 || raw_attr == 15 || raw_attr == 59 || raw_attr == 108 || raw_attr == 115 || raw_attr == 18) {
             out_battery_dp = raw_attr;
             return true;
         }
@@ -4589,9 +4625,12 @@ bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, ui
         
         if (target_used) {
             uint8_t target_dp = log_irrigation_target->tuya_dp_value;
-            bool t_ok = gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, target_dp, (uint32_t)dur, TUYA_CMD_DATA_REQUEST, false);
+            // The "irrigation_target" DP on GIEX QT06/GX02 valves expects the duration in MINUTES.
+            // Under duration mode (Mode 0), writing seconds causes out-of-bounds rejection or extremely long periods.
+            uint32_t dur_mins = (dur + 59) / 60; // round up to at least 1 minute
+            bool t_ok = gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, target_dp, dur_mins, TUYA_CMD_DATA_REQUEST, false);
             if (!t_ok) {
-                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending irrigation_target (DP %d) = %u\n"), target_dp, dur);
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending irrigation_target (DP %d) = %u\n"), target_dp, dur_mins);
             }
         }
         
