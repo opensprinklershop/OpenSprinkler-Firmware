@@ -321,22 +321,7 @@ static void gw_process_device_query_queue() {
         bool sent = false;
         bool tried_any = false;
 
-        if (it->need_basic) {
-            tried_any = true;
-            DEBUG_PRINTF(F("[ZIGBEE-GW][QUERY] dispatch basic ieee=%016llX ep=%u\n"),
-                         (unsigned long long)it->ieee_addr, (unsigned)it->endpoint);
-            bool ok = sensor_zigbee_gw_query_basic_cluster_by_ieee(it->ieee_addr, it->endpoint);
-            if (ok) {
-                it->need_basic = false;
-                sent = true;
-                it->next_try_ms = now + GW_DEVICE_QUERY_SPACING_MS;
-                DEBUG_PRINTF(F("[ZIGBEE-GW][QUERY] basic dispatched ieee=%016llX ep=%u next=%lu\n"),
-                             (unsigned long long)it->ieee_addr, (unsigned)it->endpoint,
-                             (unsigned long)it->next_try_ms);
-            }
-        }
-
-        if (it->need_tuya && !sent) {
+        if (it->need_tuya) {
             tried_any = true;
             DEBUG_PRINTF(F("[ZIGBEE-GW][QUERY] dispatch tuya ieee=%016llX ep=%u\n"),
                          (unsigned long long)it->ieee_addr, (unsigned)it->endpoint);
@@ -346,6 +331,21 @@ static void gw_process_device_query_queue() {
                 sent = true;
                 it->next_try_ms = now + GW_DEVICE_QUERY_SPACING_MS;
                 DEBUG_PRINTF(F("[ZIGBEE-GW][QUERY] tuya dispatched ieee=%016llX ep=%u next=%lu\n"),
+                             (unsigned long long)it->ieee_addr, (unsigned)it->endpoint,
+                             (unsigned long)it->next_try_ms);
+            }
+        }
+
+        if (it->need_basic && !sent) {
+            tried_any = true;
+            DEBUG_PRINTF(F("[ZIGBEE-GW][QUERY] dispatch basic ieee=%016llX ep=%u\n"),
+                         (unsigned long long)it->ieee_addr, (unsigned)it->endpoint);
+            bool ok = sensor_zigbee_gw_query_basic_cluster_by_ieee(it->ieee_addr, it->endpoint);
+            if (ok) {
+                it->need_basic = false;
+                sent = true;
+                it->next_try_ms = now + GW_DEVICE_QUERY_SPACING_MS;
+                DEBUG_PRINTF(F("[ZIGBEE-GW][QUERY] basic dispatched ieee=%016llX ep=%u next=%lu\n"),
                              (unsigned long long)it->ieee_addr, (unsigned)it->endpoint,
                              (unsigned long)it->next_try_ms);
             }
@@ -409,6 +409,28 @@ static uint64_t gw_find_ieee_by_short_addr(uint16_t short_addr) {
     return 0;
 }
 
+static uint16_t gw_get_short_addr(uint64_t ieee_addr) {
+    if (ieee_addr == 0) return 0xFFFF;
+    
+    // 1. Authoritative cache lookup first (this has the latest DEVICE_ANNCE address!)
+    for (const auto& dev : gw_discovered_devices) {
+        if (dev.ieee_addr == ieee_addr && dev.short_addr != 0 && dev.short_addr != 0xFFFF && dev.short_addr != 0xFFFE) {
+            return dev.short_addr;
+        }
+    }
+    
+    // 2. Stack fallback
+    esp_zb_ieee_addr_t ieee_le = {0};
+    for (int i = 0; i < 8; i++) {
+        ieee_le[i] = (uint8_t)(ieee_addr >> (i * 8));
+    }
+    esp_zb_lock_acquire(portMAX_DELAY);
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+    esp_zb_lock_release();
+    
+    return short_addr;
+}
+
 static ZigbeeDeviceAccessTime& gw_get_or_create_device_access(uint64_t ieee_addr, uint16_t short_addr) {
     if (ieee_addr == 0 && short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE) {
         ieee_addr = gw_find_ieee_by_short_addr(short_addr);
@@ -437,7 +459,7 @@ static void gw_record_device_access(uint64_t ieee_addr, uint16_t short_addr, boo
     }
 }
 
-static bool gw_is_device_access_allowed(uint64_t ieee_addr, uint16_t short_addr, bool is_write, uint32_t cooldown_ms = 1000UL) {
+static bool gw_is_device_access_allowed(uint64_t ieee_addr, uint16_t short_addr, bool is_write, uint32_t cooldown_ms = 5000UL) {
     uint32_t now = millis();
     if (ieee_addr == 0 && short_addr != 0 && short_addr != 0xFFFF && short_addr != 0xFFFE) {
         ieee_addr = gw_find_ieee_by_short_addr(short_addr);
@@ -476,8 +498,8 @@ static void gw_tuya_schedule_next() {
         found_any_used = true;
 
         uint16_t short_addr = gw_tuya_schedule[slot].short_addr;
-        if (!gw_is_device_access_allowed(0, short_addr, true, 1000UL)) {
-            continue; // Space commands/accesses by at least 1s per device
+        if (!gw_is_device_access_allowed(0, short_addr, true, 5000UL)) {
+            continue; // Space commands/accesses by at least 5s per device
         }
 
         gw_tuya_scheduled_send(slot);
@@ -1864,8 +1886,8 @@ bool sensor_zigbee_gw_request_dp_query(uint64_t device_ieee, uint8_t endpoint) {
         return false;
     }
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP query blocked: rate-limited/cooldown (1s) for ieee=%016llX\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
                      (unsigned long long)device_ieee);
         return false;
     }
@@ -2396,11 +2418,11 @@ public:
             gw_add_responsive_device(short_addr, ieee_addr, 1);
         }
 
-        // Send Basic Cluster query to trigger response (and add confirmed device)
-        gw_query_basic_cluster(short_addr, 1);
-
-        // Send Tuya DP query in parallel (no-op for non-Tuya devices)
+        // Send Tuya DP query first (fast and lightweight, unblocks TS0601/GIEX immediately)
         gw_tuya_send_dp_query(short_addr, 1);
+
+        // Note: Standard Basic Cluster query is queued with a safety delay inside gw_add_responsive_device(),
+        // so we don't need to send it synchronously here, which avoids flooding sleepy devices.
     }
 
     // Override zbReadBasicCluster to handle Basic Cluster read responses ourselves.
@@ -2706,12 +2728,10 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t 
         ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
     }
 
-    esp_zb_lock_acquire(portMAX_DELAY);
-    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
-    esp_zb_lock_release();
+    uint16_t short_addr = gw_get_short_addr(device_ieee);
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic query blocked: rate-limited/cooldown (1s) for ieee=%016llX\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
                      (unsigned long long)device_ieee);
         return false;
     }
@@ -2776,12 +2796,10 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(uint64_t device_ieee, uin
         ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
     }
 
-    esp_zb_lock_acquire(portMAX_DELAY);
-    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
-    esp_zb_lock_release();
+    uint16_t short_addr = gw_get_short_addr(device_ieee);
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic single-attr query blocked: rate-limited/cooldown (1s) for ieee=%016llX\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Basic single-attr query blocked: rate-limited/cooldown (5s) for ieee=%016llX\n"),
                      (unsigned long long)device_ieee);
         return false;
     }
@@ -2884,8 +2902,8 @@ bool sensor_zigbee_gw_read_attribute(uint64_t device_ieee, uint8_t endpoint,
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
     esp_zb_lock_release();
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 1000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Active read blocked: rate-limited/cooldown (1s) for ieee=%016llX cluster=0x%04X\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, false, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Active read blocked: rate-limited/cooldown (5s) for ieee=%016llX cluster=0x%04X\n"),
                      (unsigned long long)device_ieee, cluster_id);
         return false;
     }
@@ -4381,14 +4399,7 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
     // attempting short-address lookup.
     gw_try_fix_ieee(&device_ieee);
 
-    esp_zb_ieee_addr_t ieee_le = {0};
-    for (int i = 0; i < 8; i++) {
-        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
-    }
-
-    esp_zb_lock_acquire(portMAX_DELAY);
-    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
-    esp_zb_lock_release();
+    uint16_t short_addr = gw_get_short_addr(device_ieee);
 
     if (short_addr == 0xFFFF || short_addr == 0xFFFE) {
         if (!gw_ieee_is_known(device_ieee)) {
@@ -4403,8 +4414,8 @@ bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turn
         return false;
     }
 
-    if (!gw_is_device_access_allowed(device_ieee, short_addr, true, 1000UL)) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Standard On/Off rate-limited/cooldown (1s) for ieee=%016llX. Deferring.\n"),
+    if (!gw_is_device_access_allowed(device_ieee, short_addr, true, 5000UL)) {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Standard On/Off rate-limited/cooldown (5s) for ieee=%016llX. Deferring.\n"),
                      (unsigned long long)device_ieee);
         if (!gw_pending_switch.valid || gw_pending_switch.ieee_addr != device_ieee) {
             gw_queue_pending_switch(false, device_ieee, endpoint, 1, turnon);
@@ -4547,7 +4558,7 @@ bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, ui
     snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)device_ieee);
 
     uint8_t active_dp = dp_id;
-    if (active_dp == 0) {
+    if (active_dp == 0 || active_dp == 1) {
         ZigBeeLogicalDevice* log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve_1");
         if (!log_valve) log_valve = OpenSprinkler::zigbee_logical_lookup(ieee_str, "valve");
         if (log_valve) {
@@ -4609,20 +4620,13 @@ bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, ui
         if (!log_countdown) log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, "timer");
     }
 
-    bool mode_used = (log_valve_mode != nullptr);
     bool target_used = (log_irrigation_target != nullptr);
     bool countdown_used = (log_countdown != nullptr);
 
+    // Switch the valve FIRST (using the calculated active_dp) to open it without delay!
+    bool ok = gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, active_dp, turnon, TUYA_CMD_DATA_REQUEST, false);
+
     if (turnon && dur > 0) {
-        if (mode_used) {
-            uint8_t mode_dp = log_valve_mode->tuya_dp_value;
-            // Mode 0 = raw duration mode
-            bool m_ok = gw_send_tuya_dp_enum_write_cmd(device_ieee, endpoint, mode_dp, 0, TUYA_CMD_DATA_REQUEST, false);
-            if (!m_ok) {
-                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending valve_mode (DP %d) = 0\n"), mode_dp);
-            }
-        }
-        
         if (target_used) {
             uint8_t target_dp = log_irrigation_target->tuya_dp_value;
             // The "irrigation_target" DP on GIEX QT06/GX02 valves expects the duration in MINUTES.
@@ -4643,8 +4647,7 @@ bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, ui
         }
     }
     
-    // Switch the valve (using the calculated active_dp)
-    return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, active_dp, turnon, TUYA_CMD_DATA_REQUEST, false);
+    return ok;
 }
 
 bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) {

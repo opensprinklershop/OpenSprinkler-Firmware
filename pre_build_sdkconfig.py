@@ -67,6 +67,10 @@ SDKCONFIG_OVERRIDES = {
     "CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC": None,  # Disable internal-only allocation
     "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC": None,   # Disable default (malloc) allocation
     "CONFIG_MBEDTLS_IRAM_8BIT_MEM_ALLOC": None, # Disable IRAM allocation fallback
+    # Fall back to software-based AES calculation if payload length is
+    # less than threshold. Eliminates scarce internal RAM DMA page allocation failures!
+    "CONFIG_MBEDTLS_AES_HW_SMALL_DATA_LEN_OPTIM": "y",
+    "CONFIG_MBEDTLS_AES_HW_SMALL_DATA_LEN_THRESHOLD": "65536",
     
     # =====================================================================
     # Arduino Loop Task Stack Size
@@ -294,6 +298,8 @@ def sync_c5_matter_sdkconfig_headers(env):
         "CONFIG_ETHERNET_NETWORK_COMMISSIONING_DRIVER": "1",
         "CONFIG_ETHERNET_NETWORK_ENDPOINT_ID": "0",
         "CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER": "1",
+        "CONFIG_MBEDTLS_AES_HW_SMALL_DATA_LEN_OPTIM": "1",
+        "CONFIG_MBEDTLS_AES_HW_SMALL_DATA_LEN_THRESHOLD": "65536",
     }
     known_variants = ["qio_qspi", "dio_qspi", "qio_opi", "dio_opi"]
     patched = 0

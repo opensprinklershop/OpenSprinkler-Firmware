@@ -58,6 +58,32 @@ static void mbedtls_free_spiram(void *ptr) {
 }
 
 /**
+ * Linker wrap for heap_caps_aligned_alloc:
+ * When internal RAM (including DMA-capable RAM) is exhausted,
+ * fall back to PSRAM (SPIRAM) which is DMA-capable on ESP32-C5.
+ * This prevents SSL/TLS/AES failures under high memory pressure.
+ */
+extern void* __real_heap_caps_aligned_alloc(size_t alignment, size_t size, uint32_t caps);
+
+void* __wrap_heap_caps_aligned_alloc(size_t alignment, size_t size, uint32_t caps) {
+    void *ptr = __real_heap_caps_aligned_alloc(alignment, size, caps);
+    if (ptr != NULL) {
+        return ptr;
+    }
+    
+    if ((caps & MALLOC_CAP_DMA) || (caps & MALLOC_CAP_INTERNAL)) {
+        uint32_t fallback_caps = (caps & ~MALLOC_CAP_INTERNAL) | MALLOC_CAP_SPIRAM;
+        ptr = __real_heap_caps_aligned_alloc(alignment, size, fallback_caps);
+        if (ptr != NULL) {
+            ESP_EARLY_LOGW(TAG, "heap_caps_aligned_alloc %u with caps 0x%X FAILED -> fell back to SPIRAM", (unsigned)size, (unsigned)caps);
+            return ptr;
+        }
+    }
+    
+    return NULL;
+}
+
+/**
  * Initialize mbedTLS with SPIRAM-aware allocators
  */
 void mbedtls_platform_set_spiram_allocators(void) {
