@@ -3266,7 +3266,7 @@ void check_monitors() {
 #else
         time_os_t ct = timeNow;
 	struct tm *ti = gmtime(&ct);
-	uint8_t wday = (ti->tm_wday+1)%7; 
+	uint8_t wday = (ti->tm_wday+6)%7; 
 #endif
         mon->active  = (mon->m.mtime.weekdays >> wday) & 0x01;
         if (mon->m.mtime.time_from > mon->m.mtime.time_to) // FROM > TO ? Over night value

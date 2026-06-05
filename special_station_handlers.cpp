@@ -129,7 +129,7 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  }
 
  static void add_logical_device_to_json(ArduinoJson::JsonArray arr, const ZigBeeLogicalDevice& dev) {
- 	ArduinoJson::JsonObject obj = arr.createNestedObject();
+ 	ArduinoJson::JsonObject obj = arr.add<ArduinoJson::JsonObject>();
  	obj["ieee"] = dev.ieee;
  	obj["name"] = dev.name;
  	if (dev.desc[0] != '\0') obj["desc"] = dev.desc;

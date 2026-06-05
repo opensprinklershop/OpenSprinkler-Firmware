@@ -223,7 +223,7 @@ static bool gw_save_discovered_devices() {
     doc["version"] = 1;
     ArduinoJson::JsonArray arr = doc["devices"].to<ArduinoJson::JsonArray>();
     for (const auto& dev : gw_discovered_devices) {
-        ArduinoJson::JsonObject obj = arr.createNestedObject();
+        ArduinoJson::JsonObject obj = arr.add<ArduinoJson::JsonObject>();
         obj["ieee_addr"] = dev.ieee_addr;
         obj["short_addr"] = dev.short_addr;
         obj["endpoint"] = dev.endpoint;
