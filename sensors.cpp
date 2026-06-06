@@ -3269,11 +3269,28 @@ void check_monitors() {
         uint32_t seconds_of_day = timeNow % 86400L;
         uint16_t time = (seconds_of_day / 3600) * 100 + (seconds_of_day % 3600) / 60; //HHMM
         uint8_t wday = (timeNow / 86400L + 3) % 7; //Monday = 0
-        mon->active  = (mon->m.mtime.weekdays >> wday) & 0x01;
+        bool in_window = (mon->m.mtime.weekdays >> wday) & 0x01;
         if (mon->m.mtime.time_from > mon->m.mtime.time_to) // FROM > TO ? Over night value
-          mon->active &= time >= mon->m.mtime.time_from || time <= mon->m.mtime.time_to;
+          in_window &= time >= mon->m.mtime.time_from || time <= mon->m.mtime.time_to;
         else
-          mon->active &= time >= mon->m.mtime.time_from && time <= mon->m.mtime.time_to;
+          in_window &= time >= mon->m.mtime.time_from && time <= mon->m.mtime.time_to;
+
+        if (mon->reset_seconds == 0) {
+          mon->active = in_window;
+        } else {
+          if (!in_window) {
+            mon->active = false;
+            mon->reset_time = 0;
+          } else {
+            if (mon->reset_time == 0) {
+              mon->active = true;
+            } else if (timeNow < mon->reset_time) {
+              mon->active = true;
+            } else {
+              mon->active = false;
+            }
+          }
+        }
         break;
       }
       case MONITOR_REMOTE:
