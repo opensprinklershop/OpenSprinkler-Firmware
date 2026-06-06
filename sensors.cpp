@@ -3374,6 +3374,33 @@ char *strnlstr(const char *haystack, const char *needle, size_t needle_len, size
   return NULL;
 }
 
+static inline bool is_word_char(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+static const char* findSegment(const char* payload, const char* p, size_t length, const char* segment, size_t seg_len) {
+  if (seg_len == 0) return p;
+  size_t payload_offset = p - payload;
+  if (payload_offset + seg_len > length) return NULL;
+  
+  for (size_t i = payload_offset; i <= length - seg_len; i++) {
+    if (payload[i] == 0) break;
+    if (payload[i] == segment[0] && strncmp(payload + i, segment, seg_len) == 0) {
+      bool boundary_ok = true;
+      if (is_word_char(segment[0]) && i > 0 && is_word_char(payload[i - 1])) {
+        boundary_ok = false;
+      }
+      if (is_word_char(segment[seg_len - 1]) && i + seg_len < length && is_word_char(payload[i + seg_len])) {
+        boundary_ok = false;
+      }
+      if (boundary_ok) {
+        return payload + i;
+      }
+    }
+  }
+  return NULL;
+}
+
 int findValue(const char *payload, unsigned int length, const char *jsonFilter, double& value) {
 	char *p = (char*)payload;				
 	char *f = (char*)jsonFilter;
@@ -3382,10 +3409,11 @@ int findValue(const char *payload, unsigned int length, const char *jsonFilter, 
 	while (!emptyFilter && f && p) {
 		f = strstr((char*)jsonFilter, "|");
 		if (f) {
-			p = strnlstr(p, jsonFilter, f-jsonFilter, (char*)payload-p+length);
+			p = (char*)findSegment(payload, p, length, jsonFilter, f-jsonFilter);
 			jsonFilter = f+1;
 		} else {
-			p = strstr(p, jsonFilter);
+			p = (char*)findSegment(payload, p, length, jsonFilter, strlen(jsonFilter));
+			break;
 		}
 	}
 	if (p) {
@@ -3417,10 +3445,11 @@ int findString(const char *payload, unsigned int length, const char *jsonFilter,
 	while (!emptyFilter && f && p) {
 		f = strstr((char*)jsonFilter, "|");
 		if (f) {
-			p = strnlstr(p, jsonFilter, f-jsonFilter, (char*)payload-p+length);
+			p = (char*)findSegment(payload, p, length, jsonFilter, f-jsonFilter);
 			jsonFilter = f+1;
 		} else {
-			p = strstr(p, jsonFilter);
+			p = (char*)findSegment(payload, p, length, jsonFilter, strlen(jsonFilter));
+			break;
 		}
 	}
   value = "";

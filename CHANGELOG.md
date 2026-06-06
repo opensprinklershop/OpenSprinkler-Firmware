@@ -6,7 +6,18 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(209)] (veröffentlicht 2026-06-06
+## [2.4.0(210)] — 2026-06-06
+
+### Added
+- **Web UI**: High-precision flow meter configuration option scale support when using a flow divisor greater than 1 (Ticket #205).
+- **Web UI**: Localized/timezone-shifted date formatting inside the analog sensory data table (Ticket #212).
+
+### Fixed
+- **MQTT Subsystem**: Strict exact word-boundary matching in JSON payload key filtering to prevent subword collisions (e.g. matching `temperature` inside `max_temperature`) (Ticket #222).
+
+---
+
+## [2.4.0(209)] (veröffentlicht 2026-06-06)
 
 ### Fixed
 - **MONITOR_TIME (Time-based monitor)**: Corrected behavior of the Time-based monitor when reset seconds (`reset_seconds`) is set to 0. It now correctly remains active (`true`) throughout the defined time window and only goes inactive (`false`) at the end of the window.
