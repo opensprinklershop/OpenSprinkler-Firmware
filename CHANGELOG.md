@@ -6,6 +6,13 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(209)] (veröffentlicht 2026-06-06
+
+### Fixed
+- **MONITOR_TIME (Time-based monitor)**: Corrected behavior of the Time-based monitor when reset seconds (`reset_seconds`) is set to 0. It now correctly remains active (`true`) throughout the defined time window and only goes inactive (`false`) at the end of the window.
+
+---
+
 ## [2.4.0(208)] — 2026-06-03
 
 ### Fixed
