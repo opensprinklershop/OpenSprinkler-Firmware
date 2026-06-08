@@ -201,40 +201,19 @@ static ulong pipeburst_flow_snapshot = 0; // flow_count baseline when all statio
 #define FLOW_ANOMALY_DELAY_MS 10000       // 10 seconds delay for both checks
 
 #if defined(ESP32)
-static volatile uint32_t flow_irq_pulses = 0;
-static bool flow_irq_enabled = false;
-
-static void IRAM_ATTR flow_sensor_isr() {
-	static uint32_t last_interrupt_time = 0;
-	uint32_t interrupt_time = millis();
-	if (interrupt_time - last_interrupt_time > 20) { // 20ms debounce to filter contact bounces and high-frequency RF ripple
-		flow_irq_pulses = flow_irq_pulses + 1;
-		last_interrupt_time = interrupt_time;
-	}
-}
-
-static uint32_t flow_take_irq_pulses() {
-	uint32_t pulses;
-	noInterrupts();
-	pulses = flow_irq_pulses;
-	flow_irq_pulses = 0;
-	interrupts();
-	return pulses;
-}
-
 static void flow_update_input_mode() {
-	bool want_irq = (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_FLOW);
-	if (want_irq == flow_irq_enabled) return;
+	bool want_flow = (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_FLOW);
+	static bool flow_input_configured = false;
+	if (want_flow == flow_input_configured) return;
 
-	if (want_irq) {
+	if (want_flow) {
+		DEBUG_PRINTLN("[FLOW-INPUT-MODE]Configuring flow sensor pin GPIO12");
 		pinMode(PIN_SENSOR1, INPUT_PULLUP);
-		attachInterrupt(digitalPinToInterrupt(PIN_SENSOR1), flow_sensor_isr, FALLING);
-		flow_irq_enabled = true;
 		prev_flow_state = HIGH;
+		flow_input_configured = true;
 	} else {
-		detachInterrupt(digitalPinToInterrupt(PIN_SENSOR1));
-		flow_irq_enabled = false;
-		flow_irq_pulses = 0;
+		DEBUG_PRINTLN("[FLOW-INPUT-MODE]De-configuring flow sensor");
+		flow_input_configured = false;
 	}
 }
 #else
@@ -254,6 +233,7 @@ static void flow_process_pulses(ulong curr, uint32_t pulses) {
 
 	if (flow_rt_period < 0) {
 		last_flow_rt = curr;
+		flow_rt_period = 0; // Transition to 0 to seed the first pulse!
 	}
 
 	flow_count += pulses;
@@ -284,7 +264,7 @@ static void flow_process_pulses(ulong curr, uint32_t pulses) {
 
 	if (flow_rt_period > 0) {
 		os.flowcount_rt = (ulong) (FLOWCOUNT_RT_WINDOW * 1000L / flow_rt_period);
-		flow_rt_reset = curr + flow_rt_period * 10;
+		flow_rt_reset = curr + max((ulong)(flow_rt_period * 10), 10000UL); // Keep flow rate for at least 10 seconds to allow the UI to display it
 	} else {
 		os.flowcount_rt = 0;
 		flow_rt_reset = 0;
@@ -302,18 +282,27 @@ void flow_poll() {
 
 	#if defined(ESP8266) || defined(ESP32)
 	if(os.hw_rev>=2) {
-		pinMode(PIN_SENSOR1, INPUT); // Work-around for PIN_SENSOR1 on OS3.2 and above
 		pinMode(PIN_SENSOR1, INPUT_PULLUP);
 	}
 	#endif
 
-
 	unsigned char curr_flow_state = digitalReadExt(PIN_SENSOR1);
+
+	// Implement software debounce
+	static ulong last_pulse_time = 0;
 	if((!prev_flow_state) || curr_flow_state) { // only record on falling edge
 		prev_flow_state = curr_flow_state;
 		return;
 	}
 	prev_flow_state = curr_flow_state;
+
+	// 40ms software debounce to reject contact bounces and RF glitches
+	if (curr - last_pulse_time < 40) {
+		return;
+	}
+	last_pulse_time = curr;
+
+	DEBUG_PRINTF("[FLOW-POLL] Pulse detected! flow_count=%lu\n", flow_count + 1);
 	flow_process_pulses(curr, 1);
 }
 
@@ -999,20 +988,12 @@ void do_loop()
 
 	static ulong flowpoll_timeout=0;
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
-	// handle flow sensor with ESP32 interrupt + poll-drain hybrid, fallback to polling elsewhere.
+	// handle flow sensor with ESP8266-style polling.
 		ulong tm = millis();
 		if((long)(tm-flowpoll_timeout) > 0) { // overflow proof timeout
 			flowpoll_timeout = tm+FLOWPOLL_INTERVAL;
 			flow_update_timeout(tm);
-			#if defined(ESP32)
-			if (flow_irq_enabled) {
-				flow_process_pulses(tm, flow_take_irq_pulses());
-			} else {
-				flow_poll();
-			}
-			#else
 			flow_poll();
-			#endif
 		}
 	}
 
@@ -1434,13 +1415,7 @@ void do_loop()
 	if (curr_time != last_time) {
 		#if defined(ESP8266) || defined(ESP32)
 		if(os.hw_rev>=2) {
-			#if defined(ESP32)
-			if (!(flow_irq_enabled && os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW)) {
-				pinMode(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
-			}
-			#else
 			pinMode(PIN_SENSOR1, INPUT_PULLUP); // this seems necessary for OS 3.2
-			#endif
 			pinMode(PIN_SENSOR2, INPUT_PULLUP);
 		}
 		#endif

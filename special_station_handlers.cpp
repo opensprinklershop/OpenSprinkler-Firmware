@@ -3,6 +3,7 @@
 #include "ArduinoJson.hpp"
 #include "sensors.h"
 #include "sensor_zigbee.h"
+#include "ieee802154_config.h"
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 #include "sensor_zigbee_gw.h"
 #endif
@@ -544,6 +545,14 @@ bool OpenSprinkler::zigbee_logical_load() {
 	auto& map = _get_logical_devices_map();
 	_clear_logical_devices_map(map);
 
+#if !defined(OS_ENABLE_ZIGBEE)
+	return true; // No-op for Matter version or non-Zigbee build - do not load Zigbee data
+#else
+	// If it is the Zigbee build but we are currently running in Matter or disabled mode:
+	if (!ieee802154_is_zigbee()) {
+		return true; // No-op for Matter/Disabled modes
+	}
+
 	if (!file_exists(kZigbeeLogicalDevicesFile)) {
 		return true;
 	}
@@ -597,9 +606,14 @@ bool OpenSprinkler::zigbee_logical_load() {
 
 	DEBUG_PRINTF(F("[ZIGBEE] Loaded %u persisted logical device(s)\n"), (unsigned int)map.size());
 	return true;
+#endif
 }
 
 bool OpenSprinkler::zigbee_logical_save() {
+#if !defined(OS_ENABLE_ZIGBEE)
+	return true;
+#else
 	auto& map = _get_logical_devices_map();
 	return _save_logical_devices_map(map);
+#endif
 }

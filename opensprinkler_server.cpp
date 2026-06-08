@@ -1442,6 +1442,9 @@ void server_json_options_main() {
 	#if defined(ENABLE_RAINMAKER)
 	bfill.emit_p(PSTR(",RAINMAKER"));
 	#endif
+	#if defined(ENABLE_DEBUG)
+	bfill.emit_p(PSTR(",DEBUG"));
+	#endif
 	bfill.emit_p(PSTR("\""));
 
 	bfill.emit_p(PSTR(",\"dexp\":$D,\"mexp\":$D,\"hwt\":$D,"), os.detect_exp(), MAX_EXT_BOARDS, os.hw_type);
@@ -2634,6 +2637,75 @@ void server_json_debug(OTF_PARAMS_DEF) {
 #endif
 	bfill.emit_p(PSTR("}"));
 #endif
+	handle_return(HTML_OK);
+}
+
+void server_json_debug_log(OTF_PARAMS_DEF) {
+	rewind_ether_buffer();
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	print_header(OTF_PARAMS, false);
+#else
+	if(!process_password(OTF_PARAMS)) return;
+	print_header(false);
+#endif
+
+#if defined(ENABLE_DEBUG)
+	const char* buf = debug_buffer.get_buffer();
+	size_t head = debug_buffer.get_head();
+	size_t sz = debug_buffer.get_size();
+	bool wrapped = debug_buffer.is_wrapped();
+
+	if (buf && sz > 0) {
+		if (wrapped) {
+			size_t len1 = sz - head;
+			size_t offset = 0;
+			while (offset < len1) {
+				size_t avail = available_ether_buffer();
+				if (avail == 0) {
+					send_packet(OTF_PARAMS);
+					avail = available_ether_buffer();
+					if (avail == 0) break;
+				}
+				size_t chunk = (len1 - offset < avail) ? (len1 - offset) : avail;
+				bfill.append(buf + head + offset, chunk);
+				offset += chunk;
+			}
+			size_t len2 = head;
+			offset = 0;
+			while (offset < len2) {
+				size_t avail = available_ether_buffer();
+				if (avail == 0) {
+					send_packet(OTF_PARAMS);
+					avail = available_ether_buffer();
+					if (avail == 0) break;
+				}
+				size_t chunk = (len2 - offset < avail) ? (len2 - offset) : avail;
+				bfill.append(buf + offset, chunk);
+				offset += chunk;
+			}
+		} else {
+			size_t len1 = head;
+			size_t offset = 0;
+			while (offset < len1) {
+				size_t avail = available_ether_buffer();
+				if (avail == 0) {
+					send_packet(OTF_PARAMS);
+					avail = available_ether_buffer();
+					if (avail == 0) break;
+				}
+				size_t chunk = (len1 - offset < avail) ? (len1 - offset) : avail;
+				bfill.append(buf + offset, chunk);
+				offset += chunk;
+			}
+		}
+	} else {
+		bfill.emit_p(PSTR("Debug log is empty.\n"));
+	}
+#else
+	bfill.emit_p(PSTR("Debug log not enabled. Please compile with ENABLE_DEBUG.\n"));
+#endif
+
 	handle_return(HTML_OK);
 }
 
@@ -6809,6 +6881,7 @@ const char _url_keys[] PROGMEM =
 	"sh"
 	"sx"
     "db"
+    "dg"
 	"is"
 	"ig"
 	"mc"
@@ -6913,6 +6986,7 @@ URLHandler urls[] = {
 	server_sensorprog_types,//sh
 	server_sensorconfig_backup,//sx
 	server_json_debug,      // db
+	server_json_debug_log,  // dg
 	server_influx_set,// is
 	server_influx_get,// ig
 	server_monitor_config, // mc
@@ -7017,6 +7091,15 @@ void on_firmware_update(OTF_PARAMS_DEF) {
 // Accepted slot args from UI/client: ota0|ota1 (preferred), zigbee|matter (legacy).
 static String s_ota_slot;
 
+#if defined(ESP32C5)
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+static esp_ota_handle_t s_esp_ota_handle = 0;
+static const esp_partition_t* s_esp_ota_partition = nullptr;
+static bool s_esp_ota_running = false;
+static bool s_esp_ota_error = false;
+#endif
+
 static String normalize_ota_slot_arg(const String& slotArgRaw) {
 	String slotArg = slotArgRaw;
 	slotArg.toLowerCase();
@@ -7030,15 +7113,44 @@ void on_firmware_upload_fin() {
 		// don't check password
 	} else if(!(update_server->hasArg("pw") && os.password_verify(update_server->arg("pw").c_str()))) {
 		update_server_send_result(HTML_UNAUTHORIZED);
+#if defined(ESP32C5)
+		if (s_esp_ota_running) {
+			esp_ota_abort(s_esp_ota_handle);
+			s_esp_ota_running = false;
+		}
+#else
 		Update.end(false);
+#endif
 		return;
 	}
+
+#if defined(ESP32C5)
+	if (s_esp_ota_error || !s_esp_ota_running) {
+		update_server_send_result(HTML_UPLOAD_FAILED);
+		if (s_esp_ota_running) {
+			esp_ota_abort(s_esp_ota_handle);
+			s_esp_ota_running = false;
+		}
+		delay(250);
+		return;
+	}
+
+	esp_err_t err = esp_ota_end(s_esp_ota_handle);
+	s_esp_ota_running = false;
+	if (err != ESP_OK) {
+		DEBUG_PRINTF("[OTA-C5] esp_ota_end failed: %d\n", err);
+		update_server_send_result(HTML_UPLOAD_FAILED);
+		delay(250);
+		return;
+	}
+#else
 	// finish update and check error
 	if(!Update.end(true) || Update.hasError()) {
 		update_server_send_result(HTML_UPLOAD_FAILED);
 		delay(250); // allow UI to receive the error code
 		return;
 	}
+#endif
 
 #if defined(ESP32C5)
 	// Update the boot-variant config to match the slot that was just flashed
@@ -7084,17 +7196,26 @@ void on_firmware_upload() {
 		esp_partition_subtype_t subtype = (s_ota_slot == "zigbee")
 			? ESP_PARTITION_SUBTYPE_APP_OTA_0
 			: ESP_PARTITION_SUBTYPE_APP_OTA_1;
-		const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, subtype, nullptr);
+		s_esp_ota_partition = esp_partition_find_first(ESP_PARTITION_TYPE_APP, subtype, nullptr);
+		s_esp_ota_running = false;
+		s_esp_ota_error = false;
+		s_esp_ota_handle = 0;
+
 		DEBUG_PRINT(F("OTA target partition: "));
 		DEBUG_PRINTLN(partLabel);
-		if (part) {
-			DEBUG_PRINTF("OTA target address: 0x%06x\n", (unsigned)part->address);
+		if (s_esp_ota_partition) {
+			DEBUG_PRINTF("OTA target address: 0x%06x\n", (unsigned)s_esp_ota_partition->address);
+			esp_err_t err = esp_ota_begin(s_esp_ota_partition, OTA_SIZE_UNKNOWN, &s_esp_ota_handle);
+			if (err == ESP_OK) {
+				s_esp_ota_running = true;
+				DEBUG_PRINTLN(F("[OTA-C5] esp_ota_begin OK"));
+			} else {
+				s_esp_ota_error = true;
+				DEBUG_PRINTF("[OTA-C5] esp_ota_begin failed: %d\n", err);
+			}
 		} else {
+			s_esp_ota_error = true;
 			DEBUG_PRINTLN(F("OTA target partition lookup failed"));
-		}
-		if(!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH, -1, LOW, partLabel)) {
-			DEBUG_PRINT(F("begin failed for partition: "));
-			DEBUG_PRINTLN(partLabel);
 		}
 #else
 		uint32_t maxSketchSpace = (ESP.getFreeSketchSpace()-0x1000)&0xFFFFF000;
@@ -7106,16 +7227,33 @@ void on_firmware_upload() {
 
 	} else if(upload.status == UPLOAD_FILE_WRITE) {
 		DEBUG_PRINT(F("."));
+#if defined(ESP32C5)
+		if (s_esp_ota_running && !s_esp_ota_error) {
+			esp_err_t err = esp_ota_write(s_esp_ota_handle, upload.buf, upload.currentSize);
+			if (err != ESP_OK) {
+				s_esp_ota_error = true;
+				DEBUG_PRINTF("\n[OTA-C5] esp_ota_write failed: %d\n", err);
+			}
+		}
+#else
 		if(Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
 			DEBUG_PRINTLN(F("size mismatch"));
 		}
+#endif
 
 	} else if(upload.status == UPLOAD_FILE_END) {
 
 		DEBUG_PRINTLN(F("completed"));
 
 	} else if(upload.status == UPLOAD_FILE_ABORTED){
+#if defined(ESP32C5)
+		if (s_esp_ota_running) {
+			esp_ota_abort(s_esp_ota_handle);
+			s_esp_ota_running = false;
+		}
+#else
 		Update.end();
+#endif
 		DEBUG_PRINTLN(F("aborted"));
 	}
 	delay(0);

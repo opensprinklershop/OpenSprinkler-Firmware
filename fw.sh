@@ -246,7 +246,12 @@ install_ip() {
 
     header "Firmware-Upload via IP: $bin_file → $DEVICE_IP ($variant)"
 
-    local url="http://${DEVICE_IP}:8080/update"
+    ./fw.sh reset && ./fw.sh deploy zigbee debug    # Extract only the host/IP from DEVICE_IP (strip http(s) and any custom ports)
+    local host="${DEVICE_IP#http://}"
+    host="${host#https://}"
+    host="${host%%:*}"
+    host="${host%%/*}"
+    local url="http://${host}:8080/update"
     if [[ -n "$slot" ]]; then
         url+="?slot=${slot}"
     fi

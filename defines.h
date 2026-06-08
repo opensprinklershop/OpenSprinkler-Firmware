@@ -87,7 +87,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      210  // Firmware minor version
+#define OS_FW_MINOR      211  // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -676,19 +676,30 @@ enum {
 
 #if defined(ENABLE_DEBUG) /** Serial debug functions */
 
+#include "debug_log.h"
+
+#if defined(ESP8266)
+#define DEBUG_LOG_BUFFER_SIZE 2048
+#elif defined(ESP32) || defined(OSPI)
+#define DEBUG_LOG_BUFFER_SIZE 16384
+#else
+#define DEBUG_LOG_BUFFER_SIZE 4096
+#endif
+
 #if defined(ARDUINO)
-#define DEBUG_BEGIN(x)   {Serial.begin(x);}
-#define DEBUG_PRINT(x)   {Serial.print(x);}
-#define DEBUG_PRINTLN(x) {Serial.println(x);}
+#define DEBUG_BEGIN(x)   {Serial.begin(x); debug_buffer.begin(DEBUG_LOG_BUFFER_SIZE);}
+#define DEBUG_PRINT(x)   {Serial.print(x); debug_buffer.print(x);}
+#define DEBUG_PRINTLN(x) {Serial.println(x); debug_buffer.println(x);}
 // Allow passing both plain C strings and F("...") (const __FlashStringHelper*).
-#define DEBUG_PRINTF(msg, ...)    {Serial.printf((const char*)msg, ##__VA_ARGS__);}
+#define DEBUG_PRINTF(msg, ...)    {Serial.printf((const char*)msg, ##__VA_ARGS__); debug_buffer.printf((const char*)msg, ##__VA_ARGS__);}
 #else
 #include <stdio.h>
-#define DEBUG_BEGIN(x)          {}  /** Serial debug functions */
-inline  void DEBUG_PRINT(int x) {fprintf(stdout, "%d", x);}
-inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s);}
-#define DEBUG_PRINTLN(x)        {DEBUG_PRINT(x);fprintf(stdout, "\n");}
-#define DEBUG_PRINTF(msg, ...)    {fprintf(stdout, msg, ##__VA_ARGS__);}
+#define DEBUG_BEGIN(x)          {debug_buffer.begin(DEBUG_LOG_BUFFER_SIZE);}  /** Serial debug functions */
+inline  void DEBUG_PRINT(int x) {fprintf(stdout, "%d", x); debug_buffer.print(x);}
+inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s); debug_buffer.print(s);}
+inline  void DEBUG_PRINT(unsigned long x) {fprintf(stdout, "%lu", x); debug_buffer.print(x);}
+#define DEBUG_PRINTLN(x)        {DEBUG_PRINT(x);fprintf(stdout, "\n"); debug_buffer.println();}
+#define DEBUG_PRINTF(msg, ...)    {fprintf(stdout, msg, ##__VA_ARGS__); debug_buffer.printf(msg, ##__VA_ARGS__);}
 #endif
 
 #else
