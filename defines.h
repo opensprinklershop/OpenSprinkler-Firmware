@@ -694,10 +694,19 @@ enum {
 #define DEBUG_PRINTF(msg, ...)    {Serial.printf((const char*)msg, ##__VA_ARGS__); debug_buffer.printf((const char*)msg, ##__VA_ARGS__);}
 #else
 #include <stdio.h>
+#include <string>
 #define DEBUG_BEGIN(x)          {debug_buffer.begin(DEBUG_LOG_BUFFER_SIZE);}  /** Serial debug functions */
+inline  void DEBUG_PRINT(char c) {fprintf(stdout, "%c", c); debug_buffer.print(c);}
 inline  void DEBUG_PRINT(int x) {fprintf(stdout, "%d", x); debug_buffer.print(x);}
-inline  void DEBUG_PRINT(const char*s) {fprintf(stdout, "%s", s); debug_buffer.print(s);}
+inline  void DEBUG_PRINT(unsigned int x) {fprintf(stdout, "%u", x); debug_buffer.print(x);}
+inline  void DEBUG_PRINT(long x) {fprintf(stdout, "%ld", x); debug_buffer.print(x);}
 inline  void DEBUG_PRINT(unsigned long x) {fprintf(stdout, "%lu", x); debug_buffer.print(x);}
+inline  void DEBUG_PRINT(long long x) {fprintf(stdout, "%lld", x); debug_buffer.print((long)x);}
+inline  void DEBUG_PRINT(unsigned long long x) {fprintf(stdout, "%llu", x); debug_buffer.print((unsigned long)x);}
+inline  void DEBUG_PRINT(double x) {fprintf(stdout, "%g", x); debug_buffer.print(x);}
+inline  void DEBUG_PRINT(float x) {fprintf(stdout, "%g", (double)x); debug_buffer.print((double)x);}
+inline  void DEBUG_PRINT(const char* s) {fprintf(stdout, "%s", s); debug_buffer.print(s);}
+inline  void DEBUG_PRINT(const std::string& s) {fprintf(stdout, "%s", s.c_str()); debug_buffer.print(s.c_str());}
 #define DEBUG_PRINTLN(x)        {DEBUG_PRINT(x);fprintf(stdout, "\n"); debug_buffer.println();}
 #define DEBUG_PRINTF(msg, ...)    {fprintf(stdout, msg, ##__VA_ARGS__); debug_buffer.printf(msg, ##__VA_ARGS__);}
 #endif

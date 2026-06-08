@@ -147,3 +147,6 @@ curl "http://192.168.0.151/du?pw=${ADMIN_HASH}"
 
 ### Radio Coexistence (ESP32-C5)
 The ESP32-C5 supports WiFi, BLE, and Zigbee. The firmware uses coexistence APIs to manage these radios. During BLE scans, the Zigbee PTI is lowered to reduce interference. This is controlled by `zigbee_coex_yield_for_ble(true)` in `sensor_ble.cpp`. If you are testing BLE functionality, monitor the logs for coexistence messages to ensure it's working as expected.
+
+### Release ###
+After a successfull release deployment, replace also the version number in the documentation, https://opensprinklershop.github.io

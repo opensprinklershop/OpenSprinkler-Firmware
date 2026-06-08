@@ -94,7 +94,7 @@ if [ "$1" == "demo" ]; then
     	ifx=$(ls external/influxdb-cpp/*.cpp)
     	g++ -o OpenSprinkler -DDEMO -DSMTP_OPENSSL $DEBUG -std=c++14 -include string.h main.cpp \
 		OpenSprinkler.cpp program.cpp opensprinkler_server.cpp utils.cpp weather.cpp gpio.cpp mqtt.cpp sunrise.cpp \
-		smtp.c RCSwitch.cpp sensor*.cpp special_station_handlers.cpp notifier.cpp naett.c psram_utils.cpp TimeLib.cpp osinfluxdb.cpp \
+		smtp.c RCSwitch.cpp debug_log.cpp sensor*.cpp special_station_handlers.cpp notifier.cpp naett.c psram_utils.cpp TimeLib.cpp osinfluxdb.cpp \
 		$ws_include $ws $otf_include $otf $ifx_include \
 		-lpthread -lmosquitto -lssl -lcrypto -lcurl -li2c -lmodbus -lbluetooth
 else
