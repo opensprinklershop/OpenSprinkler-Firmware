@@ -1804,7 +1804,10 @@ void read_all_sensors(boolean online) {
     boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval || current_sensor->repeat_read);
     
     if (should_read) {
-      if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
+      if (!current_sensor->flags.enable || current_sensor->type == SENSOR_TYPE_NONE) {
+        current_sensor->last_read = time;
+        current_sensor->repeat_read = 0;
+      } else if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
         //boolean was_repeat = current_sensor->repeat_read;
         DEBUG_PRINTF(F("[SENSOR] read begin #%d type=%d name='%s' repeat=%d\n"),
                      current_sensor->nr, current_sensor->type, current_sensor->name, current_sensor->repeat_read);
@@ -3208,15 +3211,46 @@ void check_monitors() {
         if (sensor && sensor->flags.data_ok) {
           value = sensor->last_data;
 
-          if (!mon->active) {
-            if ((mon->type == MONITOR_MIN && value <= mon->m.minmax.value1) || 
-              (mon->type == MONITOR_MAX && value >= mon->m.minmax.value1)) {
-              mon->active = true;
+          double act_threshold = mon->m.minmax.value1;
+          double deact_threshold = mon->m.minmax.value2;
+
+          if (mon->type == MONITOR_MIN) {
+            if (deact_threshold <= act_threshold) {
+              deact_threshold = act_threshold;
             }
-          } else {
-            if ((mon->type == MONITOR_MIN && value >= mon->m.minmax.value2) || 
-              (mon->type == MONITOR_MAX && value <= mon->m.minmax.value2)) {
-              mon->active = false;
+            if (!mon->active) {
+              if (value <= act_threshold) {
+                mon->active = true;
+              }
+            } else {
+              if (deact_threshold == act_threshold) {
+                if (value > deact_threshold) {
+                  mon->active = false;
+                }
+              } else {
+                if (value >= deact_threshold) {
+                  mon->active = false;
+                }
+              }
+            }
+          } else if (mon->type == MONITOR_MAX) {
+            if (deact_threshold >= act_threshold || deact_threshold == 0.0) {
+              deact_threshold = act_threshold;
+            }
+            if (!mon->active) {
+              if (value >= act_threshold) {
+                mon->active = true;
+              }
+            } else {
+              if (deact_threshold == act_threshold) {
+                if (value < deact_threshold) {
+                  mon->active = false;
+                }
+              } else {
+                if (value <= deact_threshold) {
+                  mon->active = false;
+                }
+              }
             }
           }
         }

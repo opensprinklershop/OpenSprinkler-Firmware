@@ -1699,7 +1699,9 @@ void do_loop()
 			for(qi=pd.nqueue-1;qi>=0;qi--) {
 				q=pd.queue+qi;
 				if(!q->dur || curr_time >= q->deque_time) {
+					unsigned char dequeued_sid = q->sid;
 					pd.dequeue(qi);
+					pd.station_qid[dequeued_sid] = 0xFF;
 				}
 			}
 
