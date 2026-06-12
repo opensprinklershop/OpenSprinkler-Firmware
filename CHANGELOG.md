@@ -6,6 +6,23 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(212)] — unveröffentlicht
+
+### Fixed
+- **Logic Monitors (Hysteresis & Loop Protection)**: Implemented robust boundary handling for value hysteresis. Min/Max thresholds (`value1` and `value2`) are now dynamically matched to avoid state-toggling oscillation even when bounds are misconfigured, swapped, or a zero hysteresis is specified (resolving overlaps in Ticket #231).
+- **Web UI (Monitor Save Synchronization)**: Corrected saving of edit/add actions in the logic monitor configuration, ensuring the newly updated logical state (`active` flags and attributes) of the monitors are fetched in correct serial callback order directly after updating (Ticket #231).
+- **Boundary Checks**: Hardened array index limits on runtime queue access and station status arrays.
+
+---
+
+## [2.4.0(211)] — 2026-06-10
+
+### Fixed
+- **Logic Monitors**: Improved sensor reading logic and monitor activation conditions.
+- **Station queue**: Fixed start/stop last zone issues.
+
+---
+
 ## [2.4.0(210)] — 2026-06-06
 
 ### Added
