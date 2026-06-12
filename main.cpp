@@ -1661,7 +1661,7 @@ void do_loop()
 				unsigned char sqi=pd.station_qid[sid];
 				// skip if station is already assigned a queue element
 				// and that queue element has an earlier start time
-				if(sqi<255 && pd.queue[sqi].st<q->st) continue;
+				if(sqi<pd.nqueue && pd.queue[sqi].st<q->st) continue;
 				// otherwise assign the queue element to station
 				pd.station_qid[sid]=qid;
 			}
@@ -1674,7 +1674,7 @@ void do_loop()
 					// skip master stations and any station that's not in the queue
 					if (os.status.mas == sid+1) continue;
 					if (os.status.mas2== sid+1) continue;
-					if (pd.station_qid[sid]==255) continue;
+					if (pd.station_qid[sid] >= pd.nqueue) continue;
 
 					q = pd.queue + pd.station_qid[sid];
 
@@ -1780,7 +1780,7 @@ void do_loop()
 					// skip if this is the master station
 					if (mas_id == sid + 1) continue;
 
-					if(pd.station_qid[sid]==255) continue; // skip if station is not in the queue
+					if(pd.station_qid[sid] >= pd.nqueue) continue; // skip if station is not in the queue
 
 					q = pd.queue + pd.station_qid[sid];
 
@@ -2130,6 +2130,9 @@ void turn_off_running_station_immediate(unsigned char sid, time_os_t curr_time, 
 	os.apply_all_station_bits();
 
 	unsigned char qid = pd.station_qid[sid];
+	if (qid >= pd.nqueue) {
+		return;
+	}
 	RuntimeQueueStruct *q = pd.queue + qid;
 	unsigned char gid = os.get_station_gid(q->sid);
 	unsigned char sched_gid = (gid < NUM_SEQ_GROUPS) ? gid : NUM_SEQ_GROUPS;
@@ -2300,7 +2303,7 @@ void process_dynamic_events(time_os_t curr_time) {
 			// if raining and ignore rain bit is cleared
 			// FIX ME
 			qid = pd.station_qid[sid];
-			if(qid==255) continue;
+			if(qid >= pd.nqueue) continue;
 			RuntimeQueueStruct *q = pd.queue + qid;
 
 			if(q->pid>=99) continue;  // if this is a manually started program, proceed

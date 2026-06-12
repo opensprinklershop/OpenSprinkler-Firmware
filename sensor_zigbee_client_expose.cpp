@@ -398,6 +398,10 @@ static void drain_zb_cmds() {
         switch (cmd.type) {
             case ZB_CMD_ZONE_ON: {
                 uint8_t sid = cmd.zone.sid;
+                if (sid >= os.nstations) {
+                    DEBUG_PRINTF(F("[ZB-EXPOSE] Zone index %d out of bounds — skipped\n"), sid);
+                    break;
+                }
                 // Skip master stations
                 if ((os.status.mas == sid + 1) || (os.status.mas2 == sid + 1)) {
                     DEBUG_PRINTF(F("[ZB-EXPOSE] Zone %d is master — skipped\n"), sid);
@@ -405,7 +409,7 @@ static void drain_zb_cmds() {
                 }
                 RuntimeQueueStruct *q = nullptr;
                 unsigned char sqi = pd.station_qid[sid];
-                if (sqi == 0xFF) {
+                if (sqi >= pd.nqueue) {
                     q = pd.enqueue();
                 }
                 if (q) {
@@ -419,7 +423,11 @@ static void drain_zb_cmds() {
             }
             case ZB_CMD_ZONE_OFF: {
                 uint8_t sid = cmd.zone.sid;
-                if (pd.station_qid[sid] != 255) {
+                if (sid >= os.nstations) {
+                    DEBUG_PRINTF(F("[ZB-EXPOSE] Zone index %d out of bounds — skipped\n"), sid);
+                    break;
+                }
+                if (pd.station_qid[sid] < pd.nqueue) {
                     unsigned long curr_time = os.now_tz();
                     RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
                     q->deque_time = curr_time;
