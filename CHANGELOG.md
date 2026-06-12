@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(212)] — unveröffentlicht
+## [2.4.0(212)] — veröffentlicht 2026-06-12
 
 ### Fixed
 - **Logic Monitors (Hysteresis & Loop Protection)**: Implemented robust boundary handling for value hysteresis. Min/Max thresholds (`value1` and `value2`) are now dynamically matched to avoid state-toggling oscillation even when bounds are misconfigured, swapped, or a zero hysteresis is specified (resolving overlaps in Ticket #231).

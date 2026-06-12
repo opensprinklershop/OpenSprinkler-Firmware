@@ -1890,7 +1890,7 @@ update_changelog() {
     today=$(date +%Y-%m-%d)
     # Replace "unveröffentlicht" marker with release date
     if grep -q "unveröffentlicht" "$CHANGELOG"; then
-        sed -i "s/unveröffentlicht[^)]*)/veröffentlicht ${today}/" "$CHANGELOG"
+        sed -i "s/unveröffentlicht/veröffentlicht ${today}/" "$CHANGELOG"
         ok "CHANGELOG.md updated with release date ${today}."
     else
         warn "No 'unveröffentlicht' marker found in CHANGELOG.md — skipping update."
