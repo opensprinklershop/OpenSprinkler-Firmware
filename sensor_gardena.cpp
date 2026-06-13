@@ -1,7 +1,7 @@
 #include "sensor_gardena.h"
 #include "sensors.h"
 
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 
 using namespace ArduinoJson;
 
@@ -19,7 +19,9 @@ static bool gardena_json_has_string(JsonObjectConst obj, const char *key) {
 }
 
 void GardenaApi::init() {
+#if defined(ESP8266) || defined(ESP32)
 	client.setInsecure();
+#endif
 }
 
 bool GardenaApi::authenticate(const String &auth) {

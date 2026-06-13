@@ -2528,6 +2528,14 @@ void OpenSprinkler::switch_special_station(unsigned char sid, unsigned char valu
  * (which results in physical actions of opening/closing valves).
  */
 unsigned char OpenSprinkler::set_station_bit(unsigned char sid, unsigned char value, uint16_t dur) {
+	if (value) {
+		unsigned char bid = sid >> 3;
+		unsigned char s = sid & 0x07;
+		if (attrib_dis[bid] & (1 << s)) {
+			return 0; // Station is disabled/deactivated, do not turn it on!
+		}
+	}
+
 	unsigned char *data = station_bits+(sid>>3);  // pointer to the station byte
 	unsigned char mask = (unsigned char)1<<(sid&0x07); // mask
 	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)

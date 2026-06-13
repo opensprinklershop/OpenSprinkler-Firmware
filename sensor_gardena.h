@@ -1,9 +1,14 @@
 #ifndef _SENSOR_GARDENA_H
 #define _SENSOR_GARDENA_H
 
+#if defined(ESP32) || defined(OSPI)
+
 #if defined(ESP32)
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#elif defined(OSPI)
+#include "naett.h"
+#endif
 
 #include "ArduinoJson.hpp"
 #include "OpenSprinkler.h"
@@ -38,12 +43,17 @@ public:
 #if defined(ESP8266) || defined(ESP32)
 	String authToken;
 	String apiKey;
+#else
+	std::string authToken;
+	std::string apiKey;
 #endif
 
 private:
 	void init();
+#if defined(ESP8266) || defined(ESP32)
 	WiFiClientSecure client;
 	HTTPClient http;
+#endif
 };
 
 #include "SensorBase.hpp"

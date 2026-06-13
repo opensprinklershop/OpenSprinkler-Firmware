@@ -35,7 +35,7 @@
 #include "osinfluxdb.h"
 #include "ArduinoJson.hpp"
 #include "sensor_fyta.h"
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 #include "sensor_gardena.h"
 #endif
 #if defined(USE_OTF)
@@ -2097,7 +2097,7 @@ void server_change_options(OTF_PARAMS_DEF)
 	}
 
     if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("gardena"), true, &keyfound)) {
-	#if defined(ESP32)
+	#if defined(ESP32) || defined(OSPI)
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
 		#endif
@@ -2271,6 +2271,11 @@ void server_change_manual(OTF_PARAMS_DEF) {
 			// skip if the station is a master station
 			// (because master cannot be scheduled independently)
 			if ((os.status.mas==sid+1) || (os.status.mas2==sid+1))
+				handle_return(HTML_NOT_PERMITTED);
+
+			unsigned char bid = sid >> 3;
+			unsigned char s = sid & 0x07;
+			if (os.attrib_dis[bid] & (1 << s))
 				handle_return(HTML_NOT_PERMITTED);
 
 			RuntimeQueueStruct *q = NULL;
@@ -4474,7 +4479,7 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 	DEBUG_PRINTLN(F("server_fyta_query_plants done"));
 }
 
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 void server_gardena_get_credentials(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
 	if(!process_password(OTF_PARAMS)) return;
@@ -4710,13 +4715,25 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 		monitor = strtoul(tmp_buffer, NULL, 0);
 
 	//type = TIME
-	uint16_t time_from = 0000;
+	uint16_t time_from = 0;
 	uint16_t time_to = 2400;
 	uint8_t wdays = 0xFF;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("from"), true)) //Format: HHMM
-		time_from = strtoul(tmp_buffer, NULL, 0);
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("to"), true)) //Format: HHMM
-		time_to = strtoul(tmp_buffer, NULL, 0);
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("from"), true)) { //Format: HHMM or HH:MM
+		const char* colon = strchr(tmp_buffer, ':');
+		if (colon) {
+			time_from = strtoul(tmp_buffer, NULL, 10) * 100 + strtoul(colon + 1, NULL, 10);
+		} else {
+			time_from = strtoul(tmp_buffer, NULL, 10);
+		}
+	}
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("to"), true)) { //Format: HHMM or HH:MM
+		const char* colon = strchr(tmp_buffer, ':');
+		if (colon) {
+			time_to = strtoul(tmp_buffer, NULL, 10) * 100 + strtoul(colon + 1, NULL, 10);
+		} else {
+			time_to = strtoul(tmp_buffer, NULL, 10);
+		}
+	}
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wdays"), true)) //0=Monday
 		wdays = strtoul(tmp_buffer, NULL, 0);
 
@@ -4825,7 +4842,7 @@ void monitorconfig_json(Monitor_t *mon) {
 	}
 }
 
-void monitorconfig_json() {
+void monitorconfig_json(OTF_PARAMS_DEF) {
 	bool first = true;
 	for (auto it = monitor_iterate_begin(); ; ) {
 		Monitor_t *mon = monitor_iterate_next(it);
@@ -4834,6 +4851,7 @@ void monitorconfig_json() {
 		if (!first) bfill.emit_p(PSTR(","));
 		first = false;
 		monitorconfig_json(mon);
+		send_packet(OTF_PARAMS);
 	}
 }
 
@@ -4990,7 +5008,7 @@ void progconfig_json(ProgSensorAdjust *p, double current) {
 	bfill.emit_p(PSTR("$S"), jsonStr.c_str());
 }
 
-void progconfig_json() {
+void progconfig_json(OTF_PARAMS_DEF) {
 	bool first = true;
 	for (auto it = prog_adjust_iterate_begin(); ; ) {
 		ProgSensorAdjust *p = prog_adjust_iterate_next(it);
@@ -5002,6 +5020,7 @@ void progconfig_json() {
 		first = false;
 
 		progconfig_json(p, current);
+		send_packet(OTF_PARAMS);
 	}
 }
 
@@ -5122,7 +5141,7 @@ static const int sensor_types[] = {
     SENSOR_FYTA_MOISTURE,
     SENSOR_FYTA_TEMPERATURE,
 #endif
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 	SENSOR_GARDENA_MOISTURE,
 	SENSOR_GARDENA_TEMPERATURE,
 #endif
@@ -5191,7 +5210,7 @@ static const char* sensor_names[] = {
 	"FYTA moisture sensor",
 	"FYTA temperature sensor",
 #endif
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 	"Gardena moisture sensor",
 	"Gardena temperature sensor",
 #endif
@@ -5648,14 +5667,14 @@ void server_sensorconfig_backup(OTF_PARAMS_DEF) {
 	}
 	if (backup & BACKUP_ADJUSTMENTS)  {
 		bfill.emit_p(PSTR(",\"progadjust\":["));
-		progconfig_json();
+		progconfig_json(OTF_PARAMS);
 		bfill.emit_p(PSTR("]"));
 		send_packet(OTF_PARAMS);
 	}
 	send_packet(OTF_PARAMS);
 	if (backup & BACKUP_MONITORS)  {
 		bfill.emit_p(PSTR(",\"monitors\":["));
-		monitorconfig_json();
+		monitorconfig_json(OTF_PARAMS);
 		bfill.emit_p(PSTR("]"));
 	}
 	bfill.emit_p(PSTR("}"));
@@ -6932,12 +6951,12 @@ const char _url_keys[] PROGMEM =
 #if defined(ESP32) || defined(ESP8266)
 	"ub"  // OTA backup: get config backup JSON
 #endif
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 	"fy"
 	"fc"
 	"gl"
 	"ga"
-#elif defined(ESP8266) || defined(OSPI)
+#elif defined(ESP8266)
 	"fy"
 	"fc"
 #endif
@@ -7037,12 +7056,12 @@ URLHandler urls[] = {
 #if defined(ESP32) || defined(ESP8266)
 	server_backup_get, // ub
 #endif
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 	server_fyta_query_plants, // fy
 	server_fyta_get_credentials, //fc
 	server_gardena_query_locations, // gl
 	server_gardena_get_credentials, // ga
-#elif defined(ESP8266) || defined(OSPI)
+#elif defined(ESP8266)
 	server_fyta_query_plants, // fy
 	server_fyta_get_credentials, //fc
 #endif

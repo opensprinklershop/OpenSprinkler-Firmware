@@ -75,6 +75,7 @@ RuntimeQueueStruct* ProgramData::enqueue() {
 // this removes an element from the queue
 void ProgramData::dequeue(unsigned char qid) {
 	if (qid>=nqueue)	return;
+	station_qid[queue[qid].sid] = 0xFF; // Reset station_qid for the removed element
 	if (qid<nqueue-1) {
 		queue[qid] = queue[nqueue-1]; // copy the last element to the dequeud element to fill the space
 		if(station_qid[queue[qid].sid] == nqueue-1) // fix queue index if necessary
@@ -95,6 +96,16 @@ void ProgramData::save_count() {
 
 /** Erase all program data */
 void ProgramData::eraseall() {
+	time_os_t curr_time = os.now_tz();
+	for (int i = (int)nqueue - 1; i >= 0; i--) {
+		RuntimeQueueStruct *q = queue + i;
+		if (q->pid != 99 && q->pid != 254) {
+			unsigned char sid = q->sid;
+			turn_off_station(sid, curr_time);
+			dequeue(i);
+			station_qid[sid] = 0xFF;
+		}
+	}
 	nprograms = 0;
 	save_count();
 }
@@ -194,6 +205,33 @@ unsigned char ProgramData::modify(unsigned char pid, ProgramStruct *buf) {
 unsigned char ProgramData::del(unsigned char pid) {
 	if (pid >= nprograms)  return 0;
 	if (nprograms == 0) return 0;
+
+	// Clean up and adjust the runtime queue
+	time_os_t curr_time = os.now_tz();
+	unsigned char target_pid_1based = pid + 1; // 1-based ID of deleted program
+
+	for (int i = (int)nqueue - 1; i >= 0; i--) {
+		RuntimeQueueStruct *q = queue + i;
+		unsigned char q_pid = q->pid;
+		bool is_manual = (q_pid & 0x80) != 0;
+		unsigned char dec_pid = q_pid & 0x7F;
+
+		if ((!is_manual && q_pid == target_pid_1based) || (is_manual && dec_pid == target_pid_1based)) {
+			// This element belongs to the deleted program. Turn off the station and dequeue it.
+			unsigned char sid = q->sid;
+			turn_off_station(sid, curr_time);
+			dequeue(i);
+			station_qid[sid] = 0xFF;
+		} else {
+			// This element belongs to a different program. If its program ID is greater than the deleted program's ID, adjust (decrement) it.
+			if (!is_manual && q_pid > target_pid_1based && q_pid <= nprograms) {
+				q->pid = q_pid - 1;
+			} else if (is_manual && dec_pid > target_pid_1based && dec_pid <= nprograms) {
+				q->pid = (dec_pid - 1) | 0x80;
+			}
+		}
+	}
+
 	ulong pos = 1+(ulong)(pid+1)*PROGRAMSTRUCT_SIZE;
 	// erase by copying backward
 	for (; pos < 1+(ulong)nprograms*PROGRAMSTRUCT_SIZE; pos+=PROGRAMSTRUCT_SIZE) {

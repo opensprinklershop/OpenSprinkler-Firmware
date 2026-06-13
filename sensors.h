@@ -561,6 +561,7 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);
 void check_monitors();
+bool is_program_blocked_by_monitor(unsigned char pid);
 
 #if defined(OSPI)
 boolean send_rs485_command(uint8_t device, uint8_t address, uint16_t reg,uint16_t data, bool isbit);

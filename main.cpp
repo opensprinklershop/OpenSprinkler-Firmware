@@ -1558,6 +1558,9 @@ void do_loop()
 
 				unsigned char runcount = prog.check_match(curr_time, &will_delete);
 				if(runcount>0) {
+					if (is_program_blocked_by_monitor(pid)) {
+						continue;
+					}
 					// program match found
 					// check and process special program command
 					if(process_special_program_command(prog.name, curr_time))	continue;

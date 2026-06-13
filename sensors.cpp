@@ -1943,7 +1943,7 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
       FytaSensor *s = new FytaSensor(type);
       return s;
     }
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
     case SENSOR_GARDENA_MOISTURE:
     case SENSOR_GARDENA_TEMPERATURE: {
       GardenaSensor *s = new GardenaSensor(type);
@@ -2679,7 +2679,7 @@ unsigned char getSensorUnitId(int type) {
     // FYTA
     case SENSOR_FYTA_MOISTURE:     return UNIT_PERCENT;
     case SENSOR_FYTA_TEMPERATURE:  return UNIT_DEGREE;
-  #if defined(ESP32)
+  #if defined(ESP32) || defined(OSPI)
     // Gardena
     case SENSOR_GARDENA_MOISTURE:  return UNIT_PERCENT;
     case SENSOR_GARDENA_TEMPERATURE:return UNIT_DEGREE;
@@ -3087,6 +3087,12 @@ void start_monitor_action(Monitor_t * mon) {
 		if ((os.status.mas==sid+1) || (os.status.mas2==sid+1))
 			return;
 
+		unsigned char bid = sid >> 3;
+		unsigned char s = sid & 0x07;
+		if (os.attrib_dis[bid] & (1 << s)) {
+			return; // skip if the station is disabled/deactivated
+		}
+
     uint16_t timer=mon->maxRuntime;
     RuntimeQueueStruct *q = NULL;
 		unsigned char sqi = pd.station_qid[sid];
@@ -3118,6 +3124,38 @@ void stop_monitor_action(Monitor_t * mon) {
 		  q->deque_time = mon->time;
 		  turn_off_station(sid, mon->time, 0);
       // DEBUG_PRINTLN(F("stop_monitor_action: turn_off_station"));
+    }
+  }
+
+  if (mon->prog > 0) {
+    stop_program(mon->prog);
+
+    // 1. Turn off all running/queued stations of this program (mon->prog)
+    for (int i = pd.nqueue - 1; i >= 0; i--) {
+      RuntimeQueueStruct *q = &pd.queue[i];
+      if (q->pid == mon->prog || q->pid == (mon->prog | 0x80)) {
+        q->deque_time = mon->time;
+        turn_off_station(q->sid, mon->time, 0);
+      }
+    }
+
+    // 2. Also delete any temporary "Run-Once with repeat" programs if any
+    for (int i = 0; i < pd.nprograms; i++) {
+      ProgramStruct p;
+      pd.read(i, &p);
+      if (strncmp(p.name, "Run-Once with repeat", 20) == 0) {
+        // Stop any stations in queue belonging to this run-once program
+        uint8_t run_once_pid = i + 1;
+        for (int j = pd.nqueue - 1; j >= 0; j--) {
+          RuntimeQueueStruct *q = &pd.queue[j];
+          if (q->pid == run_once_pid || q->pid == (run_once_pid | 0x80)) {
+            q->deque_time = mon->time;
+            turn_off_station(q->sid, mon->time, 0);
+          }
+        }
+        pd.del(i);
+        i--; // adjust index after deletion
+      }
     }
   }
 }
@@ -3211,45 +3249,25 @@ void check_monitors() {
         if (sensor && sensor->flags.data_ok) {
           value = sensor->last_data;
 
-          double act_threshold = mon->m.minmax.value1;
-          double deact_threshold = mon->m.minmax.value2;
+          double v_min = mon->m.minmax.value1 <= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
+          double v_max = mon->m.minmax.value1 >= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
 
-          if (mon->type == MONITOR_MIN) {
-            if (deact_threshold <= act_threshold) {
-              deact_threshold = act_threshold;
+          if (v_min == v_max) {
+            if (mon->type == MONITOR_MIN) {
+              mon->active = (value <= v_min);
+            } else {
+              mon->active = (value >= v_max);
             }
+          } else {
             if (!mon->active) {
-              if (value <= act_threshold) {
+              if ((mon->type == MONITOR_MIN && value <= v_min) || 
+                (mon->type == MONITOR_MAX && value >= v_max)) {
                 mon->active = true;
               }
             } else {
-              if (deact_threshold == act_threshold) {
-                if (value > deact_threshold) {
-                  mon->active = false;
-                }
-              } else {
-                if (value >= deact_threshold) {
-                  mon->active = false;
-                }
-              }
-            }
-          } else if (mon->type == MONITOR_MAX) {
-            if (deact_threshold >= act_threshold || deact_threshold == 0.0) {
-              deact_threshold = act_threshold;
-            }
-            if (!mon->active) {
-              if (value >= act_threshold) {
-                mon->active = true;
-              }
-            } else {
-              if (deact_threshold == act_threshold) {
-                if (value < deact_threshold) {
-                  mon->active = false;
-                }
-              } else {
-                if (value <= deact_threshold) {
-                  mon->active = false;
-                }
+              if ((mon->type == MONITOR_MIN && value >= v_max) || 
+                (mon->type == MONITOR_MAX && value <= v_min)) {
+                mon->active = false;
               }
             }
           }
@@ -3391,6 +3409,18 @@ void replace_pid(uint old_pid, uint new_pid) {
     }
   }
   sensor_save_all();
+}
+
+bool is_program_blocked_by_monitor(unsigned char pid) {
+  for (auto &kv : monitorsMap) {
+    Monitor *mon = kv.second;
+    if (mon && mon->prog == (uint)(pid + 1)) {
+      if (!mon->active) {
+        return true; // Program has an associated monitor and the monitor is NOT active.
+      }
+    }
+  }
+  return false;
 }
 
 char *strnlstr(const char *haystack, const char *needle, size_t needle_len, size_t len)
