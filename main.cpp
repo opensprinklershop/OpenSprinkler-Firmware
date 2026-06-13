@@ -3571,16 +3571,20 @@ static void perform_ntp_sync() {
 }
 
 #if !defined(ARDUINO) // main function for RPI/LINUX
+int override_http_port = 0;
 int main(int argc, char *argv[]) {
     // Disable buffering to work with systemctl journal
     setvbuf(stdout, NULL, _IOLBF, 0);
 	printf("Starting OpenSprinkler\n");
 
 	int opt;
-	while(-1 != (opt = getopt(argc, argv, "d:"))) {
+	while(-1 != (opt = getopt(argc, argv, "d:p:"))) {
 		switch(opt) {
 		case 'd':
 			set_data_dir(optarg);
+			break;
+		case 'p':
+			override_http_port = atoi(optarg);
 			break;
 		default:
 			// ignore options we don't understand

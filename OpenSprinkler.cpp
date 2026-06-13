@@ -23,6 +23,7 @@
 
 #include "OpenSprinkler.h"
 #include "opensprinkler_server.h"
+#include <time.h>
 #include "gpio.h"
 #include "testmode.h"
 #include "program.h"
@@ -1030,9 +1031,14 @@ void OpenSprinkler::reboot_dev(uint8_t cause) {
 #include "opensprinkler_server.h"
 #include "sunrise.h"
 
+extern int override_http_port;
+
 /** Initialize network with the given mac address and http port */
 unsigned char OpenSprinkler::start_network() {
 	unsigned int port = (unsigned int)(iopts[IOPT_HTTPPORT_1]<<8) + (unsigned int)iopts[IOPT_HTTPPORT_0];
+	if (override_http_port > 0) {
+		port = override_http_port;
+	}
 #if defined(DEMO)
 #if defined(HTTP_PORT)
 	port = HTTP_PORT;
@@ -1902,6 +1908,24 @@ void OpenSprinkler::apply_all_station_bits(void (*post_activation_callback)()) {
 	}
 	#else
 	digitalWrite(PIN_SR_LATCH, HIGH);
+	// Automated tests simulation logging for GPIO zones
+	{
+		static bool last_zone_states[MAX_NUM_STATIONS] = {false};
+		for(unsigned char i = 0; i < nstations; i++) {
+			unsigned char bid = i >> 3;
+			unsigned char s = i & 0x07;
+			bool is_on = status.enabled ? (((station_bits[bid] >> s) & 0x01) != 0) : false;
+			if (is_on != last_zone_states[i]) {
+				last_zone_states[i] = is_on;
+				time_t rawtime = time(NULL);
+				struct tm *timeinfo = localtime(&rawtime);
+				char time_buffer[80];
+				strftime(time_buffer, sizeof(time_buffer), "[%Y-%m-%d %H:%M:%S]", timeinfo);
+				printf("%s Zone %d: %s\n", time_buffer, i + 1, is_on ? "An" : "Aus");
+				fflush(stdout);
+			}
+		}
+	}
 	#endif
 #endif
 

@@ -177,7 +177,7 @@ unsigned char digitalReadExt(unsigned char pin) {
 }
 #endif
 
-#elif defined(OSPI) && !(defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__))
+#elif defined(OSPI) && !(defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__)) && !defined(GPIO_SIMULATION)
 
 #if !defined(LIBGPIOD) && !defined(LIBLGPIO)	// use classic sysfs
 

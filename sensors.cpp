@@ -75,7 +75,7 @@
 
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   #include "sensor_fyta.h"
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
   #include "sensor_gardena.h"
 #endif
 #endif

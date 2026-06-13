@@ -3,42 +3,47 @@
 	echo "Compiling OSPi firmware..."
 
 	USEGPIO=""
-        GPIOLIB=""
+	GPIOLIB=""
+	ADS1115=""
+	ADS1115FILES=""
+	PCF8591=""
+	PCF8591FILES=""
 
-	source /etc/os-release
-        # Only apply Debian-specific GPIO library selection on Debian/Raspbian/Ubuntu systems
-        if [[ "$ID" == "debian" || "$ID" == "raspbian" || "$ID_LIKE" == *"debian"* ]]; then
-                VERSION_MAJOR=${VERSION_ID%%.*}
-                # Trixie (Debian 13+) uses lgpio, Bookworm (Debian 12) uses libgpiod, older uses sysfs
-                if [[ ${VERSION_MAJOR} -ge 13 ]]; then
-                        echo "Detected Debian ${VERSION_ID} (Trixie or newer) - using lgpio"
-                        USEGPIO="-DLIBLGPIO"
-                        GPIOLIB="-llgpio"
-                elif [[ ${VERSION_MAJOR} -ge 10 ]]; then
-                        echo "Detected Debian ${VERSION_ID} (Bookworm or similar) - using libgpiod"
-                        USEGPIO="-DLIBGPIOD"
-                        GPIOLIB="-lgpiod"
-                fi
-        else
-                echo "Non-Debian OS detected (${PRETTY_NAME:-$ID}) - skipping GPIO library detection"
-        fi
+	if [ "$GPIO_SIMULATION" == "1" ]; then
+		echo "Building in GPIO SIMULATION mode..."
+		USEGPIO="-DGPIO_SIMULATION"
+	else
+		source /etc/os-release
+		# Only apply Debian-specific GPIO library selection on Debian/Raspbian/Ubuntu systems
+		if [[ "$ID" == "debian" || "$ID" == "raspbian" || "$ID_LIKE" == *"debian"* ]]; then
+			VERSION_MAJOR=${VERSION_ID%%.*}
+			# Trixie (Debian 13+) uses lgpio, Bookworm (Debian 12) uses libgpiod, older uses sysfs
+			if [[ ${VERSION_MAJOR} -ge 13 ]]; then
+				echo "Detected Debian ${VERSION_ID} (Trixie or newer) - using lgpio"
+				USEGPIO="-DLIBLGPIO"
+				GPIOLIB="-llgpio"
+			elif [[ ${VERSION_MAJOR} -ge 10 ]]; then
+				echo "Detected Debian ${VERSION_ID} (Bookworm or similar) - using libgpiod"
+				USEGPIO="-DLIBGPIOD"
+				GPIOLIB="-lgpiod"
+			fi
+		else
+			echo "Non-Debian OS detected (${PRETTY_NAME:-$ID}) - skipping GPIO library detection"
+		fi
 
+		I2C=$(i2cdetect -y 1 2>/dev/null || echo "")
+		if [[ "${I2C,,}" == *"48 --"* ]] ;then
+			echo "found PCF8591"
+			PCF8591="-DPCF8591"
+			PCF8591FILES="./ospi-analog/driver_pcf8591*.c ./ospi-analog/iic.c"
+		fi
 
-        ADS1115=""
-        ADS1115FILES=""
-
-        I2C=$(i2cdetect -y 1)
-        if [[ "${I2C,,}" == *"48 --"* ]] ;then
-                echo "found PCF8591"
-                PCF8591="-DPCF8591"
-                PCF8591FILES="./ospi-analog/driver_pcf8591*.c ./ospi-analog/iic.c"
-        fi
-
-        if [[ "${I2C,,}" == *"48 49"* ]] ;then
-                echo "found ADS1115"
-                ADS1115="-DADS1115"
-                ADS1115FILES="./ospi-analog/driver_ads1115*.c ./ospi-analog/iic.c"
-        fi
+		if [[ "${I2C,,}" == *"48 49"* ]] ;then
+			echo "found ADS1115"
+			ADS1115="-DADS1115"
+			ADS1115FILES="./ospi-analog/driver_ads1115*.c ./ospi-analog/iic.c"
+		fi
+	fi
 
 
         echo "Compiling firmware..."

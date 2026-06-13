@@ -272,7 +272,11 @@ bool GardenaApi::sendValveCommand(const String &serviceId, bool open, uint16_t s
 	body += open ? "START_SECONDS_TO_OVERRIDE" : "STOP_UNTIL_NEXT_TASK";
 	body += "\"";
 	if (open) {
+#if defined(ESP8266) || defined(ESP32)
 		body += ",\"seconds\":" + String(seconds);
+#else
+		body += ",\"seconds\":" + std::to_string(seconds);
+#endif
 	}
 	body += "}}}";
 

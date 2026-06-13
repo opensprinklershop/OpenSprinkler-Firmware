@@ -252,14 +252,6 @@ uint8_t pcf8591_set_auto_increment(pcf8591_handle_t *handle, pcf8591_bool_t enab
     prev_conf = handle->conf;                                                          /* save conf */
     handle->conf &= ~(1 << 2);                                                         /* clear auto bit */
     handle->conf |= enable << 2;                                                       /* set enable */
-    if (enable != 0)                                                                   /* if enable auto increment */
-    {
-        handle->conf |= 0x40;                                                          /* set output bit */
-    }
-    else
-    {
-        handle->conf &= ~0x40;                                                         /* clear output bit */
-    }
     res = handle->iic_write_cmd(handle->iic_addr, (uint8_t *)&handle->conf, 1);        /* write command */
     if (res != 0)                                                                      /* check error */
     {

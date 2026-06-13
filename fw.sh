@@ -2134,6 +2134,20 @@ do_release() {
     else
         header "OpenSprinkler Firmware Release"
     fi
+
+    # Run automated API and logical Monitors verification tests before any deployment/release.
+    # Abort deployment if those tests fail.
+    info "Running pre-release logical Monitor & API verification tests..."
+    if ! python3 /data/Workspace/OpenSprinkler-Test/test_api.py; then
+        error "API test verification failed! Aborting release."
+        exit 1
+    fi
+    if ! python3 /data/Workspace/OpenSprinkler-Test/test_monitors.py; then
+        error "Monitor logic test verification failed! Aborting release."
+        exit 1
+    fi
+    ok "All pre-release verification checks passed successfully!"
+
     check_pio
 
     # 1. Bump version (skip for rebuild)

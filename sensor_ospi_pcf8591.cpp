@@ -34,11 +34,10 @@
 /**
 * Read the OSPi onboard PCF8591 A2D
 **/
-int OspiPcf8591Sensor::read(unsigned long time) {
-        if (!flags.enable) return HTTP_RQT_NOT_RECEIVED;
+static pcf8591_handle_t gs_handle;        /**< pcf8591 handle */
 
-        static pcf8591_handle_t gs_handle;        /**< pcf8591 handle */
-        uint8_t res;
+static uint8_t init_pcf8591() {
+        if (gs_handle.inited) return 0;
 
         DRIVER_PCF8591_LINK_INIT(&gs_handle, pcf8591_handle_t);
         DRIVER_PCF8591_LINK_IIC_INIT(&gs_handle, pcf8591_interface_iic_init);
@@ -49,40 +48,46 @@ int OspiPcf8591Sensor::read(unsigned long time) {
         DRIVER_PCF8591_LINK_DEBUG_PRINT(&gs_handle, pcf8591_interface_debug_print);
 
         /* set addr pin */
-        res = pcf8591_set_addr_pin(&gs_handle, DEFAULT_ADDR);
-        if (res != 0)
-                return HTTP_RQT_NOT_RECEIVED;
+        uint8_t res = pcf8591_set_addr_pin(&gs_handle, DEFAULT_ADDR);
+        if (res != 0) return res;
 
         /* pcf8591 init */
         res = pcf8591_init(&gs_handle);
-        if (res != 0)
-                return HTTP_RQT_NOT_RECEIVED;
+        if (res != 0) return res;
     
         /* set mode */
         res = pcf8591_set_mode(&gs_handle, DEFAULT_MODE);
-        if (res != 0) {
-                pcf8591_deinit(&gs_handle);
-                return HTTP_RQT_NOT_RECEIVED;
-        }
+        if (res != 0) return res;
 
         /* disable auto increment */
         res = pcf8591_set_auto_increment(&gs_handle, PCF8591_BOOL_FALSE);
-        if (res != 0) {
-                pcf8591_deinit(&gs_handle);
-                return HTTP_RQT_NOT_RECEIVED;
-        }
+        if (res != 0) return res;
 
         /* set default reference voltage */
         res = pcf8591_set_reference_voltage(&gs_handle, DEFAULT_REF_VOLTAGE);
-        if (res != 0) {
-                pcf8591_deinit(&gs_handle);
-                return HTTP_RQT_NOT_RECEIVED;
-        }
+        if (res != 0) return res;
+
+        // Force enable Analog Output (AOUT) to ensure ASB sensor board remains powered
+        gs_handle.conf |= 0x40;
+
+        return 0;
+}
+
+/**
+* Read the OSPi onboard PCF8591 A2D
+**/
+int OspiPcf8591Sensor::read(unsigned long time) {
+        if (!flags.enable) return HTTP_RQT_NOT_RECEIVED;
+
+        // Only read on interval to avoid hammering the I2C bus!
+        if (time < last_read + read_interval) return HTTP_RQT_NOT_RECEIVED;
+
+        uint8_t res = init_pcf8591();
+        if (res != 0) return HTTP_RQT_NOT_RECEIVED;
                 
         pcf8591_channel_t channel = (pcf8591_channel_t)id;
         res = pcf8591_set_channel(&gs_handle, channel);
         if (res != 0) {
-                pcf8591_deinit(&gs_handle);
                 return HTTP_RQT_NOT_RECEIVED;
         }
 
@@ -90,23 +95,19 @@ int OspiPcf8591Sensor::read(unsigned long time) {
         float v;
         res = pcf8591_read(&gs_handle, &raw, &v);
         if (res != 0) {
-                pcf8591_deinit(&gs_handle);
                 return HTTP_RQT_NOT_RECEIVED;
         }
 
-        pcf8591_deinit(&gs_handle);
-
-        repeat_native += raw;
-        repeat_data += v;
-        if (++repeat_read < MAX_SENSOR_REPEAT_READ && time < last_read + read_interval)
+        // Mathias' option: discard zero/null values to avoid false readings
+        if (raw == 0) {
+                DEBUG_PRINTF("OspiPcf8591Sensor: raw is 0, discarding\n");
                 return HTTP_RQT_NOT_RECEIVED;
+        }
 
-        raw = repeat_native/repeat_read;
-        v = repeat_data/repeat_read;
-
+        // Only single read since we read exactly on the interval
         repeat_native = raw;
         repeat_data = v;
-        repeat_read = 1;
+        repeat_read = 0;  // Use 0 to prevent immediate rescheduling!
         
         last_native_data = raw;
         flags.data_ok = true;

@@ -4557,11 +4557,11 @@ void server_gardena_query_locations(OTF_PARAMS_DEF) {
 		}
 	}
 
-	if (locationId.isEmpty() && !result.isNull() && result.size() > 0) {
+	if (locationId.length() == 0 && !result.isNull() && result.size() > 0) {
 		locationId = result[0]["id"].as<String>();
 	}
 
-	if (!locationId.isEmpty()) {
+	if (locationId.length() > 0) {
 		JsonDocument locData;
 		if (gardenaapi.getLocationData(locationId, locData)) {
 			out["sensors"] = locData["sensors"];
