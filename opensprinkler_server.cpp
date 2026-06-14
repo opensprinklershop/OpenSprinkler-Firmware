@@ -1421,15 +1421,7 @@ void server_json_options_main() {
 
 		// each json name takes 5 characters
 		strncpy_P0(tmp_buffer, iopt_json_names+oid*5, 5);
-		#if defined(OSPI)
-		if (oid == IOPT_FW_VERSION) {
-			bfill.emit_p(PSTR("\"$S\":\"$D.$D.$D-ospi\""), tmp_buffer, OS_FW_VERSION / 100, (OS_FW_VERSION / 10) % 10, OS_FW_VERSION % 10);
-		} else {
-			bfill.emit_p(PSTR("\"$S\":$D"), tmp_buffer, v);
-		}
-		#else
 		bfill.emit_p(PSTR("\"$S\":$D"), tmp_buffer, v);
-		#endif
 		if(oid!=NUM_IOPTS-1)
 			bfill.emit_p(PSTR(","));
 	}
