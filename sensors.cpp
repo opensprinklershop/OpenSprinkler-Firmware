@@ -96,6 +96,7 @@
 
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
   #include "sensor_remote.h"
+  #include "sensor_remote_json.h"
 #endif
 
 #include "sensor_internal.h"
@@ -620,7 +621,7 @@ void sensor_api_connect() {
   sensor_mqtt_init();
   // DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
   fyta_check_opts();
-  #if defined(ESP32)
+  #if defined(ESP32) || defined(OSPI)
   gardena_check_opts();
   #endif
   #endif
@@ -2032,6 +2033,14 @@ SensorBase* sensor_make_obj(uint type, boolean ip_based) {
       return new GenericSensor(type);
       #endif
 
+    // Remote JSON sensor
+    case SENSOR_REMOTE_JSON:
+      #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+      return new RemoteJsonSensor(type);
+      #else
+      return new GenericSensor(type);
+      #endif
+
     // Zigbee sensors
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
     case SENSOR_ZIGBEE:
@@ -2694,6 +2703,7 @@ unsigned char getSensorUnitId(int type) {
     case SENSOR_WEATHER_WIND_KMH:  return UNIT_KMH;
     // Variable-unit or runtime-determined types
     case SENSOR_MQTT:
+    case SENSOR_REMOTE_JSON:
     case SENSOR_REMOTE:
     case SENSOR_MODBUS_RTU:
     case SENSOR_BLE:
@@ -3442,7 +3452,7 @@ static inline bool is_word_char(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
-static const char* findSegment(const char* payload, const char* p, size_t length, const char* segment, size_t seg_len) {
+const char* findSegment(const char* payload, const char* p, size_t length, const char* segment, size_t seg_len) {
   if (seg_len == 0) return p;
   size_t payload_offset = p - payload;
   if (payload_offset + seg_len > length) return NULL;

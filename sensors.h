@@ -141,6 +141,7 @@ extern "C" {
 #define SENSOR_GARDENA_TEMPERATURE      63  // Gardena temperature sensor
  
 #define SENSOR_MQTT                     90  // subscribe to a MQTT server and query a value
+#define SENSOR_REMOTE_JSON              92  // query a remote JSON URL and filter value
 
 #define SENSOR_ZIGBEE                   95  // Zigbee sensor (generic, via Zigbee2MQTT)
 #define SENSOR_BLE                      96  // BLE (Bluetooth Low Energy) sensor
@@ -588,6 +589,7 @@ void dtostrf(double value, int min_width, int precision, char *txt);
 #endif
 
 void replace_pid(uint old_pid, uint new_pid);
+const char* findSegment(const char* payload, const char* p, size_t length, const char* segment, size_t seg_len);
 int findValue(const char *payload, unsigned int length, const char *jsonFilter, double& value);
 int findString(const char *payload, unsigned int length, const char *jsonFilter, String& value);
 

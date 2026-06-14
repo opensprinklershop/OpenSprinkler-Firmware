@@ -42,6 +42,7 @@
 #include "mcp_server.h"
 #endif
 #include "sensor_mqtt.h"
+#include "sensor_remote_json.h"
 #include "LinkedMap.h"
 #include <new>
 #include <stdlib.h>
@@ -5146,6 +5147,7 @@ static const int sensor_types[] = {
 	SENSOR_GARDENA_TEMPERATURE,
 #endif
 	SENSOR_MQTT,
+	SENSOR_REMOTE_JSON,
 	SENSOR_REMOTE,
 	SENSOR_WEATHER_TEMP_F,
 	SENSOR_WEATHER_TEMP_C,
@@ -5216,6 +5218,7 @@ static const char* sensor_names[] = {
 #endif
 
 	"MQTT subscription",
+	"Remote JSON Data",
 	"Remote opensprinkler sensor",
 	"Weather data - temperature (°F)",
 	"Weather data - temperature (°C)",
