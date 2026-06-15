@@ -79,9 +79,6 @@ static uint8_t init_pcf8591() {
 int OspiPcf8591Sensor::read(unsigned long time) {
         if (!flags.enable) return HTTP_RQT_NOT_RECEIVED;
 
-        // Only read on interval to avoid hammering the I2C bus!
-        if (time < last_read + read_interval) return HTTP_RQT_NOT_RECEIVED;
-
         uint8_t res = init_pcf8591();
         if (res != 0) return HTTP_RQT_NOT_RECEIVED;
                 
@@ -98,16 +95,17 @@ int OspiPcf8591Sensor::read(unsigned long time) {
                 return HTTP_RQT_NOT_RECEIVED;
         }
 
-        // Mathias' option: discard zero/null values to avoid false readings
-        if (raw == 0) {
-                DEBUG_PRINTF("OspiPcf8591Sensor: raw is 0, discarding\n");
+        repeat_native += raw;
+        repeat_data += v;
+        if (++repeat_read < MAX_SENSOR_REPEAT_READ && time < last_read + read_interval)
                 return HTTP_RQT_NOT_RECEIVED;
-        }
 
-        // Only single read since we read exactly on the interval
+        raw = repeat_native/repeat_read;
+        v = repeat_data/repeat_read;
+
         repeat_native = raw;
         repeat_data = v;
-        repeat_read = 0;  // Use 0 to prevent immediate rescheduling!
+        repeat_read = 1;
         
         last_native_data = raw;
         flags.data_ok = true;

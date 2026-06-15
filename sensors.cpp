@@ -621,7 +621,7 @@ void sensor_api_connect() {
   sensor_mqtt_init();
   // DEBUG_PRINTLN(F("[SENSOR_API] Checking FYTA options..."));
   fyta_check_opts();
-  #if defined(ESP32) || defined(OSPI)
+  #if defined(ESP32)
   gardena_check_opts();
   #endif
   #endif
