@@ -2150,13 +2150,8 @@ do_release() {
 
     check_pio
 
-    # 1. Bump version (skip for rebuild)
-    if $is_rebuild; then
-        read_version
-        info "Rebuild mode — keeping version OS_FW_VERSION=${OS_FW_VERSION}, OS_FW_MINOR=${OS_FW_MINOR}"
-    else
-        bump_minor_version
-    fi
+    # 1. Read version (do not bump yet)
+    read_version
     local version_str
     version_str="$(format_version "$OS_FW_VERSION")"
     local tag="v${OS_FW_VERSION}_${OS_FW_MINOR}"
@@ -2249,7 +2244,16 @@ ${changelog_section}"
     # 10. Online deploy to IONOS (upgrade/ → remote server)
     online_deploy
 
-    # 11. Summary
+    # 11. Increase minor version number for the next development cycle
+    if ! $is_rebuild; then
+        bump_minor_version
+        git add "$DEFINES_H"
+        git commit -m "Bump version to build $OS_FW_MINOR for next development cycle"
+        git push origin HEAD
+        ok "defines.h updated and pushed for next dev cycle: build ${OS_FW_MINOR}"
+    fi
+
+    # 12. Summary
     if $is_rebuild; then
         header "Rebuild complete!"
     else
