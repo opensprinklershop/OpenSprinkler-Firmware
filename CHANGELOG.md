@@ -6,6 +6,20 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(213)] — veröffentlicht 2026-06-15
+
+### Added
+- **Remote JSON Sensor**: Implemented support for Remote JSON sensors, allowing values to be fetched asynchronously from remote HTTP JSON APIs and integrated seamlessly into the sensor framework.
+- **Gardena Cloud API & GPIO Simulation (OSPi)**: Integrated Gardena Smart Gateway Cloud integration and robust GPIO simulation support into the native Linux (OSPi) target, enhancing remote board bringing-up and simulation capabilities.
+- **OSPi Version Reporting & Versioning**: Enhanced OSPi reporting structures, simplifying native platform firmware version and metadata handling within JSON system resource schemas.
+- **Station Program Blocking**: Added capability for logic monitors to block/prevent scheduled watering programs dynamically based on threshold states.
+
+### Changed
+- **PCF8591 I2C Optimization**: Refactored the PCF8591 pipeline and ADC reading loop to minimize I2C bus traffic, reducing bus load and CPU overhead.
+- **G++ Compiler Flags**: Cleaned up compilation overhead by removing redundant linking options in compile commands.
+
+---
+
 ## [2.4.0(212)] — veröffentlicht 2026-06-12
 
 ### Fixed
