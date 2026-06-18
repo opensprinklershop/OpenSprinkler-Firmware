@@ -95,13 +95,31 @@ int OspiPcf8591Sensor::read(unsigned long time) {
                 return HTTP_RQT_NOT_RECEIVED;
         }
 
-        repeat_native += raw;
-        repeat_data += v;
-        if (++repeat_read < MAX_SENSOR_REPEAT_READ && time < last_read + read_interval)
+        // Mathias' option: discard zero/null values to avoid false readings
+        if (raw == 0) {
+                DEBUG_PRINTF("OspiPcf8591Sensor: raw is 0, discarding\n");
+                // Do not accumulate.
+        } else {
+                repeat_native += raw;
+                repeat_data += v;
+                repeat_read++;
+        }
+
+        if (time < last_read + read_interval && repeat_read < MAX_SENSOR_REPEAT_READ)
                 return HTTP_RQT_NOT_RECEIVED;
 
-        raw = repeat_native/repeat_read;
-        v = repeat_data/repeat_read;
+        // If we have received absolutely no valid readings in this entire interval,
+        // we fallback to the last valid readings to avoid sending stale / zero results.
+        if (repeat_read == 0) {
+                if (last_native_data == 0) {
+                        return HTTP_RQT_NOT_RECEIVED;
+                }
+                raw = last_native_data;
+                v = (float)raw / 256.0f * DEFAULT_REF_VOLTAGE;
+        } else {
+                raw = repeat_native/repeat_read;
+                v = repeat_data/repeat_read;
+        }
 
         repeat_native = raw;
         repeat_data = v;
@@ -127,6 +145,15 @@ int OspiPcf8591Sensor::read(unsigned long time) {
                         return HTTP_RQT_SUCCESS;
         }
         return HTTP_RQT_NOT_RECEIVED;
+}
+
+/**
+* Close resource for PCF8591 ADC
+**/
+void OspiPcf8591Sensor::deinit() {
+        if (gs_handle.inited) {
+                pcf8591_deinit(&gs_handle);
+        }
 }
 
 

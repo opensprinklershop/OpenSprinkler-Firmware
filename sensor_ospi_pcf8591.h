@@ -40,7 +40,7 @@ public:
      * @param type Sensor type identifier
      */
     explicit OspiPcf8591Sensor(uint type) : SensorBase(type) {}
-    virtual ~OspiPcf8591Sensor() {}
+    virtual ~OspiPcf8591Sensor() { deinit(); }
     
     /**
      * @brief Read analog value from PCF8591 ADC
@@ -49,6 +49,11 @@ public:
      * @note Reads 8-bit value from specified channel
      */
     virtual int read(unsigned long time) override;
+
+    /**
+     * @brief Cleanup sensor resources
+     */
+    virtual void deinit() override;
     
     /**
      * @brief Get measurement unit identifier
