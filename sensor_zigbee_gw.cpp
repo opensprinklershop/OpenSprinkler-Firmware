@@ -1194,7 +1194,7 @@ static bool gw_extractStringAttribute(const esp_zb_zcl_attribute_t *attr, char *
  * @brief Handle Basic Cluster (0x0000) attribute read response in Gateway mode
  * Updates discovered device info and matching sensor configurations.
  */
-static void gw_handleBasicClusterResponse(uint16_t short_addr, const esp_zb_zcl_attribute_t *attribute) {
+static void gw_handleBasicClusterResponse(uint16_t short_addr, const esp_zb_zcl_attribute_t *attribute, uint64_t ieee_override = 0) {
     if (!attribute || !attribute->data.value) return;
     
     char str_buf[32] = {0};
@@ -1202,10 +1202,21 @@ static void gw_handleBasicClusterResponse(uint16_t short_addr, const esp_zb_zcl_
     bool has_u8 = (attribute->data.type == ESP_ZB_ZCL_ATTR_TYPE_U8);
     uint8_t u8_value = has_u8 ? *(uint8_t*)attribute->data.value : 0xFF;
     
-    // Find device in discovered list and update
+    // Find device in discovered list and update.
+    // Prefer matching by the explicitly known IEEE address (ieee_override) when
+    // available.  The short-address fallback is lossy: for sleepy Tuya devices
+    // (GIEX GX02/GX03/GX04) the Basic Cluster response often arrives via the
+    // no-address zbReadBasicCluster() callback, and re-deriving the short
+    // address from the IEEE can fail (returns 0xFFFF → 0).  That previously
+    // caused the manufacturer/model string of one device to be written onto a
+    // different device record (e.g. all devices ending up with the GX02's
+    // "_TZE200_sh1btabb" manufacturer), which in turn made the UI/database name
+    // every device identically.
     uint64_t ieee_addr = 0;
     for (auto& dev : gw_discovered_devices) {
-        if (dev.short_addr == short_addr) {
+        bool match = (ieee_override != 0) ? (dev.ieee_addr == ieee_override)
+                                          : (dev.short_addr == short_addr);
+        if (match) {
             ieee_addr = dev.ieee_addr;
             bool changed = false;
             if (attribute->id == ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID && has_u8) {
@@ -2449,7 +2460,7 @@ public:
             esp_zb_lock_release();
             if (short_addr == 0xFFFF || short_addr == 0xFFFE) short_addr = 0;
             gw_add_responsive_device(short_addr, gw_read_pending_ieee, 1);
-            gw_handleBasicClusterResponse(short_addr, attribute);
+            gw_handleBasicClusterResponse(short_addr, attribute, gw_read_pending_ieee);
         }
         // Always clear the pending flag.
         if (gw_read_pending && gw_read_pending_cluster == ZB_ZCL_CLUSTER_ID_BASIC) {
@@ -2486,7 +2497,7 @@ public:
                 for (int i = 7; i >= 0; i--) basic_ieee = (basic_ieee << 8) | basic_raw[i];
                 if (basic_ieee) gw_add_responsive_device(src_address.u.short_addr, basic_ieee, src_endpoint);
             }
-            gw_handleBasicClusterResponse(src_address.u.short_addr, attribute);
+            gw_handleBasicClusterResponse(src_address.u.short_addr, attribute, basic_ieee);
             return; // Don't treat the string as a sensor value
         }
 
