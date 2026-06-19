@@ -3,7 +3,7 @@
 Ta strona zawiera dokumentację oprogramowania OpenSprinkler oraz rozszerzeń OpenSprinklerPro rozwijanych przez OpenSprinklerShop.
 
 !!! info "Wersja oprogramowania OpenSprinklerShop"
-    Oprogramowanie OpenSprinklerShop, w tym OpenSprinklerPro, korzysta z własnej numeracji wersji oprogramowania, niezależnej od oficjalnej linii oprogramowania (upstream) OpenSprinkler. Bieżąca wersja oprogramowania OpenSprinklerShop to **2.4.0(208)**.
+    Oprogramowanie OpenSprinklerShop, w tym OpenSprinklerPro, korzysta z własnej numeracji wersji oprogramowania, niezależnej od oficjalnej linii oprogramowania (upstream) OpenSprinkler. Bieżąca wersja oprogramowania OpenSprinklerShop to **2.4.0(213)**.
 
 !!! tip "Aktualizacje oprogramowania i Portal"
     Pobieranie oprogramowania, archiwa, dzienniki zmian (changelogs) oraz wskazówki dotyczące aktualizacji znajdują się na [Portalu aktualizacji OpenSprinklerShop](https://opensprinklershop.de/upgrade).

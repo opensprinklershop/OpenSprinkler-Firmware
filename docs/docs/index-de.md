@@ -3,7 +3,7 @@
 Diese Seite enthält die Dokumentation zur OpenSprinkler-Firmware und zu den von OpenSprinklerShop gepflegten OpenSprinklerPro-Erweiterungen.
 
 !!! info "OpenSprinklerShop-Firmwareversion"
-    Die OpenSprinklerShop-Firmware inklusive OpenSprinklerPro verwendet eine eigene Firmware-Versionierung unabhängig von der Upstream-OpenSprinkler-Firmware. Die aktuelle OpenSprinklerShop-Firmwareversion ist **2.4.0(208)**.
+    Die OpenSprinklerShop-Firmware inklusive OpenSprinklerPro verwendet eine eigene Firmware-Versionierung unabhängig von der Upstream-OpenSprinkler-Firmware. Die aktuelle OpenSprinklerShop-Firmwareversion ist **2.4.0(213)**.
 
 !!! tip "Firmware-Upgrades & Portal"
     Firmware-Downloads, Archive, Changelogs und Upgrade-Richtlinien finden Sie auf dem [OpenSprinklerShop Upgrade-Portal](https://opensprinklershop.de/upgrade).

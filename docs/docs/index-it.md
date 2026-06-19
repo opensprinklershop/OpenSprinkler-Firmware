@@ -3,7 +3,7 @@
 Questo sito contiene la documentazione del firmware OpenSprinkler e delle estensioni OpenSprinklerPro mantenute da OpenSprinklerShop.
 
 !!! info "Versione firmware OpenSprinklerShop"
-    Il firmware OpenSprinklerShop, incluso OpenSprinklerPro, usa una propria numerazione di versione indipendente dalla linea firmware OpenSprinkler upstream. La versione firmware OpenSprinklerShop attuale è **2.4.0(208)**.
+    Il firmware OpenSprinklerShop, incluso OpenSprinklerPro, usa una propria numerazione di versione indipendente dalla linea firmware OpenSprinkler upstream. La versione firmware OpenSprinklerShop attuale è **2.4.0(213)**.
 
 !!! tip "Aggiornamenti del firmware e Portale"
     I download del firmware, gli archivi, i changelog e le linee guida per l'aggiornamento sono ospitati sul [portale di aggiornamento OpenSprinklerShop](https://opensprinklershop.de/upgrade).

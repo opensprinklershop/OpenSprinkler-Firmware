@@ -3,7 +3,7 @@
 Ez az oldal az OpenSprinkler firmware-ével és az OpenSprinklerShop által karbantartott OpenSprinklerPro bővítményekkel kapcsolatos dokumentációt tartalmazza.
 
 !!! info "OpenSprinklerShop firmware verzió"
-    Az OpenSprinklerPro-t is magában foglaló OpenSprinklerShop firmware egy egyedi szoftververzió-számozást használ, amely független a hivatalos upstream OpenSprinkler szoftvercsaládtól. A jelenlegi OpenSprinklerShop firmware verzió: **2.4.0(208)**.
+    Az OpenSprinklerPro-t is magában foglaló OpenSprinklerShop firmware egy egyedi szoftververzió-számozást használ, amely független a hivatalos upstream OpenSprinkler szoftvercsaládtól. A jelenlegi OpenSprinklerShop firmware verzió: **2.4.0(213)**.
 
 !!! tip "Szoftverfrissítések és portál"
     A szoftverletöltések, archívumok, változásnapkák (changelog) és a frissítési útmutatók megtalálhatók az [OpenSprinklerShop frissítési portálon](https://opensprinklershop.de/upgrade).
