@@ -6,6 +6,10 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(215)] — unveröffentlicht
+
+---
+
 ## [2.4.0(214)] — veröffentlicht 2026-06-21
 
 ### Fixed
