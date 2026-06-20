@@ -6,10 +6,12 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(214)]
+## [2.4.0(214)] — veröffentlicht 2026-06-21
 
 ### Fixed
 - **Weather service stuck "offline"**: The weather server forwards each request to an upstream provider, so a cold-cache response can occasionally exceed the firmware's request timeout. Two issues amplified a single timeout into a permanent "offline" state: (1) the per-request timeout was only 12 s, and (2) after *any* attempt — including a failed/timed-out one — the controller waited the full ~6 h check interval before retrying, so a reboot triggered just one attempt and then went quiet for hours. Now the weather request timeout is raised to 20 s, and a failed/timed-out check is retried after ~15 min (`CHECK_WEATHER_FAIL_RETRY`) instead of ~6 h, while successful checks keep the normal ~6 h cadence.
+- **Zigbee gateway (device identity cross-contamination)**: Basic Cluster (0x0000) responses are now matched to the originating device by its IEEE address (`ieee_override`) instead of the lossy short-address fallback. For sleepy Tuya devices (GIEX GX02/GX03/GX04) the Basic Cluster reply often arrives via the no-address callback where re-deriving the short address can fail (`0xFFFF → 0`), which previously wrote one device's manufacturer/model string onto another record (e.g. every device ending up with the GX02's `_TZE200_sh1btabb` manufacturer and an identical name in the UI/database).
+- **PCF8591 analog sensor (OSPi)**: Zero/null raw readings are now discarded instead of being averaged in, preventing false low values. If no valid sample is received during an interval the sensor falls back to the last valid reading rather than reporting a stale zero, and ADC resources are now released via a new `deinit()` on destruction.
 
 ---
 
