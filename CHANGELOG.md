@@ -6,6 +6,13 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(214)]
+
+### Fixed
+- **Weather service stuck "offline"**: The weather server forwards each request to an upstream provider, so a cold-cache response can occasionally exceed the firmware's request timeout. Two issues amplified a single timeout into a permanent "offline" state: (1) the per-request timeout was only 12 s, and (2) after *any* attempt — including a failed/timed-out one — the controller waited the full ~6 h check interval before retrying, so a reboot triggered just one attempt and then went quiet for hours. Now the weather request timeout is raised to 20 s, and a failed/timed-out check is retried after ~15 min (`CHECK_WEATHER_FAIL_RETRY`) instead of ~6 h, while successful checks keep the normal ~6 h cadence.
+
+---
+
 ## [2.4.0(213)] — veröffentlicht 2026-06-15
 
 ### Added

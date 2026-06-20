@@ -30,12 +30,33 @@
 	#include <esp_wifi.h>
 #endif
 
+#if defined(ESP8266) || defined(ESP32)
+	#include "OpenSprinkler.h"
+	extern OpenSprinkler os;
+
+	// Apply the WiFi sleep mode based on the IOPT_WIFI_MODEM_SLEEP option.
+	// Default (0): radio stays always on (full power). This avoids the
+	// connection drops some setups see during continuous operation, at the
+	// cost of higher current draw / self-heating.
+	// Option set to 1: modem sleep lets the radio idle between DTIM beacons,
+	// which lowers power and improves weak-signal RX sensitivity.
+	static void apply_wifi_sleep_mode() {
+		bool modem_sleep = os.iopts[IOPT_WIFI_MODEM_SLEEP];
+	#if defined(ESP8266)
+		wifi_set_sleep_type(modem_sleep ? MODEM_SLEEP_T : NONE_SLEEP_T);
+	#else
+		// ESP32: WiFi.setSleep(true) == modem sleep, false == full power.
+		WiFi.setSleep(modem_sleep);
+	#endif
+	}
+#endif
+
 String scan_network() {
 	// Note: This function is called by the AP captive portal endpoint (/jsap).
 	#if defined(ESP8266)
 	DEBUG_PRINTLN("Scanning for networks...");
 	WiFi.setOutputPower(20.5);
-	wifi_set_sleep_type(NONE_SLEEP_T);
+	apply_wifi_sleep_mode();
 	WiFi.mode(WIFI_STA);
 	#else
 	wifi_mode_t prev_mode = WiFi.getMode();
@@ -127,7 +148,7 @@ void start_network_ap(const char *ssid, const char *pass) {
 	DEBUG_PRINTLN("Starting AP mode");
 	if(!ssid || !ssid[0]) return;
 	#if defined(ESP8266)
-	wifi_set_sleep_type(NONE_SLEEP_T);
+	apply_wifi_sleep_mode();
 	WiFi.setOutputPower(20.5);
 	WiFi.mode(WIFI_AP_STA);
 	#endif
@@ -164,7 +185,7 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 	}
 #endif
 	#if defined(ESP8266)
-	wifi_set_sleep_type(NONE_SLEEP_T);
+	apply_wifi_sleep_mode();
 	WiFi.setOutputPower(20.5);
 	#endif
 
@@ -172,6 +193,7 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 	WiFi.mode(WIFI_AP_STA);
 	#else
 	WiFi.mode(WIFI_MODE_APSTA);
+	apply_wifi_sleep_mode();
 	// Enable auto-reconnect for ESP32 to handle connection drops
 	WiFi.setAutoReconnect(true);
 	#endif
@@ -196,7 +218,7 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	DEBUG_PRINTLN(F("[WiFi] STA mode: forcing 5 GHz band to avoid ZigBee 2.4 GHz interference."));
 #endif
 	#if defined(ESP8266)
-	wifi_set_sleep_type(NONE_SLEEP_T);
+	apply_wifi_sleep_mode();
 	WiFi.setOutputPower(20.5);
 	#endif
 
@@ -204,7 +226,7 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	WiFi.mode(WIFI_STA);
 	#else
 	WiFi.mode(WIFI_MODE_STA);
-	WiFi.setSleep(false);
+	apply_wifi_sleep_mode();
 	// Enable auto-reconnect for ESP32 to handle connection drops
 	WiFi.setAutoReconnect(true);
 	#endif

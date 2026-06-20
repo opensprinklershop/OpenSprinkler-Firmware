@@ -252,7 +252,9 @@ void GetWeather() {
 #if defined(OS_AVR)
 	int ret = os.send_http_request(host_start, ether_buffer, getweather_callback_with_peel_header);
 #else
-	int ret = os.send_http_request_async(host_start, port, ether_buffer, getweather_callback_with_peel_header, use_ssl, 12000);
+	// Use a longer timeout for weather: the weather server forwards the request to
+	// an upstream provider, so a cold-cache response can take well over 12s.
+	int ret = os.send_http_request_async(host_start, port, ether_buffer, getweather_callback_with_peel_header, use_ssl, 20000);
 #endif
 	DEBUG_PRINT(F("HTTP request sent, return code: "));
 	DEBUG_PRINTLN(ret);

@@ -161,6 +161,7 @@ void remote_http_callback(char*);
 #define ARP_REQUEST_INTERVAL    5       // ARP request interval (in seconds)
 #define CHECK_NETWORK_INTERVAL  601     // Network checking timeout (in seconds)
 #define CHECK_WEATHER_TIMEOUT   21613L  // Weather check interval (in seconds)
+#define CHECK_WEATHER_FAIL_RETRY 907L   // Retry interval after a failed/timed-out weather check (in seconds, ~15min)
 #define CHECK_WEATHER_SUCCESS_TIMEOUT 86400L // Weather check success interval (in seconds)
 #define LCD_BACKLIGHT_TIMEOUT     15    // LCD backlight timeout (in seconds))
 #define PING_TIMEOUT              200   // Ping test timeout (in ms)
@@ -1955,6 +1956,18 @@ void check_weather() {
 	#endif
 
 	time_os_t ntz = os.now_tz();
+
+	// Normally weather is re-checked every CHECK_WEATHER_TIMEOUT (~6h). However, if
+	// the most recent attempt did not succeed (e.g. the weather server timed out
+	// while forwarding the request to its upstream provider), waiting another 6h
+	// would leave the controller "weather offline" for a long time. In that case
+	// retry much sooner (CHECK_WEATHER_FAIL_RETRY). A successful attempt updates
+	// checkwt_success_lasttime to >= checkwt_lasttime, so success is detected here.
+	time_os_t check_interval = CHECK_WEATHER_TIMEOUT;
+	if (os.checkwt_lasttime && os.checkwt_success_lasttime < os.checkwt_lasttime) {
+		check_interval = CHECK_WEATHER_FAIL_RETRY;
+	}
+
 	if (os.checkwt_success_lasttime && (ntz > os.checkwt_success_lasttime + CHECK_WEATHER_SUCCESS_TIMEOUT)) {
 		// if last successful weather call timestamp is more than allowed threshold
 		// and if the selected adjustment method is not one of the manual methods
@@ -1979,7 +1992,7 @@ void check_weather() {
 			wt_errCode = HTTP_RQT_STALE;
 			md_N = 0;
 		}
-	} else if (!os.checkwt_lasttime || (ntz > os.checkwt_lasttime + CHECK_WEATHER_TIMEOUT)) {
+	} else if (!os.checkwt_lasttime || (ntz > os.checkwt_lasttime + check_interval)) {
 		os.checkwt_lasttime = ntz;
 		#if defined(ARDUINO)
 		if (!ui_state) {

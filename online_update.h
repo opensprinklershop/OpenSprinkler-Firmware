@@ -6,17 +6,21 @@
 #include <Arduino.h>
 
 // Update server base URL (no trailing slash)
+// NOTE: The manifest + firmware binaries are published to the IONOS host
+// (opensprinklershop.de) by `fw.sh release`/online_deploy. The manifest URL MUST
+// point there. ui.opensprinklershop.de does NOT serve /upgrade (404), which broke
+// online OTA in builds dfd1cbc..213.
 #if defined(ESP32)
 // ESP32 supports full TLS; use HTTPS.
-#  define OTA_UPDATE_HOST    "ui.opensprinklershop.de"
-#  define OTA_UPDATE_BASE_URL "https://ui.opensprinklershop.de/upgrade"
+#  define OTA_UPDATE_HOST    "www.opensprinklershop.de"
+#  define OTA_UPDATE_BASE_URL "https://www.opensprinklershop.de/upgrade"
 #else
 // ESP8266 BearSSL cannot complete a TLS handshake with the Ionos hosting server
 // (server ignores the max_fragment_length extension, returning a >512-byte record
 // that overflows the BearSSL RX buffer).  Use plain HTTP instead; the SHA-256
 // field in the manifest still provides integrity verification.
-#  define OTA_UPDATE_HOST    "ui.opensprinklershop.de"
-#  define OTA_UPDATE_BASE_URL "http://ui.opensprinklershop.de/upgrade"
+#  define OTA_UPDATE_HOST    "opensprinklershop.de"
+#  define OTA_UPDATE_BASE_URL "http://opensprinklershop.de/upgrade"
 #endif
 #define OTA_MANIFEST_URL OTA_UPDATE_BASE_URL "/manifest.json"
 #define OTA_ESP8266_FW_URL OTA_UPDATE_BASE_URL "/firmware_esp8266.bin"

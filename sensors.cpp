@@ -3237,6 +3237,16 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   return defaultBool;
 }
 
+// Read a monitor's pending (scratch) state during the combinational
+// evaluation phase. Using the scratch image (eval_active) instead of the
+// live `active` value makes logic monitors (NOT/AND/OR/XOR/SET_SENSOR12)
+// independent of the order in which monitors are stored/evaluated.
+static bool get_monitor_eval(uint nr, bool inv, bool defaultBool) {
+  Monitor_t *mon = monitor_by_nr(nr);
+  if (!mon) return defaultBool;
+  return inv ? !mon->eval_active : mon->eval_active;
+}
+
 void check_monitors() {
   //DEBUG_PRINTLN(F("check_monitors"));
   time_os_t timeNow = os.now_tz();
@@ -3244,40 +3254,61 @@ void check_monitors() {
   os.status.forced_sensor1 = 0;
   os.status.forced_sensor2 = 0;
 
-  int monidx = 0;
+  // ---------------------------------------------------------------------
+  // Two-phase, order-independent evaluation.
+  //
+  // Phase 1 computes a stable "process image" of every monitor state into
+  // the transient eval_active/eval_value fields without touching outputs:
+  //   1a) input/leaf monitors (sensor min/max, sensor1/2, time, remote)
+  //       are evaluated once - they do not depend on other monitors.
+  //   1b) logic monitors (NOT/AND/OR/XOR/SET_SENSOR12) are evaluated
+  //       repeatedly against the image until it no longer changes, so the
+  //       result no longer depends on the monitor order (fixes the
+  //       transient "signal and its inverse both active" glitches).
+  // Phase 2 then applies the resulting states atomically (start/stop
+  // actions, notifications and reset-timer handling).
+  // ---------------------------------------------------------------------
+
+  // Seed the image with the current states (used as latch input and as the
+  // default for monitors that are not (re)computed this cycle).
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
-    uint nr = mon->nr;
+    mon->eval_active = mon->active;
+    mon->eval_value = 0;
+  }
 
-    bool wasActive = mon->active;
-    double value = 0;
+  // Phase 1a: input / leaf monitors (independent of other monitors)
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
 
     switch(mon->type) {
-      case MONITOR_MIN: 
+      case MONITOR_MIN:
       case MONITOR_MAX: {
-       SensorBase * sensor = sensor_by_nr(mon->sensor);
+        SensorBase * sensor = sensor_by_nr(mon->sensor);
         if (sensor && sensor->flags.data_ok) {
-          value = sensor->last_data;
+          double value = sensor->last_data;
+          mon->eval_value = value;
 
           double v_min = mon->m.minmax.value1 <= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
           double v_max = mon->m.minmax.value1 >= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
 
           if (v_min == v_max) {
             if (mon->type == MONITOR_MIN) {
-              mon->active = (value <= v_min);
+              mon->eval_active = (value <= v_min);
             } else {
-              mon->active = (value >= v_max);
+              mon->eval_active = (value >= v_max);
             }
           } else {
+            // hysteresis: latch off the previous output state
             if (!mon->active) {
-              if ((mon->type == MONITOR_MIN && value <= v_min) || 
+              if ((mon->type == MONITOR_MIN && value <= v_min) ||
                 (mon->type == MONITOR_MAX && value >= v_max)) {
-                mon->active = true;
+                mon->eval_active = true;
               }
             } else {
-              if ((mon->type == MONITOR_MIN && value >= v_max) || 
+              if ((mon->type == MONITOR_MIN && value >= v_max) ||
                 (mon->type == MONITOR_MAX && value <= v_min)) {
-                mon->active = false;
+                mon->eval_active = false;
               }
             }
           }
@@ -3287,46 +3318,16 @@ void check_monitors() {
       case MONITOR_SENSOR12: {
         if (mon->m.sensor12.sensor12 == 1) {
           if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
-            mon->active = mon->m.sensor12.invers ? !os.status.sensor1_active : os.status.sensor1_active;
+            mon->eval_active = mon->m.sensor12.invers ? !os.status.sensor1_active : os.status.sensor1_active;
           }
         } else if (mon->m.sensor12.sensor12 == 2) {
           if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL) {
-            mon->active = mon->m.sensor12.invers ? !os.status.sensor2_active : os.status.sensor2_active;
+            mon->eval_active = mon->m.sensor12.invers ? !os.status.sensor2_active : os.status.sensor2_active;
           }
         }
         break;
       }
 
-      case MONITOR_SET_SENSOR12:
-        mon->active = get_monitor(mon->m.set_sensor12.monitor, false, false);
-        if (mon->m.set_sensor12.sensor12 == 1) {
-          os.status.forced_sensor1 = mon->active;
-        }
-        if (mon->m.set_sensor12.sensor12 == 2) {
-          os.status.forced_sensor2 = mon->active;
-        }
-        break;
-      case MONITOR_AND:
-        mon->active = get_monitor(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, true) &&
-          get_monitor(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, true) &&
-          get_monitor(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, true) &&
-          get_monitor(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, true);          
-        break;
-      case MONITOR_OR:
-        mon->active = get_monitor(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ||
-          get_monitor(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ||
-          get_monitor(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ||
-          get_monitor(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
-        break;
-      case MONITOR_XOR:
-        mon->active = get_monitor(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ^
-          get_monitor(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ^
-          get_monitor(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ^
-          get_monitor(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
-        break;
-      case MONITOR_NOT:
-        mon->active = get_monitor(mon->m.mnot.monitor, true, false);
-        break;
       case MONITOR_TIME: {
         uint32_t seconds_of_day = timeNow % 86400L;
         uint16_t time = (seconds_of_day / 3600) * 100 + (seconds_of_day % 3600) / 60; //HHMM
@@ -3338,35 +3339,105 @@ void check_monitors() {
           in_window &= time >= mon->m.mtime.time_from && time <= mon->m.mtime.time_to;
 
         if (mon->reset_seconds == 0) {
-          mon->active = in_window;
+          mon->eval_active = in_window;
         } else {
           if (!in_window) {
-            mon->active = false;
+            mon->eval_active = false;
             mon->reset_time = 0;
           } else {
             if (mon->reset_time == 0) {
-              mon->active = true;
+              mon->eval_active = true;
             } else if (timeNow < mon->reset_time) {
-              mon->active = true;
+              mon->eval_active = true;
             } else {
-              mon->active = false;
+              mon->eval_active = false;
             }
           }
         }
         break;
       }
+
       case MONITOR_REMOTE:
-        mon->active = get_remote_monitor(mon, wasActive);
+        mon->eval_active = get_remote_monitor(mon, mon->active);
+        break;
+
+      default:
+        // logic monitors are handled in phase 1b
         break;
     }
+  }
+
+  // Phase 1b: logic monitors, iterated until the image is stable.
+  // The guard limit bounds the work for (accidental) cyclic definitions.
+  size_t monCount = monitorsMap.size();
+  size_t maxIter = monCount + 2;
+  bool changed = true;
+  for (size_t iter = 0; changed && iter < maxIter; iter++) {
+    changed = false;
+    for (auto &kv : monitorsMap) {
+      Monitor_t *mon = kv.second;
+      bool newState = mon->eval_active;
+
+      switch(mon->type) {
+        case MONITOR_SET_SENSOR12:
+          newState = get_monitor_eval(mon->m.set_sensor12.monitor, false, false);
+          break;
+        case MONITOR_AND:
+          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, true) &&
+            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, true) &&
+            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, true) &&
+            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, true);
+          break;
+        case MONITOR_OR:
+          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ||
+            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ||
+            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ||
+            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
+          break;
+        case MONITOR_XOR:
+          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ^
+            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ^
+            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ^
+            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
+          break;
+        case MONITOR_NOT:
+          newState = get_monitor_eval(mon->m.mnot.monitor, true, false);
+          break;
+        default:
+          continue; // leaf monitor, already final
+      }
+
+      if (newState != mon->eval_active) {
+        mon->eval_active = newState;
+        changed = true;
+      }
+    }
+  }
+
+  // Phase 1c: derive forced sensor1/2 bits from the final SET_SENSOR12 states.
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
+    if (mon->type == MONITOR_SET_SENSOR12) {
+      if (mon->m.set_sensor12.sensor12 == 1) {
+        os.status.forced_sensor1 = mon->eval_active;
+      }
+      if (mon->m.set_sensor12.sensor12 == 2) {
+        os.status.forced_sensor2 = mon->eval_active;
+      }
+    }
+  }
+
+  // Phase 2: apply the computed states atomically (outputs + reset timers).
+  int monidx = 0;
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
+    uint nr = mon->nr;
+
+    bool wasActive = mon->active;
+    double value = mon->eval_value;
+    mon->active = mon->eval_active;
 
     if (mon->active != wasActive) {
-      // DEBUG_PRINT(F("Monitor "));
-      // DEBUG_PRINT(mon->nr);
-      // DEBUG_PRINT(F(" changed from "));
-      // DEBUG_PRINT(wasActive ? "active" : "inactive");
-      // DEBUG_PRINT(F(" to "));
-      // DEBUG_PRINTLN(mon->active ? "active" : "inactive");
       if (mon->active) {
         if (mon->reset_seconds > 0) {
           mon->reset_time = timeNow + mon->reset_seconds; 
@@ -3382,10 +3453,6 @@ void check_monitors() {
     } else if (mon->active) {
       if (mon->reset_time > 0 && mon->reset_time < timeNow) { //time is over
         mon->active = false;
-        // DEBUG_PRINT(F("Monitor "));
-        // DEBUG_PRINT(mon->nr);
-        // DEBUG_PRINT(F(" time is over at "));
-        // DEBUG_PRINTLN(timeNow);
         stop_monitor_action(mon);
         mon->reset_time = timeNow + mon->reset_seconds; 
       } else if (mon->reset_time == 0 && mon->reset_seconds > 0) { //reset time not set, but reset seconds is set

@@ -376,13 +376,19 @@ public:
   ulong reset_seconds;
   unsigned char undef[16];  // for later
   ulong reset_time; // time to reset
-  
+
+  // Transient evaluation scratch (not persisted / not serialized).
+  // Used by check_monitors() for order-independent two-phase evaluation.
+  boolean eval_active;
+  double eval_value;
+
   /**
    * @brief Constructor
    */
   Monitor() : nr(0), type(0), sensor(0), prog(0), zone(0), 
               active(false), time(0), maxRuntime(0), prio(0), 
-              reset_seconds(0), reset_time(0) {
+              reset_seconds(0), reset_time(0),
+              eval_active(false), eval_value(0) {
     memset(&m, 0, sizeof(Monitor_Union_t));
     memset(undef, 0, sizeof(undef));
     name[0] = 0;

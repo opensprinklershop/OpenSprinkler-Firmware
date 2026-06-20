@@ -60,6 +60,8 @@
 #
 # Environment variables (optional):
 #   OS_IP           Device IP  (default: 192.168.0.151)
+#   OS_IP_ESP8266   ESP8266 device IP (default: 192.168.0.244); esp8266 upload/
+#                   deploy always goes over IP (no USB) unless FW_UPLOAD_METHOD=usb
 #   OS_PASSWORD     Admin password in plain text (will be MD5 hashed)
 #   OS_HASH         Admin password already as MD5 hash
 #   MONITOR_SPEED   Serial monitor baud rate (default: 115200)
@@ -102,6 +104,9 @@ fi
 
 # ── Configuration ────────────────────────────────────────────────────────────
 DEVICE_IP="${OS_IP:-192.168.0.151}"
+# ESP8266 device has no USB connection here -> upload/deploy goes over the
+# network (REST/OTA). Override with OS_IP_ESP8266 if its address changes.
+ESP8266_IP="${OS_IP_ESP8266:-192.168.0.244}"
 PIO_BIN="platformio"
 SILENT="${SILENT:-true}"
 
@@ -144,6 +149,11 @@ MATTER_PRODUCT_ID="0x8000"
 ENV_C5_MATTER="esp32-c5-matter"
 ENV_C5_ZIGBEE="esp32-c5-zigbee"
 ENV_ESP8266="os3x_esp8266"
+# Track whether the upload method was explicitly chosen by the caller. This lets
+# the ESP8266 (network-only) default to IP upload while still honoring an
+# explicit FW_UPLOAD_METHOD=usb.
+FW_UPLOAD_METHOD_EXPLICIT=0
+[[ -n "${FW_UPLOAD_METHOD:-}" ]] && FW_UPLOAD_METHOD_EXPLICIT=1
 FW_UPLOAD_METHOD="${FW_UPLOAD_METHOD:-usb}"
 
 # Determine password hash
@@ -246,7 +256,7 @@ install_ip() {
 
     header "Firmware-Upload via IP: $bin_file → $DEVICE_IP ($variant)"
 
-    ./fw.sh reset && ./fw.sh deploy zigbee debug    # Extract only the host/IP from DEVICE_IP (strip http(s) and any custom ports)
+    # Extract only the host/IP from DEVICE_IP (strip http(s) and any custom ports)
     local host="${DEVICE_IP#http://}"
     host="${host#https://}"
     host="${host%%:*}"
@@ -307,6 +317,18 @@ upload_env_auto() {
             ;;
     esac
 
+    # ESP8266 is network-only here (no USB): force IP upload to its address.
+    # Honor only an *explicit* FW_UPLOAD_METHOD=usb to fall back to serial.
+    if [[ "$env" == "$ENV_ESP8266" ]]; then
+        if [[ "$FW_UPLOAD_METHOD_EXPLICIT" == "1" && "$method" == "usb" ]]; then
+            : # user explicitly requested serial upload
+        else
+            DEVICE_IP="$ESP8266_IP"
+            method="ip"
+            info "ESP8266: using IP upload to ${DEVICE_IP} (set FW_UPLOAD_METHOD=usb to force serial)."
+        fi
+    fi
+
     if [[ "$method" == "ip" ]]; then
         upload_ip_env "$env"
         return
@@ -327,6 +349,17 @@ upload_env_auto() {
 upload_env_fast_debug() {
     local env="$1"
     local method="${FW_UPLOAD_METHOD,,}"
+
+    # ESP8266 is network-only here (no USB): always use IP upload to its address.
+    # Honor only an *explicit* FW_UPLOAD_METHOD=usb to fall back to serial.
+    if [[ "$env" == "$ENV_ESP8266" ]]; then
+        if [[ "$FW_UPLOAD_METHOD_EXPLICIT" == "1" && "$method" == "usb" ]]; then
+            : # user explicitly requested serial upload
+        else
+            DEVICE_IP="$ESP8266_IP"
+            method="ip"
+        fi
+    fi
 
     # Keep debug deploy deterministic on USB by default.
     # IP upload is used only when explicitly requested.

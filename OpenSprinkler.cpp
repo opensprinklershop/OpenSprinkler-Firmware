@@ -239,6 +239,7 @@ const char iopt_json_names[] PROGMEM =
 	"ginv\0" // IOPT_INVERT_GROUP_SCHEDULING: 0=default, 1=invert
 	"fpd0\0" // IOPT_FLOW_PULSE_DIV_0
 	"fpd1\0" // IOPT_FLOW_PULSE_DIV_1
+	"wims\0" // IOPT_WIFI_MODEM_SLEEP: 0=off/full power, 1=modem sleep
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -404,10 +405,9 @@ const unsigned char iopt_max[] PROGMEM = {
 	1,               // IOPT_RAINMAKER_ENABLE
 	1,               // IOPT_INVERT_GROUP_SCHEDULING
 	255,             // IOPT_FLOW_PULSE_DIV_0
-	255              // IOPT_FLOW_PULSE_DIV_1
+	255,             // IOPT_FLOW_PULSE_DIV_1
+	1                // IOPT_WIFI_MODEM_SLEEP
 };
-
-// string options do not have maximum values
 
 /** Integer option values (stored in RAM) */
 unsigned char OpenSprinkler::iopts[] = {
@@ -498,6 +498,7 @@ unsigned char OpenSprinkler::iopts[] = {
 	0,  // Invert group scheduling: 0=default mode 1=invert mode
 	1,  // flow pulse divisor low byte (default divisor=1)
 	0,  // flow pulse divisor high byte
+	0,  // IOPT_WIFI_MODEM_SLEEP: 0=off/full power (default), 1=modem sleep
 };
 
 /** String option values (stored in RAM) */
@@ -2649,7 +2650,7 @@ void remote_http_callback(char* buffer) {
 namespace {
 
 static constexpr uint16_t HTTP_TIMEOUT_MIN_MS = 100;
-static constexpr uint16_t HTTP_TIMEOUT_MAX_MS = 12000;
+static constexpr uint16_t HTTP_TIMEOUT_MAX_MS = 20000;
 
 static uint16_t clamp_http_timeout(uint16_t timeout) {
 	if (timeout < HTTP_TIMEOUT_MIN_MS) return HTTP_TIMEOUT_MIN_MS;

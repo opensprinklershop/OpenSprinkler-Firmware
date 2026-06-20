@@ -2050,13 +2050,19 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
                 dev.is_tuya = true;
                 dirty = true;
             }
-            // If manufacturer/model are unknown/empty, apply Tuya fallback immediately to unblock logical devices!
-            if (dev.manufacturer[0] == '\0' || strcmp(dev.manufacturer, "unknown") == 0 ||
-                dev.model_id[0] == '\0' || strcmp(dev.model_id, "unknown") == 0) {
-                DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Received Tuya DP on unidentified device ieee=%016llX. Applying fallback manufacturer/model to enable logical devices.\n"),
+            // If the model identifier is still unknown, apply a generic Tuya
+            // model ("TS0601") so per-DP sensor handling can proceed. We must
+            // NOT invent a manufacturer string here: stamping a concrete
+            // manufacturer (previously the GX02 valve's "_TZE200_sh1btabb")
+            // makes gw_device_needs_basic_info() return false, which suppresses
+            // the real Basic Cluster query forever — so EVERY unidentified Tuya
+            // device ended up mislabeled as a "GIEX GX02 Water Valve" in /zd and
+            // the UI/database name lookup. Leaving the manufacturer empty keeps
+            // the Basic Cluster query active so the real manufacturer is filled
+            // in (and the database can then provide the correct device name).
+            if (dev.model_id[0] == '\0' || strcmp(dev.model_id, "unknown") == 0) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Received Tuya DP on device with unknown model ieee=%016llX. Applying generic TS0601 model (manufacturer left empty for Basic Cluster resolution).\n"),
                              (unsigned long long)ieee_addr);
-                strncpy(dev.manufacturer, "_TZE200_sh1btabb", sizeof(dev.manufacturer) - 1);
-                dev.manufacturer[sizeof(dev.manufacturer) - 1] = '\0';
                 strncpy(dev.model_id, "TS0601", sizeof(dev.model_id) - 1);
                 dev.model_id[sizeof(dev.model_id) - 1] = '\0';
                 dirty = true;
@@ -4090,8 +4096,21 @@ bool sensor_zigbee_gw_set_configured_channel(uint8_t channel) {
     return false;
 }
 
+// Deferred Zigbee startup tuning (reduce post-restart boot spike).
+// At boot the network also brings up RainMaker/MQTT TLS, the HTTPS server and
+// BLE, all heavy users of scarce internal RAM. Delaying the Zigbee rejoin
+// auto-open + Tuya DP query burst by a few seconds avoids overlapping those
+// peaks (which could push free internal heap low enough to stall the web UI on
+// an "hourglass").
+#define GW_STARTUP_DEFER_MS      20000UL  // wait after network forms before startup burst
+#define GW_STARTUP_OPEN_SECONDS  60       // rejoin permit-join window (was 180s)
+
 void sensor_zigbee_gw_loop() {
     if (!gw_zigbee_initialized) return;
+
+    // Deferred startup actions (auto-open for rejoin + Tuya DP query burst).
+    static bool gw_startup_actions_pending = false;
+    static unsigned long gw_network_formed_ms = 0;
 
     if (WiFi.status() == WL_CONNECTED) {
         sensor_zigbee_gw_do_lookups();
@@ -4148,13 +4167,19 @@ void sensor_zigbee_gw_loop() {
                                      timed_out_attr, (unsigned long long)timed_out_ieee, dev->basic_query_attempts);
                         gw_queue_basic_cluster_query_attr(dev->ieee_addr, dev->short_addr, dev->endpoint, timed_out_attr, 2000UL);
                     } else if (dev->is_tuya) {
-                        DEBUG_PRINTF(F("[ZIGBEE-GW] ⚠ Sleepy Tuya device ieee=%016llX reached query retry limit (%d). Setting fallback manufacturer/model to enable logical devices.\n"),
+                        // Do NOT invent a concrete manufacturer here. Stamping
+                        // the GX02 valve's "_TZE200_sh1btabb" mislabeled every
+                        // sleepy Tuya device that never answers Basic Cluster as
+                        // a "GIEX GX02 Water Valve". Only apply a generic TS0601
+                        // model so the device stays usable; leave manufacturer
+                        // empty so the database name lookup is not poisoned.
+                        DEBUG_PRINTF(F("[ZIGBEE-GW] ⚠ Sleepy Tuya device ieee=%016llX reached query retry limit (%d). Applying generic TS0601 model (manufacturer left empty to avoid mislabeling).\n"),
                                      (unsigned long long)timed_out_ieee, dev->basic_query_attempts);
-                        strncpy(dev->manufacturer, "_TZE200_sh1btabb", sizeof(dev->manufacturer) - 1);
-                        dev->manufacturer[sizeof(dev->manufacturer) - 1] = '\0';
-                        strncpy(dev->model_id, "TS0601", sizeof(dev->model_id) - 1);
-                        dev->model_id[sizeof(dev->model_id) - 1] = '\0';
-                        gw_mark_discovered_devices_dirty();
+                        if (dev->model_id[0] == '\0' || strcmp(dev->model_id, "unknown") == 0) {
+                            strncpy(dev->model_id, "TS0601", sizeof(dev->model_id) - 1);
+                            dev->model_id[sizeof(dev->model_id) - 1] = '\0';
+                            gw_mark_discovered_devices_dirty();
+                        }
                     } else {
                         DEBUG_PRINTF(F("[ZIGBEE-GW] Basic read timeout on non-Tuya device ieee=%016llX after %u attempts. Leaving unknown.\n"),
                                      (unsigned long long)timed_out_ieee, dev->basic_query_attempts);
@@ -4186,42 +4211,56 @@ void sensor_zigbee_gw_loop() {
             // and start pushing reports proactively.
             gw_schedule_configure_reporting_all(5000);
 
-            // Auto-open network once on startup so previously-paired devices can
-            // rejoin after a coordinator restart (firmware update, power cycle, etc.)
-            // without the user sending the "zj" command manually.
-            static bool gw_startup_open_done = false;
-            if (!gw_startup_open_done) {
-                gw_startup_open_done = true;
-                DEBUG_PRINTLN(F("[ZIGBEE-GW] Auto-opening network 180s for device rejoin after restart"));
-                sensor_zigbee_gw_open_network(180);
-            }
-
-            // Proactively query known Tuya sensors via ZBOSS address table.
-            // If ZBOSS NVRAM is intact after a restart, esp_zb_address_short_by_ieee()
-            // resolves the short address and we send a DP query immediately, before
-            // the device announces itself, so data starts flowing right away.
-            {
-                SensorIterator it_sq = sensors_iterate_begin();
-                SensorBase* s_sq;
-                while ((s_sq = sensors_iterate_next(it_sq)) != NULL) {
-                    if (!s_sq || s_sq->type != SENSOR_ZIGBEE) continue;
-                    ZigbeeSensor* zb_sq = static_cast<ZigbeeSensor*>(s_sq);
-                    if (zb_sq->device_ieee == 0) continue;
-                    // Tuya devices have manufacturer names starting with "_TZ"
-                    if (zb_sq->zb_manufacturer[0] != '_' || zb_sq->zb_manufacturer[1] != 'T') continue;
-                    bool sent = sensor_zigbee_gw_request_dp_query(
-                        zb_sq->device_ieee, zb_sq->endpoint ? zb_sq->endpoint : 1);
-                    if (sent) {
-                        DEBUG_PRINTF(F("[ZIGBEE-GW] Startup DP query → '%s' (ieee=%016llX)\n"),
-                                     s_sq->name, (unsigned long long)zb_sq->device_ieee);
-                    }
-                }
+            // Defer the startup auto-open + Tuya DP query burst instead of
+            // firing them the instant the network forms. At boot the network
+            // also stands up RainMaker/MQTT TLS, the HTTPS server and BLE — all
+            // heavy consumers of scarce internal RAM. Running the Zigbee rejoin
+            // flood at the same moment drove free internal heap to its minimum
+            // and could starve the web server (UI "hourglass"). The deferred
+            // block in the loop runs these once, GW_STARTUP_DEFER_MS later.
+            static bool gw_startup_scheduled = false;
+            if (!gw_startup_scheduled) {
+                gw_startup_scheduled = true;
+                gw_startup_actions_pending = true;
+                gw_network_formed_ms = millis();
             }
         } else {
             DEBUG_PRINTLN(F("[ZIGBEE-GW] Coordinator network LOST"));
         }
         last_connected = connected;
         gw_zigbee_connected = connected;
+    }
+
+    // Deferred Zigbee startup actions: auto-open the network for rejoin and send
+    // the Tuya DP query burst, but only once the boot-time TLS/MQTT/BLE
+    // allocations have had GW_STARTUP_DEFER_MS to settle. This decouples the
+    // Zigbee rejoin flood from the internal-RAM boot peak (see note above).
+    if (gw_startup_actions_pending && connected &&
+        millis() - gw_network_formed_ms >= GW_STARTUP_DEFER_MS) {
+        gw_startup_actions_pending = false;
+
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Deferred startup: auto-open %us for rejoin + Tuya DP queries\n"),
+                     (unsigned)GW_STARTUP_OPEN_SECONDS);
+        sensor_zigbee_gw_open_network(GW_STARTUP_OPEN_SECONDS);
+
+        // Proactively query known Tuya sensors via ZBOSS address table.
+        // If ZBOSS NVRAM is intact after a restart, esp_zb_address_short_by_ieee()
+        // resolves the short address and we send a DP query, so data flows again.
+        SensorIterator it_sq = sensors_iterate_begin();
+        SensorBase* s_sq;
+        while ((s_sq = sensors_iterate_next(it_sq)) != NULL) {
+            if (!s_sq || s_sq->type != SENSOR_ZIGBEE) continue;
+            ZigbeeSensor* zb_sq = static_cast<ZigbeeSensor*>(s_sq);
+            if (zb_sq->device_ieee == 0) continue;
+            // Tuya devices have manufacturer names starting with "_TZ"
+            if (zb_sq->zb_manufacturer[0] != '_' || zb_sq->zb_manufacturer[1] != 'T') continue;
+            bool sent = sensor_zigbee_gw_request_dp_query(
+                zb_sq->device_ieee, zb_sq->endpoint ? zb_sq->endpoint : 1);
+            if (sent) {
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Startup DP query → '%s' (ieee=%016llX)\n"),
+                             s_sq->name, (unsigned long long)zb_sq->device_ieee);
+            }
+        }
     }
 
     // Retry one deferred station command if it was queued while Zigbee was not
