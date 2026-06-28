@@ -8,6 +8,17 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ## [2.4.0(215)] — veröffentlicht 2026-06-28
 
+### Added
+- **Sensor JSON Recovery**: Added robust parsing and fallback recovery for `sensors.json`. If the primary file is missing/corrupt, firmware now attempts loading from `sensors.json.bak` and restores a valid primary file automatically.
+
+### Changed
+- **Atomic JSON Persistence (Sensors/Monitors)**: Sensor and monitor/program-adjust JSON saves now use temp-file + validation + backup rotation (`.tmp`/`.bak`) to prevent data loss from interrupted writes or partial serialization.
+- **OTA Diagnostics**: Online update checks now log additional network and memory diagnostics (RSSI, heap/internal/PSRAM stats, clearer HTTP/connection errors) to improve troubleshooting.
+
+### Fixed
+- **ESP8266 WiFi TX Power Regression**: Ensured `WiFi.setOutputPower(20.5)` is applied *after* `WiFi.mode(...)` calls, because mode switches reset TX power on ESP8266 and previously caused weaker signal behavior.
+- **Flow Average Update on Zone Stop**: Flow average tracking is now updated when a flow station finishes, improving consistency of recorded flow metrics.
+
 ---
 
 ## [2.4.0(214)] — veröffentlicht 2026-06-21
