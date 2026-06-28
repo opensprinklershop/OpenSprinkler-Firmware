@@ -133,6 +133,8 @@ GITHUB_REPO="opensprinklershop/OpenSprinkler-Firmware"
 # Path to the UI fw.sh script that handles the IONOS online deploy.
 # Credentials (IONOS_SSH_*) live in ui/.env, so we delegate to that script.
 UI_FW_SH="${UI_FW_SH:-/srv/www/htdocs/ui/fw.sh}"
+# Local UI promotion script: promotes ui-test/dev to ui-live/<release_version>.
+UI_BUILDWEBDEPLOY_SH="${UI_BUILDWEBDEPLOY_SH:-/srv/www/htdocs/ui/buildwebdeploy.sh}"
 
 # Matter manufacturing data
 MATTER_MFG_DIR="${SCRIPT_DIR}/matter_mfg"
@@ -2152,6 +2154,30 @@ online_deploy() {
     ok "Online deploy complete."
 }
 
+# Promote local staged UI from ui-test/dev to ui-live/<release_version>.
+# This must run only in the actual release flow (not buildweb.sh), so dev stays
+# mutable during development and becomes immutable only on release.
+promote_ui_release() {
+    local release_ver="$1"
+    if [[ -z "$release_ver" ]]; then
+        error "UI release promotion failed: release version is empty."
+        exit 1
+    fi
+
+    header "UI release promotion"
+
+    if [[ ! -f "$UI_BUILDWEBDEPLOY_SH" ]]; then
+        warn "UI release promotion skipped — ${UI_BUILDWEBDEPLOY_SH} not found."
+        warn "Set UI_BUILDWEBDEPLOY_SH=<path> in .env to configure."
+        return 0
+    fi
+
+    info "Promoting ui dev -> release folder: ${release_ver}"
+    bash "$UI_BUILDWEBDEPLOY_SH" "$release_ver" \
+    || { error "UI release promotion failed."; exit 1; }
+    ok "UI release folder updated: ui-live/www/${release_ver}"
+}
+
 # ── Main release workflow ────────────────────────────────────────────────────
 # Usage: do_release [rebuild]
 #   rebuild  — build only, no version bump, no git tag/release
@@ -2262,6 +2288,13 @@ ${changelog_section}"
     # AFTER update_manifest so the archive manifest carries the correct SHA-256.
     archive_current_version
     update_versions_catalog "$release_notes"
+
+    # For firmware releases we freeze the current UI dev build into a
+    # versioned ui-live folder. buildweb.sh always remains dev-only.
+    if ! $is_rebuild; then
+        local ui_release_ver="${version_str}.${OS_FW_MINOR}"
+        promote_ui_release "$ui_release_ver"
+    fi
 
     if ! $is_rebuild; then
         # 7. Update CHANGELOG.md
