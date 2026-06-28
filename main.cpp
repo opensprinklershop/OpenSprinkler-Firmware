@@ -201,6 +201,18 @@ static ulong pipeburst_check_time = 0;    // millis timestamp when to check for 
 static ulong pipeburst_flow_snapshot = 0; // flow_count baseline when all stations off
 #define FLOW_ANOMALY_DELAY_MS 10000       // 10 seconds delay for both checks
 
+static inline void update_station_flow_average(unsigned char sid, float flow_last_pulse_per_min, float flow_volume_per_pulse) {
+	if (flow_last_pulse_per_min <= 0.0f || sid >= MAX_NUM_STATIONS) return;
+
+	uint16_t avg_flow = (uint16_t)(flow_last_pulse_per_min * flow_volume_per_pulse * 100.0f);
+	uint16_t current = os.get_flow_avg_value(sid);
+	if (current == 0) {
+		os.set_flow_avg_value(sid, avg_flow);
+	} else {
+		os.set_flow_avg_value(sid, (uint16_t)((current + avg_flow) / 2));
+	}
+}
+
 #if defined(ESP32)
 static void flow_update_input_mode() {
 	bool want_flow = (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_FLOW);
@@ -2015,6 +2027,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 			else flow_last_gpm = (float) 60000 / (float)((flow_stop-flow_begin) / (flow_gallons - 1));
 		}// RAH calculate GPM, 1 pulse per gallon
 		else {flow_last_gpm = 0;}  // RAH if not one gallon (two pulses) measured then record 0 gpm
+		update_station_flow_average((unsigned char)flow_sid, flow_last_gpm, os.get_flow_volume_per_pulse());
 
 		unsigned char qid = pd.station_qid[flow_sid];
 		// ignore request if trying to turn off a zone that's not even in the queue or no flow data to log
@@ -2250,6 +2263,7 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 			else flow_last_gpm = (float) 60000 / (float)((flow_stop-flow_begin) / (flow_gallons - 1));
 		}// RAH calculate GPM, 1 pulse per gallon
 		else {flow_last_gpm = 0;}  // RAH if not one gallon (two pulses) measured then record 0 gpm
+		update_station_flow_average(sid, flow_last_gpm, os.get_flow_volume_per_pulse());
 		flow_sid = -1;
 	}
 	else flow_last_gpm = 0; // RAH if not flow zone then record 0 gpm

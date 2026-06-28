@@ -55,9 +55,11 @@ String scan_network() {
 	// Note: This function is called by the AP captive portal endpoint (/jsap).
 	#if defined(ESP8266)
 	DEBUG_PRINTLN("Scanning for networks...");
-	WiFi.setOutputPower(20.5);
 	apply_wifi_sleep_mode();
 	WiFi.mode(WIFI_STA);
+	// ESP8266: set TX power AFTER WiFi.mode(); mode() resets the output power,
+	// so setting it earlier has no effect (results in a weaker signal).
+	WiFi.setOutputPower(20.5);
 	#else
 	wifi_mode_t prev_mode = WiFi.getMode();
 	bool scan_needs_apsta = false;
@@ -149,8 +151,9 @@ void start_network_ap(const char *ssid, const char *pass) {
 	if(!ssid || !ssid[0]) return;
 	#if defined(ESP8266)
 	apply_wifi_sleep_mode();
-	WiFi.setOutputPower(20.5);
 	WiFi.mode(WIFI_AP_STA);
+	// ESP8266: set TX power AFTER WiFi.mode() (mode() resets the output power).
+	WiFi.setOutputPower(20.5);
 	#endif
 	#if defined(ESP32)
 	WiFi.mode(WIFI_MODE_AP);
@@ -186,11 +189,13 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 #endif
 	#if defined(ESP8266)
 	apply_wifi_sleep_mode();
-	WiFi.setOutputPower(20.5);
 	#endif
 
 	#if defined(ESP8266)
 	WiFi.mode(WIFI_AP_STA);
+	// ESP8266: set TX power AFTER WiFi.mode() (mode() resets the output power),
+	// otherwise the radio runs below full power and the signal is weaker.
+	WiFi.setOutputPower(20.5);
 	#else
 	WiFi.mode(WIFI_MODE_APSTA);
 	apply_wifi_sleep_mode();
@@ -219,11 +224,13 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 #endif
 	#if defined(ESP8266)
 	apply_wifi_sleep_mode();
-	WiFi.setOutputPower(20.5);
 	#endif
 
 	#if defined(ESP8266)
 	WiFi.mode(WIFI_STA);
+	// ESP8266: set TX power AFTER WiFi.mode() (mode() resets the output power),
+	// otherwise the radio runs below full power and the signal is weaker.
+	WiFi.setOutputPower(20.5);
 	#else
 	WiFi.mode(WIFI_MODE_STA);
 	apply_wifi_sleep_mode();

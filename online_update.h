@@ -11,7 +11,9 @@
 // point there. ui.opensprinklershop.de does NOT serve /upgrade (404), which broke
 // online OTA in builds dfd1cbc..213.
 #if defined(ESP32)
-// ESP32 supports full TLS; use HTTPS.
+// ESP32 uses HTTPS for online OTA (uc/uu/us path on the main web server).
+// To keep Matter+WiFi devices stable under RAM pressure, the implementation uses
+// reduced TLS I/O buffers and PSRAM-backed mbedTLS allocators.
 #  define OTA_UPDATE_HOST    "www.opensprinklershop.de"
 #  define OTA_UPDATE_BASE_URL "https://www.opensprinklershop.de/upgrade"
 #else

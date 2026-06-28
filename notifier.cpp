@@ -341,14 +341,6 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				if(email_enabled) { email_message.subject += PSTR("station event"); }
 			}
 
-			//calculate flow average:
-			uint16_t avg_flow = (uint16_t)(flow_last_gpm * flow_volume_per_pulse * 100.0f);
-			if (os.get_flow_avg_value(lval) == 0) {
-				os.set_flow_avg_value(lval, avg_flow);
-			} else {
-				os.set_flow_avg_value(lval, (os.get_flow_avg_value(lval) + avg_flow) / 2);
-			}
-
 			break;
 		}
 
@@ -374,8 +366,8 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			//Get station name
 			os.get_station_name(lval, tmp_station_name);
 
-			// only proceed if flow rate is positive, and the station name has at least 5 characters
-			if (flow_last_gpm > 0 && strlen(tmp_station_name) > 5) {
+			// Backward compatibility: if no explicit setpoint is configured, try legacy station-name suffix.
+			if (fasp == 0 && flow_last_gpm > 0 && strlen(tmp_station_name) > 5) {
 				const char *station_name_last_five_chars = tmp_station_name;
 				// extract the last 5 characters
 				station_name_last_five_chars = tmp_station_name + strlen(tmp_station_name) - 5;
@@ -391,12 +383,9 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					flow_alert_flag = true;
 				}
 				} else {
-					//Could not convert to a valid number. If a number is not detected as a station name suffix, never send an alert
+					// Could not convert suffix to a valid number: keep flow_alert_flag false.
 					flow_alert_flag = false;
 				}
-			} else {
- 				//Station name was not long enough to include 5 character flow setpoint.
-				flow_alert_flag = false;
 			}
 
 			// If flow_alert_flag is true, format the appropriate messages, else don't send alert

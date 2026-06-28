@@ -1006,9 +1006,64 @@ static void sensor_trend_init_from_log(SensorBase *sensor) {
 }
 #endif // !defined(ESP8266)
 
+// Parse a sensor JSON config file into sensorsMap. Returns false if the file is
+// missing, empty or contains invalid/corrupt JSON. Does not clear the map or
+// initialize drivers — that is the caller's responsibility so it can fall back
+// to a backup file before committing.
+static bool sensor_parse_file(const char *fn) {
+  if (!file_exists(fn)) return false;
+  ulong size = file_size(fn);
+  if (size == 0) return false;
+
+  FileReader reader(fn);
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, reader);
+  if (err) {
+    DEBUG_PRINTF("sensor_load: JSON parse error (%s) in %s, file size=%lu\n",
+                 err.c_str(), fn, size);
+    return false;
+  }
+
+  JsonArray arr;
+  if (doc.is<JsonArray>()) arr = doc.as<JsonArray>();
+  else if (doc.containsKey("sensors")) arr = doc["sensors"].as<JsonArray>();
+  else return false;
+
+  for (JsonVariant v : arr) {
+    uint sensorType = v["type"] | 0;
+    boolean ip_based = (v["ip"] | 0) != 0;
+
+    SensorBase *sensor = sensor_make_obj(sensorType, ip_based);
+    if (!sensor) {
+      sensor = new GenericSensor(sensorType);
+    }
+
+    sensor->fromJson(v);
+
+    // If the type is not supported in this firmware variant (e.g. a ZigBee
+    // sensor loaded on a Matter build), store the full raw JSON so all
+    // variant-specific fields (device_ieee, cluster_id, …) survive the
+    // roundtrip back to the original firmware.
+    if (!sensor_type_supported(sensorType)) {
+      DEBUG_PRINTF("sensor_load: type %u not supported in this firmware variant "
+                   "\u2014 loaded as generic sensor (all data preserved)\n", sensorType);
+      if (sensor->isGeneric()) {
+        GenericSensor* gs = static_cast<GenericSensor*>(sensor);
+        String raw;
+        serializeJson(v, raw);
+        gs->setRawJson(raw.c_str(), raw.length());
+      }
+    }
+
+    sensorsMap[sensor->nr] = sensor;
+    sensor->flags.data_ok = false;
+  }
+  return true;
+}
+
 void sensor_load() {
   // DEBUG_PRINTLN(F("sensor_load"));
-  
+
   // Clean up existing map to avoid memory / heap leaks on reload
   for (auto &kv : sensorsMap) {
     delete kv.second;
@@ -1016,60 +1071,33 @@ void sensor_load() {
   sensorsMap.clear();
   current_sensor = NULL;
 
-  // Try JSON format (current format)
-  if (file_exists(SENSOR_FILENAME_JSON)) {
-    ulong size = file_size(SENSOR_FILENAME_JSON);
-    if (size == 0) return;
+  bool loaded = sensor_parse_file(SENSOR_FILENAME_JSON);
+  bool from_backup = false;
 
-    FileReader reader(SENSOR_FILENAME_JSON);
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, reader);
-    if (err) {
-      DEBUG_PRINTF("sensor_load: JSON parse error (%s), file size=%lu — renaming to /sensors_bad.json\n",
-                   err.c_str(), size);
-      // Rename corrupted file so next boot doesn't repeat the error and
-      // the user can re-add sensors via the UI.
-      if (file_exists("/sensors_bad.json")) remove_file("/sensors_bad.json");
-      // No rename API available; delete so the device can start clean.
-      remove_file(SENSOR_FILENAME_JSON);
-      return;
-    }
+  if (!loaded) {
+    // Primary missing/corrupt: try to recover from the backup written by
+    // sensor_save() before discarding anything (same protection as #263).
+    for (auto &kv : sensorsMap) delete kv.second;
+    sensorsMap.clear();
 
-    JsonArray arr;
-    if (doc.is<JsonArray>()) arr = doc.as<JsonArray>();
-    else if (doc.containsKey("sensors")) arr = doc["sensors"].as<JsonArray>();
-    else return;
-
-    for (JsonVariant v : arr) {
-      uint sensorType = v["type"] | 0;
-      boolean ip_based = (v["ip"] | 0) != 0;
-      
-      SensorBase *sensor = sensor_make_obj(sensorType, ip_based);
-      if (!sensor) {
-        sensor = new GenericSensor(sensorType);
+    if (sensor_parse_file(SENSOR_FILENAME_JSON ".bak")) {
+      DEBUG_PRINTLN(F("sensor_load: recovered sensors from backup"));
+      loaded = true;
+      from_backup = true;
+    } else {
+      // Both primary and backup are unusable. If a non-empty but corrupt
+      // primary exists, set it aside for diagnostics instead of looping on it.
+      for (auto &kv : sensorsMap) delete kv.second;
+      sensorsMap.clear();
+      if (file_exists(SENSOR_FILENAME_JSON) && file_size(SENSOR_FILENAME_JSON) > 0) {
+        if (file_exists("/sensors_bad.json")) remove_file("/sensors_bad.json");
+        if (!rename_file(SENSOR_FILENAME_JSON, "/sensors_bad.json"))
+          remove_file(SENSOR_FILENAME_JSON);
       }
-
-      sensor->fromJson(v);
-
-      // If the type is not supported in this firmware variant (e.g. a ZigBee
-      // sensor loaded on a Matter build), store the full raw JSON so all
-      // variant-specific fields (device_ieee, cluster_id, …) survive the
-      // roundtrip back to the original firmware.
-      if (!sensor_type_supported(sensorType)) {
-        DEBUG_PRINTF("sensor_load: type %u not supported in this firmware variant "
-                     "\u2014 loaded as generic sensor (all data preserved)\n", sensorType);
-        if (sensor->isGeneric()) {
-          GenericSensor* gs = static_cast<GenericSensor*>(sensor);
-          String raw;
-          serializeJson(v, raw);
-          gs->setRawJson(raw.c_str(), raw.length());
-        }
-      }
-
-      sensorsMap[sensor->nr] = sensor;
-      sensor->flags.data_ok = false;
     }
+  }
 
+  if (loaded) {
     // Initialize sensor drivers
     for (auto &kv : sensorsMap) {
       SensorBase *s = kv.second;
@@ -1089,12 +1117,13 @@ void sensor_load() {
     }
 #endif
 
-    last_save_time = os.now_tz();
-    return;
+    // If we had to fall back to the backup, re-materialize a valid primary file.
+    if (from_backup) sensor_save();
   }
-  
+
   last_save_time = os.now_tz();
 }
+
 
 /**
  * @brief Store sensor data
@@ -1111,13 +1140,18 @@ void sensor_save() {
   if (!apiInit) return;
   // DEBUG_PRINTLN(F("sensor_save (json)"));
 
-  // Remove old json file if present (write fresh)
-  if (file_exists(SENSOR_FILENAME_JSON)) remove_file(SENSOR_FILENAME_JSON);
+  const char *tmpfile = SENSOR_FILENAME_JSON ".tmp";
+  const char *bakfile = SENSOR_FILENAME_JSON ".bak";
 
   // Stream-serialize sensors one at a time to minimize peak heap usage.
   // Building the full array in a single JsonDocument can OOM on ESP8266.
-  FileWriter writer(SENSOR_FILENAME_JSON);
-  writer.write('[');
+  // Write to a temp file first so an interrupted/partial write never clobbers
+  // the existing good configuration (same data-loss class as #263).
+  if (file_exists(tmpfile)) remove_file(tmpfile);
+  bool ok = true;
+  {
+    FileWriter writer(tmpfile);
+    writer.write('[');
 
   bool first = true;
   for (auto &kv : sensorsMap) {
@@ -1147,10 +1181,41 @@ void sensor_save() {
 
     // Always write current base-class values (name, enable, log, etc.).
     sensor->toJson(obj);
+    if (doc.overflowed()) ok = false;
     serializeJson(doc, writer);
   }
 
-  writer.write(']');
+    writer.write(']');
+  }  // writer flushes its buffer on destruction here
+
+  // Validate the temp file: must be non-empty, terminate with ']' (the stream
+  // completed), and the build must not have overflowed (OOM). Otherwise keep
+  // the previous good file untouched.
+  ulong tsize = file_size(tmpfile);
+  unsigned char lastc = 0;
+  if (tsize > 0) file_read_block(tmpfile, &lastc, tsize - 1, 1);
+  if (!ok || tsize < 2 || lastc != ']') {
+    DEBUG_PRINTLN(F("sensor_save: serialization failed, keeping previous file"));
+    remove_file(tmpfile);
+    last_save_time = os.now_tz();
+    current_sensor = NULL;
+    return;
+  }
+
+  // Rotate the current good file to a backup, then atomically swap in the new
+  // validated file.
+  if (file_exists(SENSOR_FILENAME_JSON)) {
+    if (file_exists(bakfile)) remove_file(bakfile);
+    rename_file(SENSOR_FILENAME_JSON, bakfile);
+  }
+  if (!rename_file(tmpfile, SENSOR_FILENAME_JSON)) {
+    if (file_exists(SENSOR_FILENAME_JSON)) remove_file(SENSOR_FILENAME_JSON);
+    if (!rename_file(tmpfile, SENSOR_FILENAME_JSON)) {
+      DEBUG_PRINTLN(F("sensor_save: rename failed, restoring backup"));
+      if (file_exists(bakfile)) rename_file(bakfile, SENSOR_FILENAME_JSON);
+      remove_file(tmpfile);
+    }
+  }
 
   last_save_time = os.now_tz();
   // DEBUG_PRINTLN(F("sensor_save2"));
@@ -2467,83 +2532,122 @@ int prog_adjust_delete(uint nr) {
 
 void prog_adjust_save() {
   if (!apiInit) return;
-  
+
   // DEBUG_PRINTLN(F("prog_adjust_save"));
-  
-  // Delete old file if exists
-  if (file_exists(PROG_SENSOR_FILENAME)) {
-    remove_file(PROG_SENSOR_FILENAME);
-  }
-  
+
+  const char *tmpfile = PROG_SENSOR_FILENAME ".tmp";
+  const char *bakfile = PROG_SENSOR_FILENAME ".bak";
+
   // Create JSON document
   ArduinoJson::JsonDocument doc;
   ArduinoJson::JsonArray array = doc.to<ArduinoJson::JsonArray>();
-  
+
   // Serialize all prog sensor adjusts
+  size_t expected = 0;
   for (auto &kv : progSensorAdjustsMap) {
     ProgSensorAdjust *pa = kv.second;
     if (pa) {
       ArduinoJson::JsonObject obj = array.add<ArduinoJson::JsonObject>();
       pa->toJson(obj);
+      expected++;
     }
   }
-  
-  // Write to file using FileWriter for buffered writing
-  FileWriter writer(PROG_SENSOR_FILENAME);
-  ArduinoJson::serializeJson(doc, writer);
-}
 
-void prog_adjust_load() {
-  // DEBUG_PRINTLN(F("prog_adjust_load"));
-  
-  // Clean up existing map
-  for (auto &kv : progSensorAdjustsMap) {
-    delete kv.second;
-  }
-  progSensorAdjustsMap.clear();
-  
-  // Check if JSON file exists
-  if (!file_exists(PROG_SENSOR_FILENAME)) {
-    DEBUG_PRINTLN(F("No prog_adjust data found"));
+  // Abort if the document could not be built completely (out of memory) so a
+  // truncated write never clobbers the existing good file (cf. #263).
+  if (doc.overflowed() || array.size() != expected) {
+    DEBUG_PRINTLN(F("prog_adjust_save: JSON build overflowed, keeping previous file"));
     return;
   }
-  
-  // Read JSON from file using FileReader for buffered reading
-  FileReader reader(PROG_SENSOR_FILENAME);
+
+  // Write to a temp file first, validate, then atomically swap.
+  if (file_exists(tmpfile)) remove_file(tmpfile);
+  size_t written = 0;
+  {
+    FileWriter writer(tmpfile);
+    written = ArduinoJson::serializeJson(doc, writer);
+  }
+
+  if (written < 2 || file_size(tmpfile) != written) {
+    DEBUG_PRINTLN(F("prog_adjust_save: serialization failed, keeping previous file"));
+    remove_file(tmpfile);
+    return;
+  }
+
+  if (file_exists(PROG_SENSOR_FILENAME)) {
+    if (file_exists(bakfile)) remove_file(bakfile);
+    rename_file(PROG_SENSOR_FILENAME, bakfile);
+  }
+  if (!rename_file(tmpfile, PROG_SENSOR_FILENAME)) {
+    if (file_exists(PROG_SENSOR_FILENAME)) remove_file(PROG_SENSOR_FILENAME);
+    if (!rename_file(tmpfile, PROG_SENSOR_FILENAME)) {
+      DEBUG_PRINTLN(F("prog_adjust_save: rename failed, restoring backup"));
+      if (file_exists(bakfile)) rename_file(bakfile, PROG_SENSOR_FILENAME);
+      remove_file(tmpfile);
+    }
+  }
+}
+
+// Parse a prog-adjust JSON file into progSensorAdjustsMap. Returns false if the
+// file is missing or contains invalid/corrupt JSON.
+static bool prog_adjust_load_file(const char *fn) {
+  if (!file_exists(fn)) return false;
+
+  FileReader reader(fn);
   ArduinoJson::JsonDocument doc;
   ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, reader);
-  
+
   if (error) {
     DEBUG_PRINT(F("prog_adjust_load deserializeJson() failed: "));
     DEBUG_PRINTLN(error.c_str());
-    return;
+    return false;
   }
-  
-  // Parse JSON array
+
   if (!doc.is<ArduinoJson::JsonArray>()) {
     DEBUG_PRINTLN(F("prog_adjust JSON is not an array"));
-    return;
+    return false;
   }
-  
+
   ArduinoJson::JsonArray array = doc.as<ArduinoJson::JsonArray>();
-  
   for (ArduinoJson::JsonVariantConst v : array) {
     ProgSensorAdjust *pa = new ProgSensorAdjust;
     pa->fromJson(v);
-    
+
     // Skip invalid entries
     if (!pa->nr || !pa->type) {
       delete pa;
       continue;
     }
-    
-    // Add to map
+
     progSensorAdjustsMap[pa->nr] = pa;
   }
-  
-  // DEBUG_PRINT(F("Loaded "));
-  // DEBUG_PRINT(prog_adjust_count());
-  // DEBUG_PRINTLN(F(" prog adjustments"));
+  return true;
+}
+
+void prog_adjust_load() {
+  // DEBUG_PRINTLN(F("prog_adjust_load"));
+
+  // Clean up existing map
+  for (auto &kv : progSensorAdjustsMap) {
+    delete kv.second;
+  }
+  progSensorAdjustsMap.clear();
+
+  if (prog_adjust_load_file(PROG_SENSOR_FILENAME)) return;
+
+  // Primary missing or corrupt: try to recover from the backup before giving up.
+  for (auto &kv : progSensorAdjustsMap) delete kv.second;
+  progSensorAdjustsMap.clear();
+
+  if (prog_adjust_load_file(PROG_SENSOR_FILENAME ".bak")) {
+    DEBUG_PRINTLN(F("prog_adjust_load: recovered from backup"));
+    prog_adjust_save();
+    return;
+  }
+
+  if (!file_exists(PROG_SENSOR_FILENAME) && !file_exists(PROG_SENSOR_FILENAME ".bak")) {
+    DEBUG_PRINTLN(F("No prog_adjust data found"));
+  }
 }
 
 uint prog_adjust_count() {
@@ -2922,85 +3026,141 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
   }
 }
 
-void monitor_load() {
-  // DEBUG_PRINTLN(F("monitor_load"));
-  
-  // Clean up existing map
-  for (auto &kv : monitorsMap) {
-    delete kv.second;
-  }
-  monitorsMap.clear();
-  
-  // Check if JSON file exists
-  if (!file_exists(MONITOR_FILENAME)) {
-    DEBUG_PRINTLN(F("No monitor data found"));
-    return;
-  }
-  
-  // Read JSON from file using FileReader
-  FileReader reader(MONITOR_FILENAME);
+// Parse a monitor JSON file into monitorsMap. Returns false if the file is
+// missing or contains invalid/corrupt JSON (in which case monitorsMap is left
+// unchanged so a caller can fall back to a backup file).
+static bool monitor_load_file(const char *fn) {
+  if (!file_exists(fn)) return false;
+
+  FileReader reader(fn);
   ArduinoJson::JsonDocument doc;
   ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, reader);
-  
+
   if (error) {
     DEBUG_PRINT(F("monitor_load deserializeJson() failed: "));
     DEBUG_PRINTLN(error.c_str());
-    return;
+    return false;
   }
-  
-  // Parse JSON array
+
   if (!doc.is<ArduinoJson::JsonArray>()) {
     DEBUG_PRINTLN(F("monitor JSON is not an array"));
-    return;
+    return false;
   }
-  
+
   ArduinoJson::JsonArray array = doc.as<ArduinoJson::JsonArray>();
-  
   for (ArduinoJson::JsonVariantConst v : array) {
     Monitor_t *mon = new Monitor_t;
     mon->fromJson(v);
-    
+
     // Skip invalid entries
     if (!mon->nr || !mon->type) {
       delete mon;
       continue;
     }
-    
-    // Add to map
+
     monitorsMap[mon->nr] = mon;
   }
-  
-  // DEBUG_PRINT(F("Loaded "));
-  // DEBUG_PRINT(monitor_count());
-  // DEBUG_PRINTLN(F(" monitors"));
+  return true;
+}
+
+void monitor_load() {
+  // DEBUG_PRINTLN(F("monitor_load"));
+
+  // Clean up existing map
+  for (auto &kv : monitorsMap) {
+    delete kv.second;
+  }
+  monitorsMap.clear();
+
+  // Primary file present and valid -> done.
+  if (monitor_load_file(MONITOR_FILENAME)) {
+    // DEBUG_PRINT(F("Loaded ")); DEBUG_PRINT(monitor_count()); DEBUG_PRINTLN(F(" monitors"));
+    return;
+  }
+
+  // Primary missing or corrupt: try to recover from the backup written by
+  // monitor_save(). This protects against an interrupted/failed previous save
+  // that would otherwise wipe the whole monitor list (#263).
+  for (auto &kv : monitorsMap) delete kv.second;
+  monitorsMap.clear();
+
+  if (monitor_load_file(MONITOR_FILENAME ".bak")) {
+    DEBUG_PRINTLN(F("monitor_load: recovered monitors from backup"));
+    monitor_save();  // re-materialize a valid primary file
+    return;
+  }
+
+  if (!file_exists(MONITOR_FILENAME) && !file_exists(MONITOR_FILENAME ".bak")) {
+    DEBUG_PRINTLN(F("No monitor data found"));
+  }
 }
 
 void monitor_save() {
   if (!apiInit) return;
-  
+
   // DEBUG_PRINTLN(F("monitor_save"));
-  
-  // Delete old file if exists
-  if (file_exists(MONITOR_FILENAME)) {
-    remove_file(MONITOR_FILENAME);
-  }
-  
+
+  const char *tmpfile = MONITOR_FILENAME ".tmp";
+  const char *bakfile = MONITOR_FILENAME ".bak";
+
   // Create JSON document
   ArduinoJson::JsonDocument doc;
   ArduinoJson::JsonArray array = doc.to<ArduinoJson::JsonArray>();
-  
+
   // Serialize all monitors
+  size_t expected = 0;
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
     if (mon) {
       ArduinoJson::JsonObject obj = array.add<ArduinoJson::JsonObject>();
       mon->toJson(obj);
+      expected++;
     }
   }
-  
-  // Write to file using FileWriter for buffered writing
-  FileWriter writer(MONITOR_FILENAME);
-  ArduinoJson::serializeJson(doc, writer);
+
+  // Bail out if the document could not be built completely (out of memory).
+  // Writing a truncated document over the live file is exactly what caused the
+  // total loss of all monitors reported in #263.
+  if (doc.overflowed() || array.size() != expected) {
+    DEBUG_PRINTLN(F("monitor_save: JSON build overflowed, keeping previous file"));
+    return;
+  }
+
+  // Write to a temporary file first so a failed/partial write never clobbers
+  // the existing good data.
+  if (file_exists(tmpfile)) remove_file(tmpfile);
+  size_t written = 0;
+  {
+    FileWriter writer(tmpfile);
+    written = ArduinoJson::serializeJson(doc, writer);
+  }  // writer flushes its buffer on destruction here
+
+  // Validate the temp file: a valid serialization is at least "[]" (2 bytes)
+  // and the on-disk size must match what serializeJson reported.
+  if (written < 2 || file_size(tmpfile) != written) {
+    DEBUG_PRINTLN(F("monitor_save: serialization failed, keeping previous file"));
+    remove_file(tmpfile);
+    return;  // previous good file (if any) stays intact
+  }
+
+  // Rotate the current good file to a backup, then atomically swap in the new
+  // validated file.
+  if (file_exists(MONITOR_FILENAME)) {
+    if (file_exists(bakfile)) remove_file(bakfile);
+    rename_file(MONITOR_FILENAME, bakfile);
+  }
+
+  if (!rename_file(tmpfile, MONITOR_FILENAME)) {
+    // Some filesystems refuse rename onto an existing target; retry after
+    // removing it.
+    if (file_exists(MONITOR_FILENAME)) remove_file(MONITOR_FILENAME);
+    if (!rename_file(tmpfile, MONITOR_FILENAME)) {
+      // Last resort: restore from backup so we are not left without a file.
+      DEBUG_PRINTLN(F("monitor_save: rename failed, restoring backup"));
+      if (file_exists(bakfile)) rename_file(bakfile, MONITOR_FILENAME);
+      remove_file(tmpfile);
+    }
+  }
 }
 
 int monitor_count() {

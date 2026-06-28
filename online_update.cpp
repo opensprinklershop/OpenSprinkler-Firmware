@@ -140,17 +140,21 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	if (useEth) {
 		DEBUG_PRINTF("[OTA] Ethernet IP: %s\n", eth.localIP().toString().c_str());
 	} else {
-		DEBUG_PRINTF("[OTA] WiFi status: %d, IP: %s\n",
-			(int)WiFi.status(), WiFi.localIP().toString().c_str());
+		DEBUG_PRINTF("[OTA] WiFi status: %d, IP: %s, RSSI: %d dBm\n",
+			(int)WiFi.status(), WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
 	}
 	DEBUG_PRINTF("[OTA] Manifest URL: %s\n", OTA_MANIFEST_URL);
+	DEBUG_PRINTF("[OTA] heap_free=%u  internal_free=%u  psram_free=%u\n",
+		(unsigned)ESP.getFreeHeap(),
+		(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+		(unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 
 	ota_set_state(OTA_STATUS_CHECKING, 0, "Checking for updates...");
 
 	WiFiClientSecure *client = new WiFiClientSecure();
 	if (!client) {
 		DEBUG_PRINTLN(F("[OTA] ERROR: WiFiClientSecure allocation failed"));
-		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Failed to create HTTP client");
+		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Failed to create HTTPS client");
 		return false;
 	}
 	client->setInsecure();
@@ -164,23 +168,28 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 		http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 		http.setTimeout(15000);
 
-		DEBUG_PRINTLN(F("[OTA] Connecting to update server..."));
+		DEBUG_PRINTLN(F("[OTA] Connecting to update server (HTTPS)..."));
+		uint32_t t_conn = millis();
 		if (http.begin(*client, OTA_MANIFEST_URL)) {
 			int httpCode = http.GET();
-			DEBUG_PRINTF("[OTA] HTTP response code: %d\n", httpCode);
+			DEBUG_PRINTF("[OTA] HTTP response code: %d  (after %u ms)\n",
+				httpCode, (unsigned)(millis() - t_conn));
 			if (httpCode == HTTP_CODE_OK) {
 				payload = http.getString();
 				DEBUG_PRINTF("[OTA] Manifest received (%u bytes)\n", (unsigned)payload.length());
 				httpOk = true;
 			} else {
-				char buf[64];
-				snprintf(buf, sizeof(buf), "HTTP error: %d", httpCode);
-				DEBUG_PRINTF("[OTA] ERROR: %s\n", buf);
+				DEBUG_PRINTF("[OTA] ERROR: HTTP %d (%s) | heap=%u rssi=%d\n",
+					httpCode, HTTPClient::errorToString(httpCode).c_str(),
+					(unsigned)ESP.getFreeHeap(), useEth ? 0 : (int)WiFi.RSSI());
+				char buf[80];
+				snprintf(buf, sizeof(buf), "HTTP error %d", httpCode);
 				ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, buf);
 			}
 			http.end();
 		} else {
-			DEBUG_PRINTLN(F("[OTA] ERROR: http.begin() failed — cannot connect to update server"));
+			DEBUG_PRINTF("[OTA] ERROR: http.begin() failed — connect failed | heap=%u rssi=%d\n",
+				(unsigned)ESP.getFreeHeap(), useEth ? 0 : (int)WiFi.RSSI());
 			ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
 		}
 	} // HTTPClient destroyed here while client is still valid
@@ -272,7 +281,9 @@ static bool ota_download_verify_flash(
 		goto final_cleanup;
 	}
 
-	// ── 1. HTTPS download with retry ────────────────────────────────────
+	DEBUG_PRINTF("[OTA] Download URL (%s): %s\n", partLabel, url);
+
+	// ── 1. HTTP download with retry ───────────────────────────────────
 	for (int attempt = 1; attempt <= MAX_DL_RETRIES && !download_ok; attempt++) {
 		if (attempt > 1) {
 			snprintf(msg, sizeof(msg), "Retry %d/%d: downloading %s...", attempt, MAX_DL_RETRIES, partLabel);
@@ -298,7 +309,9 @@ static bool ota_download_verify_flash(
 			http.setTimeout(30000);
 
 			if (!http.begin(*client, url)) {
-				DEBUG_PRINTF("[OTA] http.begin() failed for %s (attempt %d)\n", partLabel, attempt);
+				DEBUG_PRINTF("[OTA] http.begin() failed for %s (attempt %d) | heap=%u rssi=%d\n",
+					partLabel, attempt, (unsigned)ESP.getFreeHeap(),
+					useEth ? 0 : (int)WiFi.RSSI());
 				delete client;
 				continue;
 			}
@@ -306,8 +319,11 @@ static bool ota_download_verify_flash(
 			int code = http.GET();
 			DEBUG_PRINTF("[OTA] HTTP %d for %s (attempt %d)\n", code, partLabel, attempt);
 			if (code != HTTP_CODE_OK) {
-				snprintf(msg, sizeof(msg), "%s HTTP error %d", partLabel, code);
-				DEBUG_PRINTF("[OTA] %s (attempt %d)\n", msg, attempt);
+				snprintf(msg, sizeof(msg), "%s HTTP %d", partLabel, code);
+				DEBUG_PRINTF("[OTA] %s (%s) heap=%u rssi=%d (attempt %d)\n",
+					msg, HTTPClient::errorToString(code).c_str(),
+					(unsigned)ESP.getFreeHeap(),
+					useEth ? 0 : (int)WiFi.RSSI(), attempt);
 				http.end();
 				delete client;
 				continue;
@@ -378,7 +394,9 @@ static bool ota_download_verify_flash(
 			if (totalRead < imgSize) {
 				snprintf(msg, sizeof(msg), "Incomplete: %d/%d bytes (attempt %d/%d)",
 					totalRead, imgSize, attempt, MAX_DL_RETRIES);
-				DEBUG_PRINTF("[OTA] %s\n", msg);
+				DEBUG_PRINTF("[OTA] %s heap=%u rssi=%d\n",
+					msg, (unsigned)ESP.getFreeHeap(),
+					useEth ? 0 : (int)WiFi.RSSI());
 				delete client;
 				continue; // retry
 			}
@@ -619,6 +637,8 @@ static bool ota_save_continuation(const char* url, const char* sha256_hex, const
 	DEBUG_PRINTLN(F("[OTA] Continuation state saved (incl. password + sha256)"));
 	return true;
 }
+
+
 
 // FreeRTOS task that performs the full dual-OTA update
 static void ota_update_task(void* param) {

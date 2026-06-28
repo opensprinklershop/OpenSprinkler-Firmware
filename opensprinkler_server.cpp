@@ -4788,13 +4788,16 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 }
 
 void monitorconfig_json(Monitor_t *mon) {
-	bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"sensor\":$D,\"prog\":$D,\"zone\":$D,\"name\":\"$S\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,"),
+	bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"sensor\":$D,\"prog\":$D,\"zone\":$D,\"name\":\""),
 				mon->nr,
 				mon->type,
 				mon->sensor,
 				mon->prog,
-				mon->zone,
-				mon->name,
+				mon->zone);
+	// Emit the name JSON-escaped so special characters (backslash, quote, …) do
+	// not produce invalid JSON that breaks the UI/app monitor list (#263).
+	bfill_emit_json_escaped(mon->name);
+	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,"),
 				mon->maxRuntime,
 				mon->prio,
 				mon->active,
