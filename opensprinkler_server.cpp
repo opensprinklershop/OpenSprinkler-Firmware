@@ -4787,6 +4787,7 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	handle_return(ret);
 }
 
+#if defined(ARDUINO) || defined(USE_OTF)
 /** Emit a string into bfill with JSON escaping for monitor config output. */
 static void bfill_emit_json_escaped_monitor_name(const char* s) {
 	if (!s) return;
@@ -4877,6 +4878,7 @@ void monitorconfig_json(OTF_PARAMS_DEF) {
 		send_packet(OTF_PARAMS);
 	}
 }
+#endif  // defined(ARDUINO) || defined(USE_OTF)
 
 /**
  * ml
