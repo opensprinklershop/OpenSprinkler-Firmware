@@ -3300,31 +3300,13 @@ void stop_monitor_action(Monitor_t * mon) {
   if (mon->prog > 0) {
     stop_program(mon->prog);
 
-    // 1. Turn off all running/queued stations of this program (mon->prog)
+    // Turn off all running/queued stations of this program (mon->prog)
+    // Note: Ad-hoc "Run-Once with repeat" program deletion is now handled in stop_program()
     for (int i = pd.nqueue - 1; i >= 0; i--) {
       RuntimeQueueStruct *q = &pd.queue[i];
       if (q->pid == mon->prog || q->pid == (mon->prog | 0x80)) {
         q->deque_time = mon->time;
         turn_off_station(q->sid, mon->time, 0);
-      }
-    }
-
-    // 2. Also delete any temporary "Run-Once with repeat" programs if any
-    for (int i = 0; i < pd.nprograms; i++) {
-      ProgramStruct p;
-      pd.read(i, &p);
-      if (strncmp(p.name, "Run-Once with repeat", 20) == 0) {
-        // Stop any stations in queue belonging to this run-once program
-        uint8_t run_once_pid = i + 1;
-        for (int j = pd.nqueue - 1; j >= 0; j--) {
-          RuntimeQueueStruct *q = &pd.queue[j];
-          if (q->pid == run_once_pid || q->pid == (run_once_pid | 0x80)) {
-            q->deque_time = mon->time;
-            turn_off_station(q->sid, mon->time, 0);
-          }
-        }
-        pd.del(i);
-        i--; // adjust index after deletion
       }
     }
   }

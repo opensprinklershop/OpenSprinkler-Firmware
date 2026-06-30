@@ -2716,6 +2716,29 @@ void reset_all_stations(bool running_ones_only) {
 		// still gets delivered. Verify queue handles confirmation/retry.
 		sensor_zigbee_gw_force_off_all_stations();
 #endif
+
+		// Also delete any temporary "Run-Once with repeat" ad-hoc programs
+		// when resetting all stations (e.g., /cv?rsn=1)
+		for (int i = 0; i < pd.nprograms; i++) {
+			ProgramStruct p;
+			pd.read(i, &p);
+			if (strncmp(p.name, "Run-Once with repeat", 20) == 0) {
+				// Check if any stations of this run-once program are in the queue
+				uint8_t run_once_pid = i + 1;
+				bool has_queued = false;
+				for (int j = 0; j < pd.nqueue; j++) {
+					if (pd.queue[j].pid == run_once_pid || pd.queue[j].pid == (run_once_pid | 0x80)) {
+						has_queued = true;
+						break;
+					}
+				}
+				// Delete the ad-hoc program if it was queued
+				if (has_queued) {
+					pd.del(i);
+					i--;  // adjust index after deletion
+				}
+			}
+		}
 	}
 }
 
@@ -2753,6 +2776,32 @@ void stop_program(unsigned char pid) {
 			}
 		}
 	}
+
+	// Also delete any temporary "Run-Once with repeat" ad-hoc programs
+	// that may have been created from this program's manual start with repetitions
+	for (int i = 0; i < pd.nprograms; i++) {
+		ProgramStruct p;
+		pd.read(i, &p);
+		if (strncmp(p.name, "Run-Once with repeat", 20) == 0) {
+			// Check if any stations of this run-once program are queued
+			uint8_t run_once_pid = i + 1;
+			bool has_queued = false;
+			for (int j = pd.nqueue - 1; j >= 0; j--) {
+				RuntimeQueueStruct *q = &pd.queue[j];
+				if (q->pid == run_once_pid || q->pid == (run_once_pid | 0x80)) {
+					has_queued = true;
+					// Mark for dequeue (duration = 0)
+					q->dur = 0;
+				}
+			}
+			// Delete the ad-hoc program if it was queued
+			if (has_queued) {
+				pd.del(i);
+				i--;  // adjust index after deletion
+			}
+		}
+	}
+
 	DEBUG_PRINTLN("Done");
 }
 

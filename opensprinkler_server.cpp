@@ -4787,6 +4787,25 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	handle_return(ret);
 }
 
+/** Emit a string into bfill with JSON escaping for monitor config output. */
+static void bfill_emit_json_escaped_monitor_name(const char* s) {
+	if (!s) return;
+	while (*s) {
+		char c = *s++;
+		switch (c) {
+			case '"':  bfill.append("\\\"", 2); break;
+			case '\\': bfill.append("\\\\", 2); break;
+			case '\n': bfill.append("\\n", 2); break;
+			case '\r': bfill.append("\\r", 2); break;
+			case '\t': bfill.append("\\t", 2); break;
+			default:
+				if ((unsigned char)c < 0x20) break;
+				bfill.append(&c, 1);
+				break;
+		}
+	}
+}
+
 void monitorconfig_json(Monitor_t *mon) {
 	bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D,\"sensor\":$D,\"prog\":$D,\"zone\":$D,\"name\":\""),
 				mon->nr,
@@ -4796,7 +4815,7 @@ void monitorconfig_json(Monitor_t *mon) {
 				mon->zone);
 	// Emit the name JSON-escaped so special characters (backslash, quote, …) do
 	// not produce invalid JSON that breaks the UI/app monitor list (#263).
-	bfill_emit_json_escaped(mon->name);
+	bfill_emit_json_escaped_monitor_name(mon->name);
 	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,"),
 				mon->maxRuntime,
 				mon->prio,
