@@ -6,6 +6,22 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(216)] — veröffentlicht 2026-07-01
+
+### Added
+- **ZigBee Gateway über WLAN (reduzierter Modus)**: Der ZigBee-Gateway lässt sich jetzt generell aktivieren – auch ohne Ethernet. Im reduzierten WLAN-Modus funktioniert die Ansteuerung der ZigBee-Zonen (Senden), der Empfang von ZigBee-Sensor-Reports ist wegen der WLAN/ZigBee-Funk-Koexistenz jedoch unzuverlässig. Ein Hinweis erscheint oben in der Analog-Sensor-Liste; der Zustand ist über `/zs` und `iw` als `gw_reduced`/`eth` abrufbar. Mit Ethernet läuft der Gateway weiterhin im vollen Modus (Empfang + Steuerung).
+- **Verlustfreie ZigBee-NVRAM-Rollentrennung**: Gateway- (Coordinator) und Client- (End-Device) Netzwerkdaten werden nun getrennt als LittleFS-Snapshots gehalten und bei Rollenwechsel automatisch in die `zb_storage`-Partition ein-/ausgetauscht. Der Wechsel zwischen Gateway und Client (auch über Matter/Boot-Menü/Update hinweg) erfolgt ohne Verlust der jeweils gepairten Geräte und ohne Partitionstabellen-Änderung.
+
+### Changed
+- **Gateway-Fallback ohne Ethernet**: Statt den Gateway abzuschalten bzw. auf den Client-Modus umzuschalten, bleibt er nun im reduzierten Modus aktiv (nur Zonensteuerung). Der bisherige Reboot-Fallback entfällt.
+- **Monitor-Konfiguration (JSON-Escaping)**: Die JSON-Ausgabe der Monitor-Konfiguration verwendet nun bedingte Kompilierung für korrektes Escaping.
+
+### Fixed
+- **ZigBee-Rollenwechsel-Absturz**: Behebt `Zigbee stack assertion failed secur/zdo_secur.c:512` (in `secur_authenticate_child`), der auftrat, wenn der ZigBee-Stack als End-Device mit im NVRAM verbliebenen Coordinator-Kind-/Security-Records startete (z. B. nach Gateway→Client-Umschaltung).
+- **„Run-Once mit Wiederholung"-Programme**: Temporäre „Run-Once with repeat"-Programme werden bei Resets nun zuverlässig gelöscht.
+
+---
+
 ## [2.4.0(215)] — veröffentlicht 2026-06-28
 
 ### Added
