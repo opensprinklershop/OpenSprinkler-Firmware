@@ -43,6 +43,7 @@ extern "C" {
 }
 #include <esp_ieee802154.h>
 #include "esp_zigbee_core.h"
+#include "esp_zigbee_secur.h"
 #include "nwk/esp_zigbee_nwk.h"
 #include "Zigbee.h"
 #include "ZigbeeEP.h"
@@ -3027,6 +3028,7 @@ static void gw_schedule_configure_reporting_all(unsigned long initial_delay_ms =
 
 void sensor_zigbee_gw_factory_reset() {
     gw_erase_zigbee_nvram();
+    zigbee_nvram_invalidate('G');
     gw_clear_discovered_devices_cache(true);
 }
 
@@ -3060,9 +3062,14 @@ void sensor_zigbee_gw_start() {
 
     // Zigbee stays active once started (no stop/restart toggling).
 
+    // Load the Gateway dataset into zb_storage (swaps out any Client snapshot).
+    // Must run before Zigbee.begin() so ZBOSS reads the correct role's NVRAM.
+    zigbee_nvram_prepare_for_role('G');
+
     if (gw_zigbee_needs_nvram_reset) {
         gw_zigbee_needs_nvram_reset = false;
         gw_erase_zigbee_nvram();
+        zigbee_nvram_invalidate('G');
         gw_clear_discovered_devices_cache(true);
     }
 
@@ -3138,6 +3145,9 @@ void sensor_zigbee_gw_start() {
     // ZBOSS queue exhaustion panics (like zb_bufpool_mult_storage.c:105 assertions).
     esp_zb_io_buffer_size_set(80);
     esp_zb_scheduler_queue_size_set(80);
+    // Keep commissioning in standard mode. Install-code link-key exchange has
+    // triggered child-auth asserts with mixed device fleets on ESP32-C5.
+    esp_zb_secur_link_key_exchange_required_set(false);
 
     DEBUG_PRINTLN(F("[ZIGBEE-GW] Starting as COORDINATOR..."));
     if (!Zigbee.begin(ZIGBEE_COORDINATOR)) {

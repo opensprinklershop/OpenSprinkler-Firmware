@@ -665,6 +665,9 @@ static bool client_erase_zigbee_nvram() {
         return false;
     }
 
+    // Drop the persisted Client snapshot so a later role switch starts fresh.
+    zigbee_nvram_invalidate('C');
+
     // Remove persistent init flag so the next reboot treats this as a clean install
     if (file_exists(ZIGBEE_CLIENT_INIT_FLAG)) {
         remove_file(ZIGBEE_CLIENT_INIT_FLAG);
@@ -698,6 +701,144 @@ static void client_mark_zigbee_nvram_reset() {
     file_write_block(ZIGBEE_CLIENT_RESET_FLAG, &oneByte, 0, 1);
 }
 
+// ===========================================================================
+// Per-role Zigbee NVRAM separation (lossless)
+//
+// The ZBOSS stack always uses the single physical "zb_storage" partition.
+// Coordinator (Gateway) and End Device (Client) datasets are incompatible:
+// loading Coordinator child/security records into the ED stack aborts in
+// secur/zdo_secur.c (secur_authenticate_child), and vice versa.
+//
+// To let the user switch roles without losing pairing data, we keep a per-role
+// snapshot of the partition in LittleFS and swap it in/out when the active role
+// changes.  No partition-table change is required, so this is fully backward
+// compatible (lossless) for already-deployed devices.
+//
+//   /zb_nv_role   : one byte, 'G' or 'C' — role currently loaded in zb_storage
+//   /zb_nv_gw.bin : snapshot of the Gateway/Coordinator dataset
+//   /zb_nv_cl.bin : snapshot of the Client/End-Device dataset
+//
+// Snapshots are trimmed to the last used 4 KB sector (ZBOSS writes from the
+// start of the partition; the tail stays erased/0xFF), so they are only a few
+// KB in practice.
+// ===========================================================================
+static const char* ZIGBEE_NVRAM_ROLE_FLAG   = "/zb_nv_role";
+static const char* ZIGBEE_NVRAM_GW_SNAPSHOT = "/zb_nv_gw.bin";
+static const char* ZIGBEE_NVRAM_CL_SNAPSHOT = "/zb_nv_cl.bin";
+static constexpr size_t ZIGBEE_NVRAM_CHUNK  = 4096;
+
+static const char* zigbee_nvram_snapshot_for(char role) {
+    return (role == 'G') ? ZIGBEE_NVRAM_GW_SNAPSHOT : ZIGBEE_NVRAM_CL_SNAPSHOT;
+}
+
+static char zigbee_nvram_active_role() {
+    char role = 0;
+    if (file_exists(ZIGBEE_NVRAM_ROLE_FLAG)) {
+        file_read_block(ZIGBEE_NVRAM_ROLE_FLAG, &role, 0, sizeof(role));
+    }
+    return role;
+}
+
+static void zigbee_nvram_set_active_role(char role) {
+    file_write_block(ZIGBEE_NVRAM_ROLE_FLAG, &role, 0, 1);
+}
+
+// Save the used portion of zb_storage into a LittleFS snapshot file.
+static bool zigbee_nvram_backup(const esp_partition_t* part, const char* fname) {
+    if (!part) return false;
+    uint8_t* buf = (uint8_t*)malloc(ZIGBEE_NVRAM_CHUNK);
+    if (!buf) { DEBUG_PRINTLN(F("[ZIGBEE-NV] backup: OOM")); return false; }
+
+    // Determine used length: last 4 KB sector that contains a non-0xFF byte.
+    size_t used = 0;
+    for (size_t off = 0; off < part->size; off += ZIGBEE_NVRAM_CHUNK) {
+        if (esp_partition_read(part, off, buf, ZIGBEE_NVRAM_CHUNK) != ESP_OK) { free(buf); return false; }
+        for (size_t i = 0; i < ZIGBEE_NVRAM_CHUNK; i++) {
+            if (buf[i] != 0xFF) { used = off + ZIGBEE_NVRAM_CHUNK; break; }
+        }
+    }
+
+    if (file_exists(fname)) remove_file(fname);
+    if (used == 0) {
+        free(buf);
+        DEBUG_PRINTF(F("[ZIGBEE-NV] backup %s: empty (no data)\n"), fname);
+        return true;
+    }
+
+    for (size_t off = 0; off < used; off += ZIGBEE_NVRAM_CHUNK) {
+        if (esp_partition_read(part, off, buf, ZIGBEE_NVRAM_CHUNK) != ESP_OK) { free(buf); return false; }
+        file_append_block(fname, buf, ZIGBEE_NVRAM_CHUNK);
+    }
+    free(buf);
+    DEBUG_PRINTF(F("[ZIGBEE-NV] backup %s: %u bytes\n"), fname, (unsigned)used);
+    return true;
+}
+
+// Restore a snapshot into a freshly erased zb_storage.  Missing snapshot means
+// "fresh/erased" state for that role.
+static bool zigbee_nvram_restore(const esp_partition_t* part, const char* fname) {
+    if (!part) return false;
+    if (esp_partition_erase_range(part, 0, part->size) != ESP_OK) {
+        DEBUG_PRINTLN(F("[ZIGBEE-NV] restore: erase failed"));
+        return false;
+    }
+    if (!file_exists(fname)) {
+        DEBUG_PRINTF(F("[ZIGBEE-NV] restore %s: absent -> fresh erase\n"), fname);
+        return true;
+    }
+
+    uint8_t* buf = (uint8_t*)malloc(ZIGBEE_NVRAM_CHUNK);
+    if (!buf) { DEBUG_PRINTLN(F("[ZIGBEE-NV] restore: OOM")); return false; }
+
+    ulong fsize = file_size(fname);
+    for (ulong off = 0; off < fsize && off < part->size; off += ZIGBEE_NVRAM_CHUNK) {
+        memset(buf, 0xFF, ZIGBEE_NVRAM_CHUNK);
+        ulong n = (fsize - off < ZIGBEE_NVRAM_CHUNK) ? (fsize - off) : ZIGBEE_NVRAM_CHUNK;
+        file_read_block(fname, buf, off, n);
+        // Full erased-sector-sized write keeps esp_partition_write word-aligned.
+        if (esp_partition_write(part, off, buf, ZIGBEE_NVRAM_CHUNK) != ESP_OK) { free(buf); return false; }
+    }
+    free(buf);
+    DEBUG_PRINTF(F("[ZIGBEE-NV] restore %s: %lu bytes\n"), fname, (unsigned long)fsize);
+    return true;
+}
+
+void zigbee_nvram_prepare_for_role(char want) {
+    if (want != 'G' && want != 'C') return;
+
+    const esp_partition_t* part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, "zb_storage");
+    if (!part) return;
+
+    char active = zigbee_nvram_active_role();
+
+    if (active == 0) {
+        // Legacy first run after this feature is deployed: the partition already
+        // holds the currently configured role's data.  Tag it WITHOUT touching
+        // the contents so existing pairings survive the upgrade (lossless).
+        zigbee_nvram_set_active_role(want);
+        DEBUG_PRINTF(F("[ZIGBEE-NV] Tagging existing zb_storage as role '%c' (lossless upgrade)\n"), want);
+        return;
+    }
+
+    if (active == want) return;  // Already the correct dataset.
+
+    // Real role switch: preserve the outgoing role's data, load the incoming.
+    DEBUG_PRINTF(F("[ZIGBEE-NV] Role switch '%c' -> '%c': swapping zb_storage snapshots\n"), active, want);
+    zigbee_nvram_backup(part, zigbee_nvram_snapshot_for(active));
+    zigbee_nvram_restore(part, zigbee_nvram_snapshot_for(want));
+    zigbee_nvram_set_active_role(want);
+}
+
+void zigbee_nvram_invalidate(char role) {
+    if (role != 'G' && role != 'C') return;
+    const char* fname = zigbee_nvram_snapshot_for(role);
+    if (file_exists(fname)) {
+        remove_file(fname);
+        DEBUG_PRINTF(F("[ZIGBEE-NV] Snapshot for role '%c' invalidated\n"), role);
+    }
+}
+
 // ========== Client-specific start/stop ==========
 
 static void client_zigbee_start_internal() {
@@ -713,7 +854,11 @@ static void client_zigbee_start_internal() {
     if (client_zigbee_initialized || client_zigbee_start_failed) return;
 
     DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Starting Zigbee End Device (join external coordinator)..."));
-    
+
+    // Load the Client dataset into zb_storage (swaps out any Gateway snapshot).
+    // Must run before Zigbee.begin() so ZBOSS reads the correct role's NVRAM.
+    zigbee_nvram_prepare_for_role('C');
+
     const esp_partition_t* zb_partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, 
         ESP_PARTITION_SUBTYPE_DATA_FAT,
@@ -783,7 +928,10 @@ static void client_zigbee_start_internal() {
     DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Primary channel mask set to 0x%08X\n"),
                  (unsigned)ZIGBEE_COEX_CHANNEL_MASK);
 #else
-    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Using default channel mask (all channels 11-26)"));
+    // Set this explicitly instead of relying on stack defaults.
+    // Some commissioning paths can end up with an empty mask and assert.
+    Zigbee.setPrimaryChannelMask(0x07FFF800);
+    DEBUG_PRINTLN(F("[ZIGBEE-CLIENT] Primary channel mask set to default (all channels 11-26)"));
 #endif
     
     // Configure ZBOSS memory before esp_zb_init() (called inside Zigbee.begin()).
@@ -1333,10 +1481,12 @@ void sensor_zigbee_start() {
         return;
     }
     
-    // ZigBee gateway requires Ethernet — WiFi shares the 2.4GHz radio
+    // ZigBee gateway starts in both Ethernet and WiFi mode.
+    // Ethernet = full mode (report reception + zone control);
+    // WiFi only = reduced mode (zone control/sending works, report
+    // reception is unreliable due to WiFi/Zigbee radio coexistence).
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && !useEth) {
-        DEBUG_PRINTLN(F("[ZIGBEE] Gateway mode requires Ethernet — not starting"));
-        return;
+        DEBUG_PRINTLN(F("[ZIGBEE] Gateway starting in REDUCED mode (WiFi, no Ethernet): zone control only"));
     }
 
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {
@@ -1387,10 +1537,7 @@ uint16_t sensor_zigbee_get_join_window_remaining() {
 bool sensor_zigbee_ensure_started() {
     IEEE802154Mode mode = ieee802154_get_mode();
 
-    // ZigBee gateway requires Ethernet
-    if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && !useEth) {
-        return false;
-    }
+    // ZigBee gateway starts in both Ethernet (full) and WiFi (reduced) mode.
 
     // If Zigbee is already running, allow immediate access.
     // Otherwise, block until sensor_api_connect() has been called.

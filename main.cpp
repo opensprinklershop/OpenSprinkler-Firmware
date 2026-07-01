@@ -939,12 +939,12 @@ void do_loop()
 		checked_zigbee_gw_fallback = true;
 		if (ieee802154_is_zigbee_gw()) {
 			if (!useEth || !eth.linkUp()) {
-				DEBUG_PRINTLN(F("[ZIGBEE] Gateway mode started but no Ethernet connection is available! Fallback to Zigbee Client..."));
-				IEEE802154Mode fallback_mode = IEEE802154Mode::IEEE_ZIGBEE_CLIENT;
-				IEEE802154BootVariant fallback_boot = ieee802154_boot_variant_for_mode(fallback_mode);
-				ieee802154_select_otf_boot_variant(fallback_boot);
-				ieee802154_save_config(fallback_mode, fallback_boot);
-				reboot_in(2000, REBOOT_CAUSE_NETWORK_FAIL);
+				// Gateway now runs without Ethernet in REDUCED mode: sending
+				// (Zigbee zone control) works over the shared 2.4 GHz radio, but
+				// reliable reception of Zigbee reports needs Ethernet because
+				// WiFi and Zigbee contend for the same radio. Do NOT reboot or
+				// fall back — keep the gateway running.
+				DEBUG_PRINTLN(F("[ZIGBEE] Gateway running without Ethernet — REDUCED mode (zone control only, report reception unreliable)"));
 			}
 		}
 	}

@@ -4037,6 +4037,12 @@ void emit_sensor_warnings() {
 			if (!first) bfill.emit_p(PSTR(","));
 			bfill.emit_p(PSTR("\"ZIGBEE_WRONG_MODE\""));
 			first = false;
+		} else if (ieee802154_is_zigbee_gw() && !(useEth && eth.linkUp())) {
+			// Gateway on WiFi (no Ethernet): sending/zone control works, but
+			// Zigbee sensor report reception is unreliable (radio coexistence).
+			if (!first) bfill.emit_p(PSTR(","));
+			bfill.emit_p(PSTR("\"ZIGBEE_GW_REDUCED\""));
+			first = false;
 		}
 #else
 		if (!first) bfill.emit_p(PSTR(","));
@@ -5867,13 +5873,23 @@ void server_ieee802154_get(OTF_PARAMS_DEF) {
 	                   "\"zigbee\":$D,"
 	                   "\"zigbee_gw\":$D,"
 	                   "\"zigbee_client\":$D,"
-	                   "\"coex\":\"$S\"}"),
+	                   "\"coex\":\"$S\""),
 	             ieee802154_is_enabled() ? 1 : 0,
 	             ieee802154_is_matter() ? 1 : 0,
 	             ieee802154_is_zigbee() ? 1 : 0,
 	             ieee802154_is_zigbee_gw() ? 1 : 0,
 	             ieee802154_is_zigbee_client() ? 1 : 0,
 	             "disabled");
+
+	{
+		bool eth_link = false;
+#if defined(ESP32)
+		eth_link = useEth && eth.linkUp();
+#endif
+		bfill.emit_p(PSTR(",\"eth\":$D,\"gw_reduced\":$D}"),
+		             eth_link ? 1 : 0,
+		             (ieee802154_is_zigbee_gw() && !eth_link) ? 1 : 0);
+	}
 
 	send_packet(OTF_PARAMS);
 	handle_return(HTML_OK);
@@ -6080,6 +6096,20 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 	             sensor_zigbee_get_join_window_remaining(),
 	             (int)sensor_zigbee_gw_get_channel(),
 	             (int)sensor_zigbee_gw_get_configured_channel());
+
+	// Gateway reduced-mode indicator: gateway runs on WiFi without Ethernet.
+	// In this state Zigbee zone control (sending) works, but report reception
+	// (sensors) is unreliable. The UI analog sensor config uses gw_reduced to
+	// show a warning for Zigbee sensors.
+	{
+		bool eth_link = false;
+#if defined(ESP32)
+		eth_link = useEth && eth.linkUp();
+#endif
+		bfill.emit_p(PSTR(",\"eth\":$D,\"gw_reduced\":$D"),
+		             eth_link ? 1 : 0,
+		             (ieee802154_is_zigbee_gw() && !eth_link) ? 1 : 0);
+	}
 
 	// SN1/SN2 binary sensor status (if rain or soil sensor)
 	if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {

@@ -116,6 +116,25 @@ bool sensor_zigbee_ensure_started();
 void sensor_zigbee_factory_reset();
 
 /**
+ * @brief Prepare the shared zb_storage partition for the given Zigbee role.
+ * @param role 'G' for Gateway/Coordinator, 'C' for Client/End Device
+ *
+ * Gateway (Coordinator) and Client (End Device) datasets are mutually
+ * incompatible: loading one into the other aborts inside the ZBOSS security
+ * layer (secur/zdo_secur.c, secur_authenticate_child). This helper keeps a
+ * per-role snapshot of the partition in LittleFS and swaps it in/out when the
+ * active role changes, so switching modes is lossless (no data loss, no
+ * partition-table change). MUST be called before Zigbee.begin().
+ */
+void zigbee_nvram_prepare_for_role(char role);
+
+/**
+ * @brief Drop the stored NVRAM snapshot for a role after a factory reset.
+ * @param role 'G' for Gateway/Coordinator, 'C' for Client/End Device
+ */
+void zigbee_nvram_invalidate(char role);
+
+/**
  * @brief Leave the current Zigbee network in client/end-device mode
  * @return true if a leave/reset action was requested or persisted state was cleared
  */
