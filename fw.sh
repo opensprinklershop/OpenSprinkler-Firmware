@@ -1549,10 +1549,15 @@ build_release_env() {
     local bin="${SCRIPT_DIR}/.pio/build/${env}/firmware.bin"
     header "Release build: ${env}"
     if ! "$PIO_BIN" run --environment "$env"; then
-        # PlatformIO SCons can fail on the first run after a clean build dir
-        # is encountered with a new flag set (directory-ordering quirk).
-        # Retry once; the second run always succeeds in this case.
-        warn "First attempt failed — retrying …"
+        # PlatformIO SCons can fail on the first run after platformio.ini was
+        # modified (debug flags toggled by disable_release_debug): PlatformIO's
+        # implicit clean races with the parallel build's output-directory
+        # creation, so freshly compiled files fail with
+        #   "can't create .pio/build/<env>/src/<file>.o: No such file".
+        # A targeted clean of this env's build dir turns the retry into a true
+        # fresh build (matching a standalone `pio run`), which reliably succeeds.
+        warn "First attempt failed — cleaning ${env} build dir and retrying …"
+        rm -rf "${SCRIPT_DIR}/.pio/build/${env}"
         if ! "$PIO_BIN" run --environment "$env"; then
             error "Release build failed: ${env}"
             return 1

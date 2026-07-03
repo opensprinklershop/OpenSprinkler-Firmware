@@ -1381,6 +1381,21 @@ void do_loop()
 
 	online_update_loop();
 	if (online_update_in_progress()) {
+#if defined(USE_SSD1306)
+		// Show a full-screen progress bar on the OLED so the firmware update
+		// is visible on the device itself (ESP32 only). Throttle the (slow)
+		// I2C refresh to avoid stalling the OTA download.
+		{
+			static uint32_t last_ota_disp = 0;
+			static int last_ota_pct = -999;
+			OnlineUpdateState ota_st = online_update_get_state();
+			if(millis() - last_ota_disp > 400 || (int)ota_st.progress != last_ota_pct) {
+				last_ota_disp = millis();
+				last_ota_pct = (int)ota_st.progress;
+				os.lcd_print_ota_progress((int)ota_st.progress, ota_st.message);
+			}
+		}
+#endif
 		// Keep the loop lightweight during OTA to avoid WDT under heavy network contention.
 		yield();
 		return;
@@ -2718,25 +2733,24 @@ void reset_all_stations(bool running_ones_only) {
 #endif
 
 		// Also delete any temporary "Run-Once with repeat" ad-hoc programs
-		// when resetting all stations (e.g., /cv?rsn=1)
+		// when resetting all stations (e.g., /cv?rsn=1). A global stop is an
+		// explicit "cancel everything" by the user, so these temporary programs
+		// are removed unconditionally - even if they are currently between
+		// repeat intervals (not queued right now). Otherwise such a program
+		// would re-fire at its next interval and appear to "repeat endlessly".
 		for (int i = 0; i < pd.nprograms; i++) {
 			ProgramStruct p;
 			pd.read(i, &p);
 			if (strncmp(p.name, "Run-Once with repeat", 20) == 0) {
-				// Check if any stations of this run-once program are in the queue
+				// Mark any still-queued stations of this program for dequeue.
 				uint8_t run_once_pid = i + 1;
-				bool has_queued = false;
 				for (int j = 0; j < pd.nqueue; j++) {
 					if (pd.queue[j].pid == run_once_pid || pd.queue[j].pid == (run_once_pid | 0x80)) {
-						has_queued = true;
-						break;
+						pd.queue[j].dur = 0;
 					}
 				}
-				// Delete the ad-hoc program if it was queued
-				if (has_queued) {
-					pd.del(i);
-					i--;  // adjust index after deletion
-				}
+				pd.del(i);
+				i--;  // adjust index after deletion
 			}
 		}
 	}

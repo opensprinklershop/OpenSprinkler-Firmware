@@ -2950,8 +2950,17 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 			break;
 		}
 		if(!client->connected() && !client->available()) {
-			//DEBUG_PRINTLN(F("host disconnected"));
-			break;
+			// The peer may have sent FIN (connected()==false) while the TCP
+			// stack still holds buffered bytes that available() has not yet
+			// surfaced.  Breaking immediately truncates large responses and
+			// yields malformed JSON (ArduinoJson "IncompleteInput").  Give the
+			// stack a brief grace to drain before giving up.
+			bool more_data = false;
+			for(int g=0; g<25; g++) {
+				delay(2);
+				if(client->available()) { more_data = true; break; }
+			}
+			if(!more_data) break;
 		}
 	}
 #else
@@ -4473,6 +4482,48 @@ void OpenSprinkler::set_screen_led(unsigned char status) {
 	lcd.fillCircle(122, 58, 4);
 	lcd.display();
 	lcd.setColor(WHITE);
+}
+
+/** Full-screen firmware-update progress bar.
+ *  percent 0-100 draws a determinate bar with a large "NN%" readout;
+ *  percent <0 draws an indeterminate sweeping block.
+ *  msg is an optional short status line shown at the bottom.
+ */
+void OpenSprinkler::lcd_print_ota_progress(int percent, const char *msg) {
+	lcd.clear();
+	lcd.setColor(WHITE);
+	lcd.setTextAlignment(TEXT_ALIGN_CENTER);
+
+	// Title
+	lcd.setFont(ArialMT_Plain_10);
+	lcd.drawString(64, 0, F("Firmware Update"));
+
+	if(percent < 0) {
+		// Indeterminate: animate a block sweeping across the bar outline.
+		static unsigned char sweep = 0;
+		lcd.drawRect(8, 22, 112, 12);
+		unsigned char x = 10 + ((sweep * 6) % 92);
+		lcd.fillRect(x, 24, 16, 8);
+		sweep++;
+	} else {
+		if(percent > 100) percent = 100;
+		lcd.drawProgressBar(8, 22, 112, 12, (uint8_t)percent);
+		char pbuf[8];
+		snprintf(pbuf, sizeof(pbuf), "%d%%", percent);
+		lcd.setFont(ArialMT_Plain_16);
+		lcd.drawString(64, 36, String(pbuf));
+	}
+
+	if(msg && msg[0]) {
+		lcd.setFont(ArialMT_Plain_10);
+		lcd.drawString(64, 54, String(msg));
+	}
+
+	lcd.display();
+
+	// Restore the default text state used by the normal LCD write() path.
+	lcd.setTextAlignment(TEXT_ALIGN_LEFT);
+	lcd.setFont(Monospaced_plain_13);
 }
 
 #endif

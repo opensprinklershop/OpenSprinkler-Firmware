@@ -737,6 +737,9 @@ static int tool_configure_monitor(const ArduinoJson::JsonObjectConst& args) {
 
   uint8_t prio = params["prio"] | 0;
   ulong reset_seconds = params["rs"] | 0;
+  uint8_t output_mode = params["om"] | 0;
+  ulong stale_timeout = params["stt"] | 0;
+  uint8_t failsafe_active = params["fsa"] | 0;
 
   double value1 = params["value1"] | 0.0;
   double value2 = params["value2"] | 0.0;
@@ -791,7 +794,7 @@ static int tool_configure_monitor(const ArduinoJson::JsonObjectConst& args) {
       return 18; // HTML_DATA_FORMATERROR
   }
 
-  int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds);
+  int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds, output_mode, stale_timeout, failsafe_active);
   return ret >= HTTP_RQT_SUCCESS ? 1 : 16;
 }
 

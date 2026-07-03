@@ -54,8 +54,17 @@ void sensor_zigbee_gw_loop();
  * @param duration Duration in seconds (max 254)
  */
 void sensor_zigbee_gw_open_network(uint16_t duration);
-
 /**
+ * @brief Schedule a WiFi-off join (WiFi-connected gateways only).
+ *        Turns WiFi off for the join window so Zigbee gets the shared 2.4 GHz
+ *        radio, then reconnects WiFi automatically afterwards.
+ * @param duration Join window in seconds (clamped to 30..180)
+ */
+void sensor_zigbee_gw_start_wifi_off_join(uint16_t duration);
+/**
+ * @brief True while a WiFi-off join window is pending or active.
+ */
+bool sensor_zigbee_gw_wifi_off_join_active();/**
  * @brief Trigger a forced rejoin for a device and reset Tuya sequence counter
  * @param device_ieee Device IEEE address
  * @return true if rejoin initiated successfully

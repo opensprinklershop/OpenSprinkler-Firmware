@@ -299,6 +299,10 @@ public:
 #define MONITOR_TIME 14
 #define MONITOR_REMOTE 100
 
+// Monitor output modes: how an active monitor drives its zone/program output.
+#define MONITOR_OUTPUT_STARTSTOP 0  // active=>start zone/program, inactive=>stop (default, legacy behavior)
+#define MONITOR_OUTPUT_STOPONLY  1  // active=>force zone/program OFF (and keep off); inactive=>do nothing
+
 // MQTT sensor configuration types (used in sensor_mqtt_subscribe/unsubscribe)
 #define SENSORURL_TYPE_URL 0     // URL for Host/Path
 #define SENSORURL_TYPE_TOPIC 1   // TOPIC for MQTT
@@ -374,21 +378,26 @@ public:
   ulong maxRuntime;
   uint8_t prio;
   ulong reset_seconds;
-  unsigned char undef[16];  // for later
+  uint8_t output_mode;      // MONITOR_OUTPUT_* : how the monitor drives its zone/program output
+  ulong stale_timeout;      // seconds of stale/invalid sensor data before failsafe kicks in (0=disabled: keep last state)
+  uint8_t failsafe_active;  // desired output state (0/1) when the input is stale longer than stale_timeout
+  unsigned char undef[10];  // for later
   ulong reset_time; // time to reset
 
   // Transient evaluation scratch (not persisted / not serialized).
   // Used by check_monitors() for order-independent two-phase evaluation.
   boolean eval_active;
   double eval_value;
+  ulong last_ok_time;       // last time the referenced sensor delivered valid data (transient)
 
   /**
    * @brief Constructor
    */
   Monitor() : nr(0), type(0), sensor(0), prog(0), zone(0), 
               active(false), time(0), maxRuntime(0), prio(0), 
-              reset_seconds(0), reset_time(0),
-              eval_active(false), eval_value(0) {
+              reset_seconds(0), output_mode(0), stale_timeout(0),
+              failsafe_active(0), reset_time(0),
+              eval_active(false), eval_value(0), last_ok_time(0) {
     memset(&m, 0, sizeof(Monitor_Union_t));
     memset(undef, 0, sizeof(undef));
     name[0] = 0;
@@ -564,7 +573,7 @@ void monitor_load();
 void monitor_save();
 int monitor_count();
 int monitor_delete(uint nr);
-bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0);
+bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0);
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);
 void check_monitors();

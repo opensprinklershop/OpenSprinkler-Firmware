@@ -778,6 +778,11 @@ int sensor_delete(uint nr) {
   // Do not create a new driver object here; just remove the sensor
   delete it->second;
   sensorsMap.erase(it);
+  // Clear this sensor's log entries so a newly created sensor that later
+  // re-uses the same nr does not inherit stale logs of the deleted sensor.
+  sensorlog_clear_sensor(nr, LOG_STD, false, 0, false, 0, 0, 0);
+  sensorlog_clear_sensor(nr, LOG_WEEK, false, 0, false, 0, 0, 0);
+  sensorlog_clear_sensor(nr, LOG_MONTH, false, 0, false, 0, 0, 0);
   sensor_save();
   return HTTP_RQT_SUCCESS;
 }
@@ -2917,6 +2922,9 @@ void Monitor::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("maxRuntime")] = maxRuntime;
   obj[F("prio")] = prio;
   obj[F("reset_seconds")] = reset_seconds;
+  obj[F("output_mode")] = output_mode;
+  obj[F("stale_timeout")] = stale_timeout;
+  obj[F("failsafe_active")] = failsafe_active;
   
   // Serialize Monitor_Union based on type
   ArduinoJson::JsonObject mObj = obj[F("m")].to<ArduinoJson::JsonObject>();
@@ -2977,6 +2985,9 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
   maxRuntime = obj[F("maxRuntime")] | 0;
   prio = obj[F("prio")] | 0;
   reset_seconds = obj[F("reset_seconds")] | 0;
+  output_mode = obj[F("output_mode")] | 0;
+  stale_timeout = obj[F("stale_timeout")] | 0;
+  failsafe_active = obj[F("failsafe_active")] | 0;
   reset_time = 0;
   
   // Deserialize Monitor_Union based on type
@@ -3178,7 +3189,7 @@ int monitor_delete(uint nr) {
   return HTTP_RQT_NOT_RECEIVED;
 }
 
-bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds) {
+bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds, uint8_t output_mode, ulong stale_timeout, uint8_t failsafe_active) {
   // Find or create monitor
   auto it = monitorsMap.find(nr);
   Monitor_t *p;
@@ -3196,6 +3207,9 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
     p->prio = prio;
     p->reset_time = 0;
     p->reset_seconds = reset_seconds;
+    p->output_mode = output_mode;
+    p->stale_timeout = stale_timeout;
+    p->failsafe_active = failsafe_active;
     SAFE_STRNCPY(p->name, name, sizeof(p->name));
   } else {
     // Create new monitor
@@ -3211,6 +3225,9 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
     p->prio = prio;
     p->reset_time = 0;
     p->reset_seconds = reset_seconds;
+    p->output_mode = output_mode;
+    p->stale_timeout = stale_timeout;
+    p->failsafe_active = failsafe_active;
     SAFE_STRNCPY(p->name, name, sizeof(p->name));
     
     monitorsMap[nr] = p;
@@ -3289,10 +3306,13 @@ void stop_monitor_action(Monitor_t * mon) {
   mon->time = os.now_tz();
   if (mon->zone > 0) {
     int sid = mon->zone-1;
-    RuntimeQueueStruct *q = pd.queue + pd.station_qid[sid];
-    if (q) {
-		  q->deque_time = mon->time;
-		  turn_off_station(sid, mon->time, 0);
+    unsigned char sqi = pd.station_qid[sid];
+    // Only act if the station is actually queued. Guard against sqi==0xFF,
+    // which would make (pd.queue + sqi) an out-of-bounds pointer.
+    if (sqi != 0xFF) {
+      RuntimeQueueStruct *q = pd.queue + sqi;
+      q->deque_time = mon->time;
+      turn_off_station(sid, mon->time, 0);
       // DEBUG_PRINTLN(F("stop_monitor_action: turn_off_station"));
     }
   }
@@ -3428,6 +3448,7 @@ void check_monitors() {
       case MONITOR_MAX: {
         SensorBase * sensor = sensor_by_nr(mon->sensor);
         if (sensor && sensor->flags.data_ok) {
+          mon->last_ok_time = timeNow;
           double value = sensor->last_data;
           mon->eval_value = value;
 
@@ -3454,7 +3475,17 @@ void check_monitors() {
               }
             }
           }
+        } else if (mon->stale_timeout > 0) {
+          // Failsafe: the referenced sensor has no valid data. Once the data
+          // has been stale for longer than stale_timeout, force the output to
+          // the configured failsafe state instead of latching the last value.
+          if (mon->last_ok_time == 0) mon->last_ok_time = timeNow; // seed from boot/first eval
+          if (timeNow >= mon->last_ok_time + mon->stale_timeout) {
+            mon->eval_active = (mon->failsafe_active != 0);
+          }
+          // else: within grace period -> keep previous state (seeded above)
         }
+        // stale_timeout==0 -> legacy behavior: keep previous eval_active.
         break; }
 
       case MONITOR_SENSOR12: {
@@ -3579,6 +3610,8 @@ void check_monitors() {
     double value = mon->eval_value;
     mon->active = mon->eval_active;
 
+    bool stopOnly = (mon->output_mode == MONITOR_OUTPUT_STOPONLY);
+
     if (mon->active != wasActive) {
       if (mon->active) {
         if (mon->reset_seconds > 0) {
@@ -3586,19 +3619,31 @@ void check_monitors() {
         } else {
           mon->reset_time = 0;
         }
-        start_monitor_action(mon);
+        if (stopOnly)
+          stop_monitor_action(mon);  // stop-only: an active condition forces the output OFF
+        else
+          start_monitor_action(mon);
         push_message(mon, value, monidx);
         mon = monitor_by_nr(nr); //restart because if send by mail we unloaded+reloaded the monitors
       } else {
-        stop_monitor_action(mon);
+        // Became inactive: a stop-only monitor must NOT take any action here
+        // (it may only turn off, never start). It leaves the zone/program to
+        // the normal scheduler again.
+        if (!stopOnly)
+          stop_monitor_action(mon);
       }
     } else if (mon->active) {
       if (mon->reset_time > 0 && mon->reset_time < timeNow) { //time is over
         mon->active = false;
-        stop_monitor_action(mon);
+        if (!stopOnly)
+          stop_monitor_action(mon);
         mon->reset_time = timeNow + mon->reset_seconds; 
       } else if (mon->reset_time == 0 && mon->reset_seconds > 0) { //reset time not set, but reset seconds is set
         mon->reset_time = timeNow + mon->reset_seconds; 
+      } else if (stopOnly) {
+        // Continuously suppress while active: if the scheduler (or a manual run)
+        // re-started the zone/program, force it off again on the next cycle.
+        stop_monitor_action(mon);
       }
     }
 
@@ -3689,6 +3734,29 @@ int findValue(const char *payload, unsigned int length, const char *jsonFilter, 
 	char *f = (char*)jsonFilter;
 	bool emptyFilter = !jsonFilter||!jsonFilter[0];
 
+	// Optional array index addressing: a trailing "[N]" on the filter selects
+	// the N-th (0-based) numeric element of a JSON array, e.g. the filter
+	// "hourly|wind_gusts_10m[3]" reads the 4th value of
+	// {"hourly":{"wind_gusts_10m":[14.8,18.7,20.5,22.3,...]}}. Without a "[N]"
+	// suffix the behavior is unchanged (first numeric value after the key).
+	char filterbuf[128];
+	int arrayIndex = 0;
+	if (!emptyFilter) {
+		strncpy(filterbuf, jsonFilter, sizeof(filterbuf)-1);
+		filterbuf[sizeof(filterbuf)-1] = 0;
+		char *lb = strrchr(filterbuf, '[');
+		if (lb) {
+			char *rb = strchr(lb, ']');
+			if (rb && rb > lb+1) {
+				arrayIndex = atoi(lb+1);
+				if (arrayIndex < 0) arrayIndex = 0;
+				*lb = 0; // strip "[N]" so the key search matches the plain key
+			}
+		}
+		jsonFilter = filterbuf;
+		f = (char*)jsonFilter;
+	}
+
 	while (!emptyFilter && f && p) {
 		f = strstr((char*)jsonFilter, "|");
 		if (f) {
@@ -3702,7 +3770,14 @@ int findValue(const char *payload, unsigned int length, const char *jsonFilter, 
 	if (p) {
 		p += emptyFilter?0:strlen(jsonFilter);
 		char buf[30];
-		p = strpbrk(p, "0123456789.-+nullNULL");
+		// Advance to the requested array element by skipping preceding numeric tokens.
+		for (int idx = 0; idx < arrayIndex; idx++) {
+			p = strpbrk(p, "0123456789.-+");
+			if (!p || p >= (char*)payload+length) { p = NULL; break; }
+			while (p && *p && p < (char*)payload+length &&
+			       ((*p >= '0' && *p <= '9') || *p == '.' || *p == '-' || *p == '+')) p++;
+		}
+		if (p) p = strpbrk(p, "0123456789.-+nullNULL");
 		uint i = 0;
 		while (p && i < sizeof(buf) && p < (char*)payload+length) {
 			char ch = *p++;

@@ -6,6 +6,20 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(217)] — in Entwicklung
+
+### Added
+- **Monitor-Ausgangsmodus „Nur abschalten" (`om`)**: Ein Monitor kann jetzt so konfiguriert werden, dass er seine Zone bzw. sein Programm ausschließlich **abschaltet** und niemals startet (`output_mode`/`om`). Wird der Monitor aktiv, schaltet er die Zone ab und hält sie – auch gegen den normalen Zeitplan – ausgeschaltet; wird er inaktiv, übernimmt wieder der normale Scheduler. Damit lässt sich ein Kreis zuverlässig als reiner Sicherheits-/Abschalt-Watchdog überwachen, ohne dass der Monitor ihn selbst startet.
+- **Monitor-Failsafe bei ungültigem Eingang (`stt`/`fsa`)**: Neue Optionen „Failsafe nach (s)" (`stale_timeout`) und „Failsafe-Zustand" (`failsafe_active`). Liefert der zugehörige Sensor länger als die eingestellte Zeit keine gültigen Daten, wechselt der Monitor-Ausgang zwangsweise in den definierten Failsafe-Zustand, statt den letzten Wert unbegrenzt zu halten. `stale_timeout = 0` behält das bisherige Verhalten bei.
+- **JSON-/MQTT-Sensor: Array-Index-Adressierung**: JSON-Filter unterstützen jetzt eine abschließende `[N]`-Angabe, um das N-te Element eines JSON-Arrays zu lesen (0-basiert), z. B. `hourly|wind_gusts_10m[3]` für `{"hourly":{"wind_gusts_10m":[14.8,18.7,20.5,22.3,…]}}`. Ohne `[N]` bleibt das Verhalten unverändert (erster Zahlenwert nach dem Schlüssel).
+
+### Fixed
+- **Verwaiste Sensor-Logs**: Beim Löschen eines Sensors werden nun auch dessen Log-Einträge (Standard/Woche/Monat) entfernt. Ein neu angelegter Sensor, der dieselbe Nummer wiederverwendet, erbt so keine alten Logs des gelöschten Sensors mehr (wirkt sich auch positiv auf Backup/Restore aus).
+- **Monitor `stop_monitor_action` Out-of-Bounds**: Behebt einen möglichen Schreibzugriff außerhalb der Queue, wenn eine Monitor-Zone abgeschaltet werden sollte, obwohl sie nicht in der Laufzeit-Queue steht (`station_qid == 0xFF`).
+- **„Run-Once mit Wiederholung"-Leichen**: Beim globalen Stopp aller Stationen (`/cv?rsn=1`) werden temporäre „Run-Once with repeat"-Programme jetzt bedingungslos entfernt – auch solche, die gerade zwischen zwei Wiederholungsintervallen warten. Dadurch feuern sie nach dem Stoppen nicht mehr erneut.
+
+---
+
 ## [2.4.0(216)] — veröffentlicht 2026-07-01
 
 ### Added

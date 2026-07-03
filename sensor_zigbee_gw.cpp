@@ -25,6 +25,7 @@
 
 
 extern OpenSprinkler os;
+extern bool useEth;
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 
@@ -48,6 +49,7 @@ extern "C" {
 #include "Zigbee.h"
 #include "ZigbeeEP.h"
 #include <esp_heap_caps.h>
+#include "espconnect.h"
 
 // Optional: Restrict Zigbee to a single channel (e.g. 25 = 2475 MHz) to
 // minimise radio overlap with WiFi on dual-protocol ESP32-C5.
@@ -59,6 +61,15 @@ static bool gw_zigbee_initialized = false;
 static bool gw_zigbee_connected = false;
 static unsigned long gw_join_window_end = 0;
 static bool gw_zigbee_needs_nvram_reset = false;
+
+// WiFi-off join state machine (Zigbee Gateway on WiFi only).
+// Joining a new device fails while WiFi keeps the shared 2.4 GHz radio busy, so
+// on WiFi-connected gateways we briefly turn WiFi OFF for the join window and
+// automatically reconnect afterwards. On Ethernet gateways this is never used.
+enum GwWifiJoinState { GW_WJ_IDLE = 0, GW_WJ_PENDING, GW_WJ_JOINING };
+static GwWifiJoinState gw_wj_state = GW_WJ_IDLE;
+static uint16_t gw_wj_duration = 0;
+static unsigned long gw_wj_timer = 0;   // deadline (millis) for the current phase
 
 // Discovered devices storage
 static std::vector<ZigbeeDeviceInfo> gw_discovered_devices;
@@ -719,6 +730,15 @@ struct GwBasicQueryRequest {
 static std::vector<GwBasicQueryRequest> gw_basic_query_queue;
 #define GW_BASIC_QUERY_RETRY_MS 15000UL
 #define GW_BASIC_QUERY_MAX_ATTEMPTS 20
+// Hard per-device cap on how many Basic Cluster requeries we perform while the
+// manufacturer/model is still empty.  Reaching this cap stops the requery until
+// the device physically re-announces (DEVICE_ANNCE), which resets the budget.
+// Without this cap a frequently-reporting Tuya end device (e.g. GIEX GX03
+// "_TZE284_") that never answers Basic Cluster reads is bombarded with read
+// requests on every DP report, overwhelming the sleepy device so it drops its
+// parent and re-enters join mode (blinking LEDs) — and the manufacturer is
+// never stored.
+#define GW_BASIC_QUERY_ATTEMPT_CAP 12
 
 static bool gw_is_basic_query_queued(uint64_t ieee_addr) {
     for (const auto& q : gw_basic_query_queue) {
@@ -1064,9 +1084,17 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
         dev->last_rx_at_ms = millis();     // stamp last reception
         dev->silent_query_count = 0;       // device is alive — reset silence counter
 
-        // If the device's manufacturer or model is empty/unknown, reset attempts and retry query
-        if (gw_device_needs_basic_info(*dev)) {
-            dev->basic_query_attempts = 0;
+        // If the device's manufacturer or model is still empty/unknown, (re)queue
+        // a Basic Cluster read — but do NOT reset basic_query_attempts here.
+        // Resetting the counter on every DP report defeats the retry cap and
+        // lets a frequently-reporting Tuya end device (e.g. GIEX GX03
+        // "_TZE284_") be flooded with Basic Cluster reads it can't service,
+        // which overwhelms the sleepy device (it drops its parent and rejoins
+        // with blinking LEDs) and never actually stores the manufacturer.  The
+        // budget is only refreshed on a genuine re-announce (see findEndpoint).
+        if (gw_device_needs_basic_info(*dev) &&
+            dev->basic_query_attempts < GW_BASIC_QUERY_ATTEMPT_CAP &&
+            !gw_is_basic_query_queued(ieee_addr)) {
             gw_queue_basic_cluster_query(ieee_addr, short_addr, endpoint, 1000UL);
         }
 
@@ -1240,6 +1268,23 @@ static void gw_handleBasicClusterResponse(uint16_t short_addr, const esp_zb_zcl_
                     strncpy(dev.manufacturer, str_buf, sizeof(dev.manufacturer) - 1);
                     dev.manufacturer[sizeof(dev.manufacturer) - 1] = '\0';
                     changed = true;
+                    // Manufacturer (re)identified. If the device already carries
+                    // logical devices that were auto-assigned for an earlier /
+                    // wrong identity (e.g. a GX04 soil sensor provisionally
+                    // filled with GX03 valve logical devices while its
+                    // manufacturer was still unknown, because model "TS0601" is
+                    // shared by many Tuya devices), drop them and force a fresh
+                    // DB lookup so the correct logical devices for the now-known
+                    // manufacturer are fetched by sensor_zigbee_gw_do_lookups().
+                    char ieee_hex[17];
+                    snprintf(ieee_hex, sizeof(ieee_hex), "%016llX", (unsigned long long)dev.ieee_addr);
+                    if (OpenSprinkler::zigbee_logical_count_ieee(ieee_hex) > 0) {
+                        OpenSprinkler::zigbee_logical_clear_ieee(ieee_hex);
+                        DEBUG_PRINTF(F("[ZIGBEE-GW] Manufacturer resolved to \"%s\" for 0x%016llX — cleared stale logical devices for fresh DB lookup\n"),
+                                     dev.manufacturer, (unsigned long long)dev.ieee_addr);
+                    }
+                    dev.vendor[0] = '\0';
+                    dev.logical_lookup_done = false;
                 }
             } else if (attribute->id == ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID && has_string) {
                 if (strncmp(dev.model_id, str_buf, sizeof(dev.model_id)) != 0) {
@@ -2434,6 +2479,19 @@ public:
             // Pre-register so the device is visible in /zd / /zg even if it
             // never answers the immediate Basic Cluster query.
             gw_add_responsive_device(short_addr, ieee_addr, 1);
+
+            // Genuine (re)join: the device is awake right now, so refresh the
+            // Basic Cluster retry budget (cleared by the per-report flood guard)
+            // and re-queue one query.  This is the only place the attempt cap is
+            // reset, which keeps sleepy Tuya devices from being flooded between
+            // announces while still re-interviewing a device that power-cycled.
+            ZigbeeDeviceInfo* joined = gw_find_discovered_device(ieee_addr);
+            if (joined && gw_device_needs_basic_info(*joined)) {
+                joined->basic_query_attempts = 0;
+                if (!gw_is_basic_query_queued(ieee_addr)) {
+                    gw_queue_basic_cluster_query(ieee_addr, short_addr, 1, 1000UL);
+                }
+            }
         }
 
         // Send Tuya DP query first (fast and lightweight, unblocks TS0601/GIEX immediately)
@@ -2777,6 +2835,16 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t 
     gw_read_time = millis();
     gw_read_pending_ieee = device_ieee;
     gw_read_pending_cluster = ZB_ZCL_CLUSTER_ID_BASIC;
+    // Mark this as a multi-attribute (batch) Basic Cluster read.  The read
+    // timeout handler uses attr_id == 0x0000 as the sentinel to fall back to
+    // individual 0x0004 (manufacturer) / 0x0005 (model) reads.  Without this,
+    // gw_read_attr_id kept its stale value (e.g. 0xFFFF from a preceding Tuya
+    // DP query for _TZE284_/_TZE204_/_TZE200_ devices), so the batch timeout
+    // never fell back to per-attribute reads.  Strict Tuya devices (e.g. GIEX
+    // GX03 "_TZE284_8zizsafo") reject the 7-attribute batch read, so their
+    // manufacturer/model strings were never obtained and the device stayed
+    // unrecognized.
+    gw_read_attr_id = 0x0000;
     esp_zb_lock_release();
 
     gw_record_device_access(device_ieee, short_addr, false);
@@ -3805,8 +3873,56 @@ int sensor_zigbee_gw_clear_device_runtime_state(uint64_t device_ieee) {
     return cleared_verify;
 }
 
+// Bounded-retry tracking for the device-DB logical-device lookup.  The HTTPS
+// request to opensprinklershop.de can fail transiently under memory pressure
+// (BLE + MQTT + RainMaker leave little internal RAM for the TLS handshake), so
+// a single failure must NOT permanently mark the device "looked up".
+struct GwLookupFail { uint64_t ieee; uint8_t count; };
+static std::vector<GwLookupFail> gw_lookup_fails;
+#define GW_LOOKUP_MAX_FAILS 20
+
+static void gw_clear_lookup_failed(uint64_t ieee) {
+    for (auto it = gw_lookup_fails.begin(); it != gw_lookup_fails.end(); ++it) {
+        if (it->ieee == ieee) { gw_lookup_fails.erase(it); return; }
+    }
+}
+
+static void gw_note_lookup_failed(ZigbeeDeviceInfo& dev) {
+    for (auto& f : gw_lookup_fails) {
+        if (f.ieee == dev.ieee_addr) {
+            if (f.count < 255) f.count++;
+            if (f.count >= GW_LOOKUP_MAX_FAILS) {
+                // Give up after repeated failures (device likely absent from
+                // the DB, or persistent connectivity/memory issue) so we stop
+                // retrying forever.
+                dev.logical_lookup_done = true;
+                gw_mark_discovered_devices_dirty();
+            }
+            return;
+        }
+    }
+    gw_lookup_fails.push_back({dev.ieee_addr, 1});
+}
+
+// On ESP32, OpenSprinkler::send_http_request() delivers the HTTP response ONLY
+// through the callback and then frees its internal buffer.  With a NULL callback
+// the response is discarded and the caller's request buffer (ether_buffer) still
+// holds the *request* — so a subsequent parse of ether_buffer sees only the
+// request headers (nothing after the final CRLF) and fails with "EmptyInput".
+// This callback copies the raw response (headers + body) back into ether_buffer
+// so sensor_zigbee_gw_do_lookups() can locate the JSON body after "\r\n\r\n".
+static void gw_lookup_http_response_cb(char* response) {
+    if (!response) return;
+    size_t n = strlen(response);
+    if (n >= (size_t)ETHER_BUFFER_SIZE) n = ETHER_BUFFER_SIZE - 1;
+    memcpy(ether_buffer, response, n);
+    ether_buffer[n] = '\0';
+}
+
 static void sensor_zigbee_gw_do_lookups() {
-    if (WiFi.status() != WL_CONNECTED) return;
+    // Cover Ethernet AND WiFi: a WiFi-only check disabled the entire device-DB
+    // logical-device lookup on Ethernet-only gateways (the common setup).
+    if (!os.network_connected()) return;
     static unsigned long s_last_attempt_ms = 0;
     // Don't hammer the API — try at most once every 10 s
     if (s_last_attempt_ms != 0 && millis() - s_last_attempt_ms < 10000UL) return;
@@ -3827,8 +3943,9 @@ static void sensor_zigbee_gw_do_lookups() {
         }
 
         // We found a device that needs logical and vendor name lookup!
-        dev.logical_lookup_done = true;
-        gw_mark_discovered_devices_dirty();
+        // Do NOT mark logical_lookup_done here — only after a SUCCESSFUL lookup
+        // below.  The HTTPS request can fail transiently under memory pressure,
+        // and marking done prematurely permanently skips the device.
         s_last_attempt_ms = millis();
 
         DEBUG_PRINTF(F("[ZIGBEE-GW] Triggering background lookups for %s|%s (ieee=%s)\n"),
@@ -3858,7 +3975,14 @@ static void sensor_zigbee_gw_do_lookups() {
             "User-Agent: %s\r\nConnection: close\r\n\r\n",
             mfr_enc, mdl_enc, user_agent_string);
 
-        int ret = os.send_http_request("opensprinklershop.de", 443, ether_buffer, NULL, true, 8000);
+        // Use plain HTTP (port 80) rather than HTTPS: this gateway runs with
+        // very little free internal RAM (BLE + MQTT + RainMaker), and the TLS
+        // handshake for an HTTPS request frequently fails with out-of-memory,
+        // which left devices without their logical-device profile.  The device
+        // DB endpoint serves the same JSON over HTTP with no redirect.
+        // A callback is REQUIRED on ESP32 (see gw_lookup_http_response_cb): the
+        // response is otherwise discarded and ether_buffer keeps the request.
+        int ret = os.send_http_request("opensprinklershop.de", 80, ether_buffer, gw_lookup_http_response_cb, false, 8000);
         if (ret == HTTP_RQT_SUCCESS) {
             // Let's parse the HTTP response using ArduinoJson!
             // First locate the JSON start by skipping HTTP headers.
@@ -3873,6 +3997,7 @@ static void sensor_zigbee_gw_do_lookups() {
             ArduinoJson::DeserializationError err = ArduinoJson::deserializeJson(doc, json_start);
             if (err) {
                 DEBUG_PRINTF(F("[ZIGBEE-GW] JSON parsing failed: %s\n"), err.c_str());
+                gw_note_lookup_failed(dev);
                 return;
             }
 
@@ -4053,8 +4178,17 @@ static void sensor_zigbee_gw_do_lookups() {
                     OpenSprinkler::zigbee_logical_register(logdev);
                 }
             }
+            // Lookup succeeded (device found in DB).  Mark done so we don't
+            // re-query it and clear the failure backoff.
+            dev.logical_lookup_done = true;
+            gw_mark_discovered_devices_dirty();
+            gw_clear_lookup_failed(dev.ieee_addr);
         } else {
+            // Transient failure (often TLS/HTTPS out-of-memory on this busy
+            // gateway).  Leave logical_lookup_done=false so the next cycle
+            // retries, bounded by gw_note_lookup_failed().
             DEBUG_PRINTF(F("[ZIGBEE-GW] HTTP request to devices_api failed: %d\n"), ret);
+            gw_note_lookup_failed(dev);
         }
         return; // handle only one device lookup per call
     }
@@ -4115,14 +4249,78 @@ bool sensor_zigbee_gw_set_configured_channel(uint8_t channel) {
 #define GW_STARTUP_DEFER_MS      20000UL  // wait after network forms before startup burst
 #define GW_STARTUP_OPEN_SECONDS  60       // rejoin permit-join window (was 180s)
 
+// Schedule a "WiFi-off" join: turn WiFi off for the join window so Zigbee gets
+// the shared 2.4 GHz radio to itself, then reconnect WiFi automatically. The
+// actual WiFi shutdown is deferred slightly by the loop state machine so the
+// HTTP response can flush over WiFi before it drops.
+void sensor_zigbee_gw_start_wifi_off_join(uint16_t duration) {
+    if (duration == 0) duration = 30;
+    if (duration > 180) duration = 180;
+    if (gw_wj_state != GW_WJ_IDLE) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] WiFi-off join already in progress — ignoring"));
+        return;
+    }
+    gw_wj_duration = duration;
+    gw_wj_timer = millis() + 1500;   // let the /zo HTTP reply flush first
+    gw_wj_state = GW_WJ_PENDING;
+    DEBUG_PRINTF(F("[ZIGBEE-GW] WiFi-off join scheduled: %us window\n"), (unsigned)duration);
+}
+
+bool sensor_zigbee_gw_wifi_off_join_active() {
+    return gw_wj_state != GW_WJ_IDLE;
+}
+
+// Drive the WiFi-off join phases. Called from sensor_zigbee_gw_loop().
+static void gw_wifi_off_join_service() {
+    if (gw_wj_state == GW_WJ_IDLE) return;
+    unsigned long now = millis();
+    switch (gw_wj_state) {
+    case GW_WJ_PENDING:
+        if ((long)(now - gw_wj_timer) >= 0) {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW] WiFi-off join: turning WiFi OFF for join window"));
+            // Free the 2.4 GHz radio entirely for Zigbee joining.
+            WiFi.disconnect(true, false);
+            WiFi.mode(WIFI_OFF);
+            // Open the Zigbee join window now that WiFi is out of the way.
+            sensor_zigbee_gw_open_network(gw_wj_duration);
+            gw_wj_timer = now + (unsigned long)gw_wj_duration * 1000UL;
+            gw_wj_state = GW_WJ_JOINING;
+        }
+        break;
+    case GW_WJ_JOINING:
+        if ((long)(now - gw_wj_timer) >= 0) {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW] WiFi-off join: closing window, re-enabling WiFi"));
+            sensor_zigbee_gw_open_network(0);   // close the join window
+            // Reconnect WiFi using the stored credentials. Device-DB lookups for
+            // any newly joined device are gated on os.network_connected() and so
+            // resume automatically once WiFi is back up.
+            start_network_sta(os.wifi_ssid.c_str(), os.wifi_pass.c_str(),
+                              (int32_t)os.wifi_channel, os.wifi_bssid);
+            WiFi.setAutoReconnect(true);
+            gw_wj_state = GW_WJ_IDLE;
+        }
+        break;
+    default:
+        gw_wj_state = GW_WJ_IDLE;
+        break;
+    }
+}
+
 void sensor_zigbee_gw_loop() {
     if (!gw_zigbee_initialized) return;
+
+    // Service the WiFi-off join state machine first (WiFi may be down).
+    gw_wifi_off_join_service();
 
     // Deferred startup actions (auto-open for rejoin + Tuya DP query burst).
     static bool gw_startup_actions_pending = false;
     static unsigned long gw_network_formed_ms = 0;
 
-    if (WiFi.status() == WL_CONNECTED) {
+    // Use os.network_connected() (covers Ethernet AND WiFi) rather than a
+    // WiFi-only check: the Zigbee gateway commonly runs Ethernet-only, and a
+    // WiFi.status() gate would prevent the device-DB lookup that fetches the
+    // correct logical devices from ever running.
+    if (os.network_connected()) {
         sensor_zigbee_gw_do_lookups();
     }
 

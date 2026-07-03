@@ -620,6 +620,9 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void flash_screen();
 	static void toggle_screen_led();
 	static void set_screen_led(unsigned char status);
+	// Full-screen firmware-update progress bar (percent 0-100, or <0 for
+	// indeterminate). msg is an optional short status line.
+	static void lcd_print_ota_progress(int percent, const char *msg);
 	#endif
 
 	static String time2str(uint32_t t) {

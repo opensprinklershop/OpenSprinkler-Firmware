@@ -4759,6 +4759,17 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rs"), true))
 		reset_seconds = strtoul(tmp_buffer, NULL, 0);
 
+	uint8_t output_mode = 0; // MONITOR_OUTPUT_STARTSTOP
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("om"), true))
+		output_mode = strtoul(tmp_buffer, NULL, 0);
+
+	ulong stale_timeout = 0; // 0 = disabled (keep last state)
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("stt"), true))
+		stale_timeout = strtoul(tmp_buffer, NULL, 0);
+	uint8_t failsafe_active = 0;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("fsa"), true))
+		failsafe_active = strtoul(tmp_buffer, NULL, 0) > 0;
+
 	Monitor_Union_t m;
 	switch (type) {
 		case MONITOR_MIN:
@@ -4788,7 +4799,7 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 			break;
 		default: handle_return(HTML_DATA_FORMATERROR);
 	}
-	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds);
+	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds, output_mode, stale_timeout, failsafe_active);
 	ret = ret >= HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
 	handle_return(ret);
 }
@@ -4823,13 +4834,16 @@ void monitorconfig_json(Monitor_t *mon) {
 	// Emit the name JSON-escaped so special characters (backslash, quote, …) do
 	// not produce invalid JSON that breaks the UI/app monitor list (#263).
 	bfill_emit_json_escaped_monitor_name(mon->name);
-	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,"),
+	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,\"om\":$D,\"stt\":$L,\"fsa\":$D,"),
 				mon->maxRuntime,
 				mon->prio,
 				mon->active,
 				mon->time,
 				mon->reset_seconds,
-			    mon->reset_time? mon->reset_time-os.now_tz():0);
+			    mon->reset_time? mon->reset_time-os.now_tz():0,
+				mon->output_mode,
+				mon->stale_timeout,
+				mon->failsafe_active);
 
 	switch(mon->type) {
 		case MONITOR_MIN:
@@ -6624,7 +6638,7 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				bfill.emit_p(PSTR("}"));
 				out_count++;
 			}
-			bfill.emit_p(PSTR("],\"count\":$D,\"channel\":$D,\"configured_channel\":$D}"), out_count, (int)sensor_zigbee_gw_get_channel(), (int)sensor_zigbee_gw_get_configured_channel());
+			bfill.emit_p(PSTR("],\"count\":$D,\"channel\":$D,\"configured_channel\":$D,\"use_eth\":$D}"), out_count, (int)sensor_zigbee_gw_get_channel(), (int)sensor_zigbee_gw_get_configured_channel(), useEth ? 1 : 0);
 			delete[] devices;
 		} else {
 			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"out of memory\"}"));
@@ -6757,6 +6771,21 @@ void server_zigbee_open_network(OTF_PARAMS_DEF) {
 		send_packet(OTF_PARAMS);
 		handle_return(HTML_OK);
 		reboot_in(1500, REBOOT_CAUSE_WEB);
+		return;
+	}
+
+	// wifi_off=1 requests a WiFi-off join: only honoured on a WiFi-connected
+	// Zigbee gateway (Ethernet gateways keep WiFi irrelevant and never need it).
+	bool wifi_off = false;
+	if (duration > 0 && findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wifi_off"), true)) {
+		wifi_off = (atoi(tmp_buffer) != 0);
+	}
+
+	if (wifi_off && ieee802154_is_zigbee_gw() && !useEth) {
+		sensor_zigbee_gw_start_wifi_off_join(duration);
+		bfill.emit_p(PSTR("{\"result\":1,\"wifi_off\":1,\"duration\":$D}"), duration);
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
 		return;
 	}
 
@@ -7316,10 +7345,28 @@ void on_firmware_upload() {
 			DEBUG_PRINTLN(F("size mismatch"));
 		}
 #endif
+#if defined(ESP32) && defined(USE_SSD1306)
+		// Render a throttled full-screen progress bar directly here: the upload
+		// runs inside this HTTP handler so do_loop() (and its OTA display hook)
+		// does not run until the transfer completes.
+		{
+			static uint32_t last_up_disp = 0;
+			if(millis() - last_up_disp > 400) {
+				last_up_disp = millis();
+				size_t total = update_server ? update_server->clientContentLength() : 0;
+				int pct = (total > 0) ? (int)((uint64_t)upload.totalSize * 100 / total) : -1;
+				if(pct > 100) pct = 100;
+				os.lcd_print_ota_progress(pct, "Uploading");
+			}
+		}
+#endif
 
 	} else if(upload.status == UPLOAD_FILE_END) {
 
 		DEBUG_PRINTLN(F("completed"));
+#if defined(ESP32) && defined(USE_SSD1306)
+		os.lcd_print_ota_progress(100, "Flashing");
+#endif
 
 	} else if(upload.status == UPLOAD_FILE_ABORTED){
 #if defined(ESP32C5)
