@@ -7279,6 +7279,15 @@ void on_update_options() {
 	update_server->send(200, "text/plain", "");
 }
 
+void on_update_capabilities() {
+	update_server->sendHeader("Access-Control-Allow-Origin", "*");
+#if defined(ESP32C5)
+	update_server->send(200, "application/json", "{\"dualOta\":1,\"uploadPort\":8080}");
+#else
+	update_server->send(200, "application/json", "{\"dualOta\":0,\"uploadPort\":8080}");
+#endif
+}
+
 void on_firmware_upload() {
 	HTTPUpload& upload = update_server->upload();
 	if(upload.status == UPLOAD_FILE_START){
@@ -7398,6 +7407,8 @@ void start_server_client() {
 		otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET); // handle firmware update
 		update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
 		update_server->on("/update", HTTP_OPTIONS, on_update_options);
+		update_server->on("/upcap", HTTP_GET, on_update_capabilities);
+		update_server->on("/upcap", HTTP_OPTIONS, on_update_options);
 #if defined(ESP32)
 		otf->on("/ca.der", on_serve_cert);  // CA cert download for HTTPS trust setup
 #endif
@@ -7466,6 +7477,8 @@ void start_server_ap() {
 	otf->on("/update", on_firmware_update, OTF::OTF_HTTP_GET);
 	update_server->on("/update", HTTP_POST, on_firmware_upload_fin, on_firmware_upload);
 	update_server->on("/update", HTTP_OPTIONS, on_update_options);
+	update_server->on("/upcap", HTTP_GET, on_update_capabilities);
+	update_server->on("/upcap", HTTP_OPTIONS, on_update_options);
 	otf->onMissingPage(on_ap_home);
 	update_server->begin();
 

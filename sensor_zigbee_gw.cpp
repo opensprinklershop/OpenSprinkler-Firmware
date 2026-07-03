@@ -108,6 +108,7 @@ struct GwTuyaScheduledCommand {
 static GwTuyaScheduledCommand gw_tuya_schedule[8];
 static uint32_t gw_tuya_next_due_ms = 0;
 
+static uint64_t gw_find_ieee_by_short_addr(uint16_t short_addr);
 static void gw_tuya_schedule_next();
 static bool gw_load_discovered_devices();
 static bool gw_save_discovered_devices();
@@ -2576,7 +2577,7 @@ public:
             for (int i = 7; i >= 0; i--) ieee_addr = (ieee_addr << 8) | raw_ieee[i];
             if (ieee_addr) gw_add_responsive_device(src_address.u.short_addr, ieee_addr, src_endpoint);
         }
-        
+
         int32_t value = extractAttributeValue(attribute);
         
         if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF && attribute->id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
@@ -3103,13 +3104,28 @@ void sensor_zigbee_gw_factory_reset() {
 void sensor_zigbee_gw_stop() {
     // Zigbee Coordinator stays running permanently (non-Matter mode).
     // The Arduino Zigbee library does NOT support stop+restart anyway.
-    // This function is now a no-op. Coexistence priorities are
-    // managed dynamically via the radio arbiter.
+    // This function is now a no-op.
     if (!gw_zigbee_initialized) return;
     // DEBUG_PRINTLN(F("[ZIGBEE-GW] stop() called — Zigbee stays active (permanent mode)"));
 }
 
 void sensor_zigbee_gw_start() {
+    // NOT POSSIBLE / NOT SENSIBLE over WiFi: a Zigbee Gateway (coordinator) must
+    // keep its 802.15.4 receiver on continuously, but the ESP32-C5 shares ONE
+    // 2.4 GHz radio between WiFi and 802.15.4. With no Ethernet the coordinator
+    // starves the WiFi STA and WiFi disconnects permanently. Verified on
+    // hardware that SW coexistence + WiFi modem-sleep + disabling BLE do NOT fix
+    // it. Therefore the gateway is only started with Ethernet; over WiFi Zigbee
+    // is left completely disabled (use a Zigbee CLIENT/end-device for WiFi, or
+    // wire Ethernet for a gateway). See docs/coexistence notes.
+    if (!useEth) {
+        static bool wifi_gw_warning_shown = false;
+        if (!wifi_gw_warning_shown) {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW] Gateway requires Ethernet — Zigbee DISABLED over WiFi (2.4 GHz WiFi/802.15.4 coexistence is not viable)"));
+            wifi_gw_warning_shown = true;
+        }
+        return;
+    }
     // DEBUG_PRINTLN(F("[ZIGBEE-GW] sensor_zigbee_gw_start() called"));
     // DEBUG_PRINTF("[ZIGBEE-GW] ieee802154 mode: %d (%s)\n",
                 // (int)ieee802154_get_mode(), ieee802154_mode_name(ieee802154_get_mode()));
@@ -3243,8 +3259,6 @@ void sensor_zigbee_gw_start() {
                  // heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                  // heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
-    // Dynamic coex: re-initialise after Zigbee.begin() which resets PTI defaults
-
     // Log channel and PAN ID for diagnostics
     esp_zb_lock_acquire(portMAX_DELAY);
     uint8_t zb_channel = esp_zb_get_current_channel();
@@ -3261,6 +3275,7 @@ void sensor_zigbee_gw_start() {
     // Network stays closed after init. Use the HTTP API ("zj" command)
     // to open the network for joining when pairing new devices.
     // DEBUG_PRINTLN(F("[ZIGBEE-GW] Network closed — use API to open for joining"));
+
 }
 
 bool sensor_zigbee_gw_is_active() {

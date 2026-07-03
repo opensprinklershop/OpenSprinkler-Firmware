@@ -795,6 +795,32 @@ void check_weather();
 static bool process_special_program_command(const char*, uint32_t curr_time);
 static void perform_ntp_sync();
 
+#if defined(ESP32)
+static bool wifi_reconnect_throttled(const char* reason, unsigned long min_interval_ms) {
+	if (useEth || os.get_wifi_mode() != WIFI_MODE_STA) return false;
+
+	wl_status_t st = WiFi.status();
+	if (st == WL_CONNECTED) return false;
+
+	static unsigned long last_reconnect_ms = 0;
+	unsigned long now = millis();
+	if ((long)(now - last_reconnect_ms) < (long)min_interval_ms) {
+		return false;
+	}
+
+	// Avoid reconnect storms while association/auth is already in progress.
+	if (st == WL_IDLE_STATUS) {
+		return false;
+	}
+
+	last_reconnect_ms = now;
+	DEBUG_PRINTF("[WIFI] reconnect (%s), status=%d\n", reason, (int)st);
+	WiFi.setAutoReconnect(true);
+	WiFi.reconnect();
+	return true;
+}
+#endif
+
 #if defined(ESP8266) || defined(ESP32)
 bool delete_log_oldest();
 void start_server_ap();
@@ -1312,17 +1338,7 @@ void do_loop()
 			} else {
 				// WiFi disconnected in STA mode - attempt reconnection
 				#if defined(ESP32)
-				static unsigned long last_wifi_check = 0;
-				// Check WiFi status every 5 seconds when disconnected
-				if(millis() - last_wifi_check > 5000) {
-					last_wifi_check = millis();
-					DEBUG_PRINTLN(F("WiFi disconnected, attempting reconnection..."));
-					// Ensure auto-reconnect is enabled
-					WiFi.setAutoReconnect(true);
-					if(WiFi.status() != WL_CONNECTED) {
-						WiFi.reconnect();
-					}
-				}
+				wifi_reconnect_throttled("state-loop", 20000UL);
 				#endif
 				// ESP8266 handles auto-reconnect internally
 			}
@@ -3558,11 +3574,8 @@ static void check_network() {
 			os.status.network_fails++;
 			DEBUG_PRINTF("[NET_CHECK] WiFi check failed (count=%d)\n", os.status.network_fails);
 			#if defined(ESP32)
-			// Attempt WiFi reconnection after check_network detects failure
-			if(os.get_wifi_mode() == WIFI_MODE_STA && os.status.network_fails >= 2) {
-				DEBUG_PRINTLN(F("[NET_CHECK] Forcing WiFi reconnect"));
-				WiFi.setAutoReconnect(true);
-				WiFi.reconnect();
+			if (os.status.network_fails >= 2) {
+				wifi_reconnect_throttled("net-check", 60000UL);
 			}
 			#endif
 			return;
@@ -3610,7 +3623,6 @@ static void perform_ntp_sync() {
 	if (!os.iopts[IOPT_USE_NTP] || os.status.program_busy) return;
 	// do not perform ntp if network is not connected
 	if (!os.network_connected()) return;
-
 	// Delay first NTP sync after boot to ensure network stack is fully ready
 	// This is especially important for Zigbee builds where lwIP needs time to stabilize
 	//#if defined(ESP32)

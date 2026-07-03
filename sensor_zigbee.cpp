@@ -1485,8 +1485,15 @@ void sensor_zigbee_start() {
     // Ethernet = full mode (report reception + zone control);
     // WiFi only = reduced mode (zone control/sending works, report
     // reception is unreliable due to WiFi/Zigbee radio coexistence).
+    // A Zigbee Gateway (coordinator) is NOT supported over WiFi. The ESP32-C5
+    // shares one 2.4 GHz radio between WiFi and 802.15.4; an always-listening
+    // coordinator starves the WiFi STA and WiFi drops permanently (verified on
+    // hardware: SW coex + modem-sleep + BLE off did not help). Without Ethernet
+    // we leave Zigbee completely disabled so WiFi stays reliable. A Zigbee
+    // CLIENT/end device DOES coexist with WiFi and is still allowed.
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY && !useEth) {
-        DEBUG_PRINTLN(F("[ZIGBEE] Gateway starting in REDUCED mode (WiFi, no Ethernet): zone control only"));
+        DEBUG_PRINTLN(F("[ZIGBEE] Gateway requires Ethernet — Zigbee NOT started over WiFi (coexistence not possible/sensible)"));
+        return;
     }
 
     if (mode == IEEE802154Mode::IEEE_ZIGBEE_GATEWAY) {

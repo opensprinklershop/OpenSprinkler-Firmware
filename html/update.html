@@ -107,7 +107,7 @@
 
     <form method='POST' action='/update' id='fm' enctype='multipart/form-data'>
         <!-- Slot selector for dual-OTA ESP32-C5 devices. Non-C5 firmware ignores this field. -->
-        <div class="form-group" id="slot_group">
+        <div class="form-group" id="slot_group" style="display:none;">
             <label for="slot">Target Partition</label>
             <select name="slot" id="slot" style="width:100%;padding:10px;font-size:16px;border:1px solid var(--border);border-radius:5px;box-sizing:border-box;background:transparent;color:inherit;">
                 <option value="ota0">OTA0 — ZigBee (0x10000)</option>
@@ -126,8 +126,12 @@
             <input type='password' name='pw' id='pw'>
         </div>
 
+        <div class="warning-box" id="slot_warning" style="display:none;">
+            <b>IMPORTANT:</b> Select the correct target slot for your .bin file: OTA0 = ZigBee, OTA1 = Matter. Uploading the wrong variant to the wrong slot will render that slot unbootable.
+        </div>
+
         <div class="warning-box">
-            <b>IMPORTANT:</b> Select the correct target slot for your .bin file: OTA0 = ZigBee, OTA1 = Matter. Uploading the wrong variant to the wrong slot will render that slot unbootable. Firmware updates across major revisions will trigger a factory reset — save your configuration first.
+            <b>IMPORTANT:</b> Firmware updates across major revisions will trigger a factory reset — save your configuration first.
         </div>
 
         <p id='msg'></p>
@@ -331,10 +335,31 @@
     }
 
     function setSlotFromName(name) {
+        const slotGroup = id('slot_group');
+        if (!slotGroup || slotGroup.style.display === 'none') return;
         const lower = (name || '').toLowerCase();
         if (lower.indexOf('matter') !== -1) id('slot').value = 'ota1';
         else if (lower.indexOf('zigbee') !== -1) id('slot').value = 'ota0';
     }
+
+    function setDualOtaUIVisible(visible) {
+        const slotGroup = id('slot_group');
+        const slotWarning = id('slot_warning');
+        if (slotGroup) slotGroup.style.display = visible ? '' : 'none';
+        if (slotWarning) slotWarning.style.display = visible ? '' : 'none';
+    }
+
+    // Detect update capabilities from firmware server.
+    (function detectUpdateCapabilities() {
+        const capUrl = '//' + window.location.hostname + ':8080/upcap';
+        fetch(capUrl).then(function(r){ return r.ok ? r.json() : null; }).then(function(d) {
+            const dualOta = !!(d && Number(d.dualOta) === 1);
+            setDualOtaUIVisible(dualOta);
+        }).catch(function(){
+            // Keep dual-OTA controls hidden when capabilities are unavailable.
+            setDualOtaUIVisible(false);
+        });
+    })();
 
     id('file').addEventListener('change', function() {
         if (this.files && this.files[0]) setSlotFromName(this.files[0].name);
@@ -381,53 +406,108 @@
 
         show_msg('Uploading... Please wait.', 'gray');
 
-        const fd = new FormData();
         const file = files[0];
         // Include target OTA slot. Non-C5 firmware ignores this field.
         const slotSel = id('slot');
-        const slot = slotSel ? slotSel.value : '';
-        if (slotSel) {
-            fd.append('slot', slot);
+        const slotGroup = id('slot_group');
+        const hasDualOtaUI = !!(slotSel && slotGroup && slotGroup.style.display !== 'none');
+        const slot = hasDualOtaUI ? slotSel.value : '';
+        const makeFormData = function() {
+            const fd = new FormData();
+            if (hasDualOtaUI) {
+                fd.append('slot', slot);
+            }
+            fd.append('file', file, file.name);
+            // Hash the password if it's not empty, otherwise send empty string
+            fd.append('pw', password ? md5(password) : '');
+            return fd;
+        };
+
+        const query = slot ? ('?slot=' + encodeURIComponent(slot)) : '';
+        const sameOriginUrl = '/update' + query;
+        const port8080Url = '//' + window.location.hostname + ':8080/update' + query;
+        const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+        const uploadTargets = [];
+
+        // If the page is opened on default web ports, try same-origin first.
+        // This keeps compatibility with deployments that expose OTA on the main port.
+        if (currentPort === '80' || currentPort === '443') {
+            uploadTargets.push(sameOriginUrl);
         }
-        fd.append('file', file, file.name);
-        // Hash the password if it's not empty, otherwise send empty string
-        fd.append('pw', password ? md5(password) : '');
 
-        const xhr = new XMLHttpRequest();
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4 && xhr.status === 200) {
-                try {
-                    const jd = JSON.parse(xhr.responseText);
-                    const result = Number(jd.result);
-                    // Historically some builds return 0 (OK) while others return 1 (SUCCESS).
-                    if (result === 1 || result === 0) {
-                        show_msg('Update successful! The device is rebooting. You may close this page.', 'green');
-                        id('pw').value = ''; // Clear password on success
-                    } else if (result === 2) {
-                        show_msg('Authentication failed. Check device password and try again.', 'red');
-                    } else {
-                        show_msg('Update failed. Error code: ' + (Number.isFinite(result) ? result : String(jd.result)), 'red');
+        if (uploadTargets.indexOf(port8080Url) === -1) {
+            uploadTargets.push(port8080Url);
+        }
+
+        const attemptUpload = function(targetIndex) {
+            const xhr = new XMLHttpRequest();
+            const uploadUrl = uploadTargets[targetIndex];
+
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== 4) return;
+
+                if (xhr.status === 200) {
+                    try {
+                        const jd = JSON.parse(xhr.responseText);
+                        const result = Number(jd.result);
+                        // Historically some builds return 0 (OK) while others return 1 (SUCCESS).
+                        if (result === 1 || result === 0) {
+                            show_msg('Update successful! The device is rebooting. You may close this page.', 'green');
+                            id('pw').value = ''; // Clear password on success
+                        } else if (result === 2) {
+                            show_msg('Authentication failed. Check device password and try again.', 'red');
+                        } else {
+                            show_msg('Update failed. Error code: ' + (Number.isFinite(result) ? result : String(jd.result)), 'red');
+                        }
+                    } catch (e) {
+                        show_msg('Update failed. Received an invalid response from the device.', 'red');
                     }
-                } catch (e) {
-                    show_msg('Update failed. Received an invalid response from the device.', 'red');
+                    return;
                 }
-            } else if (xhr.readyState === 4) {
-                show_msg('Upload failed. Could not connect to the update server.', 'red');
-            }
-        };
-        xhr.upload.onprogress = function (evt) {
-            if (evt.lengthComputable) {
-                const pct = Math.max(5, Math.min(100, Math.round((evt.loaded / evt.total) * 100)));
-                show_msg('Uploading... (' + pct + '%) Please wait.', 'gray');
-            }
+
+                if (targetIndex + 1 < uploadTargets.length) {
+                    show_msg('Primary upload endpoint failed, retrying fallback endpoint...', 'gray');
+                    attemptUpload(targetIndex + 1);
+                } else {
+                    show_msg('Upload failed. Could not connect to the update server.', 'red');
+                }
+            };
+
+            xhr.upload.onprogress = function (evt) {
+                if (evt.lengthComputable) {
+                    const pct = Math.max(5, Math.min(100, Math.round((evt.loaded / evt.total) * 100)));
+                    show_msg('Uploading... (' + pct + '%) Please wait.', 'gray');
+                }
+            };
+
+            xhr.timeout = 300000; // 5 minutes timeout
+            xhr.ontimeout = function(){
+                if (targetIndex + 1 < uploadTargets.length) {
+                    show_msg('Primary endpoint timed out, retrying fallback endpoint...', 'gray');
+                    attemptUpload(targetIndex + 1);
+                } else {
+                    show_msg('Upload timed out. Please check the device connection and try again.', 'red');
+                }
+            };
+            xhr.onerror = function(){
+                if (targetIndex + 1 < uploadTargets.length) {
+                    show_msg('Primary endpoint unreachable, retrying fallback endpoint...', 'gray');
+                    attemptUpload(targetIndex + 1);
+                } else {
+                    show_msg('A network error occurred during the upload.', 'red');
+                }
+            };
+
+            xhr.open('POST', uploadUrl, true);
+            xhr.send(makeFormData());
         };
 
-        const uploadUrl = '//' + window.location.hostname + ':8080/update' + (slot ? '?slot=' + encodeURIComponent(slot) : '');
-        xhr.open('POST', uploadUrl, true);
-        xhr.timeout = 300000; // 5 minutes timeout
-        xhr.ontimeout = function(){ show_msg('Upload timed out. Please check the device connection and try again.', 'red'); };
-        xhr.onerror   = function(){ show_msg('A network error occurred during the upload.', 'red'); };
-        xhr.send(fd);
+        if (!uploadTargets.length) {
+            show_msg('Upload failed. No upload endpoint configured.', 'red');
+            return;
+        }
+
+        attemptUpload(0);
     });
 </script>
 

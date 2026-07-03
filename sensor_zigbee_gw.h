@@ -64,7 +64,8 @@ void sensor_zigbee_gw_start_wifi_off_join(uint16_t duration);
 /**
  * @brief True while a WiFi-off join window is pending or active.
  */
-bool sensor_zigbee_gw_wifi_off_join_active();/**
+bool sensor_zigbee_gw_wifi_off_join_active();
+/**
  * @brief Trigger a forced rejoin for a device and reset Tuya sequence counter
  * @param device_ieee Device IEEE address
  * @return true if rejoin initiated successfully

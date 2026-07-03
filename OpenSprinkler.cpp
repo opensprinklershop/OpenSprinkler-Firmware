@@ -41,6 +41,7 @@
 #include <esp_netif.h>
 #include <esp_partition.h>
 #include <esp_log.h>
+#include <lwip/netdb.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <driver/gpio.h>
@@ -2711,9 +2712,25 @@ static bool resolve_host_with_cache(const char* host, IPAddress& out_ip) {
 		return true;
 	}
 
-	if (!WiFi.hostByName(host, out_ip)) {
+	// NOTE (ESP32-C5 / IDF 5.4): WiFi.hostByName() may call dns_clear_cache()
+	// from a non-TCPIP-core context when interface state changes, which can
+	// trigger the lwIP assert "udp_remove ... Required to lock TCPIP core".
+	// Resolve directly via lwip_getaddrinfo() to avoid that code path.
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_family = AF_INET;
+	struct addrinfo* res = nullptr;
+	int err = lwip_getaddrinfo(host, "0", &hints, &res);
+	if (err != ERR_OK || !res || res->ai_family != AF_INET) {
+		if (res) {
+			lwip_freeaddrinfo(res);
+		}
 		return false;
 	}
+	struct sockaddr_in* ipv4 = (struct sockaddr_in*)res->ai_addr;
+	out_ip = IPAddress(ipv4->sin_addr.s_addr);
+	lwip_freeaddrinfo(res);
 
 	strncpy(s_http_dns_cache.host, host, sizeof(s_http_dns_cache.host) - 1);
 	s_http_dns_cache.host[sizeof(s_http_dns_cache.host) - 1] = 0;
