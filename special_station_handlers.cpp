@@ -117,6 +117,20 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  	strncpy(dev.tuya_status_on, status_on, sizeof(dev.tuya_status_on) - 1);
  	dev.tuya_status_on[sizeof(dev.tuya_status_on) - 1] = '\0';
 
+	const char* status_off = "";
+	if (obj.containsKey("tuya_status_off") && obj["tuya_status_off"].is<const char*>()) {
+		status_off = obj["tuya_status_off"].as<const char*>();
+	} else if (obj.containsKey("status_off") && obj["status_off"].is<const char*>()) {
+		status_off = obj["status_off"].as<const char*>();
+	} else if (obj.containsKey("tuya_status_of") && obj["tuya_status_of"].is<const char*>()) {
+		// Backward compatibility for historical typo in some external records.
+		status_off = obj["tuya_status_of"].as<const char*>();
+	} else if (obj.containsKey("status_of") && obj["status_of"].is<const char*>()) {
+		status_off = obj["status_of"].as<const char*>();
+	}
+	strncpy(dev.tuya_status_off, status_off, sizeof(dev.tuya_status_off) - 1);
+	dev.tuya_status_off[sizeof(dev.tuya_status_off) - 1] = '\0';
+
  	dev.factor = obj.containsKey("factor") ? obj["factor"].as<int16_t>() : 0;
  	dev.divider = obj.containsKey("divider") ? obj["divider"].as<int16_t>() : 0;
  	dev.offset = obj.containsKey("offset") ? obj["offset"].as<int16_t>() : 0;
@@ -144,6 +158,7 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  	if (dev.tuya_dp_status >= 0) obj["tuya_dp_status"] = dev.tuya_dp_status;
  	if (dev.tuya_dp_consumption >= 0) obj["tuya_dp_consumption"] = dev.tuya_dp_consumption;
  	if (dev.tuya_status_on[0] != '\0') obj["tuya_status_on"] = dev.tuya_status_on;
+	if (dev.tuya_status_off[0] != '\0') obj["tuya_status_off"] = dev.tuya_status_off;
  	obj["factor"] = dev.factor;
  	obj["divider"] = dev.divider;
  	obj["offset"] = dev.offset;

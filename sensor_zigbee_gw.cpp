@@ -1777,6 +1777,19 @@ static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
 }
 
 static bool gw_is_tuya_status_on(uint64_t ieee, uint8_t dp_number, int32_t value, uint8_t dp_type) {
+    auto value_in_csv = [](const char* csv, int32_t needle) -> bool {
+        if (!csv || !csv[0]) return false;
+        char buf[32];
+        strncpy(buf, csv, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char* token = strtok(buf, ",");
+        while (token != NULL) {
+            if (atoi(token) == needle) return true;
+            token = strtok(NULL, ",");
+        }
+        return false;
+    };
+
     char ieee_str[17];
     snprintf(ieee_str, sizeof(ieee_str), "%016llX", (unsigned long long)ieee);
     
@@ -1784,19 +1797,9 @@ static bool gw_is_tuya_status_on(uint64_t ieee, uint8_t dp_number, int32_t value
         for (const auto& entry : *OpenSprinkler::zigbee_logical_devices_map) {
             const ZigBeeLogicalDevice& dev = entry.second.device;
             if (strncmp(dev.ieee, ieee_str, 16) == 0 && dev.tuya_dp_status == dp_number) {
-                if (dev.tuya_status_on[0] != '\0') {
-                    char buf[32];
-                    strncpy(buf, dev.tuya_status_on, sizeof(buf) - 1);
-                    buf[sizeof(buf) - 1] = '\0';
-                    char* token = strtok(buf, ",");
-                    while (token != NULL) {
-                        if (atoi(token) == value) {
-                            return true;
-                        }
-                        token = strtok(NULL, ",");
-                    }
-                    return false;
-                }
+                if (value_in_csv(dev.tuya_status_on, value)) return true;
+                if (value_in_csv(dev.tuya_status_off, value)) return false;
+                if (dev.tuya_status_on[0] != '\0' || dev.tuya_status_off[0] != '\0') return false;
             }
         }
     }
@@ -4349,6 +4352,10 @@ static void sensor_zigbee_gw_do_lookups() {
                     strncpy(logdev.tuya_status_on, status_on_str, sizeof(logdev.tuya_status_on) - 1);
                     logdev.tuya_status_on[sizeof(logdev.tuya_status_on) - 1] = '\0';
 
+                    const char* status_off_str = s["tuya_status_off"] | s["status_off"] | s["tuya_status_of"] | s["status_of"] | "";
+                    strncpy(logdev.tuya_status_off, status_off_str, sizeof(logdev.tuya_status_off) - 1);
+                    logdev.tuya_status_off[sizeof(logdev.tuya_status_off) - 1] = '\0';
+
                     // Factor / Divider / Offset
                     logdev.factor = s["factor"] | 1;
                     logdev.divider = s["divider"] | 1;
@@ -4994,6 +5001,10 @@ static bool gw_send_tuya_dp_enum_write_cmd(uint64_t device_ieee, uint8_t endpoin
 
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) {
     return gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, dp_id, turnon, TUYA_CMD_DATA_REQUEST, false);
+}
+
+bool sensor_zigbee_send_tuya_dp_value_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, uint32_t value) {
+    return gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, dp_id, value, TUYA_CMD_DATA_REQUEST, false);
 }
 
 bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur, uint8_t dp_id) {

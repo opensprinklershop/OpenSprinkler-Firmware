@@ -49,6 +49,9 @@ void psram_restore_after_wifi_init();
 // Memory optimization logging (Matter & BLE)
 void log_matter_ble_memory_optimization();
 
+// Targeted heap snapshot for boot-time memory accounting.
+void log_heap_snapshot(const char *tag);
+
 // FreeRTOS task stack in PSRAM.
 // Tasks created with PSRAM_TASK_CREATE() must release their SPIRAM-allocated
 // stack by calling PSRAM_TASK_SELF_DELETE() on every exit path instead of
@@ -70,6 +73,7 @@ inline void init_mbedtls_psram_allocator() {}
 inline void psram_protect_wifi_init() {}
 inline void psram_restore_after_wifi_init() {}
 inline void log_matter_ble_memory_optimization() {}
+inline void log_heap_snapshot(const char *tag) { (void)tag; }
 
 #define PSRAM_TASK_CREATE(fn, name, sz, prm, pri, hdl) xTaskCreate(fn, name, sz, prm, pri, hdl)
 #define PSRAM_TASK_SELF_DELETE() vTaskDelete(NULL)

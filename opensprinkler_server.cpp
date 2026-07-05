@@ -1588,7 +1588,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #endif
 
 #if defined(USE_OTF)
-	char otc_buf[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char otc_buf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_OTC_OPTS, otc_buf, MAX_SOPTS_SIZE);
 	normalize_json_object_fragment(otc_buf, sizeof(otc_buf));
 	bfill.emit_p(PSTR("\"otc\":{$S},\"otcs\":$D,"), otc_buf, otf->getCloudStatus());
@@ -1604,8 +1604,8 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
 	{
-		char wto_buf[MAX_SOPTS_SIZE + 1];
-		char mqtt_buf[MAX_SOPTS_SIZE + 1];
+		static PSRAM_BSS_ATTR char wto_buf[MAX_SOPTS_SIZE + 1];
+		static PSRAM_BSS_ATTR char mqtt_buf[MAX_SOPTS_SIZE + 1];
 		os.sopt_load(SOPT_WEATHER_OPTS, wto_buf, MAX_SOPTS_SIZE);
 		os.sopt_load(SOPT_MQTT_OPTS, mqtt_buf, MAX_SOPTS_SIZE);
 		normalize_json_object_fragment(wto_buf, sizeof(wto_buf));
@@ -1626,7 +1626,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 #if defined(SUPPORT_EMAIL)
 	{
-		char email_buf[MAX_SOPTS_SIZE + 1];
+		static PSRAM_BSS_ATTR char email_buf[MAX_SOPTS_SIZE + 1];
 		os.sopt_load(SOPT_EMAIL_OPTS, email_buf, MAX_SOPTS_SIZE);
 		bfill.emit_p(PSTR("\"email\":"));
 		emit_json_object_value_or_empty(email_buf, sizeof(email_buf));
@@ -2906,11 +2906,8 @@ void server_matter_write_kvs(OTF_PARAMS_DEF) {
 	size_t part_size = part->size;
 	uint8_t *download_buf = (uint8_t *)heap_caps_malloc(part_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!download_buf) {
-		download_buf = (uint8_t *)malloc(part_size);
-	}
-	if (!download_buf) {
 		http.end();
-		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"out of memory\"}"));
+		bfill.emit_p(PSTR("{\"result\":0,\"error\":\"out of memory (need SPIRAM)\"}"));
 		handle_return(HTML_OK);
 		return;
 	}
@@ -3616,7 +3613,7 @@ void server_backup_get(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR(",\"sopts\":{"));
 	bool first = true;
 	for (int i = 0; i < NUM_SOPTS; i++) {
-		char buf[MAX_SOPTS_SIZE + 1];
+		static PSRAM_BSS_ATTR char buf[MAX_SOPTS_SIZE + 1];
 		file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
 		buf[MAX_SOPTS_SIZE] = 0;
 		if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {  // Always include WiFi-related options
@@ -3665,7 +3662,7 @@ void server_backup_get(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR(",\"sopts\":{"));
 	bool first = true;
 	for (int i = 0; i < NUM_SOPTS; i++) {
-		char buf[MAX_SOPTS_SIZE + 1];
+		static PSRAM_BSS_ATTR char buf[MAX_SOPTS_SIZE + 1];
 		file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
 		buf[MAX_SOPTS_SIZE] = 0;
 		if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {
@@ -6312,7 +6309,7 @@ static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 			bfill.emit_p(PSTR("{\"nr\":$D,\"name\":\"$S\",\"desc\":\"$S\",\"kind\":\"$S\",\"endpoint\":$D,"
 			                  "\"cluster_id\":$D,\"attribute_id\":$D,\"unit\":$D,"
 			                  "\"value_dp\":$D,\"battery_dp\":$D,\"unit_dp\":$D,\"status_dp\":$D,\"consumption_dp\":$D,"
-			                  "\"status_on\":\"$S\",\"control_mode\":$D,\"factor\":$D,\"divider\":$D,\"offset\":$D}"),
+			                  "\"status_on\":\"$S\",\"status_off\":\"$S\",\"control_mode\":$D,\"factor\":$D,\"divider\":$D,\"offset\":$D}"),
 			             nr++,
 			             dev.name,
 			             dev.desc,
@@ -6327,6 +6324,7 @@ static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 			             (int)dev.tuya_dp_status,
 			             (int)dev.tuya_dp_consumption,
 			             dev.tuya_status_on,
+			             dev.tuya_status_off,
 			             dev.is_tuya ? 1 : 0,
 			             (int)dev.factor,
 			             (int)dev.divider,
@@ -6415,6 +6413,105 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		bool queued = sensor_zigbee_gw_query_device_data(addr, endpoint);
 		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"query_device_data\",\"ieee\":\"$S\",\"endpoint\":$D,\"queued\":$D}"),
 		             queued ? 1 : 0, ieee_str, endpoint, queued ? 1 : 0);
+
+	} else if (strcmp(action, "send_logical") == 0) {
+		char ieee_str[24] = "";
+		char logical_name[32] = "";
+		char value_str[24] = "";
+
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		if (!findKeyVal(FKV_SOURCE, logical_name, sizeof(logical_name), PSTR("logical"), true) || !logical_name[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing logical parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		if (!findKeyVal(FKV_SOURCE, value_str, sizeof(value_str), PSTR("value"), true)) {
+			strcpy(value_str, "0");
+		}
+
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+
+		const char* ieee_key = ieee_str;
+		if (ieee_key[0] == '0' && (ieee_key[1] == 'x' || ieee_key[1] == 'X')) {
+			ieee_key += 2;
+		}
+
+		ZigBeeLogicalDevice* logdev = OpenSprinkler::zigbee_logical_lookup(ieee_key, logical_name);
+		if (!logdev) {
+			bfill.emit_p(PSTR("{\"result\":0,\"action\":\"send_logical\",\"error\":\"logical device not found\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+
+		int32_t value = atoi(value_str);
+		bool turn_on = (value != 0);
+		uint8_t endpoint = logdev->endpoint ? logdev->endpoint : 1;
+		bool sent = false;
+		const char* mode = "standard";
+		int32_t tx_value = value;
+
+		auto parse_first_status_value = [](const char* status_list, int32_t fallback) -> int32_t {
+			if (!status_list || !status_list[0]) return fallback;
+			char buf[32];
+			size_t i = 0;
+			while (status_list[i] && status_list[i] != ',' && status_list[i] != ';' && i < sizeof(buf) - 1) {
+				buf[i] = status_list[i];
+				i++;
+			}
+			buf[i] = '\0';
+			char* endptr = nullptr;
+			long parsed = strtol(buf, &endptr, 10);
+			if (endptr == buf) return fallback;
+			return (int32_t)parsed;
+		};
+
+		if (logdev->is_tuya) {
+			int dp_val = logdev->tuya_dp_value;
+			int dp_status = logdev->tuya_dp_status;
+
+			if (value == 1 && logdev->tuya_status_on[0]) {
+				tx_value = parse_first_status_value(logdev->tuya_status_on, value);
+			} else if (value == 0 && logdev->tuya_status_off[0]) {
+				tx_value = parse_first_status_value(logdev->tuya_status_off, value);
+			}
+
+			if (dp_val >= 0 && dp_val <= 255) {
+				sent = sensor_zigbee_send_tuya_dp_value_write(addr, endpoint, (uint8_t)dp_val, (uint32_t)tx_value);
+				mode = "tuya_value";
+			} else if (dp_status >= 0 && dp_status <= 255) {
+				sent = sensor_zigbee_send_tuya_dp_write(addr, endpoint, (uint8_t)dp_status, turn_on);
+				mode = "tuya_status";
+			} else {
+				bfill.emit_p(PSTR("{\"result\":0,\"action\":\"send_logical\",\"error\":\"invalid tuya dp\"}"));
+				send_packet(OTF_PARAMS);
+				handle_return(HTML_OK);
+				return;
+			}
+		} else {
+			sent = sensor_zigbee_send_on_off(addr, endpoint, turn_on);
+		}
+
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"send_logical\",\"ieee\":\"$S\",\"logical\":\"$S\",\"value\":$D,\"tx_value\":$D,\"endpoint\":$D,\"mode\":\"$S\"}"),
+		             sent ? 1 : 0,
+		             ieee_str,
+		             logical_name,
+		             (int)value,
+		             (int)tx_value,
+		             (int)endpoint,
+		             mode);
 
 	} else if (strcmp(action, "remove") == 0) {
 		// Remove a device by IEEE address
@@ -6595,6 +6692,11 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 
 			snprintf(key, sizeof(key), "ld%d_status_on", i);
 			findKeyVal(FKV_SOURCE, dev.tuya_status_on, sizeof(dev.tuya_status_on), key, true);
+			snprintf(key, sizeof(key), "ld%d_status_off", i);
+			if (!findKeyVal(FKV_SOURCE, dev.tuya_status_off, sizeof(dev.tuya_status_off), key, true)) {
+				snprintf(key, sizeof(key), "ld%d_status_of", i);
+				findKeyVal(FKV_SOURCE, dev.tuya_status_off, sizeof(dev.tuya_status_off), key, true);
+			}
 
 			snprintf(key, sizeof(key), "ld%d_factor", i);
 			findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, key);

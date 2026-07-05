@@ -476,9 +476,9 @@ void OSMqtt::begin(void) {
 	_sub_topic[0] = 0;
 
 	// JSON configuration settings in the form of {"en":0|1,"host":"server_name|IP address","port":1883,"user:"","pass":"","pubt":"","subt":""}
-	char saved_config[MAX_SOPTS_SIZE + 1];
-	char config[MAX_SOPTS_SIZE + 1];
-	char json[MAX_SOPTS_SIZE + 3];
+	static PSRAM_BSS_ATTR char saved_config[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char config[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char json[MAX_SOPTS_SIZE + 3];
 	os.sopt_load(SOPT_MQTT_OPTS, saved_config);
 	strcpy(config, saved_config);
 	if (!normalize_json_object_fragment(config, sizeof(config))) {

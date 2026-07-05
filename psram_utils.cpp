@@ -30,6 +30,7 @@
 #include <esp_heap_caps.h>
 #include <esp_heap_caps_init.h>
 #include <esp_idf_version.h>
+#include <esp_err.h>
 #include <mbedtls/platform.h>
 
 // heap_caps_malloc_extmem_enable() lowers the ALWAYSINTERNAL threshold at runtime
@@ -66,6 +67,7 @@ static const char* psram_dma_spiram_fallback_status() { return "disabled"; }
 // Allocation failed callback: log when internal RAM allocation fails
 // Rate-limited to avoid flooding the serial log when a component (e.g. ZBOSS
 // Zigbee stack) repeatedly requests DMA+INTERNAL buffers in its runtime loop.
+static bool _wifi_psram_protected = false;
 static uint32_t _alloc_fail_count = 0;
 static uint32_t _alloc_fail_last_log_ms = 0;
 static const uint32_t ALLOC_FAIL_LOG_INTERVAL_MS = 10000; // summarize every 10s
@@ -112,15 +114,21 @@ void init_psram_buffers() {
     DEBUG_PRINTLN(F("[PSRAM] Lowered ALWAYSINTERNAL threshold: 4096 → 16 bytes"));
   }
 
-  // Register allocation failed callback for PSRAM fallback
+  // Register alloc-failed callback only in debug builds.
+  // It is useful for diagnostics, but not required in production and can add
+  // a small amount of internal bookkeeping overhead.
+#if defined(ENABLE_DEBUG)
   if (psramFound()) {
     esp_err_t err = heap_caps_register_failed_alloc_callback(psram_alloc_failed_callback);
     if (err == ESP_OK) {
       DEBUG_PRINTLN(F("[PSRAM] Registered alloc_failed_callback for PSRAM fallback"));
+    } else if (err == ESP_ERR_INVALID_STATE) {
+      DEBUG_PRINTLN(F("[PSRAM] alloc_failed_callback not installed: global hook already registered (esp_diagnostics)"));
     } else {
       DEBUG_PRINTF("[PSRAM] WARNING: Failed to register callback (err=%d)\n", err);
     }
   }
+#endif
   
   // Debug: Check PSRAM initialization
   DEBUG_PRINTLN(F("\n====== PSRAM INITIALIZATION DEBUG ======"));
@@ -217,6 +225,27 @@ void print_psram_stats() {
   }
 }
 
+void log_heap_snapshot(const char *tag) {
+  if (!tag) tag = "(null)";
+  uint32_t free_heap = ESP.getFreeHeap();
+  uint32_t min_heap = ESP.getMinFreeHeap();
+  uint32_t heap_size = ESP.getHeapSize();
+  uint32_t free_psram = 0;
+  uint32_t total_psram = 0;
+  if (psramFound()) {
+    free_psram = ESP.getFreePsram();
+    total_psram = ESP.getPsramSize();
+    DEBUG_PRINTF("[MEM] %s | heap=%u/%u KB min=%u KB | psram=%u/%u KB\n",
+                 tag,
+                 free_heap / 1024, heap_size / 1024, min_heap / 1024,
+                 free_psram / 1024, total_psram / 1024);
+  } else {
+    DEBUG_PRINTF("[MEM] %s | heap=%u/%u KB min=%u KB | psram=none\n",
+                 tag,
+                 free_heap / 1024, heap_size / 1024, min_heap / 1024);
+  }
+}
+
 // Forward declaration for mbedTLS SPIRAM allocator (defined in mbedtls_spiram_alloc.c)
 extern "C" void mbedtls_platform_set_spiram_allocators(void);
 
@@ -232,8 +261,6 @@ void init_mbedtls_psram_allocator() {
 // WiFi PSRAM protection: temporarily force all malloc to internal RAM
 // ESP32-C5 Rev 1.0 has a broken PSRAM memory barrier → cache incoherency
 // WiFi driver buffers MUST be in internal SRAM during init/scan/connect
-
-static bool _wifi_psram_protected = false;
 
 void psram_protect_wifi_init() {
   if (!psramFound()) return;

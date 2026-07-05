@@ -1,3 +1,5 @@
+#if defined(ESP8266)
+
 /*
  * LTO Symbol Force Module for ESP8266
  *
@@ -80,3 +82,5 @@ void _lto_force_symbols(void)
 
     (void)sink;
 }
+
+#endif // ESP8266

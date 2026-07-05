@@ -603,7 +603,7 @@ static bool ota_save_start_manifest(const OnlineUpdateManifest& m) {
 		DEBUG_PRINTLN(F("[OTA] Failed to write start manifest file"));
 		return false;
 	}
-	char pwBuf[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char pwBuf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_PASSWORD, pwBuf);
 	f.printf("{\"fw_version\":%u,\"fw_minor\":%u,"
 	         "\"zigbee_url\":\"%s\",\"matter_url\":\"%s\","
@@ -629,7 +629,7 @@ static bool ota_save_continuation(const char* url, const char* sha256_hex, const
 		return false;
 	}
 	// Save password hash: factory_reset() on phase 2 boot will reset it to default
-	char pwBuf[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char pwBuf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_PASSWORD, pwBuf);
 	f.printf("{\"url\":\"%s\",\"sha256\":\"%s\",\"label\":\"%s\",\"variant\":\"%s\",\"pw\":\"%s\"}",
 	         url, sha256_hex ? sha256_hex : "", label, variant, pwBuf);

@@ -428,6 +428,7 @@ public:
 
 bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon);
 bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon);
+bool sensor_zigbee_send_tuya_dp_value_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, uint32_t value);
 bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon);
 bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur = 0, uint8_t dp_id = 0);
 bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config, uint8_t target_endpoint = 0, uint8_t target_dp = 0);
@@ -436,6 +437,7 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
 
 inline bool sensor_zigbee_send_on_off(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
 inline bool sensor_zigbee_send_tuya_dp_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, bool turnon) { return false; }
+inline bool sensor_zigbee_send_tuya_dp_value_write(uint64_t device_ieee, uint8_t endpoint, uint8_t dp_id, uint32_t value) { return false; }
 inline bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t endpoint, bool turnon) { return false; }
 inline bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, uint8_t endpoint, bool turnon, uint16_t dur, uint8_t dp_id = 0) { return false; }
 inline bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStationControlConfig* config, uint8_t target_endpoint = 0, uint8_t target_dp = 0) {

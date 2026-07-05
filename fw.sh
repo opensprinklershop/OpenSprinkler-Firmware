@@ -610,14 +610,14 @@ ensure_c5_framework_libs() {
     # nothing to patch. The next build will install it from the source package.
     [[ -d "$pkg_dir" ]] || return 0
 
-    if [[ ! -f "${pkg_dir}/lib/libespressif__esp_daylight.a" ]]; then
-        if [[ -f "${src_dir}/lib/libespressif__esp_daylight.a" ]]; then
-            cp -f "${src_dir}/lib/libespressif__esp_daylight.a" "${pkg_dir}/lib/"
-        else
-            error "Missing ESP daylight library: ${pkg_dir}/lib/libespressif__esp_daylight.a"
-            error "Rebuild/install the local framework-libs package first."
-            exit 1
-        fi
+    local has_daylight=0
+    if [[ -f "${pkg_dir}/lib/libespressif__esp_daylight.a" ]]; then
+        has_daylight=1
+    elif [[ -f "${src_dir}/lib/libespressif__esp_daylight.a" ]]; then
+        cp -f "${src_dir}/lib/libespressif__esp_daylight.a" "${pkg_dir}/lib/"
+        has_daylight=1
+    else
+        warn "ESP daylight library not present in local framework-libs package (optional in current toolchain)."
     fi
 
     for lib in "${zigbee_libs[@]}"; do
@@ -639,22 +639,28 @@ ensure_c5_framework_libs() {
               "${pkg_dir}/include/esp_matter/esp_matter_endpoint.h"
     fi
 
-    if [[ -f "${src_dir}/bin/bootloader_qio_80m.elf" ]]; then
+    local src_bootloader="${src_dir}/bin/bootloader_qio_80m.elf"
+    local src_root_bootloader="/data/Workspace/framework-arduinoespressif32-libs/bin/bootloader_qio_80m.elf"
+    if [[ ! -f "$src_bootloader" && -f "$src_root_bootloader" ]]; then
+        mkdir -p "${src_dir}/bin"
+        cp -f "$src_root_bootloader" "$src_bootloader"
+        info "Restored missing ESP32-C5 bootloader_qio_80m.elf from framework root bin/"
+    fi
+    if [[ -f "$src_bootloader" ]]; then
         mkdir -p "${pkg_dir}/bin"
-        cp -f "${src_dir}/bin/bootloader_qio_80m.elf" \
-              "${pkg_dir}/bin/bootloader_qio_80m.elf"
+        cp -f "$src_bootloader" "${pkg_dir}/bin/bootloader_qio_80m.elf"
     fi
 
     if [[ -f "$build_py" ]]; then
-        perl -0pi -e '
-            s/"-lopenthread",\s*//g;
-            s/"-lespressif__esp_schedule", "-lespressif__network_provisioning"/"-lespressif__esp_schedule", "-lespressif__esp_daylight", "-lespressif__network_provisioning"/g;
-            s/"-lespressif__esp_schedule", "-lespressif__rmaker_common"/"-lespressif__esp_schedule", "-lespressif__esp_daylight", "-lespressif__rmaker_common"/g;
-        ' "$build_py"
+        perl -0pi -e 's/"-lopenthread",\s*//g;' "$build_py"
 
-        if ! grep -q '"-lespressif__esp_daylight"' "$build_py"; then
-            error "Framework link list still misses -lespressif__esp_daylight: ${build_py}"
-            exit 1
+        if [[ "$has_daylight" -eq 1 ]]; then
+            perl -0pi -e '
+                s/"-lespressif__esp_schedule", "-lespressif__network_provisioning"/"-lespressif__esp_schedule", "-lespressif__esp_daylight", "-lespressif__network_provisioning"/g;
+                s/"-lespressif__esp_schedule", "-lespressif__rmaker_common"/"-lespressif__esp_schedule", "-lespressif__esp_daylight", "-lespressif__rmaker_common"/g;
+            ' "$build_py"
+        else
+            perl -0pi -e 's/,\s*"-lespressif__esp_daylight"//g; s/"-lespressif__esp_daylight",\s*//g;' "$build_py"
         fi
     fi
 }
@@ -818,6 +824,34 @@ upload_env() {
     _find_usb_port "$(_env_to_chip "$env")"
     header "Uploading firmware: ${env} → ${USB_PORT}"
 
+    # Resolve image size from ESP image header (not compressed transfer size).
+    _get_esp32c5_image_size_bytes() {
+        local bin="$1"
+        local image_size=""
+        image_size=$("${ESPTOOL_CMD[@]}" --chip esp32c5 image-info "$bin" 2>/dev/null \
+            | awk '/Image size:/ {print $3; exit}')
+        [[ "$image_size" =~ ^[0-9]+$ ]] && echo "$image_size"
+    }
+
+    # Read OTA slot size from the active C5 partition CSV.
+    _get_esp32c5_slot_size_bytes() {
+        local part_csv="${SCRIPT_DIR}/os4_c5_dual_otf_8mb.csv"
+        local slot_name="$1"
+        local size_hex=""
+        if [[ -f "$part_csv" ]]; then
+            size_hex=$(awk -F',' -v slot="$slot_name" '
+                function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+                { name=trim($1); size=trim($5); if (name==slot) { print size; exit } }
+            ' "$part_csv")
+        fi
+        if [[ "$size_hex" =~ ^0x[0-9A-Fa-f]+$ ]]; then
+            echo $((size_hex))
+            return 0
+        fi
+        # Fallback to current dual-OTA layout default (0x390000).
+        echo $((0x390000))
+    }
+
     # ESP32-C5 uploads must not depend on PlatformIO's bundled esptool package,
     # because ESP8266 builds can downgrade that package to a version without
     # ESP32-C5 support inside the shared packages_dir.
@@ -838,6 +872,26 @@ upload_env() {
                 error "Run build first: ./fw.sh build $(_env_to_variant "$env")"
                 exit 1
             fi
+        fi
+
+        # Guard against flashing oversized images that bootloader will reject.
+        local image_size_bytes=""
+        local slot_name=""
+        local slot_size_bytes=""
+        image_size_bytes=$(_get_esp32c5_image_size_bytes "$firmware_bin")
+        if [[ "$env" == *"-zigbee" ]]; then
+            slot_name="zigbee"
+        else
+            slot_name="matter"
+        fi
+        slot_size_bytes=$(_get_esp32c5_slot_size_bytes "$slot_name")
+        if [[ -n "$image_size_bytes" && -n "$slot_size_bytes" && "$image_size_bytes" -gt "$slot_size_bytes" ]]; then
+            error "Image too large for ${slot_name} OTA slot: ${image_size_bytes} bytes > ${slot_size_bytes} bytes"
+            error "Flashing aborted to prevent boot loop (no bootable OTA partition)."
+            if [[ "${DEBUG_MODE:-0}" -eq 1 ]]; then
+                info "Hint: run without debug flags: ./fw.sh deploy $(_env_to_variant "$env")"
+            fi
+            exit 1
         fi
 
         if [[ "$env" == *"-zigbee" ]]; then

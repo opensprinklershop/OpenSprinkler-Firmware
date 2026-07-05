@@ -198,9 +198,9 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	const char *email_recipient = NULL;
 	int  email_port = DEFAULT_EMAIL_PORT;
 	int  email_en = 0;
-	char saved_email_config[MAX_SOPTS_SIZE + 1];
-	char email_config[MAX_SOPTS_SIZE + 1];
-	char email_json[MAX_SOPTS_SIZE + 3];
+	static PSRAM_BSS_ATTR char saved_email_config[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char email_config[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char email_json[MAX_SOPTS_SIZE + 3];
 
 	os.sopt_load(SOPT_EMAIL_OPTS, saved_email_config);
 	strcpy(email_config, saved_email_config);

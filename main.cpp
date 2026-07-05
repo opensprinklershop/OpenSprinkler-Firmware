@@ -51,6 +51,9 @@
 #include "online_update.h"
 #if defined(ESP32)
 #include "custom_cert.h"
+extern "C" void mbedtls_spiram_allow_internal_reroute(bool enable);
+#else
+	static inline void mbedtls_spiram_allow_internal_reroute(bool) {}
 #endif
 
 #if defined(ARDUINO)
@@ -659,6 +662,7 @@ void do_setup() {
 	
 	// Initialize PSRAM-based buffers early
 	init_psram_buffers();
+	log_heap_snapshot("after init_psram_buffers");
 	
 	// Initialize mbedTLS to use PSRAM for SSL/TLS buffers
 	// CRITICAL: Must be called before any HTTPS connections!
@@ -708,13 +712,16 @@ void do_setup() {
 
 #if defined(ESP32)
 	init_external_flash(); // initialize external flash
+	log_heap_snapshot("after init_external_flash");
 #endif
 
 	// os.mqtt.init(); MOVED TO LAZY INIT
 	// os.status.req_mqtt_restart = true;
 
 	os.begin();          // OpenSprinkler init
+	log_heap_snapshot("after os.begin");
 	os.options_setup();  // Setup options
+	log_heap_snapshot("after options_setup");
 	os.mwdata_load();    // Load monthly water usage data
 
 	#if defined(ESP8266)
@@ -755,6 +762,7 @@ void do_setup() {
 	} else {
 		os.status.network_fails = 1;
 	}
+	log_heap_snapshot("after start_network");
 
 	os.status.req_network = 0;
 	os.status.req_ntpsync = 1;
@@ -774,6 +782,7 @@ void do_setup() {
 
 	// Initialize legacy sensor API (for prog_adjust, monitors, MQTT subscriptions)
 	sensor_api_init(true);
+	log_heap_snapshot("after sensor_api_init");
 
 	#if defined(ESP32)
 	// Resume two-phase OTA if a continuation file exists from phase 1
@@ -1169,6 +1178,7 @@ void do_loop()
 			if (online_update_in_progress()) {
 				DEBUG_PRINTLN(F("[OTA] OTA-only boot (Ethernet) — skipping Matter/RainMaker/BLE/Zigbee"));
 				start_server_client();
+				mbedtls_spiram_allow_internal_reroute(true);
 				os.state = OS_STATE_CONNECTED;
 				connecting_timeout = 0;
 				break;
@@ -1181,6 +1191,7 @@ void do_loop()
 				DEBUG_PRINTLN(F("[PROV] Ethernet + BLE claiming — deferring sensor init"));
 				OSRainMaker::instance().init();  // starts BLE provisioning
 				start_server_client();  // web UI accessible on Ethernet
+				mbedtls_spiram_allow_internal_reroute(true);
 				os.state = OS_STATE_CONNECTED;
 				connecting_timeout = 0;
 				os.lcd.setCursor(0, -1);
@@ -1210,6 +1221,7 @@ void do_loop()
 			}
 			#endif
 			start_server_client();
+			mbedtls_spiram_allow_internal_reroute(true);
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else if(os.get_wifi_mode()==WIFI_MODE_AP) {
@@ -1233,6 +1245,7 @@ void do_loop()
 			// Captive Portal: Redirect ALL DNS requests to AP IP (192.168.4.1)
 			// This handles msftconnecttest.com, connectivitycheck.gstatic.com, etc.
 			dns->start(53, "*", WiFi.softAPIP());
+			mbedtls_spiram_allow_internal_reroute(true);
 			os.state = OS_STATE_CONNECTED;
 			connecting_timeout = 0;
 		} else {
@@ -1632,7 +1645,7 @@ void do_loop()
 			// High-flow check: start evaluating after 3 minutes, then poll once per second.
 			if (flow_alert_check_sid >= 0 && flow_alert_check_sid < MAX_NUM_STATIONS) {
 				if (os.is_running((unsigned char)flow_alert_check_sid)) {
-					if (!station_flag_get(flow_alert_sent, (unsigned char)flow_alert_check_sid) && flow_alert_check_time && now_ms >= flow_alert_check_time) {
+					if (!flow_alert_sent[flow_alert_check_sid] && flow_alert_check_time && now_ms >= flow_alert_check_time) {
 						float flow_pulse_per_min = (flow_rt_period > 0) ? ((float)60000.0f / (float)flow_rt_period) : 0.0f;
 						if (flow_alert_exceeded((unsigned char)flow_alert_check_sid, flow_pulse_per_min)) {
 							flow_last_gpm = flow_pulse_per_min;
@@ -1645,7 +1658,7 @@ void do_loop()
 								}
 							}
 							notif.add(NOTIFY_FLOW_ALERT, flow_alert_check_sid, duration);
-							station_flag_set(flow_alert_sent, (unsigned char)flow_alert_check_sid);
+							flow_alert_sent[flow_alert_check_sid] = true;
 							flow_alert_check_time = 0;
 						} else {
 							flow_alert_check_time = now_ms + 1000;
@@ -2147,7 +2160,7 @@ void check_weather() {
  */
 void turn_on_station(unsigned char sid, ulong duration) {
 	if (sid < MAX_NUM_STATIONS) {
-		station_flag_clear(station_log_written_on_handoff, sid);
+		station_log_written_on_handoff[sid] = false;
 	}
 
 	// RAH implementation of flow sensor
@@ -2174,10 +2187,10 @@ void turn_on_station(unsigned char sid, ulong duration) {
 					pd.lastrun.endtime = curr_time;
 					write_log(LOGDATA_STATION, curr_time); // LOG_TODO
 					if (flow_sid >= 0 && flow_sid < MAX_NUM_STATIONS) {
-						station_flag_set(station_log_written_on_handoff, (unsigned char)flow_sid);
+						station_log_written_on_handoff[flow_sid] = true;
 					}
 					notif.add(NOTIFY_STATION_OFF, flow_sid, pd.lastrun.duration);
-					if (flow_sid >= 0 && flow_sid < MAX_NUM_STATIONS && !station_flag_get(flow_alert_sent, (unsigned char)flow_sid)) {
+					if (flow_sid >= 0 && flow_sid < MAX_NUM_STATIONS && !flow_alert_sent[flow_sid]) {
 						notif.add(NOTIFY_FLOW_ALERT, flow_sid, pd.lastrun.duration);
 					}
 				}
@@ -2189,7 +2202,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 	flow_gallons=0;
 	flow_sid = sid;
 	if (sid < MAX_NUM_STATIONS) {
-		station_flag_clear(flow_alert_sent, sid);
+		flow_alert_sent[sid] = false;
 	}
 
 	if (os.set_station_bit(sid, 1, duration)) {
@@ -2414,9 +2427,9 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	// check if the current time is past the scheduled start time,
 	// because we may be turning off a station that hasn't started yet
 	if (curr_time >= q->st) {
-		bool skip_log = (sid < MAX_NUM_STATIONS) ? station_flag_get(station_log_written_on_handoff, sid) : false;
+		bool skip_log = (sid < MAX_NUM_STATIONS) ? station_log_written_on_handoff[sid] : false;
 		if (sid < MAX_NUM_STATIONS) {
-			station_flag_clear(station_log_written_on_handoff, sid);
+			station_log_written_on_handoff[sid] = false;
 		}
 
 		// record lastrun log (only for non-master stations)
@@ -2429,7 +2442,7 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 			// log station run
 			write_log(LOGDATA_STATION, curr_time); // LOG_TODO
 			notif.add(NOTIFY_STATION_OFF, sid, pd.lastrun.duration);
-			if (sid < MAX_NUM_STATIONS && !station_flag_get(flow_alert_sent, sid)) {
+			if (sid < MAX_NUM_STATIONS && !flow_alert_sent[sid]) {
 				notif.add(NOTIFY_FLOW_ALERT, sid, pd.lastrun.duration);
 			}
 		}

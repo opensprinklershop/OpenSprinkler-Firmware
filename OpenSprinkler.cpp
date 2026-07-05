@@ -41,6 +41,7 @@
 #include <esp_netif.h>
 #include <esp_partition.h>
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <lwip/netdb.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -62,6 +63,29 @@
 #include "sensor_zigbee_gw.h"
 #endif
 #include "special_station_handlers.h"
+
+#if defined(ESP32)
+static void log_net_mem_checkpoint(const char *tag) {
+#if defined(ENABLE_DEBUG)
+	uint32_t int_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	uint32_t int_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	uint32_t ps_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+	uint32_t ps_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+	DEBUG_PRINTF("[MEM-NET] %s | int=%u KB (min=%u KB) | psram=%u/%u KB\n",
+			tag ? tag : "?",
+			int_free / 1024,
+			int_min / 1024,
+			ps_free / 1024,
+			ps_total / 1024);
+#else
+	(void)tag;
+#endif
+}
+#else
+static inline void log_net_mem_checkpoint(const char *tag) {
+	(void)tag;
+}
+#endif
 
 /** Declare static data members */
 OSMqtt OpenSprinkler::mqtt;
@@ -607,11 +631,13 @@ void(* resetFunc) (void) = 0; // AVR software reset function
 unsigned char OpenSprinkler::start_network() {
 	lcd_print_line_clear_pgm(PSTR("Starting..."), 1);
 	uint16_t httpport = (uint16_t)(iopts[IOPT_HTTPPORT_1]<<8) + (uint16_t)iopts[IOPT_HTTPPORT_0];
+	log_net_mem_checkpoint("start_network:entry");
 
 #if defined(ESP8266) || defined(ESP32)
 
 	if (start_ether()) {
 		useEth = true;
+		log_net_mem_checkpoint("start_network:after_start_ether");
 #ifdef ENABLE_RAINMAKER
 		// RainMaker's esp_rmaker_node_init() calls esp_wifi_get_mac() to build
 		// the node ID.  On Ethernet devices the WiFi driver is never started,
@@ -622,6 +648,7 @@ unsigned char OpenSprinkler::start_network() {
 		if (WiFi.mode(WIFI_STA)) {
 			WiFi.disconnect(false, false); // don't auto-connect to stored APs
 			ESP_LOGI("OS", "Ethernet+RainMaker: WiFi in STA mode (no AP connect)");
+			log_net_mem_checkpoint("start_network:after_wifi_mode_sta");
 		} else {
 			// WiFi.mode() failed — try direct esp_wifi_init as fallback.
 			// This can happen if Arduino's WiFi layer is in a conflict state.
@@ -637,6 +664,7 @@ unsigned char OpenSprinkler::start_network() {
 					esp_wifi_start();
 					esp_wifi_disconnect();
 					ESP_LOGI("OS", "Ethernet+RainMaker: WiFi init via esp_wifi_init OK");
+					log_net_mem_checkpoint("start_network:after_wifi_init_fallback");
 				} else {
 					ESP_LOGE("OS", "Ethernet+RainMaker: esp_wifi_init also FAILED — RainMaker will crash");
 				}
@@ -645,6 +673,7 @@ unsigned char OpenSprinkler::start_network() {
 				esp_wifi_set_mode(WIFI_MODE_STA);
 				esp_wifi_start();
 				esp_wifi_disconnect();
+				log_net_mem_checkpoint("start_network:after_wifi_mode_force");
 			}
 		}
 #else
@@ -660,6 +689,7 @@ unsigned char OpenSprinkler::start_network() {
 	#if defined(ESP32)
 	esp_log_level_set("NetworkClient", ESP_LOG_NONE);
 	custom_cert_init();
+	log_net_mem_checkpoint("start_network:after_custom_cert_init");
 	#endif
 
 	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
@@ -669,6 +699,7 @@ unsigned char OpenSprinkler::start_network() {
 		otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
 		DEBUG_PRINTLN(F("Started OTF with just local connection"));
 	}
+	log_net_mem_checkpoint("start_network:after_otf_init");
 
 	#if defined(ESP32)
 	acme_init();
@@ -682,6 +713,7 @@ unsigned char OpenSprinkler::start_network() {
 	update_server = new WebServer(8080);
 	#endif
 	DEBUG_PRINT(F("Started update server"));
+	log_net_mem_checkpoint("start_network:after_update_server");
 	return 1;
 
 #else
@@ -877,25 +909,20 @@ byte OpenSprinkler::start_ether() {
 	// Use eth.begin() with SPI host and pin numbers.
 	
 	// Install GPIO ISR service before initializing W5500 (which uses GPIO interrupts)
-	gpio_install_isr_service(0);
+	esp_err_t isr_err = gpio_install_isr_service(0);
+	if (isr_err != ESP_OK && isr_err != ESP_ERR_INVALID_STATE) {
+		DEBUG_PRINTF("[ETH] gpio_install_isr_service failed: %d\n", (int)isr_err);
+	}
 	
-	const uint8_t eth_spi_mhz_primary = eth.useTOE ? 80 : 60;
-	const uint8_t eth_spi_mhz_fallback = 60;
+	// In TOE mode, 80MHz init is unstable on this target and can leave
+	// SPI/GPIO ISR resources partially initialized on retry.
+	// Use one single-pass initialization at 60MHz.
+	const uint8_t eth_spi_mhz = 60;
 	delay(100);
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz_primary)) {
-		if (eth_spi_mhz_primary != eth_spi_mhz_fallback) {
-			DEBUG_PRINTF("WARN: eth.begin() failed at %u MHz, retrying at %u MHz\n", (unsigned)eth_spi_mhz_primary, (unsigned)eth_spi_mhz_fallback);
-			delay(100);
-			if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz_fallback)) {
-				DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
-				WiFi.mode(save_mode); // restore WiFi mode on failure
-				return 0;
-			}
-		} else {
-			DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
-			WiFi.mode(save_mode); // restore WiFi mode on failure
-			return 0;
-		}
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz)) {
+		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
+		WiFi.mode(save_mode); // restore WiFi mode on failure
+		return 0;
 	}
 	DEBUG_PRINTLN(eth.useTOE ? F("W5500 initialized successfully (TOE-compatible mode)") : F("W5500 initialized successfully (SPI2_HOST shared bus)"));
 	#endif
@@ -3385,9 +3412,9 @@ void OpenSprinkler::parse_otc_config() {
 	const char *token = NULL;
 	int port = DEFAULT_OTC_PORT_DEV;
 	int en = 0;
-	char saved_config[MAX_SOPTS_SIZE + 1];
-	char config[MAX_SOPTS_SIZE + 1];
-	char json[MAX_SOPTS_SIZE + 3];
+	static PSRAM_BSS_ATTR char saved_config[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char config[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char json[MAX_SOPTS_SIZE + 3];
 
 	sopt_load(SOPT_OTC_OPTS, saved_config);
 	strcpy(config, saved_config);
@@ -3822,7 +3849,7 @@ void OpenSprinkler::iopts_load() {
 			iopts[IOPT_NTP_IP4] = 0;
 	}
 	populate_master();
-	char saved_wto[MAX_SOPTS_SIZE + 1];
+	static PSRAM_BSS_ATTR char saved_wto[MAX_SOPTS_SIZE + 1];
 	sopt_load(SOPT_WEATHER_OPTS, saved_wto);
 	strcpy(tmp_buffer, saved_wto);
 	if (!parse_wto(tmp_buffer) || strcmp(saved_wto, tmp_buffer) != 0) {

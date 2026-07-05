@@ -267,8 +267,35 @@ def ensure_schedule_daylight_lib(env):
             base = base[3:-2]
         return base
 
+    daylight_available = False
+    try:
+        framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    except Exception:
+        framework_dir = None
+
+    if framework_dir:
+        daylight_archive = os.path.join(framework_dir, "esp32c5", "lib", "libespressif__esp_daylight.a")
+        daylight_available = os.path.exists(daylight_archive)
+
     fixed_libs = []
     changed = False
+
+    # If the archive is not available, purge stale daylight linker entries that
+    # may come from cached pioarduino metadata.
+    if not daylight_available:
+        for lib in libs:
+            if lib_name(lib) == "espressif__esp_daylight":
+                changed = True
+                continue
+            fixed_libs.append(lib)
+        libs = fixed_libs
+        fixed_libs = []
+
+        linkflags = list(env.get("LINKFLAGS", []))
+        filtered_flags = [flag for flag in linkflags if lib_name(flag) != "espressif__esp_daylight"]
+        if len(filtered_flags) != len(linkflags):
+            env.Replace(LINKFLAGS=filtered_flags)
+            changed = True
     for index, lib in enumerate(libs):
         fixed_libs.append(lib)
         if lib_name(lib) != "espressif__esp_schedule":
@@ -278,12 +305,18 @@ def ensure_schedule_daylight_lib(env):
         if next_lib is not None and lib_name(next_lib) == "espressif__esp_daylight":
             continue
 
-        fixed_libs.append("espressif__esp_daylight")
-        changed = True
+        if daylight_available:
+            fixed_libs.append("espressif__esp_daylight")
+            changed = True
 
     if changed:
         env.Replace(LIBS=fixed_libs)
-        print("Added esp_daylight after esp_schedule for framework schedule support")
+        if daylight_available:
+            print("Added esp_daylight after esp_schedule for framework schedule support")
+        else:
+            print("Removed stale esp_daylight linker entries (archive not present)")
+    elif any(lib_name(lib) == "espressif__esp_schedule" for lib in libs) and not daylight_available:
+        print("Skipped esp_daylight linker injection (archive not present in current framework libs)")
 
 
 def restore_c5_matter_archive(env):
@@ -479,6 +512,27 @@ def remove_c5_openthread_libs(env):
     is_esp32c5 = any("ESP32C5" in flag for flag in build_flags)
     if not (is_matter and is_esp32c5):
         return
+
+    try:
+        framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32-libs")
+    except Exception:
+        framework_dir = None
+
+    if framework_dir:
+        matter_archive = os.path.join(framework_dir, "esp32c5", "lib", "libespressif__esp_matter.a")
+        if os.path.exists(matter_archive):
+            with open(matter_archive, "rb") as archive_file:
+                content = archive_file.read()
+            has_ot_symbols = any(symbol in content for symbol in (
+                b"esp_openthread_init",
+                b"otInstanceInitSingle",
+                b"OpenthreadLauncher",
+                b"otLinkGetCounters",
+                b"otDatasetGetActive",
+            ))
+            if has_ot_symbols:
+                print("Keeping OpenThread libs: current ESP32-C5 Matter archive still references OT symbols")
+                return
 
     def keep(value):
         return "openthread" not in str(value).lower()

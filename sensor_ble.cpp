@@ -80,9 +80,11 @@ static constexpr size_t BLE_DISCOVERED_MAX = 128;
 // Only on-demand discovery scans (sensor_ble_start_discovery_scan) will now be used.
 static bool bg_scan_active = false;
 static uint32_t bg_scan_restart_at = 0;
+static uint32_t bg_scan_fail_backoff_until = 0;
 static const uint32_t BG_SCAN_DURATION_NORMAL  = 5;     // DISABLED: 0 seconds (no background scanning)
 static const uint32_t BG_SCAN_DURATION_CONTEND = 0;     // DISABLED: 0 seconds
 static const uint32_t BG_SCAN_RESTART_MS = 20000;  // Never restart background scan
+static const uint32_t BG_SCAN_FAIL_BACKOFF_MS = 5000;
 
 
 // User-requested discovery scan (active, high duty cycle)
@@ -170,6 +172,19 @@ static void ble_bg_scan_start() {
     if (discovery_scan_active) return;
     if (bg_scan_active) return;
 
+    uint32_t now = millis();
+    if ((int32_t)(now - bg_scan_fail_backoff_until) < 0) return;
+
+#if defined(ESP32C5)
+    // In Ethernet+Zigbee mode, continuous BLE background scanning causes
+    // repeated GAP start failures (rc=519) and burns scarce INTERNAL RAM.
+    // Keep BLE stack available for explicit user scans/GATT only.
+    if (useEth && ieee802154_is_zigbee()) {
+        bg_scan_restart_at = now + 30000;
+        return;
+    }
+#endif
+
     pBLEScan->setActiveScan(false);   // Passive: no SCAN_REQ overhead
     pBLEScan->setInterval(320);       // 200ms interval
     pBLEScan->setWindow(160);         // 100ms window → 50% duty cycle
@@ -180,7 +195,13 @@ static void ble_bg_scan_start() {
     // NOTE: duration=0 in NimBLE means INFINITE scan, NOT "no scan".
     // Always guard with this check before calling pBLEScan->start().
     zigbee_coex_yield_for_ble(true);   // lower Zigbee PTI during BLE scan
-    pBLEScan->start(scan_duration, ble_bg_scan_complete_cb, false);
+    bool scan_started = pBLEScan->start(scan_duration, ble_bg_scan_complete_cb, false);
+    if (!scan_started) {
+        zigbee_coex_yield_for_ble(false);
+        bg_scan_fail_backoff_until = now + BG_SCAN_FAIL_BACKOFF_MS;
+        bg_scan_restart_at = bg_scan_fail_backoff_until;
+        return;
+    }
     bg_scan_active = true;
 }
 

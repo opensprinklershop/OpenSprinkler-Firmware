@@ -375,6 +375,8 @@ struct ZigBeeLogicalDevice {
 	
 	// Tuya status active (ON) mapping (e.g. "1,2")
 	char tuya_status_on[16];
+	// Tuya status inactive (OFF) mapping (e.g. "0,3")
+	char tuya_status_off[16];
 	
 	// Compute hashable key for O(1) lookup
 	String getKey() const {

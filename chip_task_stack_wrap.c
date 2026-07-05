@@ -1,9 +1,10 @@
 #include <string.h>
 
-#if defined(ESP32C5) && defined(ENABLE_MATTER)
+#if defined(ESP32C5) && (defined(ENABLE_MATTER) || defined(ENABLE_RAINMAKER))
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "esp_rom_sys.h"
 
 // Matter's prebuilt CHIP stack may create the "CHIP" task with a static 4 KB
@@ -11,6 +12,12 @@
 // Intercept static task creation and use a larger dynamic stack for CHIP only.
 #ifndef OS_CHIP_TASK_STACK_SIZE_BYTES
 #define OS_CHIP_TASK_STACK_SIZE_BYTES 12288U
+#endif
+
+// RainMaker uses esp-mqtt's "mqtt_task". On ESP32-C5 this can overflow with
+// heavy TLS/event processing when internal RAM is fragmented/low.
+#ifndef OS_MQTT_TASK_STACK_SIZE_BYTES
+#define OS_MQTT_TASK_STACK_SIZE_BYTES 6144U
 #endif
 
 extern TaskHandle_t __real_xTaskCreateStaticPinnedToCore(
@@ -42,6 +49,36 @@ static int is_chip_task_name(const char *name)
     return (name != NULL && strcmp(name, "CHIP") == 0);
 }
 
+static int is_mqtt_task_name(const char *name)
+{
+    return (name != NULL && strcmp(name, "mqtt_task") == 0);
+}
+
+static uint32_t mqtt_stack_depth(uint32_t requested)
+{
+    return (requested < OS_MQTT_TASK_STACK_SIZE_BYTES) ? OS_MQTT_TASK_STACK_SIZE_BYTES : requested;
+}
+
+static BaseType_t create_mqtt_task_in_psram(
+    TaskFunction_t pxTaskCode,
+    const char * const pcName,
+    uint32_t stack_depth,
+    void * const pvParameters,
+    UBaseType_t uxPriority,
+    TaskHandle_t * const pxCreatedTask,
+    const BaseType_t xCoreID)
+{
+    return xTaskCreatePinnedToCoreWithCaps(
+        pxTaskCode,
+        pcName,
+        stack_depth,
+        pvParameters,
+        uxPriority,
+        pxCreatedTask,
+        xCoreID,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
 static void trace_chip_wrap(const char *api_name, uint32_t requested, uint32_t applied)
 {
     static int traced = 0;
@@ -60,6 +97,19 @@ BaseType_t __wrap_xTaskCreatePinnedToCore(
     TaskHandle_t * const pxCreatedTask,
     const BaseType_t xCoreID)
 {
+    if (is_mqtt_task_name(pcName)) {
+        uint32_t stack_depth = mqtt_stack_depth(usStackDepth);
+        trace_chip_wrap("xTaskCreatePinnedToCore(mqtt_task/psram)", usStackDepth, stack_depth);
+        BaseType_t result = create_mqtt_task_in_psram(
+            pxTaskCode, pcName, stack_depth, pvParameters, uxPriority, pxCreatedTask, xCoreID);
+        if (result == pdPASS) {
+            return result;
+        }
+        trace_chip_wrap("xTaskCreatePinnedToCore(mqtt_task/fallback)", usStackDepth, stack_depth);
+        return __real_xTaskCreatePinnedToCore(
+            pxTaskCode, pcName, stack_depth, pvParameters, uxPriority, pxCreatedTask, xCoreID);
+    }
+
     if (is_chip_task_name(pcName)) {
         uint32_t stack_depth = chip_stack_depth(usStackDepth);
         trace_chip_wrap("xTaskCreatePinnedToCore", usStackDepth, stack_depth);

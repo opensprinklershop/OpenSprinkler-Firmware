@@ -152,13 +152,23 @@ env.SetOption("num_jobs", num_cores)
 print(f"ESP32-C5 Fix: Parallel build enabled ({num_cores} jobs)")
 
 def remove_mlongcalls_flag(node):
-    """Remove -mlongcalls from all flag variables in the environment"""
+    """Remove unsupported flags and enforce LTO for ESP32-C5 builds."""
     for flag_var in ["ASFLAGS", "CCFLAGS", "CFLAGS", "CXXFLAGS", "LINKFLAGS"]:
         flags = node.get(flag_var, [])
         if isinstance(flags, list):
             while "-mlongcalls" in flags:
                 flags.remove("-mlongcalls")
                 print(f"Removed -mlongcalls from {flag_var}")
+
+            # Some framework scripts inject -fno-lto for selected targets.
+            # Remove it and force -flto so code-size optimization remains active.
+            while "-fno-lto" in flags:
+                flags.remove("-fno-lto")
+                print(f"Removed -fno-lto from {flag_var}")
+
+            if flag_var in ["CCFLAGS", "CFLAGS", "CXXFLAGS", "LINKFLAGS"] and "-flto=auto" not in flags:
+                flags.append("-flto=auto")
+                print(f"Added -flto=auto to {flag_var}")
     return node
 
 # Remove -mlongcalls flag from main environment (not supported by RISC-V ESP32-C5)
