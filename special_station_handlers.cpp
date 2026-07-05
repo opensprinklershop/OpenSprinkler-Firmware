@@ -360,14 +360,73 @@ void OpenSprinkler::switch_zigbeestation(ZigbeeStationData *data, bool turnon, u
 	#endif
 
 	if (is_giex) {
+		DEBUG_PRINTF(F("[ZIGBEE] Station cmd sid=%u mode=GIEX ieee=%016llX ep=%u dp=%u turnon=%d has_cfg=%d cfg_dp_val=%u cfg_dp_stat=%u\n"),
+		             (unsigned)sid,
+		             (unsigned long long)ieee,
+		             (unsigned)ep,
+		             (unsigned)dp_id,
+		             turnon ? 1 : 0,
+		             has_cfg ? 1 : 0,
+		             (unsigned)cfg.dp_value,
+		             (unsigned)cfg.dp_status);
 		sensor_zigbee_send_giex_water_valve_state_with_dur(ieee, ep, turnon, dur, dp_id);
 	} else if (use_tuya) {
+		DEBUG_PRINTF(F("[ZIGBEE] Station cmd sid=%u mode=TUYA ieee=%016llX ep=%u dp=%u turnon=%d has_cfg=%d cfg_dp_val=%u cfg_dp_stat=%u\n"),
+		             (unsigned)sid,
+		             (unsigned long long)ieee,
+		             (unsigned)ep,
+		             (unsigned)dp_id,
+		             turnon ? 1 : 0,
+		             has_cfg ? 1 : 0,
+		             (unsigned)cfg.dp_value,
+		             (unsigned)cfg.dp_status);
 		sensor_zigbee_send_tuya_dp_write(ieee, ep, dp_id, turnon);
 	} else {
+		DEBUG_PRINTF(F("[ZIGBEE] Station cmd sid=%u mode=STD ieee=%016llX ep=%u turnon=%d has_cfg=%d\n"),
+		             (unsigned)sid,
+		             (unsigned long long)ieee,
+		             (unsigned)ep,
+		             turnon ? 1 : 0,
+		             has_cfg ? 1 : 0);
 		sensor_zigbee_send_on_off(ieee, ep, turnon);
 	}
 	#if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-	sensor_zigbee_station_verify_register(sid, ieee, ep, dp_id, turnon);
+	uint8_t verify_dp = dp_id;
+	uint8_t ctrl_type = 0;
+	if (is_giex) {
+		ctrl_type = 2;
+		// For GIEX dual-zone valves (GX03), if raw dp is 1 (valve_1), the status DP is 104.
+		// If raw dp is 2 (valve_2), the status DP is 105.
+		// If it's a single-zone valve (GX02), we control and verify on DP 2.
+		if (has_cfg && cfg.dp_status != 0) {
+			verify_dp = cfg.dp_status;
+		} else {
+			// Symmetrical static fallbacks when template is not yet resolved
+			if (dp_id == 1) verify_dp = 104;
+			else if (dp_id == 2) {
+				// Distinguish single-zone (GX02) from dual-zone (GX03):
+				// If there's another station sharing this IEEE but with dp=1, then it's a 2-zone valve.
+				bool is_dual = false;
+				for (uint8_t s = 0; s < os.nstations; s++) {
+					if (s == sid || os.get_station_type(s) != STN_TYPE_ZIGBEE) continue;
+					StationData other_st = {};
+					os.get_station_data(s, &other_st);
+					ZigbeeStationData* other_zb = (ZigbeeStationData*)other_st.sped;
+					if (parse_ieee_hex(other_zb->device_ieee) == ieee) {
+						uint8_t other_dp = (uint8_t)hex_to_ulong((unsigned char*)other_zb->tuya_dp, sizeof(other_zb->tuya_dp));
+						if (other_dp == 1) { is_dual = true; break; }
+					}
+				}
+				verify_dp = is_dual ? 105 : 2;
+			}
+		}
+	} else if (use_tuya) {
+		ctrl_type = 1;
+		if (has_cfg && cfg.dp_status != 0) {
+			verify_dp = cfg.dp_status;
+		}
+	}
+	sensor_zigbee_station_verify_register(sid, ieee, ep, verify_dp, turnon, ctrl_type);
 	#endif
 }
 

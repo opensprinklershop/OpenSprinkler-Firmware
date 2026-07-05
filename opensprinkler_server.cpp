@@ -126,7 +126,7 @@ extern "C" {
 		#include <Update.h>
 		#include <ETH.h>
 		extern WebServer *update_server;
-		extern ETHClass eth;
+		extern OSEthernet eth;
 	#else
 		#include "SdFat.h"
 		extern SdFat sd;
@@ -6472,6 +6472,29 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		send_packet(OTF_PARAMS);
 		handle_return(HTML_OK);
 
+	} else if (strcmp(action, "rename") == 0) {
+		char ieee_str[24] = "";
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		char new_name[48] = "";
+		findKeyVal(FKV_SOURCE, new_name, sizeof(new_name), PSTR("name"), true);
+		bool ok = sensor_zigbee_gw_rename_device(addr, new_name);
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"rename\",\"ieee\":\"$S\",\"name\":\"$S\"}"),
+		             ok ? 1 : 0, ieee_str, new_name);
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+
 	} else if (strcmp(action, "clear_logical_devices") == 0) {
 		// Clear the persisted logical-device registry. Optional ieee=<16hex>
 		// limits the operation to a single device; without ieee the full
@@ -6618,7 +6641,7 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				bfill.emit_p(PSTR("{\"ieee\":\"$S\",\"short_addr\":$D,\"model\":\"$S\","
 				                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
 				                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","
-				                  "\"battery\":$D,\"lqi\":$D,"),
+				                  "\"battery\":$D,\"lqi\":$D,\"friendly_name\":\"$S\",\"is_custom_name\":$D,"),
 				             ieee_str,
 				             devices[i].short_addr,
 				             devices[i].model_id,
@@ -6633,7 +6656,9 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				             devices[i].date_code,
 				             devices[i].sw_build_id,
 				             (int)devices[i].battery,
-				             (int)devices[i].lqi);
+				             (int)devices[i].lqi,
+				             devices[i].friendly_name,
+				             devices[i].is_custom_name ? 1 : 0);
 				emit_zigbee_logical_devices(devices[i].ieee_addr);
 				bfill.emit_p(PSTR("}"));
 				out_count++;
@@ -6690,7 +6715,7 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 			                  "\"manufacturer\":\"$S\",\"vendor\":\"$S\",\"endpoint\":$D,\"device_id\":$D,\"is_new\":$D,"
 			                  "\"discovered_at\":$L,\"last_rx_s\":$L,\"online\":$D,"
 			                  "\"app_version\":$D,\"stack_version\":$D,\"hw_version\":$D,\"date_code\":\"$S\",\"sw_build_id\":\"$S\","
-			                  "\"battery\":$D,\"lqi\":$D,"),
+			                  "\"battery\":$D,\"lqi\":$D,\"friendly_name\":\"$S\",\"is_custom_name\":$D,"),
 			             ieee_str,
 			             devices[i].short_addr,
 			             devices[i].model_id,
@@ -6708,7 +6733,9 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 			             devices[i].date_code,
 			             devices[i].sw_build_id,
 			             (int)devices[i].battery,
-			             (int)devices[i].lqi);
+			             (int)devices[i].lqi,
+			             devices[i].friendly_name,
+			             devices[i].is_custom_name ? 1 : 0);
 			emit_zigbee_logical_devices(devices[i].ieee_addr);
 			bfill.emit_p(PSTR("}"));
 			send_packet(OTF_PARAMS);
@@ -7354,7 +7381,7 @@ void on_firmware_upload() {
 			DEBUG_PRINTLN(F("size mismatch"));
 		}
 #endif
-#if defined(ESP32) && defined(USE_SSD1306)
+#if (defined(ESP8266) || defined(ESP32)) && defined(USE_SSD1306)
 		// Render a throttled full-screen progress bar directly here: the upload
 		// runs inside this HTTP handler so do_loop() (and its OTA display hook)
 		// does not run until the transfer completes.
@@ -7362,7 +7389,13 @@ void on_firmware_upload() {
 			static uint32_t last_up_disp = 0;
 			if(millis() - last_up_disp > 400) {
 				last_up_disp = millis();
-				size_t total = update_server ? update_server->clientContentLength() : 0;
+				size_t total = 0;
+				#if defined(ESP32)
+				total = update_server ? (size_t)update_server->clientContentLength() : 0;
+				#elif defined(ESP8266)
+				// ESP8266WebServer exposes multipart request length via HTTPUpload.
+				total = upload.contentLength;
+				#endif
 				int pct = (total > 0) ? (int)((uint64_t)upload.totalSize * 100 / total) : -1;
 				if(pct > 100) pct = 100;
 				os.lcd_print_ota_progress(pct, "Uploading");
@@ -7373,7 +7406,7 @@ void on_firmware_upload() {
 	} else if(upload.status == UPLOAD_FILE_END) {
 
 		DEBUG_PRINTLN(F("completed"));
-#if defined(ESP32) && defined(USE_SSD1306)
+#if (defined(ESP8266) || defined(ESP32)) && defined(USE_SSD1306)
 		os.lcd_print_ota_progress(100, "Flashing");
 #endif
 

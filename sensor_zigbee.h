@@ -51,6 +51,8 @@ struct ZigbeeDeviceInfo {
     bool logical_lookup_done;    // whether logical devices lookup has been performed
     uint8_t battery;              // Battery percentage (0-100), 255 = unknown
     uint8_t lqi;                  // Link quality indicator (0-255), 0 = unknown
+    char friendly_name[48];       // Customized or default friendly device name
+    bool is_custom_name;          // Whether friendly_name was set by the user (custom name)
 };
 
 enum ZbStationControlMode : uint8_t {

@@ -713,6 +713,28 @@ bool init_W5500(boolean initSPI) {
 		static const uint8_t AccessModeRead = (0x00 << 2);
 		static const uint8_t AccessModeWrite = (0x01 << 2);
 		static const uint8_t BlockSelectCReg = (0x00 << 3);
+		auto probe_w5500 = [&]() -> bool {
+			pinMode(PIN_ETHER_CS, OUTPUT);
+
+			// ==> setMR(MR_RST)
+			digitalWrite(PIN_ETHER_CS, LOW);
+			SPI.transfer((0x00 & 0xFF00) >> 8);
+			SPI.transfer((0x00 & 0x00FF) >> 0);
+			SPI.transfer(BlockSelectCReg | AccessModeWrite);
+			SPI.transfer(0x80);
+			digitalWrite(PIN_ETHER_CS, HIGH);
+
+			// ==> ret = getMR()
+			uint8_t ret;
+			digitalWrite(PIN_ETHER_CS, LOW);
+			SPI.transfer((0x00 & 0xFF00) >> 8);
+			SPI.transfer((0x00 & 0x00FF) >> 0);
+			SPI.transfer(BlockSelectCReg | AccessModeRead);
+			ret = SPI.transfer(0);
+			digitalWrite(PIN_ETHER_CS, HIGH);
+
+			return (ret == 0);
+		};
 
 	if (initSPI) {
 		SPI.begin();
@@ -721,27 +743,17 @@ bool init_W5500(boolean initSPI) {
 		SPI.setFrequency(40000000); // 80MHz is the maximum SPI clock for W5500 - we init for 40MHz
 	}
 
-		pinMode(PIN_ETHER_CS, OUTPUT);
-
-		// ==> setMR(MR_RST)
-		digitalWrite(PIN_ETHER_CS, LOW);
-		SPI.transfer((0x00 & 0xFF00) >> 8);
-		SPI.transfer((0x00 & 0x00FF) >> 0);
-		SPI.transfer(BlockSelectCReg | AccessModeWrite);
-		SPI.transfer(0x80);
-		digitalWrite(PIN_ETHER_CS, HIGH);
-
-		// ==> ret = getMR()
-		uint8_t ret;
-		digitalWrite(PIN_ETHER_CS, LOW);
-		SPI.transfer((0x00 & 0xFF00) >> 8);
-		SPI.transfer((0x00 & 0x00FF) >> 0);
-		SPI.transfer(BlockSelectCReg | AccessModeRead);
-		ret = SPI.transfer(0);
-		digitalWrite(PIN_ETHER_CS, HIGH);
-
-	if(ret!=0) { // ret is expected to be 0
-		return false;
+	if(!probe_w5500()) {
+		if (initSPI) {
+			DEBUG_PRINTLN(F("W5500 probe failed at 40MHz, retrying 20MHz"));
+			SPI.setFrequency(20000000);
+			delay(20);
+			if(!probe_w5500()) {
+				return false;
+			}
+		} else {
+			return false;
+		}
 	}
 
 	eth.isW5500 = true;
@@ -804,13 +816,14 @@ void etherOnEvent(arduino_event_id_t event, arduino_event_info_t info)
 		case ARDUINO_EVENT_ETH_START:
 			DEBUG_PRINTLN(F("ETH Started"));
 			//set eth hostname here
-			ETH.setHostname("esp32-eth0");
+			eth.setHostname("esp32-eth0");
 			break;
 		case ARDUINO_EVENT_ETH_CONNECTED:
 			DEBUG_PRINTLN(F("ETH Connected"));
 			break;
 		case ARDUINO_EVENT_ETH_GOT_IP:
-			DEBUG_PRINTLN(ETH);
+			DEBUG_PRINT(F("ETH IP: "));
+			DEBUG_PRINTLN(eth.localIP());
 			useEth = true;
 			break;
 		case ARDUINO_EVENT_ETH_LOST_IP:
@@ -844,13 +857,18 @@ byte OpenSprinkler::start_ether() {
 		if (!init_W5500(true))
 			return 0;
 	}
+	#if OS_ETH_TOE
+	eth.useTOE = true;
+	DEBUG_PRINTLN(eth.isW5500 ? F("W5500 Ethernet-compatible mode enabled") : F("ENC28J60 Ethernet-compatible mode enabled"));
+	#endif
 	#else
 	Network.onEvent(etherOnEvent);
+	eth.useTOE = (OS_ETH_TOE != 0);
 
 	wifi_mode_t save_mode = WiFi.getMode(); // make sure WiFi mode is initialized before eth.begin() to
 	WiFi.mode(WIFI_OFF); // turn off WiFi to save resources (will be re-enabled if RainMaker is enabled)
 
-	DEBUG_PRINTLN(F("W5500 initialization..."));
+	DEBUG_PRINTLN(eth.useTOE ? F("W5500 TOE-compatible mode initialization...") : F("W5500 initialization..."));
 	DEBUG_PRINTF("CS=%d, IRQ=%d, RST=%d\n", PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET);
 
 	// W5500 shares SPI2_HOST bus with external flash (already initialized by init_external_flash()).
@@ -861,13 +879,25 @@ byte OpenSprinkler::start_ether() {
 	// Install GPIO ISR service before initializing W5500 (which uses GPIO interrupts)
 	gpio_install_isr_service(0);
 	
+	const uint8_t eth_spi_mhz_primary = eth.useTOE ? 80 : 60;
+	const uint8_t eth_spi_mhz_fallback = 60;
 	delay(100);
-	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, 60)) {
-		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
-		WiFi.mode(save_mode); // restore WiFi mode on failure
-		return 0;
+	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz_primary)) {
+		if (eth_spi_mhz_primary != eth_spi_mhz_fallback) {
+			DEBUG_PRINTF("WARN: eth.begin() failed at %u MHz, retrying at %u MHz\n", (unsigned)eth_spi_mhz_primary, (unsigned)eth_spi_mhz_fallback);
+			delay(100);
+			if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz_fallback)) {
+				DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
+				WiFi.mode(save_mode); // restore WiFi mode on failure
+				return 0;
+			}
+		} else {
+			DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
+			WiFi.mode(save_mode); // restore WiFi mode on failure
+			return 0;
+		}
 	}
-	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus)"));
+	DEBUG_PRINTLN(eth.useTOE ? F("W5500 initialized successfully (TOE-compatible mode)") : F("W5500 initialized successfully (SPI2_HOST shared bus)"));
 	#endif
 
 
@@ -883,7 +913,28 @@ byte OpenSprinkler::start_ether() {
 	}
 	eth.setDefault();
 
-	if(!eth.begin((uint8_t*)tmp_buffer)) return 0;
+	if(!eth.begin((uint8_t*)tmp_buffer)) {
+		#if OS_ETH_TOE
+		if (eth.useTOE) {
+			DEBUG_PRINTLN(F("WARN: Ethernet begin failed in TOE mode, retrying lwIP mode"));
+			eth.useTOE = false;
+			if (iopts[IOPT_USE_DHCP]==0) {
+				IPAddress staticip(iopts+IOPT_STATIC_IP1);
+				IPAddress gateway(iopts+IOPT_GATEWAY_IP1);
+				IPAddress dns(iopts+IOPT_DNS_IP1);
+				IPAddress subn(iopts+IOPT_SUBNET_MASK1);
+				if (!eth.config(staticip, gateway, subn, dns))
+					return 0;
+			}
+			eth.setDefault();
+			if (!eth.begin((uint8_t*)tmp_buffer))
+				return 0;
+		} else
+		#endif
+		{
+			return 0;
+		}
+	}
 	#else
 	if (iopts[IOPT_USE_DHCP]==0) { // config static IP before calling eth.begin
 		IPAddress staticip(iopts+IOPT_STATIC_IP1);
@@ -4509,11 +4560,13 @@ void OpenSprinkler::set_screen_led(unsigned char status) {
 void OpenSprinkler::lcd_print_ota_progress(int percent, const char *msg) {
 	lcd.clear();
 	lcd.setColor(WHITE);
+
+	#if defined(ESP8266) || defined(ESP32)
 	lcd.setTextAlignment(TEXT_ALIGN_CENTER);
 
 	// Title
 	lcd.setFont(ArialMT_Plain_10);
-	lcd.drawString(64, 0, F("Firmware Update"));
+	lcd.drawString(64, 0, "Firmware Update");
 
 	if(percent < 0) {
 		// Indeterminate: animate a block sweeping across the bar outline.
@@ -4528,18 +4581,36 @@ void OpenSprinkler::lcd_print_ota_progress(int percent, const char *msg) {
 		char pbuf[8];
 		snprintf(pbuf, sizeof(pbuf), "%d%%", percent);
 		lcd.setFont(ArialMT_Plain_16);
-		lcd.drawString(64, 36, String(pbuf));
+		lcd.drawString(64, 36, pbuf);
 	}
 
 	if(msg && msg[0]) {
 		lcd.setFont(ArialMT_Plain_10);
-		lcd.drawString(64, 54, String(msg));
+		lcd.drawString(64, 54, msg);
 	}
+	#else
+	// Linux/OSPi SSD1306 implementation supports a smaller API surface.
+	lcd.setFont(Monospaced_plain_13);
+	lcd.drawString(0, 0, "Firmware Update");
+
+	if(percent >= 0) {
+		if(percent > 100) percent = 100;
+		char pbuf[8];
+		snprintf(pbuf, sizeof(pbuf), "%d%%", percent);
+		lcd.drawString(0, 16, pbuf);
+	}
+
+	if(msg && msg[0]) {
+		lcd.drawString(0, 32, msg);
+	}
+	#endif
 
 	lcd.display();
 
+	#if defined(ESP8266) || defined(ESP32)
 	// Restore the default text state used by the normal LCD write() path.
 	lcd.setTextAlignment(TEXT_ALIGN_LEFT);
+	#endif
 	lcd.setFont(Monospaced_plain_13);
 }
 

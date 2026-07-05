@@ -70,13 +70,34 @@ void* __wrap_heap_caps_aligned_alloc(size_t alignment, size_t size, uint32_t cap
     if (ptr != NULL) {
         return ptr;
     }
-    
+
     if ((caps & MALLOC_CAP_DMA) || (caps & MALLOC_CAP_INTERNAL)) {
-        uint32_t fallback_caps = (caps & ~MALLOC_CAP_INTERNAL) | MALLOC_CAP_SPIRAM;
+        // Preserve caller constraints, but remove INTERNAL and force SPIRAM.
+        // Also add 8BIT to help DMA users that pass only MALLOC_CAP_DMA.
+        uint32_t fallback_caps = (caps & ~MALLOC_CAP_INTERNAL) | MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
         ptr = __real_heap_caps_aligned_alloc(alignment, size, fallback_caps);
         if (ptr != NULL) {
-            ESP_EARLY_LOGW(TAG, "heap_caps_aligned_alloc %u with caps 0x%X FAILED -> fell back to SPIRAM", (unsigned)size, (unsigned)caps);
+            ESP_EARLY_LOGW(TAG,
+                           "heap_caps_aligned_alloc %u caps=0x%X -> SPIRAM caps=0x%X",
+                           (unsigned)size,
+                           (unsigned)caps,
+                           (unsigned)fallback_caps);
             return ptr;
+        }
+
+        // Last attempt for INTERNAL-only callers: allow generic 8-bit SPIRAM.
+        // Keep this conservative: do not relax DMA-capable requests.
+        if (!(caps & MALLOC_CAP_DMA)) {
+            uint32_t relaxed_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+            ptr = __real_heap_caps_aligned_alloc(alignment, size, relaxed_caps);
+            if (ptr != NULL) {
+                ESP_EARLY_LOGW(TAG,
+                               "heap_caps_aligned_alloc %u caps=0x%X -> relaxed SPIRAM caps=0x%X",
+                               (unsigned)size,
+                               (unsigned)caps,
+                               (unsigned)relaxed_caps);
+                return ptr;
+            }
         }
     }
     

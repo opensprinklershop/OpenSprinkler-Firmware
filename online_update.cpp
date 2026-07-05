@@ -21,7 +21,7 @@
 
 extern OpenSprinkler os;
 extern bool useEth;   // true when the device is connected via Ethernet (main.cpp)
-extern ETHClass eth;  // Ethernet interface object (main.cpp)
+extern OSEthernet eth;  // Ethernet interface object (main.cpp)
 extern void reboot_in(uint32_t ms, uint8_t cause); // main.cpp - Ticker-based deferred reboot
 
 // Thread-safe state

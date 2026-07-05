@@ -1952,25 +1952,41 @@ bool sensor_zigbee_get_station_control_config(uint64_t device_ieee, ZigbeeStatio
         
         const ZigBeeLogicalDevice* best_logdev = nullptr;
         int best_logdev_score = -1;
+        bool best_logdev_dp_match = false;
         
         for (const auto& entry : *OpenSprinkler::zigbee_logical_devices_map) {
             const ZigBeeLogicalDevice& dev = entry.second.device;
             if (strncmp(dev.ieee, ieee_str, 16) != 0) continue;
-            
+
+            bool dp_match = (target_dp == 0) ||
+                            (dev.tuya_dp_value == target_dp) ||
+                            (dev.tuya_dp_status == target_dp);
             int score = 0;
             if (target_endpoint != 0 && dev.endpoint == target_endpoint) score += 100;
-            if (target_dp != 0 && (dev.tuya_dp_value == target_dp || dev.tuya_dp_status == target_dp)) score += 200;
+            if (target_dp != 0 && dp_match) score += 200;
             
             // Check if it is a valve/switch/control device by its name or kind
             bool is_control = (strstr(dev.name, "valve") != nullptr || strstr(dev.name, "switch") != nullptr || strstr(dev.name, "state") != nullptr);
             if (is_control) score += 50;
-            
+
             if (score > best_logdev_score) {
                 best_logdev = &dev;
                 best_logdev_score = score;
+                best_logdev_dp_match = dp_match;
             }
         }
-        
+
+        if (best_logdev && target_dp != 0 && !best_logdev_dp_match) {
+            DEBUG_PRINTF(F("[ZIGBEE] Logical config skipped for ieee=%016llX: no DP match for target_dp=%d\n"),
+                         (unsigned long long)device_ieee, (int)target_dp);
+            best_logdev = nullptr;
+        }
+
+        // Guard against arbitrary score=0 picks from same IEEE.
+        if (best_logdev && best_logdev_score <= 0) {
+            best_logdev = nullptr;
+        }
+
         if (best_logdev) {
             config->found = true;
             config->endpoint = best_logdev->endpoint ? best_logdev->endpoint : 1;

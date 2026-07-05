@@ -157,6 +157,10 @@ ENV_ESP8266="os3x_esp8266"
 FW_UPLOAD_METHOD_EXPLICIT=0
 [[ -n "${FW_UPLOAD_METHOD:-}" ]] && FW_UPLOAD_METHOD_EXPLICIT=1
 FW_UPLOAD_METHOD="${FW_UPLOAD_METHOD:-usb}"
+DEFAULT_C5_IP="192.168.0.151"
+
+# Tracks the actual path used by the most recent upload (`ip` or `usb`).
+LAST_UPLOAD_PATH=""
 
 # Determine password hash
 _get_hash() {
@@ -201,6 +205,33 @@ _device_reachable_quiet() {
     hash=$(_get_hash)
     curl -sf --connect-timeout 2 --max-time 4 "http://${DEVICE_IP}/jo?pw=${hash}" >/dev/null 2>&1 || \
         curl -sf --connect-timeout 2 --max-time 4 "http://${DEVICE_IP}/db?pw=${hash}" >/dev/null 2>&1
+}
+
+_current_boot_variant_quiet() {
+    local hash
+    hash=$(_get_hash)
+    local resp
+    resp=$(curl -sf --connect-timeout 2 --max-time 4 "http://${DEVICE_IP}/ir?pw=${hash}" 2>/dev/null) || return 1
+
+    python3 - <<'PY' "$resp"
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+
+raw = (data.get("bootVariantName") or data.get("boot_variant") or data.get("mode_name") or "")
+name = str(raw).strip().lower()
+
+if "matter" in name:
+    print("matter")
+elif "zigbee" in name:
+    print("zigbee")
+else:
+    sys.exit(1)
+PY
 }
 
 _select_ip_upload_bin() {
@@ -304,11 +335,48 @@ upload_ip_env() {
     local bin_file
     bin_file=$(_select_ip_upload_bin "$env" "$variant")
     install_ip "$variant" "$bin_file"
+    LAST_UPLOAD_PATH="ip"
+}
+
+_is_c5_env() {
+    case "$1" in
+        "$ENV_C5_MATTER"|"$ENV_C5_ZIGBEE") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+upload_env_ip_first_then_usb() {
+    local env="$1"
+    local ip_target="${OS_IP_C5_PRIMARY:-$DEFAULT_C5_IP}"
+    local target_variant
+    target_variant=$(_env_to_variant "$env")
+
+    local current_variant=""
+    if current_variant=$( DEVICE_IP="$ip_target" _current_boot_variant_quiet ); then
+        if [[ "$current_variant" == "$target_variant" ]]; then
+            info "Device currently runs '${current_variant}' on ${ip_target}; OTA to same active slot is skipped, using USB upload."
+            upload_env "$env"
+            LAST_UPLOAD_PATH="usb"
+            return 0
+        fi
+    fi
+
+    info "Trying IP upload first for ${env} via ${ip_target} ..."
+    if ( DEVICE_IP="$ip_target" upload_ip_env "$env" ); then
+        LAST_UPLOAD_PATH="ip"
+        return 0
+    fi
+
+    warn "IP upload failed for ${env} via ${ip_target}; falling back to USB upload."
+    upload_env "$env"
+    LAST_UPLOAD_PATH="usb"
 }
 
 upload_env_auto() {
     local env="$1"
     local method="${FW_UPLOAD_METHOD,,}"
+
+    LAST_UPLOAD_PATH=""
 
     case "$method" in
         auto|ip|usb) ;;
@@ -331,6 +399,17 @@ upload_env_auto() {
         fi
     fi
 
+    # For ESP32-C5 Matter/Zigbee, default behavior is IP-first (fixed controller
+    # IP) with automatic USB fallback, unless the caller explicitly forces IP.
+    if _is_c5_env "$env"; then
+        if [[ "$method" == "ip" ]]; then
+            upload_ip_env "$env"
+            return
+        fi
+        upload_env_ip_first_then_usb "$env"
+        return
+    fi
+
     if [[ "$method" == "ip" ]]; then
         upload_ip_env "$env"
         return
@@ -346,11 +425,14 @@ upload_env_auto() {
     fi
 
     upload_env "$env"
+    LAST_UPLOAD_PATH="usb"
 }
 
 upload_env_fast_debug() {
     local env="$1"
     local method="${FW_UPLOAD_METHOD,,}"
+
+    LAST_UPLOAD_PATH=""
 
     # ESP8266 is network-only here (no USB): always use IP upload to its address.
     # Honor only an *explicit* FW_UPLOAD_METHOD=usb to fall back to serial.
@@ -363,7 +445,24 @@ upload_env_fast_debug() {
         fi
     fi
 
-    # Keep debug deploy deterministic on USB by default.
+    if _is_c5_env "$env"; then
+        if [[ "$method" == "ip" ]]; then
+            if _device_reachable_quiet; then
+                info "Debug deploy: FW_UPLOAD_METHOD=ip and device reachable at ${DEVICE_IP}; using IP upload."
+                upload_ip_env "$env"
+                return
+            fi
+            warn "Debug deploy: FW_UPLOAD_METHOD=ip but device not reachable; falling back to USB upload."
+            upload_env "$env"
+            LAST_UPLOAD_PATH="usb"
+            return
+        fi
+
+        upload_env_ip_first_then_usb "$env"
+        return
+    fi
+
+    # Keep non-C5 debug deploy deterministic on USB by default.
     # IP upload is used only when explicitly requested.
     if [[ "$method" == "ip" ]]; then
         if _device_reachable_quiet; then
@@ -376,6 +475,7 @@ upload_env_fast_debug() {
 
     info "Debug deploy: using USB upload (default)."
     upload_env "$env"
+    LAST_UPLOAD_PATH="usb"
 }
 
 # ── Helper functions ─────────────────────────────────────────────────────────
@@ -758,11 +858,13 @@ upload_env() {
         fi
 
         ok "Upload successful: ${env}"
+        LAST_UPLOAD_PATH="usb"
         return 0
     fi
 
     if "$PIO_BIN" run --environment "$env" --target upload --upload-port "$USB_PORT"; then
         ok "Upload successful: ${env}"
+        LAST_UPLOAD_PATH="usb"
     else
         error "Upload failed: ${env}"
         exit 1
@@ -775,7 +877,7 @@ ensure_zigbee_boot_partition() {
     _find_esptool
     "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud 460800 \
         --before default_reset --after hard_reset \
-        erase-region 0xe000 0x2000 \
+        erase_region 0xe000 0x2000 \
         && ok "otadata erased — device will boot zigbee (OTA0) on next reset" \
         || warn "otadata erase failed — device may boot matter instead of zigbee"
 }
@@ -876,7 +978,7 @@ deploy_monitor_env() {
     # Upload
     info "Uploading to device..."
     upload_env_auto "$env"
-    if [[ "$env" == "$ENV_C5_ZIGBEE" && "${FW_UPLOAD_METHOD,,}" == "usb" ]]; then
+    if [[ "$env" == "$ENV_C5_ZIGBEE" && "$LAST_UPLOAD_PATH" == "usb" ]]; then
         ensure_zigbee_boot_partition
     fi
     
@@ -2643,7 +2745,7 @@ case "$ACTION" in
                         else
                             upload_env_auto "$ENV_C5_ZIGBEE"
                         fi
-                        if [[ "${FW_UPLOAD_METHOD,,}" == "usb" ]]; then
+                        if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
                             ensure_zigbee_boot_partition
                         fi
                         ;;
@@ -2668,10 +2770,10 @@ case "$ACTION" in
                         copy_to_upgrade
                         upload_env_auto "$ENV_C5_MATTER"
                         upload_env_auto "$ENV_C5_ZIGBEE"
-                        upload_env_auto "$ENV_ESP8266"
-                        if [[ "${FW_UPLOAD_METHOD,,}" == "usb" ]]; then
+                        if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
                             ensure_zigbee_boot_partition
                         fi
+                        upload_env_auto "$ENV_ESP8266"
                         header "Deploy complete"
                         ok "Matter:   flashed to ota_1 (0x3A0000)"
                         ok "ZigBee:   flashed to ota_0 (0x10000)"

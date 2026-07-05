@@ -108,6 +108,10 @@ struct GwTuyaScheduledCommand {
 static GwTuyaScheduledCommand gw_tuya_schedule[8];
 static uint32_t gw_tuya_next_due_ms = 0;
 
+// Minimum spacing between ANY two ZigBee command sends (global, across all
+// devices) to avoid flooding the ZBOSS stack / RF collisions.
+#define GW_TUYA_MIN_SEND_SPACING_MS 5000UL
+
 static uint64_t gw_find_ieee_by_short_addr(uint16_t short_addr);
 static void gw_tuya_schedule_next();
 static bool gw_load_discovered_devices();
@@ -517,7 +521,7 @@ static void gw_tuya_schedule_next() {
 
         gw_tuya_scheduled_send(slot);
         gw_record_device_access(0, short_addr, true);
-        gw_tuya_next_due_ms = millis() + 250UL; // general small spacing (250ms) to not flood Zigbee stack
+        gw_tuya_next_due_ms = millis() + GW_TUYA_MIN_SEND_SPACING_MS; // min 5s between any two command sends
         return;
     }
 
@@ -1342,7 +1346,8 @@ static void gw_handleBasicClusterResponse(uint16_t short_addr, const esp_zb_zcl_
 
 #define ZB_VERIFY_MAX        8
 #define ZB_VERIFY_TIMEOUT_MS 10000   // 10 s without echo → failure
-#define ZB_VERIFY_RETRY_MS    3500   // one same-command retry before failing
+#define ZB_VERIFY_RETRY_MS    6000   // wait this long for an echo before re-sending (>= min send spacing)
+#define ZB_VERIFY_MAX_RETRIES    3   // number of re-sends before giving up
 #define ZB_VERIFY_QUERY_GRACE_MS 5000 // wait after an explicit DP query before failing
 
 struct ZbStationVerify {
@@ -1352,6 +1357,7 @@ struct ZbStationVerify {
     uint32_t sent_ms;
     uint8_t  sid;
     uint8_t  endpoint;
+    uint8_t  ctrl_type;   // 0 = standard ZCL, 1 = Tuya DP, 2 = GIEX water valve
     uint8_t  retries;
     bool     pending;
 };
@@ -1389,21 +1395,73 @@ static void gw_station_verify_publish_fail(uint8_t sid, bool expected_on, bool t
     os.mqtt.publish(topic, payload);
 }
 
+// Re-send the last ON/OFF command for a pending verification entry. Used when
+// the device echoes the wrong state (e.g. a stale report collided with our
+// command) or fails to echo within the retry window.
+static void gw_station_verify_resend(int idx) {
+    if (idx < 0 || idx >= ZB_VERIFY_MAX) return;
+    ZbStationVerify &e = zb_verify_table[idx];
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Switch verify re-send: sid=%u dp=%u expected_on=%d attempt=%u\n"),
+                 (unsigned)e.sid, (unsigned)e.dp_id, e.expected_on ? 1 : 0,
+                 (unsigned)(e.retries + 1));
+    switch (e.ctrl_type) {
+        case 2: // GIEX water valve — re-assert the state DP (dur=0 keeps the target)
+            sensor_zigbee_send_giex_water_valve_state_with_dur(e.ieee, e.endpoint, e.expected_on, 0, e.dp_id);
+            break;
+        case 1: // Generic Tuya DP
+            sensor_zigbee_send_tuya_dp_write(e.ieee, e.endpoint, e.dp_id, e.expected_on);
+            break;
+        default: // Standard ZCL On/Off
+            sensor_zigbee_send_on_off(e.ieee, e.endpoint, e.expected_on);
+            break;
+    }
+    e.retries++;
+    e.sent_ms = millis();
+}
+
 // Called from gw_cache_tuya_dp_report when a Tuya DP is received.
 static void gw_station_verify_process(uint64_t ieee, uint8_t dp_id, bool actual_on) {
 
     for (int i = 0; i < ZB_VERIFY_MAX; i++) {
         if (!zb_verify_table[i].pending) continue;
         if (zb_verify_table[i].ieee  != ieee)  continue;
-        if (zb_verify_table[i].dp_id != dp_id) continue;
-        bool ok = (zb_verify_table[i].expected_on == actual_on);
-        zb_verify_table[i].pending = false;
-        if (!ok) {
+
+        bool match_state = (zb_verify_table[i].dp_id == dp_id);
+
+        // GIEX water valves frequently confirm a *stop* via a completion data
+        // point instead of echoing the state DP = 0: DP1 (mode/state) = 0, the
+        // countdown DP107 reaching 0, or a DP111 last-irrigation report. Accept
+        // those as an OFF confirmation so a closed valve does not stay "red".
+        bool giex_off = (zb_verify_table[i].ctrl_type == 2 &&
+                         zb_verify_table[i].expected_on == false &&
+                         ((dp_id == 1   && !actual_on) ||
+                          (dp_id == 107 && !actual_on) ||
+                          (dp_id == 111)));
+
+        if (!match_state && !giex_off) continue;
+
+        bool confirmed = match_state ? (zb_verify_table[i].expected_on == actual_on) : true;
+
+        if (confirmed) {
+            // The device report confirms the requested state.
+            zb_verify_table[i].pending = false;
+            gw_station_physical_state_set(zb_verify_table[i].sid, zb_verify_table[i].expected_on);
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u switch confirmed: dp=%u on=%d%s\n"),
+                         (unsigned)zb_verify_table[i].sid, (unsigned)dp_id,
+                         zb_verify_table[i].expected_on ? 1 : 0,
+                         giex_off ? " (via completion DP)" : "");
+        } else if (zb_verify_table[i].retries < ZB_VERIFY_MAX_RETRIES) {
+            // Wrong state reported (or a stale report collided with our command) —
+            // re-send the same ON/OFF command and keep verifying.
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u switch mismatch (got on=%d want on=%d) -> re-send\n"),
+                         (unsigned)zb_verify_table[i].sid, actual_on ? 1 : 0,
+                         zb_verify_table[i].expected_on ? 1 : 0);
+            gw_station_verify_resend(i);
+        } else {
+            // Retry budget exhausted — mark as failed.
+            zb_verify_table[i].pending = false;
             gw_station_verify_publish_fail(zb_verify_table[i].sid,
                                            zb_verify_table[i].expected_on, false);
-        } else {
-            DEBUG_PRINTF(F("[ZIGBEE-GW] Station sid=%u switch confirmed: dp=%u on=%d\n"),
-                         (unsigned)zb_verify_table[i].sid, (unsigned)dp_id, actual_on ? 1 : 0);
         }
         return;
     }
@@ -1975,6 +2033,50 @@ bool sensor_zigbee_gw_query_device_data(uint64_t device_ieee, uint8_t endpoint) 
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Tuya frame de-duplication.
+// The device (or the mesh) frequently re-delivers the exact same ZCL frame
+// several times — identical zcl_seq — which otherwise re-runs sensor updates and
+// switch matching for every copy. Track the last processed zcl_seq per source
+// and drop repeats seen within a short window. Only applied to DP-bearing report
+// frames; control frames (time-sync, MCU version, DP query) are always handled.
+// ---------------------------------------------------------------------------
+#define GW_TUYA_DEDUP_MAX        12
+#define GW_TUYA_DEDUP_WINDOW_MS 3000
+struct GwTuyaDedup { uint16_t short_addr; uint8_t seq; uint32_t last_ms; bool used; };
+static GwTuyaDedup DRAM_ATTR gw_tuya_dedup[GW_TUYA_DEDUP_MAX];
+
+static bool gw_tuya_frame_is_duplicate(uint16_t short_addr, uint8_t seq) {
+    uint32_t now = millis();
+    int free_slot = -1, oldest = 0;
+    uint32_t oldest_ms = now;
+    bool have_oldest = false;
+    for (int i = 0; i < GW_TUYA_DEDUP_MAX; i++) {
+        if (gw_tuya_dedup[i].used && gw_tuya_dedup[i].short_addr == short_addr) {
+            if (gw_tuya_dedup[i].seq == seq &&
+                (uint32_t)(now - gw_tuya_dedup[i].last_ms) < GW_TUYA_DEDUP_WINDOW_MS) {
+                return true; // duplicate within the window
+            }
+            gw_tuya_dedup[i].seq = seq;
+            gw_tuya_dedup[i].last_ms = now;
+            return false;
+        }
+        if (!gw_tuya_dedup[i].used) {
+            if (free_slot < 0) free_slot = i;
+        } else if (!have_oldest || (int32_t)(gw_tuya_dedup[i].last_ms - oldest_ms) < 0) {
+            oldest_ms = gw_tuya_dedup[i].last_ms;
+            oldest = i;
+            have_oldest = true;
+        }
+    }
+    int use = (free_slot >= 0) ? free_slot : oldest;
+    gw_tuya_dedup[use].short_addr = short_addr;
+    gw_tuya_dedup[use].seq = seq;
+    gw_tuya_dedup[use].last_ms = now;
+    gw_tuya_dedup[use].used = true;
+    return false;
+}
+
 static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
     // Log ALL incoming APS frames for debugging
     // DEBUG_PRINTF(F("[ZIGBEE-GW][APS] Indication: cluster=0x%04X src=0x%04X ep=%d len=%u prof=0x%04X\n"),
@@ -2064,6 +2166,12 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Unhandled command 0x%02X from 0x%04X\n"),
                 command_id, ind.src_short_addr);
         return true;  // Consume — don't let ZCL stack fail on unknown Tuya commands
+    }
+
+    // Drop retransmitted duplicates of the same DP frame (same source + zcl_seq)
+    // so a single report isn't processed several times.
+    if (gw_tuya_frame_is_duplicate(ind.src_short_addr, seq_number)) {
+        return true;
     }
 
     DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] APS ind: src=0x%04X ep=%u len=%u\n"),
@@ -4893,32 +5001,11 @@ bool sensor_zigbee_send_giex_water_valve_state_with_dur(uint64_t device_ieee, ui
         if (!log_countdown) log_countdown = OpenSprinkler::zigbee_logical_lookup(ieee_str, "timer");
     }
 
-    bool target_used = (log_irrigation_target != nullptr);
-    bool countdown_used = (log_countdown != nullptr);
-
-    // Switch the valve FIRST (using the calculated active_dp) to open it without delay!
+    // Switch the valve ONLY. The secondary countdown / target DP writes are
+    // removed because sending multiple commands simultaneously overwhelms the
+    // sleepy end-device radio and triggers collision-misses. Active report
+    // verification and retry monitoring handle the safety tracking instead.
     bool ok = gw_send_tuya_dp_bool_write_cmd(device_ieee, endpoint, active_dp, turnon, TUYA_CMD_DATA_REQUEST, false);
-
-    if (turnon && dur > 0) {
-        if (target_used) {
-            uint8_t target_dp = log_irrigation_target->tuya_dp_value;
-            // The "irrigation_target" DP on GIEX QT06/GX02 valves expects the duration in MINUTES.
-            // Under duration mode (Mode 0), writing seconds causes out-of-bounds rejection or extremely long periods.
-            uint32_t dur_mins = (dur + 59) / 60; // round up to at least 1 minute
-            bool t_ok = gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, target_dp, dur_mins, TUYA_CMD_DATA_REQUEST, false);
-            if (!t_ok) {
-                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending irrigation_target (DP %d) = %u\n"), target_dp, dur_mins);
-            }
-        }
-        
-        if (countdown_used) {
-            uint8_t countdown_dp = log_countdown->tuya_dp_value;
-            bool c_ok = gw_send_tuya_dp_value_write_cmd(device_ieee, endpoint, countdown_dp, (uint32_t)dur, TUYA_CMD_DATA_REQUEST, false);
-            if (!c_ok) {
-                DEBUG_PRINTF(F("[ZIGBEE-GW] Error sending countdown (DP %d) = %u\n"), countdown_dp, dur);
-            }
-        }
-    }
     
     return ok;
 }
@@ -4927,11 +5014,40 @@ bool sensor_zigbee_send_giex_water_valve_state(uint64_t device_ieee, uint8_t end
     return sensor_zigbee_send_giex_water_valve_state_with_dur(device_ieee, endpoint, turnon, 0, 0);
 }
 
-void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on) {
-    (void)ieee;
-    (void)endpoint;
-    (void)dp_id;
-    gw_station_physical_state_set(sid, expected_on);
+void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on, uint8_t ctrl_type) {
+    if (sid >= MAX_NUM_STATIONS) return;
+
+    // Optimistic display state; the incoming DP report will confirm or correct it.
+    zb_station_switch_error[sid] = 0;
+    zb_station_physical_on[sid]  = expected_on ? 1 : 0;
+
+    // Only Tuya/GIEX valves reliably echo their state via DP reports, so only
+    // those get an active verify-and-retry entry. Standard ZCL On/Off keeps the
+    // optimistic behaviour to avoid false switch-fail alerts on devices that do
+    // not report their on/off attribute.
+    if (ctrl_type == 0) return;
+
+    // Reuse an entry already pending for this station, else take a free slot.
+    int slot = -1;
+    for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+        if (zb_verify_table[i].pending && zb_verify_table[i].sid == sid) { slot = i; break; }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < ZB_VERIFY_MAX; i++) {
+            if (!zb_verify_table[i].pending) { slot = i; break; }
+        }
+    }
+    if (slot < 0) slot = 0; // last resort: overwrite slot 0
+
+    zb_verify_table[slot].ieee        = ieee;
+    zb_verify_table[slot].dp_id       = dp_id;
+    zb_verify_table[slot].endpoint    = endpoint;
+    zb_verify_table[slot].expected_on = expected_on;
+    zb_verify_table[slot].sid         = sid;
+    zb_verify_table[slot].ctrl_type   = ctrl_type;
+    zb_verify_table[slot].sent_ms     = millis();
+    zb_verify_table[slot].retries     = 0;
+    zb_verify_table[slot].pending     = true;
 }
 
 uint8_t sensor_zigbee_station_status_code(uint8_t sid) {
@@ -4954,11 +5070,20 @@ void sensor_zigbee_station_clear_error(uint8_t sid) {
 
 void sensor_zigbee_station_verify_tick() {
     uint32_t now = millis();
-    const uint32_t ZB_VERIFY_FAIL_TIMEOUT_MS = 15000; // 15s bis Fehler
     for (int i = 0; i < ZB_VERIFY_MAX; i++) {
         if (!zb_verify_table[i].pending) continue;
-        if (now - zb_verify_table[i].sent_ms >= ZB_VERIFY_FAIL_TIMEOUT_MS) {
-            DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm timeout: sid=%u dp=%u expected_on=%d, marking failed\n"),
+        if ((uint32_t)(now - zb_verify_table[i].sent_ms) < ZB_VERIFY_RETRY_MS) continue;
+
+        if (zb_verify_table[i].retries < ZB_VERIFY_MAX_RETRIES) {
+            // No confirming report within the retry window — re-send the command.
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm timeout (no echo): sid=%u dp=%u expected_on=%d -> re-send\n"),
+                         (unsigned)zb_verify_table[i].sid,
+                         (unsigned)zb_verify_table[i].dp_id,
+                         zb_verify_table[i].expected_on ? 1 : 0);
+            gw_station_verify_resend(i);
+        } else {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Switch confirm failed after %u re-sends: sid=%u dp=%u expected_on=%d\n"),
+                         (unsigned)zb_verify_table[i].retries,
                          (unsigned)zb_verify_table[i].sid,
                          (unsigned)zb_verify_table[i].dp_id,
                          zb_verify_table[i].expected_on ? 1 : 0);

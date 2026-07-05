@@ -80,6 +80,10 @@
 		DNSServer *dns = NULL;
 		ENC28J60lwIP enc28j60(PIN_ETHER_CS); // ENC28J60 lwip for wired Ether
 		Wiznet5500lwIP w5500(PIN_ETHER_CS); // W5500 lwip for wired Ether
+		#if OS_ETH_TOE
+		ArduinoENC28J60lwIP enc28j60_toe(PIN_ETHER_CS); // ENC28J60 Ethernet-compatible mode
+		ArduinoWiznet5500lwIP w5500_toe(PIN_ETHER_CS); // W5500 Ethernet-compatible mode
+		#endif
 		lwipEth eth;
 		bool useEth = false; // tracks whether we are using WiFi or wired Ether connection
 	#elif defined(ESP32)
@@ -96,7 +100,7 @@
 
 		DNSServer *dns = NULL;
 
-		ETHClass eth;
+		OSEthernet eth;
 		bool useEth = false; // tracks whether we are using WiFi or wired Ether connection
 	#else
 		EthernetServer *m_server = NULL;
@@ -900,7 +904,7 @@ void overcurrent_monitor() {
 }
 
 // Gratuitous ARP task for ESP8266 lwIP
-#if defined(ESP8266)
+#if defined(ESP8266) && !OS_ETH_TOE
 void gratuitousARPTask() {
 		if (!useEth && os.get_wifi_mode()!=WIFI_MODE_STA) return;
 		//DEBUG_PRINTLN(F("gratuiousARPTask"));
@@ -1330,10 +1334,18 @@ void do_loop()
 			otf->loop();
 			connecting_timeout = 0;
 		} else {
-			// STA or Ethernet mode: handle regular server operations
-			if(useEth || WiFi.status() == WL_CONNECTED) {
-				update_server->handleClient();
-				otf->loop();
+			// STA or Ethernet mode: keep serving HTTP even if mode flags lag behind
+			// transient link events. This avoids "empty response" while ping still works.
+			#if defined(ESP32)
+			if (!useEth && eth.linkUp() && (bool)eth.localIP()) {
+				useEth = true;
+				DEBUG_PRINTLN(F("[NET] Corrected mode to Ethernet (link up + IP present)"));
+			}
+			#endif
+
+			update_server->handleClient();
+			otf->loop();
+			if (useEth || WiFi.status() == WL_CONNECTED) {
 				connecting_timeout = 0;
 			} else {
 				// WiFi disconnected in STA mode - attempt reconnection
@@ -1349,11 +1361,13 @@ void do_loop()
 		debug_os_state_transition("do_loop/net", state_before, os.state);
 	}
 	#ifdef ESP8266
+	#if !OS_ETH_TOE
 	static unsigned long arp_check = 0;
 	if (curr_time && (curr_time > arp_check)) {
 		gratuitousARPTask(); // send gratuitous ARP every 5 seconds
 		arp_check = curr_time + ARP_REQUEST_INTERVAL;
 	}
+	#endif
 	yield();
 	#endif
 	#else // AVR

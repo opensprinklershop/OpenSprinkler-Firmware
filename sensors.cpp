@@ -1771,10 +1771,11 @@ void push_message(SensorBase *sensor) {
               sensor->last_read, (int)sensor->last_data,
               abs((int)(sensor->last_data * 100) % 100), getSensorUnit(sensor));
 
-    if (!os.mqtt.connected()) os.mqtt.reconnect();
     if (os.mqtt.connected()) {
       os.mqtt.publish(topic, payload);
     } else {
+      // Keep loopTask stack shallow: MQTT reconnect can trigger a TLS connect
+      // path with high stack usage. Reconnect is handled centrally in os.mqtt.loop().
       mqtt_defer_push(sensor->nr);
     }
     // DEBUG_PRINTLN(F("push mqtt2"));

@@ -125,6 +125,11 @@ void sensor_zigbee_gw_factory_reset();
 int sensor_zigbee_gw_get_discovered_devices(ZigbeeDeviceInfo* out, int max_devices);
 
 /**
+ * @brief Rename discovered device and persist with custom name flag
+ */
+bool sensor_zigbee_gw_rename_device(uint64_t ieee_addr, const char* new_name);
+
+/**
  * @brief Clear "is_new" flag on all discovered devices (Gateway mode)
  */
 void sensor_zigbee_gw_clear_new_device_flags();
@@ -232,8 +237,9 @@ void sensor_zigbee_gw_force_off_all_stations();
 /**
  * @brief Register a pending switch-state verification for a Zigbee station.
  * Called from switch_zigbeestation after each ON/OFF command is sent.
+ * ctrl_type: 0 = standard ZCL On/Off, 1 = Tuya DP, 2 = GIEX water valve.
  */
-void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on);
+void sensor_zigbee_station_verify_register(uint8_t sid, uint64_t ieee, uint8_t endpoint, uint8_t dp_id, bool expected_on, uint8_t ctrl_type = 1);
 
 /**
  * @brief Return the current Zigbee station switch status.

@@ -28,6 +28,13 @@
 
 typedef unsigned long ulong;
 
+// Ethernet compatibility/TOE mode switch for ESP targets.
+// 0: default lwIP path
+// 1: use Ethernet-compatible wrappers where available (ESP8266)
+#ifndef OS_ETH_TOE
+#define OS_ETH_TOE 0
+#endif
+
 // ============================================================================
 // PSRAM (SPIRAM) Memory Allocation Attributes
 // ============================================================================
