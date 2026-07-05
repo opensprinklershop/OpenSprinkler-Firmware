@@ -356,8 +356,10 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			//Added variable for flow_gpm_alert_setpoint 
 			uint16_t fasp = os.get_flow_alert_setpoint(lval);
 			if (fasp > 0) {
-				flow_alert_flag = true;
-				flow_gpm_alert_setpoint = (float)(fasp) / 100.0f; 
+				flow_gpm_alert_setpoint = (float)(fasp) / 100.0f;
+				if ((flow_last_gpm * flow_volume_per_pulse) > flow_gpm_alert_setpoint) {
+					flow_alert_flag = true;
+				}
 			}
 
 			//Added variable for tmp station name

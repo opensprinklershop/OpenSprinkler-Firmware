@@ -193,6 +193,8 @@ unsigned char prev_flow_state = HIGH;
 float flow_last_gpm=0;
 int32_t flow_rt_period = -1;
 int16_t flow_sid = -1; // current flow sensor station id, -1 means not set
+#define STATION_FLAG_BYTES ((MAX_NUM_STATIONS + 7) / 8)
+static uint8_t station_log_written_on_handoff[STATION_FLAG_BYTES] = {0};
 uint32_t reboot_timer = 0;
 unsigned char curr_alert_sid = 0;
 uint32_t ping_ok = 0;
@@ -204,6 +206,58 @@ static int16_t noflow_check_sid = -1;      // station being monitored for no-flo
 static ulong pipeburst_check_time = 0;    // millis timestamp when to check for pipe burst
 static ulong pipeburst_flow_snapshot = 0; // flow_count baseline when all stations off
 #define FLOW_ANOMALY_DELAY_MS 10000       // 10 seconds delay for both checks
+#define FLOW_ALERT_EVAL_DELAY_MS 180000   // evaluate high-flow alert after 3 minutes runtime
+static ulong flow_alert_check_time = 0;    // millis timestamp for high-flow alert evaluation
+static int16_t flow_alert_check_sid = -1;  // station being monitored for high-flow alert
+static uint8_t flow_alert_sent[STATION_FLAG_BYTES] = {0};
+
+static inline bool station_flag_get(const uint8_t *flags, unsigned char sid) {
+	if (!flags || sid >= MAX_NUM_STATIONS) return false;
+	return (flags[sid >> 3] & (uint8_t)(1U << (sid & 0x07))) != 0;
+}
+
+static inline void station_flag_set(uint8_t *flags, unsigned char sid) {
+	if (!flags || sid >= MAX_NUM_STATIONS) return;
+	flags[sid >> 3] |= (uint8_t)(1U << (sid & 0x07));
+}
+
+static inline void station_flag_clear(uint8_t *flags, unsigned char sid) {
+	if (!flags || sid >= MAX_NUM_STATIONS) return;
+	flags[sid >> 3] &= (uint8_t)~(1U << (sid & 0x07));
+}
+
+static bool get_flow_alert_setpoint(unsigned char sid, float *setpoint_out) {
+	if (!setpoint_out || sid >= MAX_NUM_STATIONS) return false;
+
+	uint16_t fasp = os.get_flow_alert_setpoint(sid);
+	if (fasp > 0) {
+		*setpoint_out = (float)fasp / 100.0f;
+		return true;
+	}
+
+	char station_name[STATION_NAME_SIZE];
+	os.get_station_name(sid, station_name);
+	const size_t len = strlen(station_name);
+	if (len < 5) return false;
+
+	const char *suffix = station_name + len - 5;
+	char *endptr = NULL;
+	double parsed = strtod(suffix, &endptr);
+	if (endptr == suffix || parsed <= 0.0) return false;
+
+	*setpoint_out = (float)parsed;
+	return true;
+}
+
+static bool flow_alert_exceeded(unsigned char sid, float flow_pulse_per_min) {
+	if (flow_pulse_per_min <= 0.0f) return false;
+
+	float setpoint = 0.0f;
+	if (!get_flow_alert_setpoint(sid, &setpoint)) return false;
+
+	float flow_rate = flow_pulse_per_min * os.get_flow_volume_per_pulse();
+	return flow_rate > setpoint;
+}
 
 static inline void update_station_flow_average(unsigned char sid, float flow_last_pulse_per_min, float flow_volume_per_pulse) {
 	if (flow_last_pulse_per_min <= 0.0f || sid >= MAX_NUM_STATIONS) return;
@@ -1574,6 +1628,34 @@ void do_loop()
 				}
 				pipeburst_check_time = 0; // one-shot: only alert once per all-off event
 			}
+
+			// High-flow check: start evaluating after 3 minutes, then poll once per second.
+			if (flow_alert_check_sid >= 0 && flow_alert_check_sid < MAX_NUM_STATIONS) {
+				if (os.is_running((unsigned char)flow_alert_check_sid)) {
+					if (!station_flag_get(flow_alert_sent, (unsigned char)flow_alert_check_sid) && flow_alert_check_time && now_ms >= flow_alert_check_time) {
+						float flow_pulse_per_min = (flow_rt_period > 0) ? ((float)60000.0f / (float)flow_rt_period) : 0.0f;
+						if (flow_alert_exceeded((unsigned char)flow_alert_check_sid, flow_pulse_per_min)) {
+							flow_last_gpm = flow_pulse_per_min;
+							int32_t duration = 0;
+							unsigned char fqid = pd.station_qid[flow_alert_check_sid];
+							if (fqid < pd.nqueue) {
+								RuntimeQueueStruct *fq = pd.queue + fqid;
+								if (curr_time >= fq->st) {
+									duration = (int32_t)(curr_time - fq->st);
+								}
+							}
+							notif.add(NOTIFY_FLOW_ALERT, flow_alert_check_sid, duration);
+							station_flag_set(flow_alert_sent, (unsigned char)flow_alert_check_sid);
+							flow_alert_check_time = 0;
+						} else {
+							flow_alert_check_time = now_ms + 1000;
+						}
+					}
+				} else {
+					flow_alert_check_sid = -1;
+					flow_alert_check_time = 0;
+				}
+			}
 		}
 
 		// ====== Schedule program data ======
@@ -2064,6 +2146,10 @@ void check_weather() {
  * This function turns on a scheduled station
  */
 void turn_on_station(unsigned char sid, ulong duration) {
+	if (sid < MAX_NUM_STATIONS) {
+		station_flag_clear(station_log_written_on_handoff, sid);
+	}
+
 	// RAH implementation of flow sensor
 	if (flow_sid >= 0 && flow_sid != sid) {
 		// if another station is running, stop its flow measurement
@@ -2087,8 +2173,13 @@ void turn_on_station(unsigned char sid, ulong duration) {
 					pd.lastrun.duration = curr_time - q->st;
 					pd.lastrun.endtime = curr_time;
 					write_log(LOGDATA_STATION, curr_time); // LOG_TODO
+					if (flow_sid >= 0 && flow_sid < MAX_NUM_STATIONS) {
+						station_flag_set(station_log_written_on_handoff, (unsigned char)flow_sid);
+					}
 					notif.add(NOTIFY_STATION_OFF, flow_sid, pd.lastrun.duration);
-					notif.add(NOTIFY_FLOW_ALERT, flow_sid, pd.lastrun.duration);
+					if (flow_sid >= 0 && flow_sid < MAX_NUM_STATIONS && !station_flag_get(flow_alert_sent, (unsigned char)flow_sid)) {
+						notif.add(NOTIFY_FLOW_ALERT, flow_sid, pd.lastrun.duration);
+					}
 				}
 			}
 		}
@@ -2097,6 +2188,9 @@ void turn_on_station(unsigned char sid, ulong duration) {
 	//Added flow_gallons reset to station turn on.
 	flow_gallons=0;
 	flow_sid = sid;
+	if (sid < MAX_NUM_STATIONS) {
+		station_flag_clear(flow_alert_sent, sid);
+	}
 
 	if (os.set_station_bit(sid, 1, duration)) {
 		notif.add(NOTIFY_STATION_ON, sid, duration);
@@ -2146,6 +2240,8 @@ void turn_on_station(unsigned char sid, ulong duration) {
 		noflow_check_time = millis() + FLOW_ANOMALY_DELAY_MS;
 		noflow_flow_snapshot = flow_count;
 		noflow_check_sid = sid;
+			flow_alert_check_sid = sid;
+			flow_alert_check_time = millis() + FLOW_ALERT_EVAL_DELAY_MS;
 	}
 	// Cancel pipe burst check since a station is now running
 	pipeburst_check_time = 0;
@@ -2310,14 +2406,21 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 		else {flow_last_gpm = 0;}  // RAH if not one gallon (two pulses) measured then record 0 gpm
 		update_station_flow_average(sid, flow_last_gpm, os.get_flow_volume_per_pulse());
 		flow_sid = -1;
+			flow_alert_check_sid = -1;
+			flow_alert_check_time = 0;
 	}
 	else flow_last_gpm = 0; // RAH if not flow zone then record 0 gpm
 
 	// check if the current time is past the scheduled start time,
 	// because we may be turning off a station that hasn't started yet
 	if (curr_time >= q->st) {
+		bool skip_log = (sid < MAX_NUM_STATIONS) ? station_flag_get(station_log_written_on_handoff, sid) : false;
+		if (sid < MAX_NUM_STATIONS) {
+			station_flag_clear(station_log_written_on_handoff, sid);
+		}
+
 		// record lastrun log (only for non-master stations)
-		if (os.status.mas != (sid + 1) && os.status.mas2 != (sid + 1)) {
+		if (!skip_log && os.status.mas != (sid + 1) && os.status.mas2 != (sid + 1)) {
 			pd.lastrun.station = sid;
 			pd.lastrun.program = qpid_decode(q->pid);
 			pd.lastrun.duration = curr_time - q->st;
@@ -2326,7 +2429,9 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 			// log station run
 			write_log(LOGDATA_STATION, curr_time); // LOG_TODO
 			notif.add(NOTIFY_STATION_OFF, sid, pd.lastrun.duration);
-			notif.add(NOTIFY_FLOW_ALERT, sid, pd.lastrun.duration);
+			if (sid < MAX_NUM_STATIONS && !station_flag_get(flow_alert_sent, sid)) {
+				notif.add(NOTIFY_FLOW_ALERT, sid, pd.lastrun.duration);
+			}
 		}
 	}
 

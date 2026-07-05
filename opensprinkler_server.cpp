@@ -3989,6 +3989,9 @@ void emit_sensor_warnings() {
 	bool has_asb = false, has_rs485 = false, has_mqtt = false;
 	bool has_zigbee = false, has_ble = false;
 	uint16_t detected = get_asb_detected_boards();
+	time_os_t now = os.now_tz();
+	bool mqtt_sensor_recent_data = false;
+	const time_os_t MQTT_SENSOR_GRACE_SECONDS = 15 * 60;
 
 	for (auto it = sensors_iterate_begin(); ; ) {
 		SensorBase *sensor = sensors_iterate_next(it);
@@ -3996,7 +3999,12 @@ void emit_sensor_warnings() {
 		int t = sensor->type;
 		if (t >= ASB_SENSORS_START && t <= ASB_SENSORS_END) has_asb = true;
 		else if (t >= RS485_SENSORS_START && t <= RS485_SENSORS_END) has_rs485 = true;
-		else if (t == SENSOR_MQTT) has_mqtt = true;
+		else if (t == SENSOR_MQTT) {
+			has_mqtt = true;
+			if (sensor->flags.data_ok && sensor->last_read > 0 && now >= sensor->last_read && (now - sensor->last_read) <= MQTT_SENSOR_GRACE_SECONDS) {
+				mqtt_sensor_recent_data = true;
+			}
+		}
 		else if (t == SENSOR_ZIGBEE) has_zigbee = true;
 		else if (t == SENSOR_BLE) has_ble = true;
 	}
@@ -4023,7 +4031,7 @@ void emit_sensor_warnings() {
 			if (!first) bfill.emit_p(PSTR(","));
 			bfill.emit_p(PSTR("\"MQTT_DISABLED\""));
 			first = false;
-		} else if (!os.mqtt.connected()) {
+		} else if (!os.mqtt.connected() && !mqtt_sensor_recent_data) {
 			if (!first) bfill.emit_p(PSTR(","));
 			bfill.emit_p(PSTR("\"MQTT_DISCONNECTED\""));
 			first = false;
