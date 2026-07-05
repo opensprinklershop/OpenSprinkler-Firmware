@@ -209,11 +209,17 @@ static bool gw_load_discovered_devices() {
         const char* date_code = obj["date_code"] | "";
         const char* sw_build_id = obj["sw_build_id"] | "";
         const char* vendor = obj["vendor"] | "";
+        const char* friendly_name = obj["friendly_name"] | "";
+        bool is_custom_name = obj["is_custom_name"] | false;
         strncpy(info.model_id, model, sizeof(info.model_id) - 1);
         strncpy(info.manufacturer, manufacturer, sizeof(info.manufacturer) - 1);
         strncpy(info.date_code, date_code, sizeof(info.date_code) - 1);
         strncpy(info.sw_build_id, sw_build_id, sizeof(info.sw_build_id) - 1);
         strncpy(info.vendor, vendor, sizeof(info.vendor) - 1);
+        if (friendly_name[0]) {
+            strncpy(info.friendly_name, friendly_name, sizeof(info.friendly_name) - 1);
+        }
+        info.is_custom_name = is_custom_name;
 
         gw_reset_discovered_devices_runtime_fields(info);
         info.battery = obj["battery"] | 255U;
@@ -255,6 +261,8 @@ static bool gw_save_discovered_devices() {
         if (dev.date_code[0] != '\0') obj["date_code"] = dev.date_code;
         if (dev.sw_build_id[0] != '\0') obj["sw_build_id"] = dev.sw_build_id;
         if (dev.vendor[0] != '\0') obj["vendor"] = dev.vendor;
+        if (dev.friendly_name[0] != '\0') obj["friendly_name"] = dev.friendly_name;
+        if (dev.is_custom_name) obj["is_custom_name"] = true;
         if (dev.battery != 255) obj["battery"] = dev.battery;
         if (dev.lqi != 0) obj["lqi"] = dev.lqi;
     }
@@ -1194,6 +1202,60 @@ void sensor_zigbee_gw_clear_new_device_flags() {
     for (auto& dev : gw_discovered_devices) {
         dev.is_new = false;
     }
+}
+
+bool sensor_zigbee_gw_rename_device(uint64_t ieee_addr, const char* new_name) {
+    if (ieee_addr == 0) return false;
+    if (!gw_discovered_devices_loaded) {
+        gw_load_discovered_devices();
+    }
+
+    ZigbeeDeviceInfo* dev = gw_find_discovered_device(ieee_addr);
+    if (!dev) return false;
+
+    char clean_name[sizeof(dev->friendly_name)] = {0};
+    if (new_name) {
+        size_t in_len = strlen(new_name);
+        size_t start = 0;
+        while (start < in_len && isspace((unsigned char)new_name[start])) start++;
+        size_t end = in_len;
+        while (end > start && isspace((unsigned char)new_name[end - 1])) end--;
+
+        size_t out = 0;
+        for (size_t i = start; i < end && out < sizeof(clean_name) - 1; i++) {
+            unsigned char ch = (unsigned char)new_name[i];
+            if (ch < 32) continue;
+            clean_name[out++] = (char)ch;
+        }
+        clean_name[out] = '\0';
+    }
+
+    bool changed = false;
+    if (clean_name[0] == '\0') {
+        if (dev->friendly_name[0] != '\0') {
+            dev->friendly_name[0] = '\0';
+            changed = true;
+        }
+        if (dev->is_custom_name) {
+            dev->is_custom_name = false;
+            changed = true;
+        }
+    } else {
+        if (strncmp(dev->friendly_name, clean_name, sizeof(dev->friendly_name)) != 0) {
+            strncpy(dev->friendly_name, clean_name, sizeof(dev->friendly_name) - 1);
+            dev->friendly_name[sizeof(dev->friendly_name) - 1] = '\0';
+            changed = true;
+        }
+        if (!dev->is_custom_name) {
+            dev->is_custom_name = true;
+            changed = true;
+        }
+    }
+
+    if (!changed) return true;
+
+    gw_mark_discovered_devices_dirty();
+    return gw_save_discovered_devices();
 }
 
 // ========== Tuya DP protocol handler (APS layer) ==========

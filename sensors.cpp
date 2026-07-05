@@ -3307,12 +3307,20 @@ void stop_monitor_action(Monitor_t * mon) {
   mon->time = os.now_tz();
   if (mon->zone > 0) {
     int sid = mon->zone-1;
-    unsigned char sqi = pd.station_qid[sid];
-    // Only act if the station is actually queued. Guard against sqi==0xFF,
-    // which would make (pd.queue + sqi) an out-of-bounds pointer.
-    if (sqi != 0xFF) {
-      RuntimeQueueStruct *q = pd.queue + sqi;
-      q->deque_time = mon->time;
+    bool had_zone_entries = false;
+
+    // Stop *all* queued/running entries for this zone, independent of program.
+    // This matches the zone-level monitor expectation: one stop action should
+    // clear the complete zone pipeline.
+    for (int i = pd.nqueue - 1; i >= 0; i--) {
+      RuntimeQueueStruct *q = &pd.queue[i];
+      if (q->sid == sid) {
+        q->deque_time = mon->time;
+        had_zone_entries = true;
+      }
+    }
+
+    if (had_zone_entries) {
       turn_off_station(sid, mon->time, 0);
       // DEBUG_PRINTLN(F("stop_monitor_action: turn_off_station"));
     }
@@ -3641,9 +3649,11 @@ void check_monitors() {
         mon->reset_time = timeNow + mon->reset_seconds; 
       } else if (mon->reset_time == 0 && mon->reset_seconds > 0) { //reset time not set, but reset seconds is set
         mon->reset_time = timeNow + mon->reset_seconds; 
-      } else if (stopOnly) {
+      } else if (stopOnly && mon->reset_seconds == 0) {
         // Continuously suppress while active: if the scheduler (or a manual run)
         // re-started the zone/program, force it off again on the next cycle.
+        // If reset_seconds > 0, we intentionally use pulse behavior: stop only
+        // on each new activation edge (or periodic re-activation), not every cycle.
         stop_monitor_action(mon);
       }
     }
