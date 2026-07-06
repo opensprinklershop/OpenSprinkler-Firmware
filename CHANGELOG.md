@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(217)] — in Entwicklung
+## [2.4.0(217)] — veröffentlicht 2026-07-06
 
 ### Added
 - **Monitor-Ausgangsmodus „Nur abschalten" (`om`)**: Ein Monitor kann jetzt so konfiguriert werden, dass er seine Zone bzw. sein Programm ausschließlich **abschaltet** und niemals startet (`output_mode`/`om`). Wird der Monitor aktiv, schaltet er die Zone ab und hält sie – auch gegen den normalen Zeitplan – ausgeschaltet; wird er inaktiv, übernimmt wieder der normale Scheduler. Damit lässt sich ein Kreis zuverlässig als reiner Sicherheits-/Abschalt-Watchdog überwachen, ohne dass der Monitor ihn selbst startet.
