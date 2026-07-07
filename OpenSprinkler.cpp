@@ -889,18 +889,14 @@ byte OpenSprinkler::start_ether() {
 		if (!init_W5500(true))
 			return 0;
 	}
-	#if OS_ETH_TOE
-	eth.useTOE = true;
 	DEBUG_PRINTLN(eth.isW5500 ? F("W5500 Ethernet-compatible mode enabled") : F("ENC28J60 Ethernet-compatible mode enabled"));
-	#endif
 	#else
 	Network.onEvent(etherOnEvent);
-	eth.useTOE = (OS_ETH_TOE != 0);
 
 	wifi_mode_t save_mode = WiFi.getMode(); // make sure WiFi mode is initialized before eth.begin() to
 	WiFi.mode(WIFI_OFF); // turn off WiFi to save resources (will be re-enabled if RainMaker is enabled)
 
-	DEBUG_PRINTLN(eth.useTOE ? F("W5500 TOE-compatible mode initialization...") : F("W5500 initialization..."));
+	DEBUG_PRINTLN(F("W5500 initialization..."));
 	DEBUG_PRINTF("CS=%d, IRQ=%d, RST=%d\n", PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET);
 
 	// W5500 shares SPI2_HOST bus with external flash (already initialized by init_external_flash()).
@@ -914,9 +910,11 @@ byte OpenSprinkler::start_ether() {
 		DEBUG_PRINTF("[ETH] gpio_install_isr_service failed: %d\n", (int)isr_err);
 	}
 	
-	// In TOE mode, 80MHz init is unstable on this target and can leave
-	// SPI/GPIO ISR resources partially initialized on retry.
-	// Use one single-pass initialization at 60MHz.
+	// W5500 shares SPI2_HOST bus with external flash (already initialized by init_external_flash()).
+	// Do NOT call SPI.begin() - it uses Arduino HAL register access which conflicts
+	// with the ESP-IDF spi_bus driver used by both external flash and W5500 MAC.
+	// Use eth.begin() with SPI host and pin numbers.
+	DEBUG_PRINTLN(F("W5500 begin:"));
 	const uint8_t eth_spi_mhz = 60;
 	delay(100);
 	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz)) {
@@ -924,7 +922,7 @@ byte OpenSprinkler::start_ether() {
 		WiFi.mode(save_mode); // restore WiFi mode on failure
 		return 0;
 	}
-	DEBUG_PRINTLN(eth.useTOE ? F("W5500 initialized successfully (TOE-compatible mode)") : F("W5500 initialized successfully (SPI2_HOST shared bus)"));
+	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus)"));
 	#endif
 
 
@@ -941,26 +939,7 @@ byte OpenSprinkler::start_ether() {
 	eth.setDefault();
 
 	if(!eth.begin((uint8_t*)tmp_buffer)) {
-		#if OS_ETH_TOE
-		if (eth.useTOE) {
-			DEBUG_PRINTLN(F("WARN: Ethernet begin failed in TOE mode, retrying lwIP mode"));
-			eth.useTOE = false;
-			if (iopts[IOPT_USE_DHCP]==0) {
-				IPAddress staticip(iopts+IOPT_STATIC_IP1);
-				IPAddress gateway(iopts+IOPT_GATEWAY_IP1);
-				IPAddress dns(iopts+IOPT_DNS_IP1);
-				IPAddress subn(iopts+IOPT_SUBNET_MASK1);
-				if (!eth.config(staticip, gateway, subn, dns))
-					return 0;
-			}
-			eth.setDefault();
-			if (!eth.begin((uint8_t*)tmp_buffer))
-				return 0;
-		} else
-		#endif
-		{
-			return 0;
-		}
+		return 0;
 	}
 	#else
 	if (iopts[IOPT_USE_DHCP]==0) { // config static IP before calling eth.begin

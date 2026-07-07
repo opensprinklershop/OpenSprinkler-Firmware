@@ -109,9 +109,21 @@ int RemoteJsonSensor::read(unsigned long time) {
     char filter_copy[200];
     int num_segments = 0;
     const char* segments[16];
+    int arrayIndex = 0;
     if (filter[0]) {
         strncpy(filter_copy, filter, sizeof(filter_copy) - 1);
         filter_copy[sizeof(filter_copy) - 1] = '\0';
+
+        char *lb = strrchr(filter_copy, '[');
+        if (lb) {
+            char *rb = strchr(lb, ']');
+            if (rb && rb > lb + 1) {
+                arrayIndex = atoi(lb + 1);
+                if (arrayIndex < 0) arrayIndex = 0;
+                *lb = '\0'; // strip "[N]" so the segment search works with plain text key
+            }
+        }
+
         char* token = strtok(filter_copy, "|");
         while (token && num_segments < 16) {
             segments[num_segments++] = token;
@@ -172,7 +184,7 @@ int RemoteJsonSensor::read(unsigned long time) {
             }
         } else {
             int remaining = bufferLen - (p - chunkBuffer);
-            if (remaining < 64 && stream->available()) {
+            if (remaining < 256 && stream->available()) {
                 int p_offset = p - chunkBuffer;
                 int keep_len = bufferLen - p_offset;
                 if (keep_len > 0) {
@@ -186,8 +198,19 @@ int RemoteJsonSensor::read(unsigned long time) {
                 continue;
             }
 
+            // Skip preceding numeric elements if arrayIndex > 0
+            for (int idx = 0; idx < arrayIndex; idx++) {
+                p = strpbrk(p, "0123456789.-+");
+                if (!p || p >= chunkBuffer + bufferLen) { p = NULL; break; }
+                while (p && *p && p < chunkBuffer + bufferLen &&
+                       ((*p >= '0' && *p <= '9') || *p == '.' || *p == '-' || *p == '+')) p++;
+            }
+
             char val_buf[32];
-            const char* val_start = strpbrk(p, "0123456789.-+nullNULL");
+            const char* val_start = NULL;
+            if (p) {
+                val_start = strpbrk(p, "0123456789.-+nullNULL");
+            }
             if (val_start && val_start < chunkBuffer + bufferLen) {
                 int i = 0;
                 const char* val_p = val_start;

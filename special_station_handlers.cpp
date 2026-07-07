@@ -49,6 +49,7 @@ static uint64_t parse_ieee_hex(const char *hex16) {
 	return ieee;
 }
 
+#if defined(OS_ENABLE_ZIGBEE)
  static void fill_logical_device_from_json(ZigBeeLogicalDevice& dev, ArduinoJson::JsonObjectConst obj) {
  	dev = ZigBeeLogicalDevice{};
 	dev.tuya_dp_value = -1;
@@ -165,6 +166,7 @@ static uint64_t parse_ieee_hex(const char *hex16) {
  	if (dev.unit[0] != '\0') obj["unit"] = dev.unit;
  	obj["unitid"] = dev.unitid;
  }
+#endif
 
  #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 static bool infer_tuya_from_sensor_rows(uint64_t ieee, uint8_t* inferred_dp) {
@@ -454,6 +456,10 @@ OpenSprinkler::LogicalDeviceMap* OpenSprinkler::zigbee_logical_devices_map = nul
 
 // Helper: Get or create the logical devices map
 static OpenSprinkler::LogicalDeviceMap& _get_logical_devices_map() {
+#if !defined(OS_ENABLE_ZIGBEE)
+	static OpenSprinkler::LogicalDeviceMap fallback_map;
+	return fallback_map;
+#else
 	if (!OpenSprinkler::zigbee_logical_devices_map) {
 		OpenSprinkler::zigbee_logical_devices_map = new (std::nothrow) OpenSprinkler::LogicalDeviceMap();
 		if (OpenSprinkler::zigbee_logical_devices_map) {
@@ -465,8 +471,10 @@ static OpenSprinkler::LogicalDeviceMap& _get_logical_devices_map() {
 		}
 	}
 	return *OpenSprinkler::zigbee_logical_devices_map;
+#endif
 }
 
+#if defined(OS_ENABLE_ZIGBEE)
 static void _clear_logical_devices_map(OpenSprinkler::LogicalDeviceMap& map) {
 	map.clear();
 }
@@ -505,6 +513,7 @@ static bool _save_logical_devices_map(OpenSprinkler::LogicalDeviceMap& map) {
 
 	return true;
 }
+#endif
 
 /** Register a logical device (insert or update) */
 bool OpenSprinkler::zigbee_logical_register(const ZigBeeLogicalDevice& logdev) {
@@ -616,9 +625,6 @@ uint16_t OpenSprinkler::zigbee_logical_count_ieee(const char *ieee) {
 }
 
 bool OpenSprinkler::zigbee_logical_load() {
-	auto& map = _get_logical_devices_map();
-	_clear_logical_devices_map(map);
-
 #if !defined(OS_ENABLE_ZIGBEE)
 	return true; // No-op for Matter version or non-Zigbee build - do not load Zigbee data
 #else
@@ -626,6 +632,9 @@ bool OpenSprinkler::zigbee_logical_load() {
 	if (!ieee802154_is_zigbee()) {
 		return true; // No-op for Matter/Disabled modes
 	}
+
+	auto& map = _get_logical_devices_map();
+	_clear_logical_devices_map(map);
 
 	if (!file_exists(kZigbeeLogicalDevicesFile)) {
 		return true;

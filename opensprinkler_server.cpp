@@ -3769,7 +3769,7 @@ void server_sensor_config(OTF_PARAMS_DEF)
 			strncpy(tmp_buffer, value, TMP_BUFFER_SIZE-1);
 			tmp_buffer[TMP_BUFFER_SIZE-1] = '\0';
 			urlDecodeAndUnescape(tmp_buffer);
-			config[key] = tmp_buffer;  // ArduinoJson copies char* (isLinked=false)
+			config[key] = String(tmp_buffer);  // ArduinoJson copies char* (isLinked=false)
 		}
 		qp = qp->next;
 	}
