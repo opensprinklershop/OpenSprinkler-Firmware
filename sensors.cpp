@@ -1036,6 +1036,10 @@ static bool sensor_parse_file(const char *fn) {
 
   for (JsonVariant v : arr) {
     uint sensorType = v["type"] | 0;
+    uint sensorNr = v["nr"] | 0;
+    if (sensorNr == 0 || sensorType == 0) {
+      continue; // Skip invalid sensor entries (type=0 or nr=0)
+    }
     boolean ip_based = (v["ip"] | 0) != 0;
 
     SensorBase *sensor = sensor_make_obj(sensorType, ip_based);

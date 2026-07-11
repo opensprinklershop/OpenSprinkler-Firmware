@@ -114,9 +114,14 @@ extern "C" {
 		#include <LittleFS.h>
 		#include "espconnect.h"
 		extern ESP8266WebServer *update_server;
+#if OS_ETH_TOE
+		extern ArduinoENC28J60lwIP enc28j60;
+		extern ArduinoWiznet5500lwIP w5500;
+#else
 		extern ENC28J60lwIP enc28j60;
 		extern Wiznet5500lwIP w5500;
-		extern lwipEth eth;
+#endif
+		extern OSEthernet eth;
 	#elif defined(ESP32)
 		#include <FS.h>
 		#include <LittleFS.h>

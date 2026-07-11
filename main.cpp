@@ -81,9 +81,14 @@ extern "C" void mbedtls_spiram_allow_internal_reroute(bool enable);
 		Pinger *pinger = NULL;
 		ESP8266WebServer *update_server = NULL;
 		DNSServer *dns = NULL;
+#if OS_ETH_TOE
+		ArduinoENC28J60lwIP enc28j60(PIN_ETHER_CS);
+		ArduinoWiznet5500lwIP w5500(PIN_ETHER_CS);
+#else
 		ENC28J60lwIP enc28j60(PIN_ETHER_CS); // ENC28J60 lwip for wired Ether
 		Wiznet5500lwIP w5500(PIN_ETHER_CS); // W5500 lwip for wired Ether
-		lwipEth eth;
+#endif
+		OSEthernet eth;
 		bool useEth = false; // tracks whether we are using WiFi or wired Ether connection
 	#elif defined(ESP32)
 		#include <ETH.h>

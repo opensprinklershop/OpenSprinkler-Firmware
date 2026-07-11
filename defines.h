@@ -267,6 +267,10 @@ enum {
 	#endif
 #endif
 
+#if !defined(OS_ETH_TOE)
+  #define OS_ETH_TOE 0
+#endif
+
 /* Weather Adjustment Methods */
 enum {
 	WEATHER_METHOD_MANUAL = 0,
@@ -622,7 +626,7 @@ enum {
 	// W5500 Ethernet: SCK=6, MISO=14, MOSI=13, CS=3, RST=EN(hardwired HIGH)
 	#define PIN_ETHER_CS       3  // Ethernet CS (chip select pin)
 	#define PIN_EXT_FLASH_CS   5  // external flash CS pin
-	#define PIN_ETHER_IRQ     27   // W5500 INT pin on GPIO7 (PIN_FREE3)
+	#define PIN_ETHER_IRQ     27   // W5500 INT pin on GPIO27
 	#define PIN_ETHER_RESET   -1  // RESET hardwired to EN (always HIGH)
 #endif
 

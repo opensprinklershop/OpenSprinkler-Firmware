@@ -21,6 +21,7 @@
 #include "sensor_remote_json.h"
 #include "sensors.h"
 #include "OpenSprinkler.h"
+#include <new>
 
 #if defined(ESP8266)
 #include <ESP8266HTTPClient.h>
@@ -74,26 +75,35 @@ int RemoteJsonSensor::read(unsigned long time) {
     HTTPClient http;
     int httpCode = 0;
     bool opened = false;
-    WiFiClientSecure client_secure;
-    WiFiClient client_plain;
+    WiFiClientSecure *client_secure = nullptr;
+    WiFiClient *client = nullptr;
 
     http.setTimeout(SENSOR_READ_TIMEOUT);
 
     if (strncmp(url, "https://", 8) == 0) {
-        client_secure.setInsecure();
-        if (http.begin(client_secure, url)) {
-            httpCode = http.GET();
-            opened = true;
+        client_secure = new WiFiClientSecure();
+        if (client_secure) {
+            client_secure->setInsecure();
+            client = client_secure;
         }
     } else {
-        if (http.begin(client_plain, url)) {
-            httpCode = http.GET();
-            opened = true;
-        }
+        client = new WiFiClient();
+    }
+
+    if (!client) {
+        flags.data_ok = false;
+        return HTTP_RQT_NOT_RECEIVED;
+    }
+
+    if (http.begin(*client, url)) {
+        httpCode = http.GET();
+        opened = true;
     }
 
     if (!opened || httpCode != 200) {
         if (opened) http.end();
+        if (client_secure) delete client_secure;
+        else if (client) delete client;
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
@@ -101,6 +111,8 @@ int RemoteJsonSensor::read(unsigned long time) {
     WiFiClient *stream = http.getStreamPtr();
     if (!stream) {
         http.end();
+        if (client_secure) delete client_secure;
+        else if (client) delete client;
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
@@ -131,7 +143,14 @@ int RemoteJsonSensor::read(unsigned long time) {
         }
     }
 
-    char chunkBuffer[1536];
+    char *chunkBuffer = new char[1536];
+    if (!chunkBuffer) {
+        http.end();
+        if (client_secure) delete client_secure;
+        else if (client) delete client;
+        flags.data_ok = false;
+        return HTTP_RQT_NOT_RECEIVED;
+    }
     int bufferLen = 0;
     int current_segment_idx = 0;
     const char* p = chunkBuffer;
@@ -145,12 +164,16 @@ int RemoteJsonSensor::read(unsigned long time) {
 
         // Fill buffer from stream if there's space and data
         if (stream->available() && bufferLen < 1400) {
-            int to_read = sizeof(chunkBuffer) - bufferLen - 1;
+            int to_read = 1536 - bufferLen - 1;
             int read_bytes = stream->read(reinterpret_cast<uint8_t*>(chunkBuffer + bufferLen), to_read);
             if (read_bytes > 0) {
                 bufferLen += read_bytes;
                 chunkBuffer[bufferLen] = '\0';
             }
+        }
+
+        if (bufferLen == 0 && !stream->available() && !stream->connected()) {
+            break;
         }
 
         if (current_segment_idx < num_segments) {
@@ -167,19 +190,41 @@ int RemoteJsonSensor::read(unsigned long time) {
                 current_segment_idx++;
                 continue;
             } else {
+                // Shift or wait for more data
                 int p_offset = p - chunkBuffer;
-                int keep_len = bufferLen - p_offset;
-                if (keep_len > 0) {
-                    memmove(chunkBuffer, p, keep_len);
-                    bufferLen = keep_len;
-                } else {
-                    bufferLen = 0;
+                if (p_offset > 0) {
+                    int keep_len = bufferLen - p_offset;
+                    if (keep_len > 0) {
+                        memmove(chunkBuffer, p, keep_len);
+                        bufferLen = keep_len;
+                    } else {
+                        bufferLen = 0;
+                    }
+                    chunkBuffer[bufferLen] = '\0';
+                    p = chunkBuffer;
+                    continue;
+                } else if (bufferLen >= 1400) {
+                    // Buffer is full but p is already at the beginning of the buffer.
+                    // This means the segment was not found in 1400 bytes. Discard old data.
+                    int discard_len = bufferLen - current_seg_len + 1;
+                    if (discard_len > 0) {
+                        memmove(chunkBuffer, chunkBuffer + discard_len, current_seg_len - 1);
+                        bufferLen = current_seg_len - 1;
+                    } else {
+                        bufferLen = 0;
+                    }
+                    chunkBuffer[bufferLen] = '\0';
+                    p = chunkBuffer;
+                    continue;
                 }
-                chunkBuffer[bufferLen] = '\0';
-                p = chunkBuffer;
 
                 if (!stream->available()) {
-                    break;
+                    if (!stream->connected()) {
+                        break;
+                    } else {
+                        delay(1);
+                        continue;
+                    }
                 }
             }
         } else {
@@ -233,6 +278,9 @@ int RemoteJsonSensor::read(unsigned long time) {
     }
 
     http.end();
+    delete[] chunkBuffer;
+    if (client_secure) delete client_secure;
+    else if (client) delete client;
 
 #elif defined(OSPI)
     naettReq *req = naettRequest(url, naettMethod("GET"));

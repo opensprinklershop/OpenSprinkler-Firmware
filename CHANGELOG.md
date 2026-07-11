@@ -6,6 +6,14 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(218)] — veröffentlicht 2026-07-08
+
+### Fixed
+- **Ausfall/Blockade durch Remote-JSON-Sensor**: Behebt eine Endlosschleife (Busy-Spinning) mit 100% CPU-Überlastung im HTTP-JSON-Sensor-Parser (`sensor_remote_json.cpp`), wenn keine Daten am Stream anlagen (`stream->available() == 0`), der Puffer aber nicht leer war (`bufferLen > 0`). Die Blockade fror den gesamten Loop-Task des Controllers ein, was zu extrem trägem Verhalten (Minutenlangen Delays), fehlerhaften zeitgesteuerten Starts und nicht erreichbarem Webserver / Timeouts im Interface führte.
+- **Kompilierungsfehler auf 64-Bit-Systemen (OSPi)**: Behebt den Konflikt zwischen dem Submodul `OpenThings-Framework-Firmware-Library` und den Firmware-Definitionen bezüglich des Rückgetyps von `millis()` (`uint32_t` vs `unsigned long` / `ulong`) auf 64-Bit Linux-Systemen (wie z.B. Debian Bookworm 64-bit auf RPi 4/5). Das Submodul `OpenThings-Framework-Firmware-Library` sollte auf die neueste Revision `4243385` aktualisiert werden, um die Typübereinstimmung sicherzustellen.
+
+---
+
 ## [2.4.0(217)] — veröffentlicht 2026-07-06
 
 ### Added

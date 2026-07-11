@@ -28,6 +28,7 @@
 #include "testmode.h"
 #include "program.h"
 #include "ArduinoJson.hpp"
+#include "psram_utils.h"
 #include "sunrise.h"
 #include "ieee802154_config.h"
 
@@ -602,6 +603,10 @@ bool OpenSprinkler::load_hardware_mac(unsigned char* buffer, bool wired) {
 	// ESP_MAC_ETH gives the Ethernet MAC (used by W5500 driver via arduino-esp32).
 	// ESP_MAC_WIFI_STA gives the WiFi STA MAC.
 	esp_read_mac(buffer, wired ? ESP_MAC_ETH : ESP_MAC_WIFI_STA);
+	if (wired) {
+		// The arduino-esp32 W5500 driver calls esp_derive_local_mac to derive a local MAC for Ethernet
+		esp_derive_local_mac(buffer, buffer);
+	}
 	return true;
 #else
 	// initialize the buffer by assigning software mac
@@ -646,6 +651,7 @@ unsigned char OpenSprinkler::start_network() {
 		// hands the 2.4 GHz radio to Zigbee/BLE, after which WiFi.mode(STA) fails.
 		// WIFI_STA is started but never connected to any AP; all data uses ETH.
 		if (WiFi.mode(WIFI_STA)) {
+			WiFi.setAutoReconnect(false); // disable background auto-reconnects when on Ethernet
 			WiFi.disconnect(false, false); // don't auto-connect to stored APs
 			ESP_LOGI("OS", "Ethernet+RainMaker: WiFi in STA mode (no AP connect)");
 			log_net_mem_checkpoint("start_network:after_wifi_mode_sta");
@@ -857,6 +863,35 @@ void etherOnEvent(arduino_event_id_t event, arduino_event_info_t info)
 			DEBUG_PRINT(F("ETH IP: "));
 			DEBUG_PRINTLN(eth.localIP());
 			useEth = true;
+			// Asynchronously retrieve DHCP details and update options on ESP32
+			{
+				uint32_t eth_dns_ip = 0;
+				esp_netif_t *eth_netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+				if (!eth_netif) {
+					// Fallback: try the first ETH netif by iterating
+					esp_netif_t *n = nullptr;
+					while ((n = esp_netif_next_unsafe(n)) != nullptr) {
+						const char *k = esp_netif_get_ifkey(n);
+						if (k && strncmp(k, "ETH", 3) == 0) { eth_netif = n; break; }
+					}
+				}
+				if (eth_netif) {
+					esp_netif_dns_info_t dns_info = {};
+					if (esp_netif_get_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns_info) == ESP_OK) {
+						eth_dns_ip = dns_info.ip.u_addr.ip4.addr;
+					}
+				}
+				DEBUG_PRINT(F("eth.dns:"));
+				DEBUG_PRINTLN(IPAddress(eth_dns_ip));
+
+				if (os.iopts[IOPT_USE_DHCP]) {
+					memcpy(os.iopts+IOPT_STATIC_IP1, &(eth.localIP()[0]), 4);
+					memcpy(os.iopts+IOPT_GATEWAY_IP1, &(eth.gatewayIP()[0]),4);
+					memcpy(os.iopts+IOPT_DNS_IP1, &eth_dns_ip, 4);
+					memcpy(os.iopts+IOPT_SUBNET_MASK1, &(eth.subnetMask()[0]), 4);
+					os.iopts_save();
+				}
+			}
 			break;
 		case ARDUINO_EVENT_ETH_LOST_IP:
 			DEBUG_PRINTLN(F("ETH Lost IP"));
@@ -889,14 +924,28 @@ byte OpenSprinkler::start_ether() {
 		if (!init_W5500(true))
 			return 0;
 	}
+#if OS_ETH_TOE
+	DEBUG_PRINTLN(eth.isW5500 ? F("[ETH-TOE] W5500 Hardware TCP/IP (TOE) Mode enabled") : F("[ETH-TOE] ENC28J60 Emulation Mode enabled"));
+#else
 	DEBUG_PRINTLN(eth.isW5500 ? F("W5500 Ethernet-compatible mode enabled") : F("ENC28J60 Ethernet-compatible mode enabled"));
+#endif
 	#else
 	Network.onEvent(etherOnEvent);
 
 	wifi_mode_t save_mode = WiFi.getMode(); // make sure WiFi mode is initialized before eth.begin() to
 	WiFi.mode(WIFI_OFF); // turn off WiFi to save resources (will be re-enabled if RainMaker is enabled)
 
+	// Stabilize W5500 CS pin (set to HIGH) before initializing the driver
+	if (PIN_ETHER_CS >= 0) {
+		pinMode(PIN_ETHER_CS, OUTPUT);
+		digitalWrite(PIN_ETHER_CS, HIGH);
+	}
+
+#if OS_ETH_TOE
+	DEBUG_PRINTLN(F("[ETH-TOE] W5500 Hardware TCP/IP (TOE) Mode initialization..."));
+#else
 	DEBUG_PRINTLN(F("W5500 initialization..."));
+#endif
 	DEBUG_PRINTF("CS=%d, IRQ=%d, RST=%d\n", PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET);
 
 	// W5500 shares SPI2_HOST bus with external flash (already initialized by init_external_flash()).
@@ -915,7 +964,15 @@ byte OpenSprinkler::start_ether() {
 	// with the ESP-IDF spi_bus driver used by both external flash and W5500 MAC.
 	// Use eth.begin() with SPI host and pin numbers.
 	DEBUG_PRINTLN(F("W5500 begin:"));
+#if defined(ESP32C5)
+	const uint8_t eth_spi_mhz = 20;
+	DEBUG_PRINTLN(F("[ESP32-C5] Configuring W5500 SPI frequency at 20 MHz (stable shared SPI)"));
+#elif OS_ETH_TOE
+	const uint8_t eth_spi_mhz = 80;
+	DEBUG_PRINTLN(F("[ETH-TOE] Configuring W5500 SPI frequency at 80 MHz"));
+#else
 	const uint8_t eth_spi_mhz = 60;
+#endif
 	delay(100);
 	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
@@ -923,6 +980,9 @@ byte OpenSprinkler::start_ether() {
 		return 0;
 	}
 	DEBUG_PRINTLN(F("W5500 initialized successfully (SPI2_HOST shared bus)"));
+#if defined(ESP32C5)
+	delay(250); // Settle delay to avoid brownout/startup issues on ESP32-C5
+#endif
 	#endif
 
 
@@ -954,9 +1014,17 @@ byte OpenSprinkler::start_ether() {
 
 	lcd_print_line_clear_pgm(PSTR("Start wired link"), 1);
 	#if defined(ESP8266)
+#if OS_ETH_TOE
+	lcd_print_line_clear_pgm(eth.isW5500 ? PSTR(" [w5500-toe] ") : PSTR(" [enc-emul] "), 2);
+#else
 	lcd_print_line_clear_pgm(eth.isW5500 ? PSTR("  [w5500]    ") : PSTR(" [enc28j60]  "), 2);
+#endif
 	#else
+#if OS_ETH_TOE
+	lcd_print_line_clear_pgm(PSTR(" [w5500-toe] "), 2);
+#else
 	lcd_print_line_clear_pgm(PSTR("  [w5500]    "), 2);
+#endif
 	#endif
 
 	/*
@@ -972,6 +1040,12 @@ byte OpenSprinkler::start_ether() {
 		timecount++;
 	}*/
 	lcd_print_line_clear_pgm(PSTR(""), 2);
+#if defined(ESP32) || (defined(ESP8266) && OS_ETH_TOE)
+	// In fully asynchronous / non-blocking mode:
+	// We return 1 immediately once the Ethernet controller has been successfully initialized.
+	// Saving DHCP-retrieved IPs occurs asynchronously (on ESP32 inside etherOnEvent).
+	return 1;
+#else
 	if (eth.connected()) {
 		// if wired connection is successful at this point, copy the network ips to config
 		DEBUG_PRINTLN();
@@ -982,31 +1056,11 @@ byte OpenSprinkler::start_ether() {
 		// 0.0.0.0 when WiFi is not connected, which would corrupt the stored
 		// persistent options.
 		uint32_t eth_dns_ip = 0;
-		#if defined(ESP32)
-		{
-			esp_netif_t *eth_netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
-			if (!eth_netif) {
-				// Fallback: try the first ETH netif by iterating
-				esp_netif_t *n = nullptr;
-				while ((n = esp_netif_next_unsafe(n)) != nullptr) {
-					const char *k = esp_netif_get_ifkey(n);
-					if (k && strncmp(k, "ETH", 3) == 0) { eth_netif = n; break; }
-				}
-			}
-			if (eth_netif) {
-				esp_netif_dns_info_t dns_info = {};
-				if (esp_netif_get_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns_info) == ESP_OK) {
-					eth_dns_ip = dns_info.ip.u_addr.ip4.addr;
-				}
-			}
-		}
-		#else
 		// ESP8266: read the primary DNS from lwIP directly (eth object has no dnsIP())
 		{
 			const ip_addr_t *dns_addr = dns_getserver(0);
 			if (dns_addr) eth_dns_ip = dns_addr->addr;
 		}
-		#endif
 		DEBUG_PRINT(F("eth.dns:"));
 		DEBUG_PRINTLN(IPAddress(eth_dns_ip));
 
@@ -1022,6 +1076,7 @@ byte OpenSprinkler::start_ether() {
 		// if wired connection has failed at this point, return depending on whether the user wants to force wired
 		return (iopts[IOPT_FORCE_WIRED] ? 1 : 0);
 	}
+#endif
 
 #else
 	Ethernet.init(PIN_ETHER_CS);  // make sure to call this before any Ethernet calls
@@ -2814,7 +2869,7 @@ static void send_http_request_async_task(void* arg) {
 		if (req->request) free(req->request);
 		free(req);
 	}
-	vTaskDelete(NULL);
+	PSRAM_TASK_SELF_DELETE();
 }
 #else
 struct AsyncHttpRequestParams {
@@ -3094,7 +3149,7 @@ int8_t OpenSprinkler::send_http_request_async(const char* server, uint16_t port,
 	req->timeout = effective_timeout;
 	req->expect_response = expect_response;
 
-	BaseType_t task_ok = xTaskCreate(send_http_request_async_task, "http_async", 8192, req, 1, NULL);
+	BaseType_t task_ok = PSRAM_TASK_CREATE(send_http_request_async_task, "http_async", 8192, req, 1, NULL);
 	if (task_ok != pdPASS) {
 		free(req->request);
 		free(req);
