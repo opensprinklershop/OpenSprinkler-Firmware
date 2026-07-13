@@ -61,6 +61,12 @@ static bool gw_zigbee_initialized = false;
 static bool gw_zigbee_connected = false;
 static unsigned long gw_join_window_end = 0;
 static bool gw_zigbee_needs_nvram_reset = false;
+// Set once Zigbee.begin() has failed (e.g. internal RAM exhaustion prevents the
+// ZBOSS task stack allocation). Retrying begin() is UNSAFE: the report-receiver
+// endpoint has already been handed to ZigbeeCore, and a second begin() would
+// dereference stale endpoint state → Load access fault panic. Once failed we
+// degrade gracefully (gateway disabled until reboot) instead of crashing.
+static bool gw_zigbee_begin_failed = false;
 
 // WiFi-off join state machine (Zigbee Gateway on WiFi only).
 // Joining a new device fails while WiFi keeps the shared 2.4 GHz radio busy, so
@@ -3317,6 +3323,20 @@ void sensor_zigbee_gw_start() {
         return;
     }
 
+    // A previous Zigbee.begin() failed (typically internal RAM exhaustion).
+    // Do NOT retry: the report-receiver endpoint was already registered with
+    // ZigbeeCore, so a second begin() would touch stale state and panic
+    // (Load access fault). Degrade gracefully — the gateway stays disabled
+    // until the next reboot, when more internal RAM may be available.
+    if (gw_zigbee_begin_failed) {
+        static bool begin_failed_warning_shown = false;
+        if (!begin_failed_warning_shown) {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW] Zigbee.begin() previously failed — gateway disabled until reboot (retry is unsafe)"));
+            begin_failed_warning_shown = true;
+        }
+        return;
+    }
+
     // Zigbee stays active once started (no stop/restart toggling).
 
     // Load the Gateway dataset into zb_storage (swaps out any Client snapshot).
@@ -3378,12 +3398,13 @@ void sensor_zigbee_gw_start() {
     }
 #endif
 
-    // Log heap state before Zigbee init for diagnostics
-    // DEBUG_PRINTF(F("[ZIGBEE-GW] Heap before init: internal free=%u, largest=%u, PSRAM free=%u, largest=%u\n"),
-                 // heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 // heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-                 // heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                 // heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    // [ZBMEM] Instrumentation: measure exact internal vs PSRAM split across ZBOSS
+    // init to determine what (if anything) is movable to PSRAM.
+    DEBUG_PRINTF("[ZBMEM] before esp_zb config: internal=%u B (largest=%u) | psram=%u B (largest=%u)\n",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     // Configure ZBOSS memory BEFORE esp_zb_init() (which is called inside Zigbee.begin()).
     // The Coordinator/Router role allocates neighbor, routing, and source-route tables
@@ -3409,12 +3430,24 @@ void sensor_zigbee_gw_start() {
     DEBUG_PRINTLN(F("[ZIGBEE-GW] Starting as COORDINATOR..."));
     if (!Zigbee.begin(ZIGBEE_COORDINATOR)) {
         DEBUG_PRINTLN(F("[ZIGBEE-GW] ERROR: Zigbee.begin(COORDINATOR) FAILED!"));
-        delete gw_reportReceiver;
-        gw_reportReceiver = nullptr;
+        // Mark begin as permanently failed for this boot. Do NOT delete
+        // gw_reportReceiver here: ZigbeeCore has already taken ownership of the
+        // endpoint pointer via addEndpoint(); freeing it would leave a dangling
+        // reference inside ZigbeeCore that panics on any later begin() retry.
+        // Keeping the (small) object avoids the dangling pointer; the
+        // gw_zigbee_begin_failed guard prevents any retry from this boot.
+        gw_zigbee_begin_failed = true;
         return;
     }
 
     gw_zigbee_initialized = true;
+    // [ZBMEM] After Zigbee.begin(): shows how much internal vs PSRAM the ZBOSS
+    // stack + 802.15.4 driver + Zigbee_main task consumed.
+    DEBUG_PRINTF("[ZBMEM] after Zigbee.begin: internal=%u B (largest=%u) | psram=%u B (largest=%u)\n",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
     Zigbee.onGlobalDefaultResponse(gw_zigbee_default_response_cb);
     // DEBUG_PRINTLN(F("[ZIGBEE-GW] Zigbee Coordinator started successfully!"));
     // DEBUG_PRINTF("[ZIGBEE-GW] Zigbee.started()=%d, Zigbee.connected()=%d\n",
@@ -3458,6 +3491,13 @@ bool sensor_zigbee_gw_is_active() {
 bool sensor_zigbee_gw_ensure_started() {
     if (gw_zigbee_initialized) {
         return true;
+    }
+
+    // A prior Zigbee.begin() failed this boot — never retry (see note at the
+    // gw_zigbee_begin_failed declaration). Return quietly to avoid log spam on
+    // every sensor read; sensor_zigbee_gw_start() logs the one-shot warning.
+    if (gw_zigbee_begin_failed) {
+        return false;
     }
 
     // Never start Zigbee in SOFTAP mode (RF conflict with 802.15.4)

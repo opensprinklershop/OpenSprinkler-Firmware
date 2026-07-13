@@ -50,6 +50,7 @@ extern "C" {
 #include <esp_local_ctrl.h>
 #include <esp_wifi.h>
 #include <nvs.h>
+#include <WiFi.h>
 
 // Exported by prebuilt RainMaker library — handles CmdSetUserMapping protobuf
 // and calls esp_rmaker_start_user_node_mapping() internally.
@@ -1800,6 +1801,15 @@ static esp_err_t start_local_ctrl_manually() {
   D->lc_httpd_cfg.transport_mode = HTTPD_SSL_TRANSPORT_INSECURE;
   D->lc_httpd_cfg.httpd.ctrl_port   = D->lc_httpd_cfg.httpd.ctrl_port + 10;  // avoid clash with OTF
   D->lc_httpd_cfg.httpd.max_uri_handlers = 12;
+  // HTTPD_SSL_CONFIG_DEFAULT() hard-codes a TLS-sized 10 KB task stack. This
+  // transport is INSECURE (plain HTTP); only the protocomm SEC1 handshake
+  // (X25519 + AES, mostly heap-backed) runs on it, so the full TLS stack is
+  // unnecessary. The stack is MALLOC_CAP_INTERNAL (xTaskCreate — cannot live in
+  // PSRAM), so right-sizing it is the only way to relieve internal-RAM pressure
+  // here. 6 KB leaves comfortable margin for httpd + SEC1 while saving 4 KB of
+  // scarce internal RAM (fixes ESP_ERR_HTTPD_TASK when Zigbee GW has already
+  // consumed most internal RAM at boot).
+  D->lc_httpd_cfg.httpd.stack_size = 6144;
 
   // Build proper SEC1 security params (PoP struct, not raw string)
   D->lc_sec1 = {};
@@ -2018,6 +2028,27 @@ static esp_err_t rmaker_do_start(OSRainMakerData *d) {
   }
 
   d->pending_start = false;
+
+  // ── Reclaim WiFi RAM on Ethernet ─────────────────────────────────────────
+  // WiFi STA was only initialized so esp_rmaker_node_init() (called earlier in
+  // OSRainMaker::init()) could read the station MAC for the node ID. The agent,
+  // MQTT and local_ctrl all run over Ethernet — WiFi is never connected. Now
+  // that RainMaker is fully up, turn WiFi OFF to reclaim ~24 KB of internal RAM
+  // (critical on ESP32-C5, which runs near 0 KB free) and hand the shared
+  // 2.4 GHz radio to Zigbee/BLE. arduino-esp32's WiFi.mode(WIFI_OFF) calls
+  // esp_wifi_stop()+esp_wifi_deinit(), freeing the static RX/TX buffers.
+  if (useEth) {
+    wifi_mode_t wm = WIFI_MODE_NULL;
+    if (esp_wifi_get_mode(&wm) == ESP_OK && wm != WIFI_MODE_NULL) {
+      uint32_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      WiFi.mode(WIFI_OFF);
+      uint32_t after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      DEBUG_PRINTF("[RMAKER] Ethernet active — WiFi STA disabled; internal RAM %u -> %u bytes (+%d)\n",
+                   (unsigned)before, (unsigned)after, (int)(after - before));
+      ESP_LOGI(TAG, "Ethernet active — WiFi STA disabled to reclaim internal RAM");
+    }
+  }
+
   return ESP_OK;
 }
 
