@@ -8,15 +8,31 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ## [2.4.0(219)] — veröffentlicht 2026-07-14
 
+### Added
+- **Remote-JSON-/MQTT-Sensor: Array-Index in verschachtelten Pfaden**: Die `[N]`-Array-Index-Adressierung funktioniert jetzt auch auf **nicht-letzten** Segmenten eines Filters, z. B. `ch_soil[3]|humidity`. Intern wird die Auswahl des N-ten Array-Elements durch wiederholte Segment-Suche emuliert; die abschließende `[N]`-Variante (z. B. `hourly|wind_gusts_10m[3]`) bleibt weiterhin gültig.
+- **OTA-Fähigkeits-Erkennung (Dual-OTA)**: Der Update-Server meldet nun seine Plattform-Fähigkeiten als JSON (`dualOta`, `uploadPort`, `platform`). ESP32-C5 meldet `dualOta:1`, ESP32/ESP8266 `dualOta:0`, sodass das UI den passenden Upload-Weg wählen kann.
+
 ### Changed
 - **Sensor-Gruppen: Mehrfachzuordnung über Gruppen-Nr**: Ein Gruppen-Sensor (MIN/MAX/AVG/SUM) kann jetzt selbst eine Gruppen-Nr besitzen. Ist diese gesetzt (≠ 0), fließen **alle** Sensoren mit derselben Gruppen-Nr in die Berechnung ein – dadurch können mehrere Gruppen-Sensoren (z. B. AVG und MIN) dieselben Mitglieder auswerten und ein Sensor lässt sich mehreren Gruppen zuordnen. Andere Gruppen-Sensoren werden dabei übersprungen, damit sich Gruppen nicht gegenseitig aufsummieren. Bleibt die Gruppen-Nr des Gruppen-Sensors leer bzw. `0`, gilt weiterhin das bisherige Verhalten: Mitglieder verweisen über ihre Gruppen-Nr auf die Sensor-Nr des Gruppen-Sensors (verschachtelte Gruppen bleiben erhalten).
+- **ESP32-C5: Optimierung des internen RAM**: Sobald Ethernet + RainMaker aktiv sind, wird die WiFi-STA abgeschaltet, um ~24 KB knappen internen RAM freizugeben (und das 2,4-GHz-Radio an Zigbee/BLE zu übergeben). Zusätzlich wurde der Task-Stack des `local_ctrl`-HTTPD von 10 KB auf 6 KB verkleinert – der Transport ist reines HTTP, der volle TLS-Stack wird nicht benötigt.
+- **Speicherschonende JSON-Erzeugung**: Große Konfigurations-/JSON-Puffer werden nicht mehr auf dem Stack gehalten; das `ArduinoJson::JsonDocument` wird jetzt heap-basiert (`new (std::nothrow)`) angelegt. Die Sensor-Liste (`/sl`) und weitere Endpunkte bleiben auch unter Speicherdruck bedienbar (Notfall-Fallback mit `"warnings":["LOW_MEMORY"]`), statt den Webserver hängen zu lassen.
+
+### Fixed
+- **ESP32-C5 Zigbee-Gateway: Absturz (Load-Access-Fault) verhindert**: Nach einem fehlgeschlagenen `Zigbee.begin()` (typisch bei erschöpftem internen RAM) wird **kein erneuter** `begin()`-Versuch mehr unternommen. Ein zweiter Aufruf hätte auf bereits an `ZigbeeCore` übergebene, veraltete Endpoint-Zustände zugegriffen und das System zum Absturz gebracht. Der Gateway degradiert nun kontrolliert (bis zum nächsten Reboot deaktiviert), statt zu paniken.
+- **`ESP_ERR_HTTPD_TASK` beim Boot (ESP32-C5)**: Behebt das Fehlschlagen der HTTPD-Task-Erzeugung, wenn das Zigbee-Gateway beim Start bereits den Großteil des internen RAM belegt hatte (siehe Stack-Right-Sizing oben).
+- **Stack-Overflow unter Speichermangel**: Beseitigt mögliche Stack-Überläufe durch die Auslagerung großer Puffer vom Stack in den Heap.
 
 ---
 
 ## [2.4.0(218)] — veröffentlicht 2026-07-08
 
+### Changed
+- **Entfernung des veralteten Ethernet-TOE-Modus**: Der Legacy-„TCP/IP Offload Engine"-Pfad wurde vollständig entfernt (`defines.h`, `OpenSprinkler.h/.cpp`, `main.cpp`), um die Ethernet-Initialisierung zu vereinheitlichen und zu vereinfachen.
+
 ### Fixed
 - **Ausfall/Blockade durch Remote-JSON-Sensor**: Behebt eine Endlosschleife (Busy-Spinning) mit 100% CPU-Überlastung im HTTP-JSON-Sensor-Parser (`sensor_remote_json.cpp`), wenn keine Daten am Stream anlagen (`stream->available() == 0`), der Puffer aber nicht leer war (`bufferLen > 0`). Die Blockade fror den gesamten Loop-Task des Controllers ein, was zu extrem trägem Verhalten (Minutenlangen Delays), fehlerhaften zeitgesteuerten Starts und nicht erreichbarem Webserver / Timeouts im Interface führte.
+- **W5500-SPI-Bus-Konflikt (ESP32-C5)**: Der W5500-Ethernet-MAC teilt sich den `SPI2_HOST`-Bus mit dem externen Flash. `SPI.begin()` (Arduino-HAL-Registerzugriff) kollidierte mit dem ESP-IDF-`spi_bus`-Treiber; die Initialisierung erfolgt nun ausschließlich über `eth.begin()` mit SPI-Host- und Pin-Nummern.
+- **UTC-Zeitzonen-Fix**: Korrigiert die Zeitbehandlung im UTC-/Zeitzonen-Pfad.
 - **Kompilierungsfehler auf 64-Bit-Systemen (OSPi)**: Behebt den Konflikt zwischen dem Submodul `OpenThings-Framework-Firmware-Library` und den Firmware-Definitionen bezüglich des Rückgetyps von `millis()` (`uint32_t` vs `unsigned long` / `ulong`) auf 64-Bit Linux-Systemen (wie z.B. Debian Bookworm 64-bit auf RPi 4/5). Das Submodul `OpenThings-Framework-Firmware-Library` sollte auf die neueste Revision `4243385` aktualisiert werden, um die Typübereinstimmung sicherzustellen.
 
 ---
