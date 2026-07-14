@@ -2209,11 +2209,20 @@ void sensor_update_groups() {
         case SENSOR_GROUP_AVG:
         case SENSOR_GROUP_SUM: {
           uint nr = sensor->nr;
+          // If the group sensor itself has a group number assigned, aggregate
+          // all sensors sharing that group number (allows multiple group
+          // sensors to reference the same members). Otherwise fall back to the
+          // legacy behavior where members point to this group sensor's nr.
+          boolean shared = (sensor->group != 0);
+          uint target = shared ? sensor->group : nr;
           double value = 0;
           int n = 0;
           for (auto &kv2 : sensorsMap) {
             SensorBase *member = kv2.second;
-            if (member->nr != nr && member->group == nr && member->flags.enable) {
+            // In shared mode, skip other group sensors so groups don't
+            // aggregate each other when they share the same group number.
+            if (shared && sensor_isgroup(member)) continue;
+            if (member->nr != nr && member->group == target && member->flags.enable) {
               switch (sensor->type) {
                 case SENSOR_GROUP_MIN:
                   if (n++ == 0) value = member->last_data;

@@ -28,10 +28,21 @@ int GroupSensor::read(unsigned long time) {
   double value = 0;
   int n = 0;
 
+  // If the group sensor itself has a group number assigned, aggregate all
+  // sensors sharing that group number (allows the same members to feed
+  // multiple group sensors). Otherwise fall back to the legacy behavior
+  // where members reference this group sensor's nr.
+  bool shared = (group != 0);
+  uint target = shared ? group : nr;
+
   for (auto it = sensors_iterate_begin(); ; ) {
     SensorBase *member = sensors_iterate_next(it);
     if (!member) break;
-    if (member->nr == nr || member->group != nr || !member->flags.enable)
+    if (member->nr == nr || member->group != target || !member->flags.enable)
+      continue;
+    // In shared mode, skip other group sensors so groups don't aggregate
+    // each other when they share the same group number.
+    if (shared && sensor_isgroup(member))
       continue;
     switch (type) {
       case SENSOR_GROUP_MIN:
@@ -66,17 +77,24 @@ unsigned char GroupSensor::getUnitId() const {
   
   for (int iteration = 0; iteration < 100; iteration++) {
     bool found = false;
-    
+
+    // In shared mode the group sensor carries its own group number and
+    // aggregates all sensors sharing it; otherwise members reference nr.
+    bool shared = (current->group != 0);
+    uint target = shared ? current->group : current->nr;
+
     for (auto it = sensors_iterate_begin(); ; ) {
       SensorBase *sen = sensors_iterate_next(it);
       if (!sen) break;
-      
+
       // Check if this sensor is a member of the current group
-      if (sen != current && sen->group > 0 && sen->group == current->nr) {
+      if (sen != current && sen->group > 0 && sen->group == target) {
         // If it's not a group sensor, return its unit ID
         if (!sensor_isgroup(sen)) {
           return sen->getUnitId();
         }
+        // In shared mode groups don't nest into each other.
+        if (shared) continue;
         // If it's a nested group, continue searching from that group
         current = sen;
         found = true;
