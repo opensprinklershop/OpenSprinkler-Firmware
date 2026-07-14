@@ -6,6 +6,13 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(219)] — veröffentlicht 2026-07-14
+
+### Changed
+- **Sensor-Gruppen: Mehrfachzuordnung über Gruppen-Nr**: Ein Gruppen-Sensor (MIN/MAX/AVG/SUM) kann jetzt selbst eine Gruppen-Nr besitzen. Ist diese gesetzt (≠ 0), fließen **alle** Sensoren mit derselben Gruppen-Nr in die Berechnung ein – dadurch können mehrere Gruppen-Sensoren (z. B. AVG und MIN) dieselben Mitglieder auswerten und ein Sensor lässt sich mehreren Gruppen zuordnen. Andere Gruppen-Sensoren werden dabei übersprungen, damit sich Gruppen nicht gegenseitig aufsummieren. Bleibt die Gruppen-Nr des Gruppen-Sensors leer bzw. `0`, gilt weiterhin das bisherige Verhalten: Mitglieder verweisen über ihre Gruppen-Nr auf die Sensor-Nr des Gruppen-Sensors (verschachtelte Gruppen bleiben erhalten).
+
+---
+
 ## [2.4.0(218)] — veröffentlicht 2026-07-08
 
 ### Fixed
