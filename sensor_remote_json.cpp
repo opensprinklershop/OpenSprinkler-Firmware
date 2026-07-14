@@ -117,7 +117,10 @@ int RemoteJsonSensor::read(unsigned long time) {
         return HTTP_RQT_NOT_RECEIVED;
     }
 
-    // Parse filters
+    // Parse filters.
+    // Supports legacy repeated-segment syntax and index syntax such as:
+    //   ch_soil[3]|humidity
+    // by expanding it to repeated next-segment matches internally.
     char filter_copy[200];
     int num_segments = 0;
     const char* segments[16];
@@ -126,20 +129,45 @@ int RemoteJsonSensor::read(unsigned long time) {
         strncpy(filter_copy, filter, sizeof(filter_copy) - 1);
         filter_copy[sizeof(filter_copy) - 1] = '\0';
 
-        char *lb = strrchr(filter_copy, '[');
-        if (lb) {
-            char *rb = strchr(lb, ']');
-            if (rb && rb > lb + 1) {
-                arrayIndex = atoi(lb + 1);
-                if (arrayIndex < 0) arrayIndex = 0;
-                *lb = '\0'; // strip "[N]" so the segment search works with plain text key
+        char* raw_segments[16];
+        int raw_count = 0;
+        char* token = strtok(filter_copy, "|");
+        while (token && raw_count < 16) {
+            raw_segments[raw_count++] = token;
+            token = strtok(NULL, "|");
+        }
+
+        int parsed_index[16];
+        for (int i = 0; i < raw_count; i++) {
+            parsed_index[i] = -1;
+            char* seg = raw_segments[i];
+            char* lb = strrchr(seg, '[');
+            if (lb) {
+                char* rb = strchr(lb, ']');
+                if (rb && rb[1] == '\0' && rb > lb + 1) {
+                    int idx = atoi(lb + 1);
+                    if (idx < 0) idx = 0;
+                    parsed_index[i] = idx;
+                    *lb = '\0';
+                }
             }
         }
 
-        char* token = strtok(filter_copy, "|");
-        while (token && num_segments < 16) {
-            segments[num_segments++] = token;
-            token = strtok(NULL, "|");
+        for (int i = 0; i < raw_count && num_segments < 16; i++) {
+            segments[num_segments++] = raw_segments[i];
+
+            // If index is on a non-last segment, emulate array element selection by
+            // repeating the next key search. Example:
+            // ch_soil[3]|humidity -> ch_soil|humidity|humidity|humidity|humidity
+            if (parsed_index[i] >= 0) {
+                if (i + 1 < raw_count) {
+                    for (int r = 0; r < parsed_index[i] && num_segments < 16; r++) {
+                        segments[num_segments++] = raw_segments[i + 1];
+                    }
+                } else {
+                    arrayIndex = parsed_index[i];
+                }
+            }
         }
     }
 
@@ -254,7 +282,7 @@ int RemoteJsonSensor::read(unsigned long time) {
             char val_buf[32];
             const char* val_start = NULL;
             if (p) {
-                val_start = strpbrk(p, "0123456789.-+nullNULL");
+                val_start = strpbrk(p, "0123456789.-+");
             }
             if (val_start && val_start < chunkBuffer + bufferLen) {
                 int i = 0;

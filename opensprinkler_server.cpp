@@ -1593,7 +1593,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #endif
 
 #if defined(USE_OTF)
-	static PSRAM_BSS_ATTR char otc_buf[MAX_SOPTS_SIZE + 1];
+	char otc_buf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_OTC_OPTS, otc_buf, MAX_SOPTS_SIZE);
 	normalize_json_object_fragment(otc_buf, sizeof(otc_buf));
 	bfill.emit_p(PSTR("\"otc\":{$S},\"otcs\":$D,"), otc_buf, otf->getCloudStatus());
@@ -1609,19 +1609,20 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("\"mac\":\"$X:$X:$X:$X:$X:$X\","), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
 	{
-		static PSRAM_BSS_ATTR char wto_buf[MAX_SOPTS_SIZE + 1];
-		static PSRAM_BSS_ATTR char mqtt_buf[MAX_SOPTS_SIZE + 1];
-		os.sopt_load(SOPT_WEATHER_OPTS, wto_buf, MAX_SOPTS_SIZE);
-		os.sopt_load(SOPT_MQTT_OPTS, mqtt_buf, MAX_SOPTS_SIZE);
-		normalize_json_object_fragment(wto_buf, sizeof(wto_buf));
-		normalize_json_object_fragment(mqtt_buf, sizeof(mqtt_buf));
-		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":{$S},\"wtdata\":"),
+		char opt_buf[MAX_SOPTS_SIZE + 1];
+		os.sopt_load(SOPT_WEATHER_OPTS, opt_buf, MAX_SOPTS_SIZE);
+		normalize_json_object_fragment(opt_buf, sizeof(opt_buf));
+		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":"),
 					 SOPT_LOCATION,
 					 SOPT_JAVASCRIPTURL,
 					 SOPT_WEATHERURL,
-					 wto_buf,
-					 SOPT_IFTTT_KEY,
-					 mqtt_buf);
+					 opt_buf,
+					 SOPT_IFTTT_KEY);
+
+		os.sopt_load(SOPT_MQTT_OPTS, opt_buf, MAX_SOPTS_SIZE);
+		normalize_json_object_fragment(opt_buf, sizeof(opt_buf));
+		bfill.emit_p(PSTR("{$S},\"wtdata\":"), opt_buf);
+
 		emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
 		bfill.emit_p(PSTR(",\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
 					 wt_errCode,
@@ -1631,7 +1632,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 #if defined(SUPPORT_EMAIL)
 	{
-		static PSRAM_BSS_ATTR char email_buf[MAX_SOPTS_SIZE + 1];
+		char email_buf[MAX_SOPTS_SIZE + 1];
 		os.sopt_load(SOPT_EMAIL_OPTS, email_buf, MAX_SOPTS_SIZE);
 		bfill.emit_p(PSTR("\"email\":"));
 		emit_json_object_value_or_empty(email_buf, sizeof(email_buf));
@@ -3930,30 +3931,45 @@ void server_sensor_readnow(OTF_PARAMS_DEF) {
 void sensorconfig_json(OTF_PARAMS_DEF) {
 	bool first = true;
 	uint8_t batch_count = 0;
+	ArduinoJson::JsonDocument *doc = new (std::nothrow) ArduinoJson::JsonDocument();
 	for (auto it = sensors_iterate_begin(); ; ) {
 		SensorBase *sensor = sensors_iterate_next(it);
 		if (!sensor) break;
 
 		if (first) first = false; else bfill.emit_p(PSTR(","));
 
-		ArduinoJson::JsonDocument doc;
-		ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+		if (!doc) {
+			// Keep the response usable even under memory pressure.
+			sensor->emitJson(bfill);
+			batch_count++;
+			if (bfill.avail() < 128 || batch_count >= 8) {
+				send_packet(OTF_PARAMS);
+				batch_count = 0;
+				#if defined(ARDUINO)
+				yield();
+				#endif
+			}
+			continue;
+		}
+
+		doc->clear();
+		ArduinoJson::JsonObject obj = doc->to<ArduinoJson::JsonObject>();
 		sensor->toJson(obj);
-		const size_t json_len = ArduinoJson::measureJson(doc);
+		const size_t json_len = ArduinoJson::measureJson(*doc);
 
 		if (json_len <= bfill.avail()) {
-			const size_t written = ArduinoJson::serializeJson(doc, bfill.cursor(), bfill.avail() + 1);
+			const size_t written = ArduinoJson::serializeJson(*doc, bfill.cursor(), bfill.avail() + 1);
 			bfill.advance(written);
 		} else {
 			send_packet(OTF_PARAMS);
 
 			if (json_len <= bfill.avail()) {
-				const size_t written = ArduinoJson::serializeJson(doc, bfill.cursor(), bfill.avail() + 1);
+				const size_t written = ArduinoJson::serializeJson(*doc, bfill.cursor(), bfill.avail() + 1);
 				bfill.advance(written);
 			} else {
 				char *json_buf = (char*)malloc(json_len + 1);
 				if (json_buf) {
-					const size_t written = ArduinoJson::serializeJson(doc, json_buf, json_len + 1);
+					const size_t written = ArduinoJson::serializeJson(*doc, json_buf, json_len + 1);
 					const char *src = json_buf;
 					size_t remaining = written;
 					while (remaining) {
@@ -3978,8 +3994,12 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
 		if (bfill.avail() < 128 || batch_count >= 8) {
 			send_packet(OTF_PARAMS);
 			batch_count = 0;
+			#if defined(ARDUINO)
+			yield();
+			#endif
 		}
 	}
+	if (doc) delete doc;
 }
 
 /**
@@ -4089,6 +4109,21 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 	//DEBUG_PRINTLN(F("server_sensor_list"));
 	//DEBUG_PRINT(F("server_count: "));
 	//DEBUG_PRINTLN(sensor_count());
+	
+	bool sl_suspended_services = false;
+#if defined(ESP8266)
+	// On ESP8266, /sl can run out of heap after long uptimes or large restores.
+	// Temporarily suspend optional subsystems to free memory for JSON generation.
+	if (freeMemory() < 8192) {
+		if (OSMqtt::enabled()) {
+			OSMqtt::suspend();
+			sl_suspended_services = true;
+		}
+		os.influxdb.suspend();
+		delay(5);
+		yield();
+	}
+#endif
 
 	uint test = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("test"), true))
@@ -4107,6 +4142,15 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("{\"test\":$D,"), test);
 		bfill.emit_p(PSTR("\"detected\":$D}"), get_asb_detected_boards());
 	} else {
+		// Emergency fallback for extremely low-memory situations: keep endpoint
+		// responsive so the UI can recover instead of hanging indefinitely.
+#if defined(ESP8266)
+		if (freeMemory() < 3072) {
+			bfill.emit_p(PSTR("{\"count\":$D,\"detected\":$D,\"warnings\":[\"LOW_MEMORY\"],\"sensors\":[]}"),
+				sensor_count(), get_asb_detected_boards());
+		} else
+#endif
+		{
 		bfill.emit_p(PSTR("{\"count\":$D,"), sensor_count());
 		bfill.emit_p(PSTR("\"detected\":$D,"), get_asb_detected_boards());
 		emit_sensor_warnings();
@@ -4114,7 +4158,15 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 		sensorconfig_json(OTF_PARAMS);
 		bfill.emit_p(PSTR("]"));
 		bfill.emit_p(PSTR("}"));
+		}
 	}
+
+#if defined(ESP8266)
+	if (sl_suspended_services) {
+		OSMqtt::resume();
+		os.influxdb.resume();
+	}
+#endif
 	handle_return(HTML_OK);
 }
 
@@ -7424,9 +7476,11 @@ void on_update_options() {
 void on_update_capabilities() {
 	update_server->sendHeader("Access-Control-Allow-Origin", "*");
 #if defined(ESP32C5)
-	update_server->send(200, "application/json", "{\"dualOta\":1,\"uploadPort\":8080}");
+	update_server->send(200, "application/json", "{\"dualOta\":1,\"uploadPort\":8080,\"platform\":\"esp32c5\"}");
+#elif defined(ESP32)
+	update_server->send(200, "application/json", "{\"dualOta\":0,\"uploadPort\":8080,\"platform\":\"esp32\"}");
 #else
-	update_server->send(200, "application/json", "{\"dualOta\":0,\"uploadPort\":8080}");
+	update_server->send(200, "application/json", "{\"dualOta\":0,\"uploadPort\":8080,\"platform\":\"esp8266\"}");
 #endif
 }
 

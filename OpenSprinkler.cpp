@@ -3446,9 +3446,9 @@ void OpenSprinkler::parse_otc_config() {
 	const char *token = NULL;
 	int port = DEFAULT_OTC_PORT_DEV;
 	int en = 0;
-	static PSRAM_BSS_ATTR char saved_config[MAX_SOPTS_SIZE + 1];
-	static PSRAM_BSS_ATTR char config[MAX_SOPTS_SIZE + 1];
-	static PSRAM_BSS_ATTR char json[MAX_SOPTS_SIZE + 3];
+	char saved_config[MAX_SOPTS_SIZE + 1];
+	char config[MAX_SOPTS_SIZE + 1];
+	char json[MAX_SOPTS_SIZE + 3];
 
 	sopt_load(SOPT_OTC_OPTS, saved_config);
 	strcpy(config, saved_config);

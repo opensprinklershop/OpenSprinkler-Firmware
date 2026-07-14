@@ -2712,8 +2712,13 @@ bool checkDiskFree() {
 
 // SensorBase default emitJson implementation
 void SensorBase::emitJson(BufferFiller& bfill) const {
-  ArduinoJson::JsonDocument doc;
-  ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+  ArduinoJson::JsonDocument *doc = new (std::nothrow) ArduinoJson::JsonDocument();
+  if (!doc) {
+    // Last-resort payload to keep the JSON stream valid under memory pressure.
+    bfill.emit_p(PSTR("{\"nr\":$D,\"type\":$D}"), nr, type);
+    return;
+  }
+  ArduinoJson::JsonObject obj = doc->to<ArduinoJson::JsonObject>();
   toJson(obj);
 
   // Temperature conversion removed — now handled by client app
@@ -2721,8 +2726,9 @@ void SensorBase::emitJson(BufferFiller& bfill) const {
   // Serialize direkt in den Zielbuffer (vermeidet Heap-String-Allokationen)
   const size_t cap = bfill.avail() + 1; // +1 für Nullterminator
   char* out = bfill.cursor();
-  const size_t written = ArduinoJson::serializeJson(doc, out, cap);
+  const size_t written = ArduinoJson::serializeJson(*doc, out, cap);
   bfill.advance(written);
+  delete doc;
 }
 
 // SensorBase default implementation for getUnitId()
@@ -3745,69 +3751,87 @@ const char* findSegment(const char* payload, const char* p, size_t length, const
 }
 
 int findValue(const char *payload, unsigned int length, const char *jsonFilter, double& value) {
-	char *p = (char*)payload;				
-	char *f = (char*)jsonFilter;
-	bool emptyFilter = !jsonFilter||!jsonFilter[0];
+  char *p = (char*)payload;				
+  bool emptyFilter = !jsonFilter||!jsonFilter[0];
 
-	// Optional array index addressing: a trailing "[N]" on the filter selects
-	// the N-th (0-based) numeric element of a JSON array, e.g. the filter
-	// "hourly|wind_gusts_10m[3]" reads the 4th value of
-	// {"hourly":{"wind_gusts_10m":[14.8,18.7,20.5,22.3,...]}}. Without a "[N]"
-	// suffix the behavior is unchanged (first numeric value after the key).
-	char filterbuf[128];
-	int arrayIndex = 0;
-	if (!emptyFilter) {
-		strncpy(filterbuf, jsonFilter, sizeof(filterbuf)-1);
-		filterbuf[sizeof(filterbuf)-1] = 0;
-		char *lb = strrchr(filterbuf, '[');
-		if (lb) {
-			char *rb = strchr(lb, ']');
-			if (rb && rb > lb+1) {
-				arrayIndex = atoi(lb+1);
-				if (arrayIndex < 0) arrayIndex = 0;
-				*lb = 0; // strip "[N]" so the key search matches the plain key
-			}
-		}
-		jsonFilter = filterbuf;
-		f = (char*)jsonFilter;
-	}
+  char filterbuf[128];
+  const char* segments[16];
+  int segment_index[16];
+  int segment_count = 0;
+  int arrayIndex = 0;
 
-	while (!emptyFilter && f && p) {
-		f = strstr((char*)jsonFilter, "|");
-		if (f) {
-			p = (char*)findSegment(payload, p, length, jsonFilter, f-jsonFilter);
-			jsonFilter = f+1;
-		} else {
-			p = (char*)findSegment(payload, p, length, jsonFilter, strlen(jsonFilter));
-			break;
-		}
-	}
-	if (p) {
-		p += emptyFilter?0:strlen(jsonFilter);
-		char buf[30];
-		// Advance to the requested array element by skipping preceding numeric tokens.
-		for (int idx = 0; idx < arrayIndex; idx++) {
-			p = strpbrk(p, "0123456789.-+");
-			if (!p || p >= (char*)payload+length) { p = NULL; break; }
-			while (p && *p && p < (char*)payload+length &&
-			       ((*p >= '0' && *p <= '9') || *p == '.' || *p == '-' || *p == '+')) p++;
-		}
-		if (p) p = strpbrk(p, "0123456789.-+nullNULL");
-		uint i = 0;
-		while (p && i < sizeof(buf) && p < (char*)payload+length) {
-			char ch = *p++;
-			if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+') {
-				buf[i++] = ch;
-			} else break;
-		}
-		buf[i] = 0;
-		DEBUG_PRINT(F("result: "));
-		DEBUG_PRINTLN(buf);	
+  if (!emptyFilter) {
+    strncpy(filterbuf, jsonFilter, sizeof(filterbuf)-1);
+    filterbuf[sizeof(filterbuf)-1] = 0;
 
-		value = -9999;
-		return sscanf(buf, "%lf", &value);
-	}
-	return 0;
+    char *token = strtok(filterbuf, "|");
+    while (token && segment_count < 16) {
+      segments[segment_count] = token;
+      segment_index[segment_count] = -1;
+
+      char *lb = strrchr(token, '[');
+      if (lb) {
+        char *rb = strchr(lb, ']');
+        if (rb && rb[1] == 0 && rb > lb+1) {
+          int idx = atoi(lb+1);
+          if (idx < 0) idx = 0;
+          segment_index[segment_count] = idx;
+          *lb = 0;
+        }
+      }
+
+      segment_count++;
+      token = strtok(NULL, "|");
+    }
+  }
+
+  for (int i = 0; !emptyFilter && i < segment_count && p; i++) {
+    const char *seg = segments[i];
+    size_t seg_len = strlen(seg);
+    p = (char*)findSegment(payload, p, length, seg, seg_len);
+    if (!p) break;
+    p += seg_len;
+
+    int idx = segment_index[i];
+    if (idx >= 0) {
+      if (i + 1 < segment_count) {
+        const char *next_seg = segments[i + 1];
+        size_t next_len = strlen(next_seg);
+        for (int r = 0; r < idx && p; r++) {
+          p = (char*)findSegment(payload, p, length, next_seg, next_len);
+          if (p) p += next_len;
+        }
+      } else {
+        arrayIndex = idx;
+      }
+    }
+  }
+
+  if (p) {
+    char buf[30];
+    // Advance to the requested array element by skipping preceding numeric tokens.
+    for (int idx = 0; idx < arrayIndex; idx++) {
+      p = strpbrk(p, "0123456789.-+");
+      if (!p || p >= (char*)payload+length) { p = NULL; break; }
+      while (p && *p && p < (char*)payload+length &&
+             ((*p >= '0' && *p <= '9') || *p == '.' || *p == '-' || *p == '+')) p++;
+    }
+    if (p) p = strpbrk(p, "0123456789.-+");
+    uint i = 0;
+    while (p && i < sizeof(buf) && p < (char*)payload+length) {
+      char ch = *p++;
+      if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+') {
+        buf[i++] = ch;
+      } else break;
+    }
+    buf[i] = 0;
+    DEBUG_PRINT(F("result: "));
+    DEBUG_PRINTLN(buf);	
+
+    value = -9999;
+    return sscanf(buf, "%lf", &value);
+  }
+  return 0;
 }
 
 int findString(const char *payload, unsigned int length, const char *jsonFilter, String& value) {

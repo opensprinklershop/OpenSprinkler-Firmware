@@ -354,7 +354,9 @@
         const capUrl = '//' + window.location.hostname + ':8080/upcap';
         fetch(capUrl).then(function(r){ return r.ok ? r.json() : null; }).then(function(d) {
             const dualOta = !!(d && Number(d.dualOta) === 1);
-            setDualOtaUIVisible(dualOta);
+            const platform = d && typeof d.platform === 'string' ? d.platform.toLowerCase() : '';
+            const isEsp32C5 = platform === 'esp32c5';
+            setDualOtaUIVisible(dualOta && isEsp32C5);
         }).catch(function(){
             // Keep dual-OTA controls hidden when capabilities are unavailable.
             setDualOtaUIVisible(false);
