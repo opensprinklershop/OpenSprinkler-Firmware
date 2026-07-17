@@ -3024,6 +3024,13 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	}
 
 	if (!expect_response) {
+		// Command-only request (remote/HTTP/OTC stations): we don't read a
+		// response body, but we MUST make sure the request bytes are actually
+		// transmitted before closing. On ESP32/lwIP client->stop() closes the
+		// socket and can discard still-buffered TX data (or send an RST),
+		// which truncates the /cm request so the remote controller never
+		// executes it. flush() blocks until the output buffer is drained.
+		client->flush();
 		client->stop();
 		if (!shared_client) delete client;
 		#if defined(ESP8266) || defined(ESP32)
@@ -3491,6 +3498,16 @@ void OpenSprinkler::parse_otc_config() {
 void OpenSprinkler::options_setup() {
 
 	DEBUG_PRINTLN(F("OpenSprinkler options setup"));
+#if defined(ESP32C5)
+	// First-boot / post-factory-reset hardware self-test for hand-soldered
+	// ESP32-C5 boards: runs once whenever the completion marker is missing
+	// (i.e. on the very first boot and after every factory reset). It exercises
+	// the on-board peripherals and GPIOs and reports faulty devices/pins on the
+	// display before the normal factory_reset() writes DONE_FILENAME.
+	if (!file_exists(DONE_FILENAME)) {
+		hardware_selftest();
+	}
+#endif
 	// Check reset conditions:
 	if (file_read_byte(IOPTS_FILENAME, IOPT_FW_VERSION)!=OS_FW_VERSION ||  // fw major version has changed
 			!file_exists(DONE_FILENAME)) {  // done file doesn't exist

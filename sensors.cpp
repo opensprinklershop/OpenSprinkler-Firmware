@@ -3134,41 +3134,42 @@ void monitor_save() {
   const char *tmpfile = MONITOR_FILENAME ".tmp";
   const char *bakfile = MONITOR_FILENAME ".bak";
 
-  // Create JSON document
-  ArduinoJson::JsonDocument doc;
-  ArduinoJson::JsonArray array = doc.to<ArduinoJson::JsonArray>();
-
-  // Serialize all monitors
-  size_t expected = 0;
-  for (auto &kv : monitorsMap) {
-    Monitor_t *mon = kv.second;
-    if (mon) {
-      ArduinoJson::JsonObject obj = array.add<ArduinoJson::JsonObject>();
-      mon->toJson(obj);
-      expected++;
-    }
-  }
-
-  // Bail out if the document could not be built completely (out of memory).
-  // Writing a truncated document over the live file is exactly what caused the
-  // total loss of all monitors reported in #263.
-  if (doc.overflowed() || array.size() != expected) {
-    DEBUG_PRINTLN(F("monitor_save: JSON build overflowed, keeping previous file"));
-    return;
-  }
-
-  // Write to a temporary file first so a failed/partial write never clobbers
-  // the existing good data.
+  // Stream-serialize monitors one at a time to minimize peak heap usage.
+  // Building the full array in a single JsonDocument can OOM on ESP8266 when
+  // many (HTTP/HTTPS) sensors already fragment the heap; the whole-list build
+  // would then silently drop monitors (#272: "adding one more HTTP sensor loses
+  // monitors"). A per-monitor document keeps the peak allocation tiny.
   if (file_exists(tmpfile)) remove_file(tmpfile);
-  size_t written = 0;
+  bool ok = true;
   {
     FileWriter writer(tmpfile);
-    written = ArduinoJson::serializeJson(doc, writer);
+    writer.write('[');
+
+    bool first = true;
+    for (auto &kv : monitorsMap) {
+      Monitor_t *mon = kv.second;
+      if (!mon) continue;
+
+      if (!first) writer.write(',');
+      first = false;
+
+      ArduinoJson::JsonDocument doc;
+      ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
+      mon->toJson(obj);
+      if (doc.overflowed()) ok = false;
+      ArduinoJson::serializeJson(doc, writer);
+    }
+
+    writer.write(']');
   }  // writer flushes its buffer on destruction here
 
-  // Validate the temp file: a valid serialization is at least "[]" (2 bytes)
-  // and the on-disk size must match what serializeJson reported.
-  if (written < 2 || file_size(tmpfile) != written) {
+  // Validate the temp file: must be non-empty, terminate with ']' (the stream
+  // completed), and no per-monitor build must have overflowed (OOM). Otherwise
+  // keep the previous good file untouched (data-loss protection, #263).
+  ulong tsize = file_size(tmpfile);
+  unsigned char lastc = 0;
+  if (tsize > 0) file_read_block(tmpfile, &lastc, tsize - 1, 1);
+  if (!ok || tsize < 2 || lastc != ']') {
     DEBUG_PRINTLN(F("monitor_save: serialization failed, keeping previous file"));
     remove_file(tmpfile);
     return;  // previous good file (if any) stays intact

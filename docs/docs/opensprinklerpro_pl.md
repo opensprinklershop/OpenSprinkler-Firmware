@@ -2,7 +2,7 @@
 
 OpenSprinklerPro to rozszerzony zestaw funkcji dla sterowników OpenSprinkler, zaprojektowany dla instalacji wymagających nowoczesnej integracji radiowej, zaawansowanych czujników, aktualizacji online, dostępu do asystentów AI (poprzez protokół MCP) oraz kompleksowego monitorowania urządzeń. Rozszerzenie bazuje na standardowych funkcjach nawadniania: sekcjach (strefach), harmonogramach (programach), korektach pogodowych, historii pracy i zdalnym dostępie (przeglądarka / aplikacja mobilna).
 
-Oprogramowanie OpenSprinklerShop (w tym rozszerzenia OpenSprinklerPro) posiada własną, niezależną numerację wersji firmware od głównej gałęzi (upstream). Obecna stabilna wersja firmware OpenSprinklerShop to **2.4.0(213)**.
+Oprogramowanie OpenSprinklerShop (w tym rozszerzenia OpenSprinklerPro) posiada własną, niezależną numerację wersji firmware od głównej gałęzi (upstream). Obecna stabilna wersja firmware OpenSprinklerShop to **2.4.0(219)**.
 
 ## Przegląd funkcji
 

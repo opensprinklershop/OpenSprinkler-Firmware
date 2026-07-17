@@ -540,6 +540,9 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void mwdata_check_month(time_os_t curr_time);
 
 	static void options_setup();
+#if defined(ESP32C5)
+	static void hardware_selftest(); // first-boot GPIO/peripheral self-test (board bring-up)
+#endif
 	static void pre_factory_reset();
 	static void factory_reset();
 	static void iopts_load();

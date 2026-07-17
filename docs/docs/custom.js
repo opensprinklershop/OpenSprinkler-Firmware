@@ -47,7 +47,9 @@ function initLanguageSelector() {
       de: "zigbee-de",
       fr: "zigbee-fr",
       it: "zigbee-it",
-      pt: "zigbee-pt"
+      pt: "zigbee-pt",
+      hu: "zigbee-hu",
+      pl: "zigbee-pl"
     },
     "analog-sensor-config": {
       en: "analog-sensor-config",

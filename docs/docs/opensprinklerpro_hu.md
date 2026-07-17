@@ -2,7 +2,7 @@
 
 Az OpenSprinklerPro egy kibővített funkciókészlet az OpenSprinkler öntözésvezérlőkhöz, amelyek modern rádiós integrációkat, fejlettebb érzékelőket, online frissítéseket, valamint AI/MCP hozzáférést és komplex eszköz-felügyeletet igényelnek. Az alapvető OpenSprinkler funkciókra épül: zónák, programok, időjáráshoz való igazítás (Weather Adjustment), naplózás és távoli elérés az applikáción/böngészőn keresztül.
 
-Az OpenSprinklerShop saját szoftverága (Firmware), amely tartalmazza az OpenSprinklerPro kiterjesztéseket is, az upstream verzióktól független verziószámozást használ. A jelenlegi OpenSprinklerShop firmware verzió: **2.4.0(213)**.
+Az OpenSprinklerShop saját szoftverága (Firmware), amely tartalmazza az OpenSprinklerPro kiterjesztéseket is, az upstream verzióktól független verziószámozást használ. A jelenlegi OpenSprinklerShop firmware verzió: **2.4.0(219)**.
 
 ## Áttekintés
 
