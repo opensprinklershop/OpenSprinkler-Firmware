@@ -6,6 +6,20 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(220)] — veröffentlicht 2026-07-19
+
+### Added
+- **ESP32-C5 Hardware-Selbsttest (Board-Bring-up/QC)**: Handbestückte ESP32-C5-Boards führen jetzt beim allerersten Boot bzw. nach jedem Factory-Reset (solange die `DONE`-Markierung fehlt) einen einmaligen, zerstörungsfreien Hardware-Selbsttest aus. Geprüft werden On-Board-Peripherie und GPIOs: I2C-Geräte werden nur gelesen/geprobt, das IO-Expander-Konfigregister wird mit seinem eigenen Wert zurückgeschrieben, das Schieberegister mit „alles AUS" getaktet (keine Station aktiv), freie GPIOs werden nur mit internen Pull-ups/-downs geprüft. Fehlerhafte Geräte/Pins werden auf dem OLED angezeigt; Bedienung per Taster (bei Fehlern: B1 = Neustart/Wiederholen, B3 = Fortfahren; ohne Fehler: B3 = Fortfahren).
+
+### Changed
+- **Monitor-Speicherung: OOM-/Datenverlust-Schutz (#272)**: Die Monitor-Liste wird beim Speichern nun Monitor für Monitor gestreamt serialisiert, statt das gesamte JSON-Array in einem einzigen `JsonDocument` aufzubauen. Auf dem speicherarmen ESP8266 konnte der Komplett-Aufbau bei bereits fragmentiertem Heap (viele HTTP/HTTPS-Sensoren) fehlschlagen und dabei stillschweigend Monitore verlieren. Die per-Monitor-Serialisierung hält die Spitzen-Allokation minimal; die vorhandene gültige Datei bleibt bei einem Fehler unangetastet (Validierung: Datei endet mit `]`, kein Overflow).
+- **ESP8266: Konfigurations-Headroom auf vollem Dateisystem sichern (#293)**: Auf dem knappen LittleFS teilen sich Sensor-Logs und Konfigurationsdateien (Sensoren/Monitore/Programm-Anpassungen) eine kleine Partition. Füllen die Logs das Dateisystem, konnte eine Konfig-Speicherung fehlschlagen (Temp-Datei nicht schreibbar) und die Änderung ging verloren – ein abgebrochener Rewrite unter ENOSPC konnte sogar bestehende Konfiguration beschädigen. Vor jeder Konfig-Speicherung (`sensor_save`, `monitor_save`, `prog_adjust_save`) werden nun bei Bedarf die ältesten Log-Ring-Dateien getrimmt (32 KB reservierter Headroom, `LOG_MONTH` → `LOG_WEEK` → `LOG_STD`), wobei die aktuellen Log-Daten erhalten bleiben.
+
+### Fixed
+- **Station-Flags: Out-of-Bounds-Zugriff behoben**: Die stationsbezogenen Flag-Arrays (`station_log_written_on_handoff`, `flow_alert_sent`) waren als Bitmaske dimensioniert (`(MAX_NUM_STATIONS+7)/8` Bytes), wurden aber überall direkt byteweise per `[sid]` indiziert. Auf Controllern mit mehr als 8 Stationen führte dies bei jedem Stationsstart zu einem Schreibzugriff außerhalb des Arrays und konnte benachbarte globale Variablen beschädigen. Die Arrays sind nun byteweise (`[MAX_NUM_STATIONS]`) dimensioniert; die ungenutzten Bit-Helfer wurden entfernt.
+
+---
+
 ## [2.4.0(219)] — veröffentlicht 2026-07-14
 
 ### Added
