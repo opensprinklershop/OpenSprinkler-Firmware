@@ -1149,6 +1149,8 @@ void sensor_save() {
   if (!apiInit) return;
   // DEBUG_PRINTLN(F("sensor_save (json)"));
 
+  ensureConfigSpace();  // config takes priority over old logs on a full FS (#293)
+
   const char *tmpfile = SENSOR_FILENAME_JSON ".tmp";
   const char *bakfile = SENSOR_FILENAME_JSON ".bak";
 
@@ -2554,6 +2556,8 @@ void prog_adjust_save() {
 
   // DEBUG_PRINTLN(F("prog_adjust_save"));
 
+  ensureConfigSpace();  // config takes priority over old logs on a full FS (#293)
+
   const char *tmpfile = PROG_SENSOR_FILENAME ".tmp";
   const char *bakfile = PROG_SENSOR_FILENAME ".bak";
 
@@ -2716,6 +2720,29 @@ bool checkDiskFree() {
     return false;
   }
   return true;
+}
+
+// Ensure there is enough free space for a configuration save. On the
+// space-constrained ESP8266 LittleFS the sensor logs and the configuration
+// files (sensors/monitors/adjustments) share one small partition. When the
+// logs fill the filesystem a config save can fail (its temp file cannot be
+// written) so the user's change is silently lost - and an interrupted rewrite
+// under ENOSPC can even drop existing config (#293). Configuration data is far
+// more valuable than the oldest, disposable log history, so free space by
+// trimming the inactive (older) log ring files before the save. Removing
+// getlogfile2() keeps all current log data (getlogfile()) intact and only drops
+// the oldest half of the ring. Oldest/least-granular history goes first.
+void ensureConfigSpace() {
+  if (diskFree() >= CONFIG_HEADROOM) return;
+  const uint8_t order[] = { LOG_MONTH, LOG_WEEK, LOG_STD };
+  for (uint8_t i = 0; i < 3 && diskFree() < CONFIG_HEADROOM; i++) {
+    const char *fn = getlogfile2(order[i]);
+    if (fn && fn[0] && file_exists(fn)) {
+      DEBUG_PRINT(F("ensureConfigSpace: trimming old log "));
+      DEBUG_PRINTLN(fn);
+      remove_file(fn);
+    }
+  }
 }
 #endif
 
@@ -3130,6 +3157,8 @@ void monitor_save() {
   if (!apiInit) return;
 
   // DEBUG_PRINTLN(F("monitor_save"));
+
+  ensureConfigSpace();  // config takes priority over old logs on a full FS (#293)
 
   const char *tmpfile = MONITOR_FILENAME ".tmp";
   const char *bakfile = MONITOR_FILENAME ".bak";

@@ -197,8 +197,8 @@ unsigned char prev_flow_state = HIGH;
 float flow_last_gpm=0;
 int32_t flow_rt_period = -1;
 int16_t flow_sid = -1; // current flow sensor station id, -1 means not set
-#define STATION_FLAG_BYTES ((MAX_NUM_STATIONS + 7) / 8)
-static uint8_t station_log_written_on_handoff[STATION_FLAG_BYTES] = {0};
+// Per-station flags, indexed directly by station id (sid). One byte per station.
+static uint8_t station_log_written_on_handoff[MAX_NUM_STATIONS] = {0};
 uint32_t reboot_timer = 0;
 unsigned char curr_alert_sid = 0;
 uint32_t ping_ok = 0;
@@ -213,22 +213,7 @@ static ulong pipeburst_flow_snapshot = 0; // flow_count baseline when all statio
 #define FLOW_ALERT_EVAL_DELAY_MS 180000   // evaluate high-flow alert after 3 minutes runtime
 static ulong flow_alert_check_time = 0;    // millis timestamp for high-flow alert evaluation
 static int16_t flow_alert_check_sid = -1;  // station being monitored for high-flow alert
-static uint8_t flow_alert_sent[STATION_FLAG_BYTES] = {0};
-
-static inline bool station_flag_get(const uint8_t *flags, unsigned char sid) {
-	if (!flags || sid >= MAX_NUM_STATIONS) return false;
-	return (flags[sid >> 3] & (uint8_t)(1U << (sid & 0x07))) != 0;
-}
-
-static inline void station_flag_set(uint8_t *flags, unsigned char sid) {
-	if (!flags || sid >= MAX_NUM_STATIONS) return;
-	flags[sid >> 3] |= (uint8_t)(1U << (sid & 0x07));
-}
-
-static inline void station_flag_clear(uint8_t *flags, unsigned char sid) {
-	if (!flags || sid >= MAX_NUM_STATIONS) return;
-	flags[sid >> 3] &= (uint8_t)~(1U << (sid & 0x07));
-}
+static uint8_t flow_alert_sent[MAX_NUM_STATIONS] = {0};
 
 static bool get_flow_alert_setpoint(unsigned char sid, float *setpoint_out) {
 	if (!setpoint_out || sid >= MAX_NUM_STATIONS) return false;

@@ -171,6 +171,12 @@ extern "C" {
 
 #define MIN_DISK_FREE 8192  // 8Kb min
 
+// Free space that must remain available for a configuration save (sensors,
+// monitors, program adjustments). Configuration is far more valuable than the
+// oldest, disposable sensor-log history, so if the filesystem drops below this
+// headroom we trim old log ring files before saving config (#293).
+#define CONFIG_HEADROOM 32768  // 32Kb reserved for config saves
+
 #define MAX_SENSOR_REPEAT_READ 32000  // max reads for calculating avg
 #define MAX_SENSOR_READ_TIME 1        // second for reading sensors
 
@@ -596,6 +602,7 @@ boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 ulong diskFree();
 bool checkDiskFree();  // true: disk space Ok, false: Out of disk space
+void ensureConfigSpace();  // free space for a config save by trimming old logs
 #endif
 
 #if !defined(ARDUINO)
