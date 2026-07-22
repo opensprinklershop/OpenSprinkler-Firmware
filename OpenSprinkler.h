@@ -541,6 +541,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 
 	static void options_setup();
 #if defined(ESP32C5)
+	static uint16_t hw_chip_rev; // ESP32-C5 silicon revision, major*100+minor (0=unknown); set at boot in do_setup()
 	static void hardware_selftest(); // first-boot GPIO/peripheral self-test (board bring-up)
 #endif
 	static void pre_factory_reset();

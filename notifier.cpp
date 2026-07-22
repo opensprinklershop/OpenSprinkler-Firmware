@@ -44,6 +44,161 @@ extern float flow_last_gpm;
 
 extern const char *user_agent_string;
 
+// ---------------------------------------------------------------------------
+// Notification event log
+//
+// A small circular buffer that keeps the most recent notification events so the
+// mobile app can poll them (GET /nl) and raise push/local notifications for the
+// same events that are otherwise only sent to IFTTT / MQTT / Email. Records are
+// stored raw (type + values) and rendered to text on demand at poll time to keep
+// the memory footprint tiny (important on ESP8266).
+// ---------------------------------------------------------------------------
+static NotifLogRecord notif_log[NOTIF_LOG_MAXSIZE];
+static uint8_t notif_log_head = 0;   // index of the oldest stored record
+static uint8_t notif_log_cnt = 0;    // number of stored records
+static uint32_t notif_log_nextid = 1;
+
+uint8_t notif_log_count() { return notif_log_cnt; }
+
+uint32_t notif_log_lastid() { return notif_log_nextid - 1; }
+
+const NotifLogRecord* notif_log_at(uint8_t idx) {
+	if (idx >= notif_log_cnt) return NULL;
+	uint8_t pos = (uint8_t)((notif_log_head + idx) % NOTIF_LOG_MAXSIZE);
+	return &notif_log[pos];
+}
+
+void notif_log_add(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
+	uint8_t pos;
+	if (notif_log_cnt < NOTIF_LOG_MAXSIZE) {
+		pos = (uint8_t)((notif_log_head + notif_log_cnt) % NOTIF_LOG_MAXSIZE);
+		notif_log_cnt++;
+	} else {
+		// buffer full: overwrite the oldest record
+		pos = notif_log_head;
+		notif_log_head = (uint8_t)((notif_log_head + 1) % NOTIF_LOG_MAXSIZE);
+	}
+	notif_log[pos].id = notif_log_nextid++;
+	notif_log[pos].time = os.now_tz();
+	notif_log[pos].type = type;
+	notif_log[pos].lval = lval;
+	notif_log[pos].fval = fval;
+	notif_log[pos].bval = bval;
+	DEBUG_PRINTF("notif_log_add id=%lu type=%lu\n", (unsigned long)notif_log[pos].id, (unsigned long)type);
+}
+
+uint8_t notif_priority(uint32_t type) {
+	switch (type) {
+		case NOTIFY_FLOW_ALERT:
+		case NOTIFY_CURR_ALERT:
+		case NOTIFY_NOFLOW:
+		case NOTIFY_PIPE_BURST:
+		case NOTIFY_MONITOR_HIGH:
+			return 2; // high
+		case NOTIFY_MONITOR_MID:
+		case NOTIFY_REBOOT:
+		case NOTIFY_RAINDELAY:
+			return 1; // medium
+		default:
+			return 0; // low
+	}
+}
+
+// Render a compact english summary. Floats are formatted without %f so it also
+// works on AVR (classic OpenSprinkler) toolchains.
+void notif_render_text(uint32_t type, uint32_t lval, float fval, uint8_t bval, char* out, size_t outlen) {
+	if (!out || outlen == 0) return;
+	out[0] = 0;
+	char nbuf[STATION_NAME_SIZE];
+	switch (type) {
+		case NOTIFY_STATION_ON:
+			os.get_station_name(lval, nbuf);
+			if ((int)fval > 0)
+				snprintf_P(out, outlen, PSTR("Station %s turned on (scheduled %dm %ds)"), nbuf, (int)fval/60, (int)fval%60);
+			else
+				snprintf_P(out, outlen, PSTR("Station %s turned on"), nbuf);
+			break;
+		case NOTIFY_STATION_OFF:
+			os.get_station_name(lval, nbuf);
+			if ((int)fval > 0)
+				snprintf_P(out, outlen, PSTR("Station %s closed (ran %dm %ds)"), nbuf, (int)fval/60, (int)fval%60);
+			else
+				snprintf_P(out, outlen, PSTR("Station %s closed"), nbuf);
+			break;
+		case NOTIFY_PROGRAM_SCHED: {
+			ProgramStruct prog;
+			const char* pname = "";
+			if (lval < pd.nprograms) { pd.read(lval, &prog); pname = prog.name; }
+			if (fval < 0)
+				snprintf_P(out, outlen, PSTR("Program %s skipped%s"), pname, (bval > 0) ? " (weather)" : "");
+			else
+				snprintf_P(out, outlen, PSTR("Program %s scheduled (%d%% water)"), pname, (int)fval);
+			break;
+		}
+		case NOTIFY_SENSOR1:
+			snprintf_P(out, outlen, PSTR("Sensor 1 %s"), ((int)fval) ? "activated" : "de-activated");
+			break;
+		case NOTIFY_SENSOR2:
+			snprintf_P(out, outlen, PSTR("Sensor 2 %s"), ((int)fval) ? "activated" : "de-activated");
+			break;
+		case NOTIFY_RAINDELAY:
+			snprintf_P(out, outlen, PSTR("Rain delay %s"), ((int)fval) ? "activated" : "de-activated");
+			break;
+		case NOTIFY_FLOWSENSOR: {
+			float vol = lval * os.get_flow_volume_per_pulse();
+			snprintf_P(out, outlen, PSTR("Flow: count %d, volume %d.%02d"), (int)lval, (int)vol, ((int)(vol*100))%100);
+			break;
+		}
+		case NOTIFY_WEATHER_UPDATE:
+			snprintf_P(out, outlen, PSTR("Weather update: water level %d%%"), (int)fval);
+			break;
+		case NOTIFY_REBOOT:
+			snprintf_P(out, outlen, PSTR("Controller rebooted (cause %d)"), (int)os.last_reboot_cause);
+			break;
+		case NOTIFY_FLOW_ALERT:
+			os.get_station_name(lval, nbuf);
+			snprintf_P(out, outlen, PSTR("FLOW ALERT on station %s"), nbuf);
+			break;
+		case NOTIFY_CURR_ALERT:
+			if (bval == CURR_ALERT_TYPE_UNDER) {
+				os.get_station_name(lval, nbuf);
+				snprintf_P(out, outlen, PSTR("Undercurrent on station %s (%dmA)"), nbuf, (int)fval);
+			} else if (bval == CURR_ALERT_TYPE_OVER_STATION) {
+				os.get_station_name(lval, nbuf);
+				snprintf_P(out, outlen, PSTR("Overcurrent on station %s (%dmA)"), nbuf, (int)fval);
+			} else {
+				snprintf_P(out, outlen, PSTR("System overcurrent (%dmA)"), (int)fval);
+			}
+			break;
+		case NOTIFY_NOFLOW:
+			os.get_station_name(lval, nbuf);
+			snprintf_P(out, outlen, PSTR("No flow detected on station %s"), nbuf);
+			break;
+		case NOTIFY_PIPE_BURST:
+			snprintf_P(out, outlen, PSTR("Pipe burst warning (%lu pulses)"), (unsigned long)lval);
+			break;
+		case NOTIFY_MONTHLY_REPORT: {
+			int v = (int)fval;
+			snprintf_P(out, outlen, PSTR("Monthly water report: %d.%02d L"), v, ((int)(fval*100))%100);
+			break;
+		}
+		case NOTIFY_MONITOR_LOW:
+		case NOTIFY_MONITOR_MID:
+		case NOTIFY_MONITOR_HIGH: {
+			Monitor_t* mon = monitor_by_idx(bval);
+			const char* mname = mon ? mon->name : "";
+			int v = (int)fval;
+			int frac = (int)(fval*100)%100; if (frac < 0) frac = -frac;
+			snprintf_P(out, outlen, PSTR("Monitor %s: %d.%02d"), mname, v, frac);
+			break;
+		}
+		default:
+			snprintf_P(out, outlen, PSTR("Event %lu"), (unsigned long)type);
+			break;
+	}
+	out[outlen-1] = 0;
+}
+
 bool is_notif_enabled(uint32_t type) {
 	uint32_t notif = (uint32_t)os.iopts[IOPT_NOTIF_ENABLE] |
 		((uint32_t)os.iopts[IOPT_NOTIF2_ENABLE] << 8) |
@@ -176,6 +331,10 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if (!is_notif_enabled(type)) {
 		return;
 	}
+	// Record this event in the in-memory log so the mobile app can poll it (GET /nl)
+	// and show a push/local notification. Reset to false when an event turns out to
+	// be a non-event (e.g. a flow reading below the alert setpoint).
+	bool log_this = true;
 	static char topic[PUSH_TOPIC_LEN+1];
 	static char payload[PUSH_PAYLOAD_LEN+1];
 	char* postval = tmp_buffer+1; // +1 so we can fit a opening { before the loaded config
@@ -452,6 +611,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				//Can not force os.mqtt.enabled() off, but it will not publish an mqtt message as topic\payload will be empty.
 				ifttt_enabled=false;
 				email_enabled=false;
+				log_this=false; // below setpoint: not a real flow alert, don't log for the app
 			}
 		break;
 		}
@@ -910,4 +1070,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	}
 	if (influxdb_enabled)
 		os.influxdb.push_message(type, lval, fval, sval);
+
+	if (log_this)
+		notif_log_add(type, lval, fval, bval);
 }

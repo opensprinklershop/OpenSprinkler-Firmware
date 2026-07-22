@@ -5024,6 +5024,70 @@ void server_monitor_list(OTF_PARAMS_DEF) {
 
 
 /**
+ * nl
+ * Notification event log (for the mobile app to poll and display as push/local
+ * notifications). Returns the most recent events, optionally only those with an
+ * id greater than `after`.
+ * GET /nl?pw=xxx[&after=N][&max=M]
+ * Response: {"last":<highest id>,"events":[{"id":N,"t":<localtime>,"type":T,"prio":P,"text":"..."}]}
+ */
+void server_notification_log(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+#endif
+
+	uint32_t after = 0;
+	uint32_t maxn = NOTIF_LOG_MAXSIZE;
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("after"), true))
+		after = strtoul(tmp_buffer, NULL, 0);
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("max"), true)) {
+		maxn = strtoul(tmp_buffer, NULL, 0);
+		if (maxn == 0 || maxn > NOTIF_LOG_MAXSIZE) maxn = NOTIF_LOG_MAXSIZE;
+	}
+
+#if defined(USE_OTF)
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	bfill.emit_p(PSTR("{\"last\":$D,\"events\":["), (int)notif_log_lastid());
+
+	uint8_t total = notif_log_count();
+	// Determine how many of the newest records to emit (bounded by maxn).
+	uint32_t emitted = 0;
+	bool first = true;
+	char text[TMP_BUFFER_SIZE];
+	for (uint8_t i = 0; i < total; i++) {
+		const NotifLogRecord *rec = notif_log_at(i);
+		if (!rec) continue;
+		if (rec->id <= after) continue;
+		// Respect the max limit by only keeping the newest maxn records.
+		if ((total - i) > maxn) continue;
+		if (emitted >= maxn) break;
+
+		notif_render_text(rec->type, rec->lval, rec->fval, rec->bval, text, sizeof(text));
+
+		if (!first) bfill.emit_p(PSTR(","));
+		first = false;
+		bfill.emit_p(PSTR("{\"id\":$D,\"t\":$L,\"type\":$L,\"prio\":$D,\"text\":\""),
+			(int)rec->id, (uint32_t)rec->time, (uint32_t)rec->type, (int)notif_priority(rec->type));
+		bfill_emit_json_escaped_monitor_name(text);
+		bfill.emit_p(PSTR("\"}"));
+		emitted++;
+		send_packet(OTF_PARAMS);
+	}
+	bfill.emit_p(PSTR("]}"));
+	handle_return(HTML_OK);
+}
+
+
+
+/**
  * sb
  * define a program adjustment
 */
@@ -7186,6 +7250,7 @@ const char _url_keys[] PROGMEM =
 	"mc"
 	"ml"
 	"mt"
+	"nl"  // notification event log (mobile app push/local notifications)
 #if defined(ESP32C5)
 	"ir"  // IEEE 802.15.4: get radio config
 	"iw"  // IEEE 802.15.4: set radio mode (+ reboot)
@@ -7291,6 +7356,7 @@ URLHandler urls[] = {
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
+	server_notification_log, // nl
 #if defined(ESP32C5)
 	server_ieee802154_get, // ir
 	server_ieee802154_set, // iw

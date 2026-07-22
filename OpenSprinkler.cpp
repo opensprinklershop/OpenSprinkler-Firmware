@@ -134,6 +134,9 @@ unsigned char OpenSprinkler::attrib_spe[MAX_NUM_BOARDS];
 unsigned char OpenSprinkler::attrib_grp[MAX_NUM_STATIONS];
 uint16_t OpenSprinkler::attrib_fas[MAX_NUM_STATIONS];
 uint16_t OpenSprinkler::attrib_favg[MAX_NUM_STATIONS];
+#if defined(ESP32C5)
+uint16_t OpenSprinkler::hw_chip_rev = 0; // ESP32-C5 silicon revision (major*100+minor), set at boot
+#endif
 unsigned char OpenSprinkler::masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
 time_os_t OpenSprinkler::masters_last_on[NUM_MASTER_ZONES];
 RCSwitch OpenSprinkler::rfswitch;
@@ -344,7 +347,17 @@ const char iopt_prompts[] PROGMEM =
 	"Reserved 7      "
 	"Reserved 8      "
 	"WiFi mode?      "
-	"Factory reset?  ";
+	"Factory reset?  "
+	"Below handling: "
+	"Below thr. hi:  "
+	"Below thr. lo:  "
+	"Notif 3 Enable  "
+	"Notif 4 Enable  "
+	"RainMaker en.?  "
+	"Invert grp sch.?"
+	"Flow div low:   "
+	"Flow div high:  "
+	"WiFi modem sleep";
 
 // string options do not have prompts
 
@@ -422,7 +435,7 @@ const unsigned char iopt_max[] PROGMEM = {
 	210,             // IOPT_RESERVED_TEMPCON
 	2,               // IOPT_RESERVED_COMBCHART
 	1,               // IOPT_WIFI_MODE (ro)
-	255,             // IOPT_RESET (ro)
+	1,               // IOPT_RESET (boolean: No/Yes)
 	6,               // IOPT_BELOW_HANDLING (NUM_BELOW_MODES-1 = BELOW_DISABLED_MINUTES)
 	255,             // IOPT_BELOW1 (high byte of uint16_t threshold)
 	255,             // IOPT_BELOW2 (low byte of uint16_t threshold)
@@ -1622,6 +1635,34 @@ DEBUG_PRINTLN(F("OpenSprinkler begin6a"));
 #endif
 
 DEBUG_PRINTLN(F("OpenSprinkler begin6c"));
+
+#if defined(ESP32C5)
+	// Hardware self-test for hand-soldered boards: launched by HOLDING B1 and B2
+	// together during boot. It runs here — after the display and IO-expander are
+	// initialised but BEFORE the external-flash LittleFS mount — so a board with
+	// a faulty flash (which would otherwise stall at the mount) can still be
+	// diagnosed. The test does not touch the filesystem. The B1+B2 combo cannot
+	// be confused with the single-button boot menu, and the test always exits by
+	// resetting the device.
+	pinModeExt(PIN_BUTTON_1, INPUT_PULLUP);
+	pinModeExt(PIN_BUTTON_2, INPUT_PULLUP);
+	if (digitalReadExt(PIN_BUTTON_1) == 0 && digitalReadExt(PIN_BUTTON_2) == 0) {
+		ulong hwt_hold_start = millis();
+		bool hwt_held = true;
+		while (millis() - hwt_hold_start < BUTTON_HOLD_MS) {
+			if (digitalReadExt(PIN_BUTTON_1) != 0 || digitalReadExt(PIN_BUTTON_2) != 0) { hwt_held = false; break; }
+			delay(10);
+		}
+		if (hwt_held) {
+			// wait for both buttons to be released so the held combo is not
+			// misread by the test's own button handling
+			while (digitalReadExt(PIN_BUTTON_1) == 0 || digitalReadExt(PIN_BUTTON_2) == 0) delay(10);
+			delay(50); // debounce
+			hardware_selftest();
+		}
+	}
+#endif
+
 #if defined(ARDUINO)
 	#if defined(ESP8266) || defined(ESP32)
 		lcd.setCursor(0,0);
@@ -3498,16 +3539,6 @@ void OpenSprinkler::parse_otc_config() {
 void OpenSprinkler::options_setup() {
 
 	DEBUG_PRINTLN(F("OpenSprinkler options setup"));
-#if defined(ESP32C5)
-	// First-boot / post-factory-reset hardware self-test for hand-soldered
-	// ESP32-C5 boards: runs once whenever the completion marker is missing
-	// (i.e. on the very first boot and after every factory reset). It exercises
-	// the on-board peripherals and GPIOs and reports faulty devices/pins on the
-	// display before the normal factory_reset() writes DONE_FILENAME.
-	if (!file_exists(DONE_FILENAME)) {
-		hardware_selftest();
-	}
-#endif
 	// Check reset conditions:
 	if (file_read_byte(IOPTS_FILENAME, IOPT_FW_VERSION)!=OS_FW_VERSION ||  // fw major version has changed
 			!file_exists(DONE_FILENAME)) {  // done file doesn't exist

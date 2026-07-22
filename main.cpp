@@ -49,6 +49,9 @@
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
 #include "online_update.h"
+#if defined(ESP32C5)
+#include "esp_chip_info.h"
+#endif
 #if defined(ESP32)
 #include "custom_cert.h"
 extern "C" void mbedtls_spiram_allow_internal_reroute(bool enable);
@@ -635,6 +638,31 @@ void do_setup() {
 	DEBUG_PRINTF("  OpenSprinkler ESP32-C5  FW %d.%d\n", OS_FW_VERSION, OS_FW_MINOR);
 #endif
 	DEBUG_PRINTLN(F("============================================"));
+
+	// --- ESP32-C5 silicon revision detection -------------------------------
+	// The pre-compiled framework libs are built with CONFIG_ESP32C5_REV_MIN_100
+	// (min v1.0) .. CONFIG_ESP32C5_REV_MAX_FULL=199 (max v1.99). A single binary
+	// therefore boots on every C5 silicon revision from v1.0 up to v1.x.
+	// IMPORTANT: do NOT raise MIN_REV (e.g. to 102) or the bootloader would
+	// refuse to start on older v1.0 chips -> that would break compatibility.
+	//
+	// The PSRAM "dummy cacheline" MSPI memory-barrier workaround is only
+	// *needed* on silicon < v1.02. On v1.02+ (e.g. the v1.3 R8M8 module) the
+	// fix is in hardware; the software workaround is still compiled in (it is
+	// gated on MIN_REV, not the runtime rev) but is inert/harmless.
+	{
+		esp_chip_info_t ci = {};
+		esp_chip_info(&ci);
+		unsigned rev_full = ci.revision;      // major*100 + minor (IDF 5.x)
+		os.hw_chip_rev = (uint16_t)rev_full;
+		DEBUG_PRINTF("  Silicon rev: v%u.%02u (rev_full=%u)\n",
+			rev_full / 100, rev_full % 100, rev_full);
+		if (rev_full >= 102) {
+			DEBUG_PRINTLN(F("  PSRAM MSPI-MB fix in HW (SW workaround inert)"));
+		} else {
+			DEBUG_PRINTLN(F("  PSRAM MSPI-MB SW workaround active (<v1.02)"));
+		}
+	}
 #endif
 
 #if defined(ESP32)

@@ -27,6 +27,11 @@
 
 #define NOTIF_QUEUE_MAXSIZE 32
 
+// In-memory circular log of the most recent notification events. The mobile app
+// polls this (via the /nl endpoint) so the configured events (IFTTT/MQTT/Email)
+// can additionally be shown as push/local notifications on iOS and Android.
+#define NOTIF_LOG_MAXSIZE 24
+
 #include "OpenSprinkler.h"
 #include "types.h"
 
@@ -57,4 +62,28 @@ protected:
 };
 
 uint32_t get_notif_enabled();
+
+/** Notification event log (for the mobile app to poll and display as push/local notifications) */
+struct NotifLogRecord {
+	uint32_t id;      // monotonically increasing id (0 = invalid)
+	time_os_t time;   // local time the event was recorded
+	uint32_t type;    // NOTIFY_* type
+	uint32_t lval;
+	float fval;
+	uint8_t bval;
+};
+
+// Record a notification event into the circular log.
+void notif_log_add(uint32_t type, uint32_t lval, float fval, uint8_t bval);
+// Number of records currently stored.
+uint8_t notif_log_count();
+// Highest id assigned so far (0 if none).
+uint32_t notif_log_lastid();
+// Get the record at logical index (0 = oldest). Returns NULL if out of range.
+const NotifLogRecord* notif_log_at(uint8_t idx);
+// Render a compact english summary text for an event into out.
+void notif_render_text(uint32_t type, uint32_t lval, float fval, uint8_t bval, char* out, size_t outlen);
+// Map an event type to a mobile-app priority (0=low, 1=medium, 2=high).
+uint8_t notif_priority(uint32_t type);
+
 #endif  // _NOTIFIER_H

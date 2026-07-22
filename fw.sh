@@ -151,6 +151,17 @@ MATTER_PRODUCT_ID="0x8000"
 ENV_C5_MATTER="esp32-c5-matter"
 ENV_C5_ZIGBEE="esp32-c5-zigbee"
 ENV_ESP8266="os3x_esp8266"
+
+# ESP32-C5 direct-esptool flashing configuration.
+# The esptool *stub* flasher is unreliable on some ESP32-C5 rev boards: it fails
+# to read the SPI flash id and drops the connection during the stub baud switch
+# ("Invalid head of packet" / "chip stopped responding"). The ROM loader
+# (--no-stub) flashes reliably even at high baud, so all C5 write/erase-region
+# operations use it. Chip-wide erase_flash still needs the stub (not supported by
+# the ROM loader) and is left unchanged.
+# Default upload speed is the maximum reliable rate; override via UPLOAD_SPEED.
+ESP32C5_UPLOAD_SPEED_DEFAULT="921600"
+ESP32C5_ESPTOOL_FLAGS=(--no-stub)
 # Track whether the upload method was explicitly chosen by the caller. This lets
 # the ESP8266 (network-only) default to IP upload while still honoring an
 # explicit FW_UPLOAD_METHOD=usb.
@@ -859,7 +870,7 @@ upload_env() {
         _find_esptool
         local firmware_bin="${SCRIPT_DIR}/.pio/build/${env}/firmware.bin"
         local dist_bin="${SCRIPT_DIR}/.pio/dist/firmware_${env}.bin"
-        local baud="${UPLOAD_SPEED:-460800}"
+        local baud="${UPLOAD_SPEED:-$ESP32C5_UPLOAD_SPEED_DEFAULT}"
         info "Using direct esptool upload path for ${env}"
 
         if [[ ! -f "$firmware_bin" ]]; then
@@ -895,7 +906,7 @@ upload_env() {
         fi
 
         if [[ "$env" == *"-zigbee" ]]; then
-            "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud "$baud" \
+            "${ESPTOOL_CMD[@]}" --chip esp32c5 "${ESP32C5_ESPTOOL_FLAGS[@]}" --port "$USB_PORT" --baud "$baud" \
                 --before default_reset --after hard_reset \
                 write_flash 0x10000 "$firmware_bin" \
             || { error "Upload failed: ${env}"; exit 1; }
@@ -905,7 +916,7 @@ upload_env() {
                 info "Generating Matter manufacturing data automatically …"
                 generate_matter_mfg
             fi
-            "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud "$baud" \
+            "${ESPTOOL_CMD[@]}" --chip esp32c5 "${ESP32C5_ESPTOOL_FLAGS[@]}" --port "$USB_PORT" --baud "$baud" \
                 --before default_reset --after hard_reset \
                 write_flash 0x3A0000 "$firmware_bin" 0x730000 "$MATTER_KVS_BIN" \
             || { error "Upload failed: ${env}"; exit 1; }
@@ -929,7 +940,7 @@ ensure_zigbee_boot_partition() {
     info "Erasing otadata partition to guarantee OTA0 (zigbee) boot …"
     _find_usb_port "esp32c5"
     _find_esptool
-    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$USB_PORT" --baud 460800 \
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 "${ESP32C5_ESPTOOL_FLAGS[@]}" --port "$USB_PORT" --baud "${UPLOAD_SPEED:-$ESP32C5_UPLOAD_SPEED_DEFAULT}" \
         --before default_reset --after hard_reset \
         erase_region 0xe000 0x2000 \
         && ok "otadata erased — device will boot zigbee (OTA0) on next reset" \
@@ -1489,10 +1500,10 @@ flash_matter_kvs() {
     _find_usb_port "esp32c5"
 
     local port="$USB_PORT"
-    local baud="${UPLOAD_SPEED:-460800}"
+    local baud="${UPLOAD_SPEED:-$ESP32C5_UPLOAD_SPEED_DEFAULT}"
 
     info "Flashing ${MATTER_KVS_BIN} → ${MATTER_KVS_ADDR}"
-    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 "${ESP32C5_ESPTOOL_FLAGS[@]}" --port "$port" --baud "$baud" \
         --before default_reset --after hard_reset \
         write_flash "$MATTER_KVS_ADDR" "$MATTER_KVS_BIN" \
     || { error "Flash failed"; exit 1; }
@@ -1564,7 +1575,7 @@ full_flash_env() {
     _find_usb_port "esp32c5"
 
     local port="$USB_PORT"
-    local baud="${UPLOAD_SPEED:-460800}"
+    local baud="${UPLOAD_SPEED:-$ESP32C5_UPLOAD_SPEED_DEFAULT}"
 
     # Build flash arguments: bootloader + partitions + firmware
     local flash_args=(
@@ -1589,6 +1600,9 @@ full_flash_env() {
     info "Firmware    → ${fw_addr}"
 
     # Optional: erase entire flash first (ERASE_FLASH=1 ./fw.sh full-flash zigbee)
+    # Note: a full-chip erase_flash requires the esptool stub (the ROM loader
+    # cannot erase the whole chip), so --no-stub is intentionally NOT used here.
+    # On boards where the stub is unreliable, erase individual regions instead.
     if [[ "${ERASE_FLASH:-0}" == "1" ]]; then
         warn "Erasing entire flash first …"
         "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
@@ -1597,7 +1611,7 @@ full_flash_env() {
         ok "Flash erased"
     fi
 
-    "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
+    "${ESPTOOL_CMD[@]}" --chip esp32c5 "${ESP32C5_ESPTOOL_FLAGS[@]}" --port "$port" --baud "$baud" \
         --before default_reset --after hard_reset \
         write_flash "${flash_args[@]}" \
     || { error "Full flash failed"; exit 1; }
@@ -1608,13 +1622,13 @@ full_flash_env() {
     # nvs   partition (0x9000,   0x5000): user mapping, WiFi creds, runtime state
     if [[ "${FACTORY_RESET:-0}" == "1" ]]; then
         info "FACTORY_RESET=1: Erasing RainMaker fctry partition (0x7EA000, 24K) …"
-        "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
+        "${ESPTOOL_CMD[@]}" --chip esp32c5 "${ESP32C5_ESPTOOL_FLAGS[@]}" --port "$port" --baud "$baud" \
             --before default_reset --after no_reset \
             erase_region 0x7EA000 0x6000 \
         || warn "fctry erase failed (non-fatal)"
 
         info "FACTORY_RESET=1: Erasing NVS partition (0x9000, 20K) …"
-        "${ESPTOOL_CMD[@]}" --chip esp32c5 --port "$port" --baud "$baud" \
+        "${ESPTOOL_CMD[@]}" --chip esp32c5 "${ESP32C5_ESPTOOL_FLAGS[@]}" --port "$port" --baud "$baud" \
             --before default_reset --after hard_reset \
             erase_region 0x9000 0x5000 \
         || warn "NVS erase failed (non-fatal)"
@@ -2584,7 +2598,7 @@ ${BOLD}Environment variables:${NC}
     FW_UPLOAD_METHOD=<mode> Upload mode: auto | ip | usb  (default: usb)
                                                     use ip only when explicitly requested
     UPLOAD_PORT=<port>      Serial port      (auto-detected if not set)
-  UPLOAD_SPEED=<baud>     Upload baud rate  (default: 460800)
+  UPLOAD_SPEED=<baud>     Upload baud rate  (default: 921600, max reliable for ESP32-C5)
   ERASE_FLASH=1           Erase entire flash before full-flash
   FACTORY_RESET=1         Also erase NVS + fctry after full-flash (wipes WiFi credentials
                           and RainMaker certs — only for new-device provisioning)
