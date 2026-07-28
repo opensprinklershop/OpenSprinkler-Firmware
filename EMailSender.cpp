@@ -594,6 +594,12 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 
   if (this->additionalResponseLineOnConnection > 0){
 	  for (int i = 0; i<=this->additionalResponseLineOnConnection; i++) {
+		// Stop as soon as the final greeting line arrives (see EHLO handling
+		// below): "220 text" ends the reply, "220-text" continues it. Keeps
+		// non-Gmail servers with a different greeting line count from hanging.
+		if (_serverResponce.length() < 4 || _serverResponce.charAt(3) != '-') {
+			break;
+		}
 		response = awaitSMTPResponse(client, "220", "Connection response error ", 2500);
 		//if additionalResponseLineOnConnection is set to 255: wait out all code 250 responses, then continue
         if (this->additionalResponseLineOnConnection == 255) break;
@@ -633,6 +639,15 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 
   if (this->additionalResponseLineOnHELO > 0){
 	  for (int i = 0; i<=this->additionalResponseLineOnHELO; i++) {
+		// Detect end of the multi-line SMTP reply instead of relying on the
+		// hardcoded DEFAULT_EHLO_RESPONSE_COUNT. Per RFC 5321 continuation
+		// lines are "250-text" (dash after the code) and the final line is
+		// "250 text" (space). Servers such as GMX and Zoho return fewer EHLO
+		// lines than Gmail; without this check the loop would block on the
+		// missing lines until a 2500ms timeout and abort before sending.
+		if (_serverResponce.length() < 4 || _serverResponce.charAt(3) != '-') {
+			break;
+		}
 		response = awaitSMTPResponse(client, "250", "EHLO error", 2500);
 		if (!response.status && response.code == F("1")) {
 			//if additionalResponseLineOnHELO is set to 255: wait out all code 250 responses, then continue
