@@ -33,6 +33,7 @@ public:
   char name[30] = {0};            // name
   uint type = 0;                  // sensor type
   uint group = 0;                 // group assignment
+  uint order = 0;                 // display order (0=unset -> sort by nr)
   uint32_t ip = 0;                // tcp-ip
   uint port = 0;                  // tcp-port or address
   uint id = 0;                    // modbus id or channel
@@ -215,6 +216,7 @@ public:
     obj[F("nr")] = nr;
     obj[F("type")] = type;
     obj[F("group")] = group;
+    obj[F("order")] = order;
     obj[F("name")] = name;
     obj[F("ip")] = ip;
     obj[F("port")] = port;
@@ -249,6 +251,7 @@ public:
     if (obj.containsKey(F("nr"))) nr = obj[F("nr")];
     if (obj.containsKey(F("type"))) type = obj[F("type")];
     if (obj.containsKey(F("group"))) group = obj[F("group")];
+    if (obj.containsKey(F("order"))) order = obj[F("order")];
     if (obj.containsKey(F("name"))) {
       const char *sname = obj[F("name")].as<const char*>();
       if (sname) strncpy(name, sname, sizeof(name)-1);

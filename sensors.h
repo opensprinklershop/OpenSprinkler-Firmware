@@ -266,6 +266,7 @@ public:
   uint32_t stale_timeout; // seconds, 0=disabled
   uint8_t stale_policy;   // PROG_STALE_*
   double stale_fallback;  // adjustment factor, 1.0 = 100%
+  uint order;             // display order (0=unset -> sort by nr)
   char name[30];
   
   /**
@@ -387,6 +388,7 @@ public:
   uint8_t output_mode;      // MONITOR_OUTPUT_* : how the monitor drives its zone/program output
   ulong stale_timeout;      // seconds of stale/invalid sensor data before failsafe kicks in (0=disabled: keep last state)
   uint8_t failsafe_active;  // desired output state (0/1) when the input is stale longer than stale_timeout
+  uint order;               // display order (0=unset -> sort by nr)
   unsigned char undef[10];  // for later
   ulong reset_time; // time to reset
 
@@ -406,6 +408,7 @@ public:
               eval_active(false), eval_value(0), last_ok_time(0) {
     memset(&m, 0, sizeof(Monitor_Union_t));
     memset(undef, 0, sizeof(undef));
+    order = 0;
     name[0] = 0;
   }
   
@@ -579,7 +582,7 @@ void monitor_load();
 void monitor_save();
 int monitor_count();
 int monitor_delete(uint nr);
-bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0);
+int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0, uint order = 0);
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);
 void check_monitors();
@@ -604,6 +607,11 @@ ulong diskFree();
 bool checkDiskFree();  // true: disk space Ok, false: Out of disk space
 void ensureConfigSpace();  // free space for a config save by trimming old logs
 #endif
+
+// Returns true if there is enough filesystem space to safely store a NEW
+// configuration entry that grows the given config file. Old disposable log
+// rings are trimmed first. On non-filesystem targets this always returns true.
+bool config_space_for_new_entry(const char *cfgfile);
 
 #if !defined(ARDUINO)
 void dtostrf(float value, int min_width, int precision, char *txt);

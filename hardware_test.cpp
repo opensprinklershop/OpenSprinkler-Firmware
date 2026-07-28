@@ -279,13 +279,16 @@ static uint8_t hwt_collect_failures(HwtContext &ctx, const char *out[], uint8_t 
 // Screen shown when all required tests passed. Any button resets the device.
 static void hwt_screen_pass(HwtContext &ctx) {
 	char line[17];
+	// Count only REQUIRED checks so the total is stable. Optional devices
+	// (RTC/EEPROM) may or may not be populated and their I2C detection can flap
+	// between boots, which otherwise made the displayed total wobble
+	// (e.g. 18/18 vs 19/19). Required checks are a fixed set.
 	uint8_t npass = 0;
 	uint8_t ntest = 0;
-	for (uint8_t i = 0; i < ctx.count; i++){ 
+	for (uint8_t i = 0; i < ctx.count; i++) {
+		if (!ctx.results[i].required) continue;
+		ntest++;
 		if (ctx.results[i].ok) npass++;
-		if (ctx.results[i].required || ctx.results[i].ok) {
-			ntest++;
-		}
 	}
 	snprintf(line, sizeof(line), "%u/%u checks OK", npass, ntest);
 

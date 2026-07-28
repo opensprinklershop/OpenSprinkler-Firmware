@@ -47,6 +47,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <driver/gpio.h>
+#include <driver/spi_master.h>
 #if defined(ESP32C5)
 #include "soc/lp_aon_reg.h"
 #endif
@@ -922,6 +923,66 @@ void etherOnEvent(arduino_event_id_t event, arduino_event_info_t info)
 			break;
 	}
 }
+
+// W5500 low-level bring-up diagnostic. Talks to the W5500 directly over the
+// shared SPI2_HOST bus BEFORE eth.begin() installs its own driver, so it does
+// not conflict with the running Ethernet driver. Reads the chip identity
+// register (VERSIONR, expected 0x04) and the PHY config register (PHYCFGR) to
+// tell "chip not responding" (power/CS/MISO/RESET wiring) apart from "chip
+// alive but PHY link down" (cable/magnetics/PHY). RJ45 LEDs off at bring-up
+// usually means the PHY analog front-end never came up.
+static void w5500_spi_diag() {
+	spi_device_handle_t dev = nullptr;
+	spi_device_interface_config_t devcfg = {};
+	devcfg.mode = 0;
+	devcfg.clock_speed_hz = 2 * 1000 * 1000; // conservative 2 MHz for probing
+	devcfg.spics_io_num = PIN_ETHER_CS;
+	devcfg.queue_size = 1;
+	esp_err_t err = spi_bus_add_device(SPI2_HOST, &devcfg, &dev);
+	if (err != ESP_OK) {
+		DEBUG_PRINTF("[W5500-DIAG] spi_bus_add_device failed: %d\n", (int)err);
+		return;
+	}
+
+	// Read n bytes from a W5500 common-block register (BSB=0, read, VDM mode).
+	auto rd = [&](uint16_t addr, uint8_t *out, size_t n) -> esp_err_t {
+		uint8_t tx[3 + 4] = {0};
+		uint8_t rx[3 + 4] = {0};
+		if (n > 4) n = 4;
+		tx[0] = (uint8_t)(addr >> 8);
+		tx[1] = (uint8_t)(addr & 0xFF);
+		tx[2] = 0x00; // common block, read op, variable data length
+		spi_transaction_t t = {};
+		t.length = (3 + n) * 8;
+		t.tx_buffer = tx;
+		t.rx_buffer = rx;
+		esp_err_t e = spi_device_polling_transmit(dev, &t);
+		if (e == ESP_OK) memcpy(out, rx + 3, n);
+		return e;
+	};
+
+	uint8_t ver = 0, mr = 0, phy = 0;
+	rd(0x0039, &ver, 1); // VERSIONR
+	rd(0x0000, &mr, 1);  // MR (mode register)
+	rd(0x002E, &phy, 1); // PHYCFGR
+
+	DEBUG_PRINTF("[W5500-DIAG] VERSIONR=0x%02X (expect 0x04), MR=0x%02X, PHYCFGR=0x%02X\n",
+		ver, mr, phy);
+	if (ver != 0x04) {
+		DEBUG_PRINTLN(F("[W5500-DIAG] Chip NOT responding correctly -> check 3V3 power, RESET(EN) line, CS/MISO/MOSI/SCK wiring and solder joints"));
+	} else {
+		DEBUG_PRINTF("[W5500-DIAG] Chip alive. Link=%s Speed=%s Duplex=%s OPMDC=0x%X\n",
+			(phy & 0x01) ? "UP" : "DOWN",
+			(phy & 0x02) ? "100M" : "10M",
+			(phy & 0x04) ? "FULL" : "HALF",
+			(unsigned)((phy >> 3) & 0x07));
+		if (!(phy & 0x01)) {
+			DEBUG_PRINTLN(F("[W5500-DIAG] PHY reports link DOWN — check RJ45 magnetics/cable; LEDs off => PHY analog not linking"));
+		}
+	}
+
+	spi_bus_remove_device(dev);
+}
 #endif
 
 byte OpenSprinkler::start_ether() {
@@ -987,6 +1048,17 @@ byte OpenSprinkler::start_ether() {
 	const uint8_t eth_spi_mhz = 60;
 #endif
 	delay(100);
+	// Low-level W5500 bring-up diagnostic BEFORE eth.begin() takes over the bus.
+	w5500_spi_diag();
+
+	// Some W5500 modules fail to negotiate link reliably with
+	// the switch. Force a fixed 100BASE-TX full-duplex mode before begin() so the
+	// PHY can still bring the link up when auto-negotiation is flaky.
+	eth.setAutoNegotiation(false);
+	eth.setLinkSpeed(100);
+	eth.setFullDuplex(true);
+	DEBUG_PRINTLN(F("[ETH] forcing W5500 to 100M full-duplex mode before begin()"));
+
 	if (!eth.begin(ETH_PHY_W5500, ETH_PHY_ADDR_AUTO, PIN_ETHER_CS, PIN_ETHER_IRQ, PIN_ETHER_RESET, SPI2_HOST, OS_SPI_SCK, OS_SPI_MISO, OS_SPI_MOSI, eth_spi_mhz)) {
 		DEBUG_PRINTLN(F("ERROR: eth.begin() failed - W5500 not responding or misconfigured"));
 		WiFi.mode(save_mode); // restore WiFi mode on failure

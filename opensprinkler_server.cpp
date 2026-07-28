@@ -188,6 +188,7 @@ int available_ether_buffer() {
 #define HTML_PAGE_NOT_FOUND   0x20
 #define HTML_NOT_PERMITTED    0x30
 #define HTML_UPLOAD_FAILED    0x40
+#define HTML_NOT_ENOUGH_SPACE 0x41
 #define HTML_REDIRECT_HOME    0xFF
 
 #if !defined(USE_OTF)
@@ -1340,6 +1341,8 @@ void server_change_program(OTF_PARAMS_DEF) {
 	}
 
 	if (pid==-1) {
+		// Reject a new program when the filesystem is too full to store it safely (#295)
+		if(!config_space_for_new_entry(PROG_FILENAME)) handle_return(HTML_NOT_ENOUGH_SPACE);
 		if(!pd.add(&prog)) handle_return(HTML_DATA_OUTOFBOUND);
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)
 		if (auto *rm = OSRainMaker::get()) rm->sync_programs();
@@ -3785,7 +3788,8 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	delete doc;
 	if (ret == HTTP_RQT_SUCCESS) sensor_request_save();
 
-	ret = ret == HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
+	ret = ret == HTTP_RQT_SUCCESS ? HTML_SUCCESS :
+	      (ret == HTTP_RQT_NOT_ENOUGH_SPACE ? HTML_NOT_ENOUGH_SPACE : HTML_DATA_MISSING);
 	handle_return(ret);
 
 	DEBUG_PRINTLN(F("server_sensor_config5"));
@@ -4832,6 +4836,10 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("fsa"), true))
 		failsafe_active = strtoul(tmp_buffer, NULL, 0) > 0;
 
+	uint order = 0; // 0 = keep existing / sort by nr
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("order"), true))
+		order = strtoul(tmp_buffer, NULL, 0);
+
 	Monitor_Union_t m;
 	switch (type) {
 		case MONITOR_MIN:
@@ -4861,9 +4869,59 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 			break;
 		default: handle_return(HTML_DATA_FORMATERROR);
 	}
-	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds, output_mode, stale_timeout, failsafe_active);
-	ret = ret >= HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
+	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds, output_mode, stale_timeout, failsafe_active, order);
+	ret = ret == HTTP_RQT_SUCCESS ? HTML_SUCCESS :
+	      (ret == HTTP_RQT_NOT_ENOUGH_SPACE ? HTML_NOT_ENOUGH_SPACE : HTML_DATA_MISSING);
 	handle_return(ret);
+}
+
+/**
+ * od
+ * Persist the display order of sensors / monitors / program adjustments on the
+ * device so it survives reloads, browser changes and power cycles (#295).
+ * Params:
+ *   t = section: 's'=sensors, 'm'=monitors, 'p'=program adjustments
+ *   o = comma-separated list of entry numbers (nr) in the desired display order
+ * A 1-based order index is stored per entry and the affected section is saved
+ * exactly once (keeps flash writes minimal).
+ */
+void server_config_order(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+	(void)p;
+#endif
+
+	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("t"), true))
+		handle_return(HTML_DATA_MISSING);
+	char section = tmp_buffer[0];
+	if (section != 's' && section != 'm' && section != 'p')
+		handle_return(HTML_DATA_FORMATERROR);
+
+	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("o"), true))
+		handle_return(HTML_DATA_MISSING);
+
+	// Parse the comma-separated nr list and assign a 1-based order to each entry.
+	uint pos = 0;
+	char *saveptr = NULL;
+	char *tok = strtok_r(tmp_buffer, ",", &saveptr);
+	while (tok) {
+		uint nr = strtoul(tok, NULL, 0);
+		if (nr) {
+			pos++;
+			if (section == 's') { SensorBase *s = sensor_by_nr(nr); if (s) s->order = pos; }
+			else if (section == 'm') { Monitor_t *mon = monitor_by_nr(nr); if (mon) mon->order = pos; }
+			else { ProgSensorAdjust *pa = prog_adjust_by_nr(nr); if (pa) pa->order = pos; }
+		}
+		tok = strtok_r(NULL, ",", &saveptr);
+	}
+
+	if (section == 's') sensor_save();
+	else if (section == 'm') monitor_save();
+	else prog_adjust_save();
+
+	handle_return(HTML_SUCCESS);
 }
 
 #if defined(ARDUINO) || defined(USE_OTF)
@@ -4896,7 +4954,7 @@ void monitorconfig_json(Monitor_t *mon) {
 	// Emit the name JSON-escaped so special characters (backslash, quote, …) do
 	// not produce invalid JSON that breaks the UI/app monitor list (#263).
 	bfill_emit_json_escaped_monitor_name(mon->name);
-	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,\"om\":$D,\"stt\":$L,\"fsa\":$D,"),
+	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,\"om\":$D,\"stt\":$L,\"fsa\":$D,\"order\":$D,"),
 				mon->maxRuntime,
 				mon->prio,
 				mon->active,
@@ -4905,7 +4963,8 @@ void monitorconfig_json(Monitor_t *mon) {
 			    mon->reset_time? mon->reset_time-os.now_tz():0,
 				mon->output_mode,
 				mon->stale_timeout,
-				mon->failsafe_active);
+				mon->failsafe_active,
+				mon->order);
 
 	switch(mon->type) {
 		case MONITOR_MIN:
@@ -5156,8 +5215,12 @@ void server_sensorprog_config(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("name"), true))
 		obj["name"] = tmp_buffer;
 
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("order"), true))
+		obj["order"] = strtoul(tmp_buffer, NULL, 0);
+
 	int ret = prog_adjust_define(obj);
-	ret = ret >= HTTP_RQT_SUCCESS?HTML_SUCCESS:HTML_DATA_MISSING;
+	ret = ret == HTTP_RQT_SUCCESS ? HTML_SUCCESS :
+	      (ret == HTTP_RQT_NOT_ENOUGH_SPACE ? HTML_NOT_ENOUGH_SPACE : HTML_DATA_MISSING);
 	handle_return(ret);
 }
 
@@ -7250,6 +7313,7 @@ const char _url_keys[] PROGMEM =
 	"mc"
 	"ml"
 	"mt"
+	"od"  // persist display order of sensors/monitors/program adjustments
 	"nl"  // notification event log (mobile app push/local notifications)
 #if defined(ESP32C5)
 	"ir"  // IEEE 802.15.4: get radio config
@@ -7356,6 +7420,7 @@ URLHandler urls[] = {
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
+	server_config_order, // od
 	server_notification_log, // nl
 #if defined(ESP32C5)
 	server_ieee802154_get, // ir

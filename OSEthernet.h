@@ -84,6 +84,9 @@
 		inline bool linkUp() { return backend.linkUp(); }
 		inline wl_status_t status() { return connected() ? WL_CONNECTED : WL_DISCONNECTED; }
 		inline bool setHostname(const char* name) { return backend.setHostname(name); }
+		inline bool setAutoNegotiation(bool on) { return backend.setAutoNegotiation(on); }
+		inline bool setLinkSpeed(uint16_t speed) { return backend.setLinkSpeed(speed); }
+		inline bool setFullDuplex(bool on) { return backend.setFullDuplex(on); }
 
 	private:
 		ETHClass backend;

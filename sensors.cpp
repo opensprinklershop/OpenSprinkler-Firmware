@@ -944,6 +944,13 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     return HTTP_RQT_NOT_RECEIVED;
   }
 
+  // Reject creation of a new sensor when the filesystem is too full to store it
+  // safely — otherwise the config save could silently fail and lose data (#295).
+  if (!config_space_for_new_entry(SENSOR_FILENAME_JSON)) {
+    delete new_sensor;
+    return HTTP_RQT_NOT_ENOUGH_SPACE;
+  }
+
   // Load from JSON
   new_sensor->fromJson(json);
 
@@ -2421,6 +2428,7 @@ void ProgSensorAdjust::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("stale_timeout")] = stale_timeout;
   obj[F("stale_policy")] = stale_policy;
   obj[F("stale_fallback")] = stale_fallback;
+  obj[F("order")] = order;
   obj[F("name")] = name;
 }
 
@@ -2437,6 +2445,7 @@ void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
   stale_policy = obj[F("stale_policy")] | PROG_STALE_LAST_VALUE;
   if (stale_policy > PROG_STALE_FALLBACK) stale_policy = PROG_STALE_LAST_VALUE;
   stale_fallback = clamp_adjust_factor(obj[F("stale_fallback")] | 1.0);
+  order = obj[F("order")] | order;
   
   const char* nameStr = obj[F("name")] | "";
   SAFE_STRNCPY(name, nameStr, sizeof(name));
@@ -2493,6 +2502,10 @@ int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save) {
     p = it->second;
     p->fromJson(json);
   } else {
+    // Reject a new entry when the filesystem is too full to store it safely (#295)
+    if (!config_space_for_new_entry(PROG_SENSOR_FILENAME)) {
+      return HTTP_RQT_NOT_ENOUGH_SPACE;
+    }
     // Create new
     p = new ProgSensorAdjust;
     p->fromJson(json);
@@ -2746,6 +2759,26 @@ void ensureConfigSpace() {
 }
 #endif
 
+// Guard against silently losing a user's new configuration entry when the
+// (small, log-shared) filesystem is full (#295). Before creating a new sensor,
+// monitor, program adjustment or program, verify there is room to rewrite the
+// affected config file (the atomic save writes a full temp copy) plus a safety
+// margin. Old disposable log rings are trimmed first. When space is
+// insufficient the caller rejects the request and reports it to the user
+// instead of writing a truncated/failed config.
+bool config_space_for_new_entry(const char *cfgfile) {
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  ensureConfigSpace();  // reclaim space from old logs first
+  ulong need = MIN_DISK_FREE;  // safety margin for the atomic save
+  if (cfgfile && cfgfile[0] && file_exists(cfgfile))
+    need += file_size(cfgfile);  // the save rewrites the whole file into a temp copy
+  return diskFree() >= need;
+#else
+  (void)cfgfile;
+  return true;
+#endif
+}
+
 // SensorBase default emitJson implementation
 void SensorBase::emitJson(BufferFiller& bfill) const {
   ArduinoJson::JsonDocument *doc = new (std::nothrow) ArduinoJson::JsonDocument();
@@ -2972,6 +3005,7 @@ void Monitor::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("output_mode")] = output_mode;
   obj[F("stale_timeout")] = stale_timeout;
   obj[F("failsafe_active")] = failsafe_active;
+  obj[F("order")] = order;
   
   // Serialize Monitor_Union based on type
   ArduinoJson::JsonObject mObj = obj[F("m")].to<ArduinoJson::JsonObject>();
@@ -3035,6 +3069,7 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
   output_mode = obj[F("output_mode")] | 0;
   stale_timeout = obj[F("stale_timeout")] | 0;
   failsafe_active = obj[F("failsafe_active")] | 0;
+  order = obj[F("order")] | order;
   reset_time = 0;
   
   // Deserialize Monitor_Union based on type
@@ -3239,7 +3274,7 @@ int monitor_delete(uint nr) {
   return HTTP_RQT_NOT_RECEIVED;
 }
 
-bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds, uint8_t output_mode, ulong stale_timeout, uint8_t failsafe_active) {
+int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds, uint8_t output_mode, ulong stale_timeout, uint8_t failsafe_active, uint order) {
   // Find or create monitor
   auto it = monitorsMap.find(nr);
   Monitor_t *p;
@@ -3260,8 +3295,13 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
     p->output_mode = output_mode;
     p->stale_timeout = stale_timeout;
     p->failsafe_active = failsafe_active;
+    if (order) p->order = order;  // only overwrite when an explicit order is provided
     SAFE_STRNCPY(p->name, name, sizeof(p->name));
   } else {
+    // Reject a new monitor when the filesystem is too full to store it safely (#295)
+    if (!config_space_for_new_entry(MONITOR_FILENAME)) {
+      return HTTP_RQT_NOT_ENOUGH_SPACE;
+    }
     // Create new monitor
     p = new Monitor_t;
     p->nr = nr;
@@ -3278,6 +3318,7 @@ bool monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const
     p->output_mode = output_mode;
     p->stale_timeout = stale_timeout;
     p->failsafe_active = failsafe_active;
+    p->order = order;
     SAFE_STRNCPY(p->name, name, sizeof(p->name));
     
     monitorsMap[nr] = p;
@@ -3473,6 +3514,22 @@ void check_monitors() {
 
   os.status.forced_sensor1 = 0;
   os.status.forced_sensor2 = 0;
+
+  // Robustness against a non-monotonic wall clock. os.now_tz() can jump
+  // backwards (NTP resync, RTC glitch, or a full config partition that prevents
+  // time persistence, see #295). A pending reset_time that was computed against
+  // an older, larger clock value would then lie unreachably far in the future,
+  // so a monitor's timed action (e.g. a stop-only zone or a scheduled run) would
+  // never expire — leaving a station running for many hours. Re-anchor any
+  // reset_time that is further ahead than its own reset window so the timer can
+  // still elapse.
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
+    if (mon->reset_seconds > 0 &&
+        mon->reset_time > timeNow + (time_os_t)mon->reset_seconds) {
+      mon->reset_time = timeNow + mon->reset_seconds;
+    }
+  }
 
   // ---------------------------------------------------------------------
   // Two-phase, order-independent evaluation.

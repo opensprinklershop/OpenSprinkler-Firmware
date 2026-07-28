@@ -1025,26 +1025,49 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 		#if defined(ARDUINO)
 			#if defined(ESP8266) || defined(ESP32)
 				if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
-					// BearSSL (with setBufferSizes 4096+512) needs ~8-10KB plus fragmentation
-					// headroom. Require 16000 so the 75% maxblock check demands >=12000;
-					// the previous threshold of 12000 allowed maxblock=9464 to pass, which
-					// caused BearSSL _connectSSL() to crash with an OOM exception.
-					const size_t email_mem_needed = 16000;
+					// TLS handshake headroom required before opening the SMTP connection.
+					// ESP8266 (BearSSL, no PSRAM): needs ~8-10KB internal heap plus
+					// fragmentation headroom. Require 16000 so the 75% maxblock check
+					// demands >=12000; the previous threshold of 12000 allowed
+					// maxblock=9464 to pass, which caused BearSSL _connectSSL() to crash.
+					// ESP32 (mbedTLS): once the network is up the firmware reroutes
+					// mbedTLS allocations to PSRAM (mbedtls_spiram_allow_internal_reroute),
+					// so the TLS buffers do NOT come from internal heap. Requiring 16000
+					// internal bytes wrongly blocked emails during active watering on the
+					// RAM-tight ESP32-C5 (~20KB free at idle). Use 10000 to match the
+					// weather/HTTPS TLS gate (OpenSprinkler.cpp ssl_tmp_memory_needed).
+					#if defined(ESP8266)
+						const size_t email_mem_needed = 16000;
+					#else
+						const size_t email_mem_needed = 10000;
+					#endif
 					if (!free_tmp_memory(email_mem_needed)) {
-						DEBUG_PRINTLN(F("Not enough memory to send email"));
+						// Not enough contiguous heap to open a TLS connection right now
+						// (typical during active watering on RAM-tight boards). Skip only
+						// the SMTP send — do NOT return, so this event is still recorded in
+						// the in-memory notification log (/nl) and pushed to InfluxDB below.
+						// Returning here used to make program-start/station-off events vanish
+						// entirely (no email, no app notification) whenever memory was tight.
+						DEBUG_PRINTLN(F("Not enough memory to send email (event still logged)"));
 						restore_tmp_memory(email_mem_needed);
-						return;
+					} else {
+						DEBUG_PRINTLN(F("Sending email..."));
+						EMailSender emailSend(email_login, email_password, email_username, "OpenSprinkler");
+						emailSend.setSMTPServer(email_host);
+						emailSend.setSMTPPort(email_port);
+						// Use EHLO (ESMTP) instead of the library default HELO. AUTH is an
+						// ESMTP service extension that servers only advertise/enable after
+						// EHLO; some providers (e.g. GMX, Zoho) reject "AUTH LOGIN" issued
+						// after a plain HELO. The multi-line EHLO reply is parsed correctly
+						// (final line detected via the "250 " vs "250-" indicator).
+						emailSend.setEHLOCommand(true);
+						EMailSender::Response resp = emailSend.send(email_recipient, email_message);
+						DEBUG_PRINTLN(F("Sending Status:"));
+						DEBUG_PRINTLN(resp.status);
+						DEBUG_PRINTLN(resp.code);
+						DEBUG_PRINTLN(resp.desc);
+						restore_tmp_memory(email_mem_needed);
 					}
-					DEBUG_PRINTLN(F("Sending email..."));
-					EMailSender emailSend(email_login, email_password, email_username, "OpenSprinkler");
-					emailSend.setSMTPServer(email_host);
-					emailSend.setSMTPPort(email_port);
-					EMailSender::Response resp = emailSend.send(email_recipient, email_message);
-					DEBUG_PRINTLN(F("Sending Status:"));
-					DEBUG_PRINTLN(resp.status);
-					DEBUG_PRINTLN(resp.code);
-					DEBUG_PRINTLN(resp.desc);
-					restore_tmp_memory(email_mem_needed);
 				}
 			#endif
 		#else
