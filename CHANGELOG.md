@@ -6,6 +6,15 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(222)] — veröffentlicht 2026-07-29
+
+### Changed
+- **Release Build 222**: Freigabe des nächsten Build-Stands (`OS_FW_MINOR=222`) nach `2.4.0(221)`.
+- **Dokumentationsabgleich**: Mehrsprachige Dokumentationsseiten wurden auf den aktuellen Firmware-Stand `2.4.0(221)` synchronisiert.
+
+### Notes
+- **Keine neuen Firmware-Codeänderungen seit `2.4.0(221)`**: Der Unterschied seit der letzten Release umfasst ausschließlich Versions-/Dokumentationspflege.
+
 ## [2.4.0(221)] — veröffentlicht 2026-07-28
 
 ### Added

@@ -178,6 +178,7 @@ enum {
 #define HTTP_RQT_EMPTY_RETURN  -4
 #define HTTP_RQT_PENDING       -5
 #define HTTP_RQT_STALE         -6
+#define HTTP_RQT_NOT_ENOUGH_SPACE -7  // not enough flash/filesystem space to store a new entry
 
 /** Sensor macro defines */
 #define SENSOR_TYPE_NONE    0x00
