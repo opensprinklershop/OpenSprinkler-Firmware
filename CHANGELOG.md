@@ -6,6 +6,21 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(221)] — veröffentlicht 2026-07-28
+
+### Added
+- **In-Memory-Benachrichtigungsprotokoll (`/nl`-Endpunkt)**: Ein neuer ringförmiger In-Memory-Log hält die letzten Benachrichtigungsereignisse vor (bis zu 24 Einträge). Die Mobile-App kann ihn über den neuen Endpunkt `GET /nl?pw=…[&after=N][&max=M]` pollen und die konfigurierten Ereignisse (IFTTT/MQTT/E-Mail) zusätzlich als Push-/lokale Benachrichtigungen auf iOS und Android anzeigen. Jeder Eintrag enthält eine fortlaufende ID, die lokale Zeit, den Ereignistyp, eine Priorität (hoch/mittel/niedrig, z. B. Flow-/Strom-/Pipe-Burst-Alarme = hoch) und einen kompakten englischen Klartext. Der Log ist speicherneutral (fester Ringpuffer ohne dynamische Allokation); die Text-/Float-Aufbereitung kommt ohne `%f` aus und bleibt damit auch auf den AVR-Toolchains (klassischer OpenSprinkler) kompatibel.
+- **ESP32-C5: Silicon-Revision-Erkennung beim Boot**: Die Chip-Revision wird beim Start erkannt, protokolliert (`v1.xx`) und in `os.hw_chip_rev` hinterlegt. Ab Revision ≥ v1.02 ist der PSRAM-MSPI-Memory-Barrier-Fix bereits in Hardware vorhanden (der Software-Workaround bleibt kompiliert, ist dann aber inert); auf älteren Chips < v1.02 bleibt der Workaround aktiv. Die Mindest-Revision der vorkompilierten Framework-Libs bleibt bewusst bei v1.0, damit ein einziges Binary auf allen C5-Revisionen ab v1.0 startet.
+
+### Changed
+- **ESP32-C5 Hardware-Selbsttest: Ausführung vor dem Dateisystem-Mount**: Der über **B1+B2 beim Booten** gestartete Selbsttest läuft nun garantiert **vor** dem Mounten des externen Flash-Dateisystems, sodass sich auch ein Board mit defektem Flash noch diagnostizieren lässt. Zusätzlich wurde die Prüfung benachbarter Pads auf Lötbrücken (adjacent-pad bridge checks) überarbeitet.
+- **ESP32-C5 Firmware-Upload zuverlässiger & schneller (`fw.sh`)**: Schreib-/Erase-Region-Operationen nutzen jetzt den ROM-Loader (`--no-stub`) mit standardmäßig **921600 Baud**. Der esptool-Stub konnte auf manchen C5-Boards beim Baud-Wechsel die Verbindung verlieren („Invalid head of packet" / „chip stopped responding"); der ROM-Loader flasht auch bei hoher Baudrate zuverlässig. Ein Vollchip-`erase_flash` benötigt weiterhin den Stub und bleibt unverändert.
+
+### Fixed
+- **E-Mail-Versand: Hänger/Timeout bei Nicht-Gmail-Providern (GMX, Zoho)**: Der SMTP-Handshake der `EMailSender`-Bibliothek las eine **fest kodierte Anzahl** an EHLO-/Begrüßungs-Antwortzeilen (`DEFAULT_EHLO_RESPONSE_COUNT = 6`). Gmail sendet zufällig genau diese Zeilenanzahl, während GMX (`smtp.gmx.net`) und Zoho (`smtp.zoho.eu`) **weniger** Zeilen liefern – die Bibliothek wartete dann auf nicht existierende Zeilen bis zum 2500-ms-Timeout und brach mit „Timeout! Reduce additional HELO response line count" ab, ohne die Mail zu versenden. Das Ende der mehrzeiligen SMTP-Antwort wird jetzt gemäß RFC 5321 erkannt (Fortsetzungszeile `NNN-text` mit Bindestrich, Schlusszeile `NNN text` mit Leerzeichen an Position 3) und die Schleife bricht sofort nach der Schlusszeile ab. Die feste Zeilenzahl dient nur noch als obere Sicherheitsgrenze; der Versand funktioniert damit providerunabhängig.
+
+---
+
 ## [2.4.0(220)] — veröffentlicht 2026-07-19
 
 ### Added
