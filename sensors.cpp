@@ -1363,8 +1363,16 @@ bool sensorlog_add(uint8_t log, SensorBase *sensor, ulong time) {
       return false;
     }
 
+    // Per-sensor log throttle: when log_interval > 0, never write more than one
+    // entry per log_interval seconds even if the value keeps changing. This caps
+    // the log volume of noisy sensors (e.g. a timer toggling every few minutes)
+    // that would otherwise flood the shared, size-limited log ring (ticket 305).
+    // The daily heartbeat (>86400s) is unaffected. 0 = off (legacy behavior).
+    ulong dt = time - sensor->last_logged_time;
+    bool interval_ok = (sensor->log_interval == 0) || (dt >= sensor->log_interval);
+
     // Write to log file only if necessary
-    if (time-sensor->last_logged_time > 86400 || abs(sensor->last_data - sensor->last_logged_data) > 0.00999) {
+    if (interval_ok && (dt > 86400 || abs(sensor->last_data - sensor->last_logged_data) > 0.00999)) {
       SensorLog_t sensorlog;
       memset(&sensorlog, 0, sizeof(SensorLog_t));
       sensorlog.nr = sensor->nr;
@@ -3021,7 +3029,7 @@ void Monitor::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("stale_timeout")] = stale_timeout;
   obj[F("failsafe_active")] = failsafe_active;
   obj[F("order")] = order;
-  
+  obj[F("show")] = show;
   // Serialize Monitor_Union based on type
   ArduinoJson::JsonObject mObj = obj[F("m")].to<ArduinoJson::JsonObject>();
   switch(type) {
@@ -3085,6 +3093,7 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
   stale_timeout = obj[F("stale_timeout")] | 0;
   failsafe_active = obj[F("failsafe_active")] | 0;
   order = obj[F("order")] | order;
+  show = obj[F("show")] | 1;
   reset_time = 0;
   
   // Deserialize Monitor_Union based on type
@@ -3289,7 +3298,7 @@ int monitor_delete(uint nr) {
   return HTTP_RQT_NOT_RECEIVED;
 }
 
-int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds, uint8_t output_mode, ulong stale_timeout, uint8_t failsafe_active, uint order) {
+int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds, uint8_t output_mode, ulong stale_timeout, uint8_t failsafe_active, uint order, uint8_t show) {
   // Find or create monitor
   auto it = monitorsMap.find(nr);
   Monitor_t *p;
@@ -3311,6 +3320,7 @@ int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const 
     p->stale_timeout = stale_timeout;
     p->failsafe_active = failsafe_active;
     if (order) p->order = order;  // only overwrite when an explicit order is provided
+    p->show = show;
     SAFE_STRNCPY(p->name, name, sizeof(p->name));
   } else {
     // Reject a new monitor when the filesystem is too full to store it safely (#295)
@@ -3334,6 +3344,7 @@ int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const 
     p->stale_timeout = stale_timeout;
     p->failsafe_active = failsafe_active;
     p->order = order;
+    p->show = show;
     SAFE_STRNCPY(p->name, name, sizeof(p->name));
     
     monitorsMap[nr] = p;

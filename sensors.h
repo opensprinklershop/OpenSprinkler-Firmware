@@ -389,7 +389,8 @@ public:
   ulong stale_timeout;      // seconds of stale/invalid sensor data before failsafe kicks in (0=disabled: keep last state)
   uint8_t failsafe_active;  // desired output state (0/1) when the input is stale longer than stale_timeout
   uint order;               // display order (0=unset -> sort by nr)
-  unsigned char undef[10];  // for later
+  uint8_t show;             // show on main page (1=visible default, 0=hidden)
+  unsigned char undef[9];   // for later
   ulong reset_time; // time to reset
 
   // Transient evaluation scratch (not persisted / not serialized).
@@ -409,6 +410,7 @@ public:
     memset(&m, 0, sizeof(Monitor_Union_t));
     memset(undef, 0, sizeof(undef));
     order = 0;
+    show = 1;
     name[0] = 0;
   }
   
@@ -582,7 +584,7 @@ void monitor_load();
 void monitor_save();
 int monitor_count();
 int monitor_delete(uint nr);
-int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0, uint order = 0);
+int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0, uint order = 0, uint8_t show = 1);
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);
 void check_monitors();

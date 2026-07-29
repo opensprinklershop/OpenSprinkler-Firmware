@@ -36,6 +36,25 @@
 
 extern OpenSprinkler os;
 
+// Resolve a JSON-array index token from a filter segment's [..] brackets.
+// Besides a plain number it accepts a dynamic "now" placeholder that resolves to
+// the current local hour-of-day index (0..23), with an optional +N/-N offset,
+// e.g. "[now]", "[now+1]", "[now-2]". This lets HTTP-JSON forecast arrays
+// (e.g. Open-Meteo hourly) be indexed relative to the current hour (ticket 305).
+static int remote_json_parse_array_index(const char* s) {
+    while (*s == ' ') s++;
+    if ((s[0]=='n'||s[0]=='N') && (s[1]=='o'||s[1]=='O') && (s[2]=='w'||s[2]=='W')) {
+        int base = (int)((os.now_tz() % 86400L) / 3600L); // local hour 0..23
+        s += 3;
+        while (*s == ' ') s++;
+        int off = (*s == '+' || *s == '-') ? atoi(s) : 0;
+        int idx = base + off;
+        return idx < 0 ? 0 : idx;
+    }
+    int idx = atoi(s);
+    return idx < 0 ? 0 : idx;
+}
+
 void RemoteJsonSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     SensorBase::fromJson(obj);
     if (obj.containsKey(F("url"))) {
@@ -145,7 +164,7 @@ int RemoteJsonSensor::read(unsigned long time) {
             if (lb) {
                 char* rb = strchr(lb, ']');
                 if (rb && rb[1] == '\0' && rb > lb + 1) {
-                    int idx = atoi(lb + 1);
+                    int idx = remote_json_parse_array_index(lb + 1);
                     if (idx < 0) idx = 0;
                     parsed_index[i] = idx;
                     *lb = '\0';
@@ -313,7 +332,7 @@ int RemoteJsonSensor::read(unsigned long time) {
 #elif defined(OSPI)
     naettReq *req = naettRequest(url, naettMethod("GET"));
     naettRes *res = naettMake(req);
-    
+
     unsigned long start_ms = millis();
     while (!naettComplete(res)) {
         if (millis() - start_ms > SENSOR_READ_TIMEOUT) {

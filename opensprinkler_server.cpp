@@ -4840,6 +4840,10 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("order"), true))
 		order = strtoul(tmp_buffer, NULL, 0);
 
+	uint8_t show = 1; // 1 = show on main page (default), 0 = hidden
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("show"), true))
+		show = strtoul(tmp_buffer, NULL, 0) > 0;
+
 	Monitor_Union_t m;
 	switch (type) {
 		case MONITOR_MIN:
@@ -4869,7 +4873,7 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 			break;
 		default: handle_return(HTML_DATA_FORMATERROR);
 	}
-	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds, output_mode, stale_timeout, failsafe_active, order);
+	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds, output_mode, stale_timeout, failsafe_active, order, show);
 	ret = ret == HTTP_RQT_SUCCESS ? HTML_SUCCESS :
 	      (ret == HTTP_RQT_NOT_ENOUGH_SPACE ? HTML_NOT_ENOUGH_SPACE : HTML_DATA_MISSING);
 	handle_return(ret);
@@ -4954,7 +4958,7 @@ void monitorconfig_json(Monitor_t *mon) {
 	// Emit the name JSON-escaped so special characters (backslash, quote, …) do
 	// not produce invalid JSON that breaks the UI/app monitor list (#263).
 	bfill_emit_json_escaped_monitor_name(mon->name);
-	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,\"om\":$D,\"stt\":$L,\"fsa\":$D,\"order\":$D,"),
+	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,\"om\":$D,\"stt\":$L,\"fsa\":$D,\"order\":$D,\"show\":$D,"),
 				mon->maxRuntime,
 				mon->prio,
 				mon->active,
@@ -4964,7 +4968,8 @@ void monitorconfig_json(Monitor_t *mon) {
 				mon->output_mode,
 				mon->stale_timeout,
 				mon->failsafe_active,
-				mon->order);
+				mon->order,
+				mon->show);
 
 	switch(mon->type) {
 		case MONITOR_MIN:
@@ -7521,6 +7526,21 @@ void on_firmware_update(OTF_PARAMS_DEF) {
 // Accepted slot args from UI/client: ota0|ota1 (preferred), zigbee|matter (legacy).
 static String s_ota_slot;
 
+// Tracks whether we suspended MQTT (to free RAM / stop WiFi contention) at the
+// start of a firmware upload so it is only resumed when the update is aborted or
+// fails (a successful update reboots the device). See on_firmware_upload().
+static bool s_ota_services_suspended = false;
+
+// Resume services suspended for the duration of a firmware upload. Safe to call
+// unconditionally; only acts if we actually suspended. OSMqtt::resume() defers
+// the reconnect to the main loop, so it is safe from inside an HTTP handler.
+static void ota_resume_services() {
+	if (s_ota_services_suspended) {
+		OSMqtt::resume();
+		s_ota_services_suspended = false;
+	}
+}
+
 #if defined(ESP32C5)
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -7551,6 +7571,7 @@ void on_firmware_upload_fin() {
 #else
 		Update.end(false);
 #endif
+		ota_resume_services();
 		return;
 	}
 
@@ -7577,6 +7598,7 @@ void on_firmware_upload_fin() {
 	// finish update and check error
 	if(!Update.end(true) || Update.hasError()) {
 		update_server_send_result(HTML_UPLOAD_FAILED);
+		ota_resume_services();
 		delay(250); // allow UI to receive the error code
 		return;
 	}
@@ -7618,11 +7640,24 @@ void on_update_capabilities() {
 void on_firmware_upload() {
 	HTTPUpload& upload = update_server->upload();
 	if(upload.status == UPLOAD_FILE_START){
+#if !defined(ESP32C5)
 		if(os.iopts[IOPT_WIFI_MODE]==WIFI_MODE_STA) {
-			// TODO: stopping these can cause problems if the update fails and the user abandons the task
-			// WiFiUDP::stopAll();
-			//mqtt_client->disconnect();
+			// Free RAM and stop network contention before flashing. On the
+			// memory-tight ESP8266 an active MQTT client (PubSubClient buffer +
+			// WiFiClient, ~7 KB) competing for the WiFi radio made the FIRST
+			// upload attempt stall while a later retry succeeded (ticket 305).
+			// Suspend MQTT (frees heap) and close UDP sockets (NTP/mDNS). resume()
+			// is deferred to the main loop and only runs if the update is
+			// aborted/failed; a successful update reboots the device.
+			if (OSMqtt::enabled()) {
+				OSMqtt::suspend();
+				s_ota_services_suspended = true;
+			}
+#if defined(ESP8266)
+			WiFiUDP::stopAll();
+#endif
 		}
+#endif
 		DEBUG_PRINT(F("upload: "));
 		DEBUG_PRINTLN(upload.filename);
 		// Read target OTA slot from UI/client and normalize it.
@@ -7719,6 +7754,7 @@ void on_firmware_upload() {
 #else
 		Update.end();
 #endif
+		ota_resume_services();  // update abandoned: bring MQTT back
 		DEBUG_PRINTLN(F("aborted"));
 	}
 	delay(0);

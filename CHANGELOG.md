@@ -6,6 +6,16 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(223)] — in Entwicklung
+
+### Added
+- **Monitor-Sichtbarkeit auf der Hauptseite (`show`, Ticket 305)**: Monitore haben nun – analog zu Sensoren – ein persistentes `show`-Flag. In der Monitor-Konfiguration (`/mc`, Parameter `show`) und in der Ausgabe (`"show"`) mitgeführt; Standard `1` (sichtbar, abwärtskompatibel). Damit lassen sich einzelne (auch aktive) Monitore aus der überladenen Hauptseiten-Anzeige ausblenden, ohne sie zu deaktivieren.
+- **Pro-Sensor Mindest-Log-Intervall (`li`, Ticket 305)**: Neues Sensorfeld `log_interval` (Sekunden, `0` = aus). Ist es gesetzt, wird pro Sensor höchstens ein Log-Eintrag je `li` Sekunden geschrieben – auch bei ständigem Wertwechsel. Das begrenzt das Log-Volumen „lauter" Sensoren (z. B. ein Timer, der alle paar Minuten schaltet), die sonst den gemeinsamen, größenbegrenzten Log-Ring fluten. Der Tages-Heartbeat (>86400 s) bleibt unberührt.
+- **HTTP-JSON-Filter: dynamischer Array-Index `[now±N]` (Ticket 305)**: Neben festen Indizes (`[3]`) versteht der Remote-JSON-Filter jetzt den Platzhalter `[now]`, `[now+N]` bzw. `[now-N]`. Er löst sich zur aktuellen lokalen Stunde des Tages (0–23) plus Offset auf, sodass stündliche Vorhersage-Arrays (z. B. Open-Meteo) relativ zur aktuellen Stunde adressiert werden können (z. B. `hourly|temperature_2m[now+1]`). Verfügbar auf ESP8266/ESP32/ESP32-C5 (Streaming-Parser).
+
+### Changed
+- **Robusteres Firmware-Update: Dienste vor dem Flashen anhalten (Ticket 305)**: Zu Beginn eines OTA-Uploads (STA-Modus, nicht ESP32-C5) wird der MQTT-Client jetzt via `OSMqtt::suspend()` angehalten (gibt auf dem ESP8266 ~7 KB Heap frei) und offene UDP-Sockets (NTP/mDNS) werden geschlossen. Zuvor konkurrierten diese Dienste um das WLAN-Funkmodul, wodurch der **erste** Upload-Versuch auf dem RAM-knappen ESP8266 hängenblieb und erst ein zweiter Anlauf erfolgreich war. Bei Abbruch oder Fehlschlag des Updates werden die Dienste wieder aufgenommen (ein erfolgreiches Update startet ohnehin neu).
+
 ## [2.4.0(222)] — veröffentlicht 2026-07-29
 
 ### Added
