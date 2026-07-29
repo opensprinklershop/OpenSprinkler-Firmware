@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(223)] — unveröffentlicht
+## [2.4.0(223)] — veröffentlicht 2026-07-29
 
 ### Added
 - **Monitor-Sichtbarkeit auf der Hauptseite (`show`, Ticket 305)**: Monitore haben nun – analog zu Sensoren – ein persistentes `show`-Flag. In der Monitor-Konfiguration (`/mc`, Parameter `show`) und in der Ausgabe (`"show"`) mitgeführt; Standard `1` (sichtbar, abwärtskompatibel). Damit lassen sich einzelne (auch aktive) Monitore aus der überladenen Hauptseiten-Anzeige ausblenden, ohne sie zu deaktivieren.
