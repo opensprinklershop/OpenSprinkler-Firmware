@@ -8,12 +8,19 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ## [2.4.0(222)] — veröffentlicht 2026-07-29
 
-### Changed
-- **Release Build 222**: Freigabe des nächsten Build-Stands (`OS_FW_MINOR=222`) nach `2.4.0(221)`.
-- **Dokumentationsabgleich**: Mehrsprachige Dokumentationsseiten wurden auf den aktuellen Firmware-Stand `2.4.0(221)` synchronisiert.
+### Added
+- **Persistente Anzeigereihenfolge für Sensoren/Monitore/Programm-Anpassungen (`/od`, #295)**: Neuer Endpunkt `GET /od?t=<s|m|p>&o=<nr1,nr2,…>`, der die vom Nutzer festgelegte Sortierreihenfolge geräteseitig speichert (1-basierter `order`-Index je Eintrag) und den betroffenen Abschnitt genau einmal schreibt. Die Reihenfolge übersteht damit Reloads, Browser-/Gerätewechsel und Stromausfälle. Das neue Feld `order` wird in Sensor-, Monitor- und Programm-Anpassungs-JSON (`toJson`/`fromJson`) sowie in der Monitor-Konfigurationsausgabe (`"order"`) mitgeführt; `0` bedeutet „nicht gesetzt → Sortierung nach `nr`".
 
-### Notes
-- **Keine neuen Firmware-Codeänderungen seit `2.4.0(221)`**: Der Unterschied seit der letzten Release umfasst ausschließlich Versions-/Dokumentationspflege.
+### Changed
+- **E-Mail über ESMTP/EHLO statt HELO**: Der Versand nutzt jetzt `setEHLOCommand(true)`. `AUTH LOGIN` ist eine ESMTP-Erweiterung, die viele Provider (z. B. GMX, Zoho) nur nach `EHLO` anbieten und nach einem einfachen `HELO` ablehnen. Die mehrzeilige EHLO-Antwort wird korrekt anhand des `250 ` (Schluss) vs. `250-` (Fortsetzung) Indikators ausgewertet.
+- **E-Mail-TLS-Speicherschwelle plattformabhängig**: Auf ESP32 wird der benötigte interne Heap für den TLS-Handshake von 16000 auf **10000 Bytes** gesenkt (identisch zur Wetter-/HTTPS-Schwelle), da mbedTLS nach Netzstart in den PSRAM umgeleitet wird; die 16000-Byte-Anforderung blockierte auf dem RAM-knappen ESP32-C5 während aktiver Bewässerung fälschlich den Mailversand. ESP8266 (BearSSL, kein PSRAM) behält weiterhin 16000 Bytes.
+- **W5500-Ethernet-Bring-up robuster (ESP32-C5)**: Vor `eth.begin()` läuft nun eine Low-Level-SPI-Diagnose (`w5500_spi_diag`), die direkt über den geteilten `SPI2_HOST`-Bus die Chip-Identität (`VERSIONR`, erwartet `0x04`) und `PHYCFGR` liest, um „Chip antwortet nicht" (Power/CS/MISO/RESET-Verdrahtung) von „Chip lebt, aber PHY-Link down" (Kabel/Magnetics/PHY) zu unterscheiden. Zusätzlich wird die Verbindung vor `begin()` fest auf **100BASE-TX Full-Duplex** gesetzt (`setAutoNegotiation(false)`/`setLinkSpeed(100)`/`setFullDuplex(true)`), damit der Link auch bei fehleranfälliger Auto-Negotiation zustande kommt (neue Wrapper in `OSEthernet.h`).
+- **Hardware-Selbsttest: stabile Prüfsummen-Anzeige**: Die „x/y checks OK"-Anzeige zählt nur noch **erforderliche** Prüfungen. Optionale Geräte (RTC/EEPROM) können bestückt sein oder nicht und ihre I2C-Erkennung kann zwischen Boots schwanken, wodurch die angezeigte Gesamtzahl bisher zwischen z. B. 18/18 und 19/19 sprang.
+
+### Fixed
+- **Konfigurationsverlust auf vollem Dateisystem verhindert (#295)**: Vor dem Anlegen eines **neuen** Sensors, Monitors, Programms oder einer Programm-Anpassung prüft `config_space_for_new_entry()`, ob genug Platz für das atomare Neuschreiben der Konfigurationsdatei (Temp-Kopie) plus Sicherheitsmarge frei ist; alte, entbehrliche Log-Ringe werden zuvor getrimmt. Reicht der Platz nicht, wird die Anfrage mit `HTML_NOT_ENOUGH_SPACE` bzw. `HTTP_RQT_NOT_ENOUGH_SPACE` abgewiesen, statt eine abgeschnittene/fehlgeschlagene Konfiguration zu schreiben.
+- **E-Mail-Ereignisse gehen bei Speichermangel nicht mehr verloren**: Reicht der kontinuierliche Heap für den TLS-Aufbau gerade nicht (typisch während aktiver Bewässerung auf RAM-knappen Boards), wird **nur** der SMTP-Versand übersprungen — kein vorzeitiges `return` mehr. Das Ereignis wird weiterhin im In-Memory-Benachrichtigungslog (`/nl`) erfasst und an InfluxDB gemeldet; zuvor verschwanden Programmstart-/Station-Aus-Ereignisse bei Speicherknappheit vollständig (keine Mail, keine App-Benachrichtigung).
+- **Monitor-Timer robust gegen rückwärts springende Uhr (#295)**: `os.now_tz()` kann rückwärts springen (NTP-Resync, RTC-Glitch oder eine volle Konfig-Partition, die das Persistieren der Zeit verhindert). Eine `reset_time`, die gegen einen älteren, größeren Uhrwert berechnet wurde, läge dann unerreichbar weit in der Zukunft, sodass eine zeitgesteuerte Monitor-Aktion (z. B. eine „Nur-Abschalten"-Zone oder ein geplanter Lauf) nie ablaufen würde – eine Station könnte stundenlang weiterlaufen. Eine `reset_time`, die weiter als ihr eigenes Reset-Fenster in der Zukunft liegt, wird nun neu verankert.
 
 ## [2.4.0(221)] — veröffentlicht 2026-07-28
 

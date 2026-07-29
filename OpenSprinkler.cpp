@@ -1039,8 +1039,8 @@ byte OpenSprinkler::start_ether() {
 	// Use eth.begin() with SPI host and pin numbers.
 	DEBUG_PRINTLN(F("W5500 begin:"));
 #if defined(ESP32C5)
-	const uint8_t eth_spi_mhz = 20;
-	DEBUG_PRINTLN(F("[ESP32-C5] Configuring W5500 SPI frequency at 20 MHz (stable shared SPI)"));
+	const uint8_t eth_spi_mhz = 40;
+	DEBUG_PRINTLN(F("[ESP32-C5] Configuring W5500 SPI frequency at 40 MHz (stable shared SPI)"));
 #elif OS_ETH_TOE
 	const uint8_t eth_spi_mhz = 80;
 	DEBUG_PRINTLN(F("[ETH-TOE] Configuring W5500 SPI frequency at 80 MHz"));
@@ -1049,7 +1049,7 @@ byte OpenSprinkler::start_ether() {
 #endif
 	delay(100);
 	// Low-level W5500 bring-up diagnostic BEFORE eth.begin() takes over the bus.
-	w5500_spi_diag();
+	// w5500_spi_diag();
 
 	// Some W5500 modules fail to negotiate link reliably with
 	// the switch. Force a fixed 100BASE-TX full-duplex mode before begin() so the

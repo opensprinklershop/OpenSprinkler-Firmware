@@ -778,11 +778,13 @@ int sensor_delete(uint nr) {
   // Do not create a new driver object here; just remove the sensor
   delete it->second;
   sensorsMap.erase(it);
-  // Clear this sensor's log entries so a newly created sensor that later
-  // re-uses the same nr does not inherit stale logs of the deleted sensor.
-  sensorlog_clear_sensor(nr, LOG_STD, false, 0, false, 0, 0, 0);
-  sensorlog_clear_sensor(nr, LOG_WEEK, false, 0, false, 0, 0, 0);
-  sensorlog_clear_sensor(nr, LOG_MONTH, false, 0, false, 0, 0, 0);
+  // NOTE: we deliberately do NOT scan/clear this sensor's historical log
+  // entries here. The sensor log is a large rotating store (can hold hundreds
+  // of thousands of entries); clearing a single sensor's entries is an O(N)
+  // flash rewrite that, on the W5500-shared SPI bus, blocks the main loop for
+  // minutes and made the /sc delete request appear to "do nothing". Stale
+  // entries for this nr age out naturally as the ring log rotates; a re-created
+  // sensor re-using the same nr simply sees them until then.
   sensor_save();
   return HTTP_RQT_SUCCESS;
 }
@@ -1447,6 +1449,12 @@ ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
     ulong result = file_read_block(f, sensorlog, idx * SENSORLOG_STORE_SIZE,
                                    SENSORLOG_STORE_SIZE*SLOG_BUFSIZE);
     int entries = result / SENSORLOG_STORE_SIZE;
+    // Guard against a stalled read: if the block read returns nothing (EOF,
+    // read error, or a truncated log file) idxr would never advance and the
+    // outer while-loop would spin forever — hanging sensor_delete()/the /sc
+    // request. Stop clearing instead of looping endlessly.
+    if (entries <= 0) break;
+    bool block_modified = false;
     for (int i = 0; i < entries; i++, idxr++) {
       SensorLog_t * sl = &sensorlog[i];
       if (sl->nr > 0 && (sl->nr == sensorNr || sensorNr == 0)) {
@@ -1460,11 +1468,18 @@ ulong sensorlog_clear_sensor(uint sensorNr, uint8_t log, bool use_under,
         if (sensorNr > 0 && sl->nr == sensorNr && !use_under && !use_over && !before && !after) found = true;
         if (found) {
           sl->nr = 0;
-          file_write_block(f, sl, (idx+i) * SENSORLOG_STORE_SIZE, sizeof(sl->nr));
-          // DEBUG_PRINTF("clearlog3 idx=%ld idxr=%ld\n", idx, idxr);
+          block_modified = true;
           n++;
         }
       }
+    }
+    // Write the whole modified block back in a SINGLE flash operation. The old
+    // code issued one open/seek/write/close per cleared entry, turning a log
+    // with hundreds of thousands of entries into as many flash ops on the
+    // W5500-shared SPI bus — which hung sensor_delete()/the /sc request.
+    if (block_modified) {
+      file_write_block(f, sensorlog, idx * SENSORLOG_STORE_SIZE,
+                       (ulong)entries * SENSORLOG_STORE_SIZE);
     }
   }
   delete[] sensorlog;

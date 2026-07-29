@@ -894,6 +894,13 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
   }
   client.println();
 
+#if !defined(ENABLE_ATTACHMENTS)
+  // Terminate the multipart body. Without attachments compiled in the closing
+  // boundary below (only emitted in the attachment path) is skipped, leaving a
+  // malformed MIME message that strict clients like Thunderbird refuse to render.
+  client.println(F("--frontier--"));
+#endif
+
 #ifdef STORAGE_INTERNAL_ENABLED
   bool spiffsActive = false;
 #endif

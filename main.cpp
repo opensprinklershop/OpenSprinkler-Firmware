@@ -206,6 +206,15 @@ uint32_t reboot_timer = 0;
 unsigned char curr_alert_sid = 0;
 uint32_t ping_ok = 0;
 
+// Keep the first seconds after boot free of the TLS-heavy email/push sends. On
+// the RAM-constrained ESP32-C5 zigbee build those sends spike internal heap to
+// near-zero, which blocks the web server exactly during the post-reboot window
+// when the user needs to reach the device. Queued notifications simply wait and
+// flush once this quiet window has elapsed.
+#ifndef NOTIF_BOOT_QUIET_MS
+#define NOTIF_BOOT_QUIET_MS 60000
+#endif
+
 // Flow anomaly detection state
 static ulong noflow_check_time = 0;       // millis timestamp when to check for no-flow
 static ulong noflow_flow_snapshot = 0;     // flow_count baseline at station start
@@ -2045,8 +2054,10 @@ void do_loop()
 
                 if(otf) otf->loop();
 
-                // process notifier events
-                if(os.network_connected()) {
+                // process notifier events.
+                // Skip the TLS email/push flush during the early-boot quiet
+                // window so the web server stays reachable right after a reboot.
+                if(os.network_connected() && boot_elapsed >= NOTIF_BOOT_QUIET_MS) {
                         notif.run();
                 }
 

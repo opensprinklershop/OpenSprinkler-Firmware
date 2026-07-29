@@ -56,6 +56,19 @@ extern "C" {
 // If not defined, the Zigbee stack scans all channels 11-26 (default).
 // #define ZIGBEE_COEX_CHANNEL_MASK  (1UL << 25)
 
+// High-frequency Tuya/report trace logging. A single chatty Zigbee device can
+// emit dozens of frames/sec; logging each one over the 115200 serial console
+// saturates the CPU and starves HTTP/UI. Gated OFF by default even in debug
+// builds — set to 1 only for targeted Zigbee frame-level debugging.
+#ifndef ZB_GW_VERBOSE_LOG
+#define ZB_GW_VERBOSE_LOG 0
+#endif
+#if ZB_GW_VERBOSE_LOG
+#define ZB_GW_TRACE(...) DEBUG_PRINTF(__VA_ARGS__)
+#else
+#define ZB_GW_TRACE(...) do {} while (0)
+#endif
+
 // Zigbee Gateway state
 static bool gw_zigbee_initialized = false;
 static bool gw_zigbee_connected = false;
@@ -111,8 +124,24 @@ struct GwTuyaScheduledCommand {
     uint8_t payload[20];
 };
 
-static GwTuyaScheduledCommand gw_tuya_schedule[8];
+static constexpr size_t GW_TUYA_SCHEDULE_MAX = 8;
+// Outgoing Tuya command queue lives in PSRAM to keep it off the internal heap.
+static GwTuyaScheduledCommand* gw_tuya_schedule = nullptr;
 static uint32_t gw_tuya_next_due_ms = 0;
+
+// Lazily allocate the Tuya command queue in SPIRAM (falls back to internal RAM).
+static inline bool ensure_tuya_schedule() {
+    if (gw_tuya_schedule) return true;
+    gw_tuya_schedule = (GwTuyaScheduledCommand*)heap_caps_calloc(
+        GW_TUYA_SCHEDULE_MAX, sizeof(GwTuyaScheduledCommand),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!gw_tuya_schedule) {
+        gw_tuya_schedule = (GwTuyaScheduledCommand*)heap_caps_calloc(
+            GW_TUYA_SCHEDULE_MAX, sizeof(GwTuyaScheduledCommand),
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    return gw_tuya_schedule != nullptr;
+}
 
 // Minimum spacing between ANY two ZigBee command sends (global, across all
 // devices) to avoid flooding the ZBOSS stack / RF collisions.
@@ -398,7 +427,7 @@ static void gw_process_device_query_queue() {
 }
 
 static void gw_tuya_scheduled_send(uint8_t slot) {
-    if (slot >= (sizeof(gw_tuya_schedule) / sizeof(gw_tuya_schedule[0]))) return;
+    if (!gw_tuya_schedule || slot >= GW_TUYA_SCHEDULE_MAX) return;
     GwTuyaScheduledCommand& cmd = gw_tuya_schedule[slot];
     if (!cmd.used) return;
 
@@ -520,11 +549,12 @@ static bool gw_is_device_access_allowed(uint64_t ieee_addr, uint16_t short_addr,
 }
 
 static void gw_tuya_schedule_next() {
+    if (!gw_tuya_schedule) return;
     uint32_t now = millis();
     if (gw_tuya_next_due_ms != 0 && (int32_t)(now - gw_tuya_next_due_ms) < 0) return;
 
     bool found_any_used = false;
-    for (uint8_t slot = 0; slot < (sizeof(gw_tuya_schedule) / sizeof(gw_tuya_schedule[0])); slot++) {
+    for (uint8_t slot = 0; slot < GW_TUYA_SCHEDULE_MAX; slot++) {
         if (!gw_tuya_schedule[slot].used) continue;
         found_any_used = true;
 
@@ -551,8 +581,9 @@ static bool gw_schedule_tuya_dp_cmd(uint16_t short_addr, uint8_t endpoint, uint8
                                     uint8_t dp_id, uint8_t dp_type, const uint8_t* payload,
                                     size_t payload_len, uint16_t seq) {
     if (!payload || payload_len == 0 || payload_len > sizeof(gw_tuya_schedule[0].payload)) return false;
+    if (!ensure_tuya_schedule()) return false;
 
-    for (uint8_t slot = 0; slot < (sizeof(gw_tuya_schedule) / sizeof(gw_tuya_schedule[0])); slot++) {
+    for (uint8_t slot = 0; slot < GW_TUYA_SCHEDULE_MAX; slot++) {
         if (gw_tuya_schedule[slot].used) continue;
 
         gw_tuya_schedule[slot].used = true;
@@ -1026,13 +1057,29 @@ struct ZigbeeAttributeReport {
 };
 
 static constexpr size_t MAX_PENDING_REPORTS = 16;
-static ZigbeeAttributeReport pending_reports[MAX_PENDING_REPORTS];
+// Report cache is allocated in PSRAM to keep it off the scarce internal heap.
+static ZigbeeAttributeReport* pending_reports = nullptr;
 static size_t pending_report_count = 0;
 static constexpr unsigned long REPORT_VALIDITY_MS = 60000;
+
+// Lazily allocate the report cache in SPIRAM (falls back to internal RAM).
+static inline bool ensure_report_cache() {
+    if (pending_reports) return true;
+    pending_reports = (ZigbeeAttributeReport*)heap_caps_calloc(
+        MAX_PENDING_REPORTS, sizeof(ZigbeeAttributeReport),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!pending_reports) {
+        pending_reports = (ZigbeeAttributeReport*)heap_caps_calloc(
+            MAX_PENDING_REPORTS, sizeof(ZigbeeAttributeReport),
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    return pending_reports != nullptr;
+}
 
 static bool gw_cache_attribute_report(uint64_t ieee_addr, uint8_t endpoint,
                                       uint16_t cluster_id, uint16_t attr_id,
                                       int32_t value, uint8_t lqi) {
+    if (!ensure_report_cache()) return false;
     for (size_t i = 0; i < pending_report_count; i++) {
         ZigbeeAttributeReport& r = pending_reports[i];
         if (r.ieee_addr == ieee_addr && r.cluster_id == cluster_id && r.attr_id == attr_id &&
@@ -1745,6 +1792,7 @@ static void gw_station_status_process_tuya_dp(uint64_t ieee, uint8_t endpoint, u
 static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
                                   uint16_t mapped_cluster, uint16_t mapped_attr,
                                   int32_t value, int lqi, uint8_t dp_type) {
+    if (!ensure_report_cache()) return;
     uint16_t flagged_attr = tuya_report_attr((uint8_t)mapped_attr, dp_type);
 
     // Update existing report in-place if we already have one for the same
@@ -1775,7 +1823,7 @@ static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
         report.timestamp = millis();
         report.consumed = false;
 
-        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Cached DP report: cluster=0x%04X attr=0x%04X value=%ld lqi=%d\n"),
+        ZB_GW_TRACE(F("[ZIGBEE-GW][TUYA] Cached DP report: cluster=0x%04X attr=0x%04X value=%ld lqi=%d\n"),
                     mapped_cluster, mapped_attr, value, lqi);
     } else {
         DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Report cache full — dropping Tuya DP"));
@@ -2050,6 +2098,37 @@ static void gw_tuya_send_dp_query(uint16_t short_addr, uint8_t dst_ep) {
                  short_addr, dst_ep, TUYA_CMD_DATA_QUERY, (unsigned)tsn);
 }
 
+// Send a ZCL Default Response (general command 0x0B, status SUCCESS) for a
+// received cluster-specific command. Many Tuya EF00 devices send their data
+// reports with the ZCL "disable default response" bit CLEARED, i.e. they expect
+// a ZCL Default Response. Because our APS indication handler consumes the frame
+// (returns true), the stack's ZCL layer never auto-generates that response, so
+// the device keeps RETRANSMITTING the identical frame (same zcl_seq) — the
+// flood. Sending the response the device waits for stops the retransmits.
+static void gw_tuya_send_default_response(uint16_t short_addr, uint8_t dst_ep,
+                                          uint8_t zcl_seq, uint8_t rsp_to_cmd_id) {
+    // [0] frame control: general(00) | dir client->server(0) | disable default
+    //     response(1) = 0x10; [1] seq echoed; [2] 0x0B Default Response;
+    //     [3] response-to command id; [4] status 0x00 SUCCESS.
+    uint8_t asdu[5] = { 0x10, zcl_seq, 0x0B, rsp_to_cmd_id, 0x00 };
+
+    esp_zb_apsde_data_req_t req = {};
+    req.dst_addr_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    req.dst_addr.addr_short = short_addr;
+    req.dst_endpoint = dst_ep;
+    req.src_endpoint = 10;
+    req.profile_id = ESP_ZB_AF_HA_PROFILE_ID;
+    req.cluster_id = ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC;
+    req.asdu_length = sizeof(asdu);
+    req.asdu = asdu;
+    req.tx_options = ESP_ZB_APSDE_TX_OPT_ACK_TX;
+    req.radius = 0;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_aps_data_request(&req);
+    esp_zb_lock_release();
+}
+
 bool sensor_zigbee_gw_request_dp_query(uint64_t device_ieee, uint8_t endpoint) {
     if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) return false;
     if (device_ieee == 0) return false;
@@ -2106,29 +2185,46 @@ bool sensor_zigbee_gw_query_device_data(uint64_t device_ieee, uint8_t endpoint) 
 
 // ---------------------------------------------------------------------------
 // Tuya frame de-duplication.
-// The device (or the mesh) frequently re-delivers the exact same ZCL frame
-// several times — identical zcl_seq — which otherwise re-runs sensor updates and
-// switch matching for every copy. Track the last processed zcl_seq per source
-// and drop repeats seen within a short window. Only applied to DP-bearing report
-// frames; control frames (time-sync, MCU version, DP query) are always handled.
+// The device (or the mesh) frequently re-delivers the exact same DP report many
+// times which otherwise re-runs sensor updates and switch matching for every
+// copy. Keying on the ZCL sequence number is unreliable: several Tuya devices
+// reuse the SAME zcl_seq for successive, distinct reports (they never increment
+// it), so a seq-based window both let retransmits through AND dropped genuine
+// value changes that happened to share the seq. Instead we key on a hash of the
+// DP-record payload: identical payloads within the window are dropped as
+// retransmits, while any value change produces a different hash and is processed
+// immediately. Only applied to DP-bearing report frames; control frames
+// (time-sync, MCU version, DP query) are always handled.
 // ---------------------------------------------------------------------------
 #define GW_TUYA_DEDUP_MAX        12
-#define GW_TUYA_DEDUP_WINDOW_MS 3000
-struct GwTuyaDedup { uint16_t short_addr; uint8_t seq; uint32_t last_ms; bool used; };
+#define GW_TUYA_DEDUP_WINDOW_MS 5000
+struct GwTuyaDedup { uint16_t short_addr; uint32_t hash; uint32_t last_ms; bool used; };
 static GwTuyaDedup DRAM_ATTR gw_tuya_dedup[GW_TUYA_DEDUP_MAX];
 
-static bool gw_tuya_frame_is_duplicate(uint16_t short_addr, uint8_t seq) {
+// FNV-1a hash of the Tuya DP records (skips the ZCL header and the 2-byte Tuya
+// transaction sequence, which change between otherwise-identical retransmits).
+static uint32_t gw_tuya_payload_hash(const uint8_t* asdu, uint16_t asdu_length) {
+    uint32_t h = 2166136261u;
+    // DP records start at offset 5 (ZCL hdr[3] + Tuya tx-seq[2]).
+    for (uint16_t i = 5; i < asdu_length; i++) {
+        h ^= asdu[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static bool gw_tuya_frame_is_duplicate(uint16_t short_addr, uint32_t payload_hash) {
     uint32_t now = millis();
     int free_slot = -1, oldest = 0;
     uint32_t oldest_ms = now;
     bool have_oldest = false;
     for (int i = 0; i < GW_TUYA_DEDUP_MAX; i++) {
         if (gw_tuya_dedup[i].used && gw_tuya_dedup[i].short_addr == short_addr) {
-            if (gw_tuya_dedup[i].seq == seq &&
+            if (gw_tuya_dedup[i].hash == payload_hash &&
                 (uint32_t)(now - gw_tuya_dedup[i].last_ms) < GW_TUYA_DEDUP_WINDOW_MS) {
-                return true; // duplicate within the window
+                return true; // identical DP payload within the window → retransmit
             }
-            gw_tuya_dedup[i].seq = seq;
+            gw_tuya_dedup[i].hash = payload_hash;
             gw_tuya_dedup[i].last_ms = now;
             return false;
         }
@@ -2142,7 +2238,7 @@ static bool gw_tuya_frame_is_duplicate(uint16_t short_addr, uint8_t seq) {
     }
     int use = (free_slot >= 0) ? free_slot : oldest;
     gw_tuya_dedup[use].short_addr = short_addr;
-    gw_tuya_dedup[use].seq = seq;
+    gw_tuya_dedup[use].hash = payload_hash;
     gw_tuya_dedup[use].last_ms = now;
     gw_tuya_dedup[use].used = true;
     return false;
@@ -2167,7 +2263,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
     uint8_t seq_number = ind.asdu[1];
     uint8_t command_id = ind.asdu[2];
 
-    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] cmd=0x%02X zcl_seq=%u len=%u from 0x%04X ep=%u fc=0x%02X\n"),
+    ZB_GW_TRACE(F("[ZIGBEE-GW][TUYA] cmd=0x%02X zcl_seq=%u len=%u from 0x%04X ep=%u fc=0x%02X\n"),
                  command_id, seq_number, ind.asdu_length, ind.src_short_addr, ind.src_endpoint, ind.asdu[0]);
 
     // Handle Tuya time sync request (0x24)
@@ -2239,13 +2335,25 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         return true;  // Consume — don't let ZCL stack fail on unknown Tuya commands
     }
 
-    // Drop retransmitted duplicates of the same DP frame (same source + zcl_seq)
-    // so a single report isn't processed several times.
-    if (gw_tuya_frame_is_duplicate(ind.src_short_addr, seq_number)) {
+    // Acknowledge the data report the way the device expects. If it left the ZCL
+    // "disable default response" bit (frame control bit 4) CLEARED, it wants a
+    // ZCL Default Response; without it the device retransmits the same frame
+    // repeatedly (the flood). Respond to EVERY received copy (before the dedup
+    // below) so retransmits are answered and stop.
+    if ((ind.asdu[0] & 0x10) == 0) {
+        gw_tuya_send_default_response(ind.src_short_addr, ind.src_endpoint,
+                                      seq_number, command_id);
+    }
+
+    // Drop retransmitted duplicates of the same DP report (same source +
+    // identical DP payload) so one report isn't processed several times, even
+    // when the device reuses the ZCL sequence number across distinct reports.
+    if (gw_tuya_frame_is_duplicate(ind.src_short_addr,
+                                   gw_tuya_payload_hash(ind.asdu, ind.asdu_length))) {
         return true;
     }
 
-    DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] APS ind: src=0x%04X ep=%u len=%u\n"),
+    ZB_GW_TRACE(F("[ZIGBEE-GW][TUYA] APS ind: src=0x%04X ep=%u len=%u\n"),
                  ind.src_short_addr, ind.src_endpoint, ind.asdu_length);
 
     // Need at least 5 bytes for ZCL header (3) + Tuya seq (2) for DP parsing
@@ -2332,7 +2440,7 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
             }
         }
 
-        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] DP %u: type=%u len=%u value=%ld\n"),
+        ZB_GW_TRACE(F("[ZIGBEE-GW][TUYA] DP %u: type=%u len=%u value=%ld\n"),
                 dp_number, dp_type, dp_len, dp_value);
 
         // Always cache raw Tuya DP reports (cluster 0xEF00, attr=DP id)
@@ -3679,7 +3787,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             }
             
             if (matches) {
-                DEBUG_PRINTF(F("[ZIGBEE-GW]   ✓ Matched '%s': c=0x%04X a=0x%04X ieee=%08lX%08lX → raw=%ld\n"),
+                ZB_GW_TRACE(F("[ZIGBEE-GW]   ✓ Matched '%s': c=0x%04X a=0x%04X ieee=%08lX%08lX → raw=%ld\n"),
                             zb_sensor->name, report.cluster_id, report_attr_unmasked,
                             (unsigned long)(report.ieee_addr >> 32), (unsigned long)(report.ieee_addr & 0xFFFFFFFF),
                             report.value);
@@ -3704,6 +3812,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             }
 
             if (!suppress_nomatch) {
+#if ZB_GW_VERBOSE_LOG
                 DEBUG_PRINTF(F("[ZIGBEE-GW] ✗ NO MATCH (checked %d ZigBee sensor%s)\n"), checked_count, checked_count == 1 ? "" : "s");
                 DEBUG_PRINTF(F("[ZIGBEE-GW]   Report detail: ieee=0x%016llX ep=%u cluster=0x%04X attr=0x%04X value=%ld%s solicited=%d\n"),
                              (unsigned long long)report.ieee_addr,
@@ -3736,6 +3845,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                     DEBUG_PRINTF(F("[ZIGBEE-GW]   No configured ZigBee sensor bound to ieee=0x%016llX\n"),
                                  (unsigned long long)report.ieee_addr);
                 }
+#endif
             }
         }
         

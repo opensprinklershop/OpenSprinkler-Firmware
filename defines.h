@@ -80,7 +80,7 @@ typedef unsigned long ulong;
 #define TMP_BUFFER_SIZE      320   // scratch buffer size
 #define TMP_BUFFER_SIZE_L      (TMP_BUFFER_SIZE*2)   // scratch buffer size
 
-#define MQTT_BUFFER_SIZE      4096
+#define MQTT_BUFFER_SIZE      4096 // Muss mindestens 4K sein wegen großer MQTT-Payloads
 
 /** Firmware version, hardware version, and maximal values */
 #define OS_FW_VERSION  240  // Firmware version: 240 means 2.4.0
