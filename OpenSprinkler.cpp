@@ -931,6 +931,7 @@ void etherOnEvent(arduino_event_id_t event, arduino_event_info_t info)
 // tell "chip not responding" (power/CS/MISO/RESET wiring) apart from "chip
 // alive but PHY link down" (cable/magnetics/PHY). RJ45 LEDs off at bring-up
 // usually means the PHY analog front-end never came up.
+#if defined(ETH_DIAG)
 static void w5500_spi_diag() {
 	spi_device_handle_t dev = nullptr;
 	spi_device_interface_config_t devcfg = {};
@@ -983,6 +984,7 @@ static void w5500_spi_diag() {
 
 	spi_bus_remove_device(dev);
 }
+#endif
 #endif
 
 byte OpenSprinkler::start_ether() {
@@ -1048,8 +1050,10 @@ byte OpenSprinkler::start_ether() {
 	const uint8_t eth_spi_mhz = 60;
 #endif
 	delay(100);
+#if defined(ETH_DIAG)
 	// Low-level W5500 bring-up diagnostic BEFORE eth.begin() takes over the bus.
-	// w5500_spi_diag();
+	w5500_spi_diag();
+#endif
 
 	// Some W5500 modules fail to negotiate link reliably with
 	// the switch. Force a fixed 100BASE-TX full-duplex mode before begin() so the

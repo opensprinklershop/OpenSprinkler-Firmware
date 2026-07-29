@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(223)] — in Entwicklung
+## [2.4.0(223)] — unveröffentlicht
 
 ### Added
 - **Monitor-Sichtbarkeit auf der Hauptseite (`show`, Ticket 305)**: Monitore haben nun – analog zu Sensoren – ein persistentes `show`-Flag. In der Monitor-Konfiguration (`/mc`, Parameter `show`) und in der Ausgabe (`"show"`) mitgeführt; Standard `1` (sichtbar, abwärtskompatibel). Damit lassen sich einzelne (auch aktive) Monitore aus der überladenen Hauptseiten-Anzeige ausblenden, ohne sie zu deaktivieren.
@@ -15,6 +15,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ### Changed
 - **Robusteres Firmware-Update: Dienste vor dem Flashen anhalten (Ticket 305)**: Zu Beginn eines OTA-Uploads (STA-Modus, nicht ESP32-C5) wird der MQTT-Client jetzt via `OSMqtt::suspend()` angehalten (gibt auf dem ESP8266 ~7 KB Heap frei) und offene UDP-Sockets (NTP/mDNS) werden geschlossen. Zuvor konkurrierten diese Dienste um das WLAN-Funkmodul, wodurch der **erste** Upload-Versuch auf dem RAM-knappen ESP8266 hängenblieb und erst ein zweiter Anlauf erfolgreich war. Bei Abbruch oder Fehlschlag des Updates werden die Dienste wieder aufgenommen (ein erfolgreiches Update startet ohnehin neu).
+- **W5500-Bring-up-Diagnose hinter `ETH_DIAG` gekapselt (ESP32-C5)**: Die Low-Level-SPI-Diagnose (`w5500_spi_diag`) wird nur noch kompiliert und ausgeführt, wenn `ETH_DIAG` definiert ist (standardmäßig aus). Im Normalbetrieb entfällt damit der zusätzliche SPI-Probe-Zugriff vor `eth.begin()`; das feste 100BASE-TX-Full-Duplex-Setup bleibt unverändert aktiv.
 
 ## [2.4.0(222)] — veröffentlicht 2026-07-29
 
