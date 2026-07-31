@@ -46,6 +46,9 @@
 #include "sensor_zigbee_gw.h"
 #endif
 #endif
+#if defined(ESP32C5) && defined(OS_MGM210P)
+#include "mgm210p_transport.h"
+#endif
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
 #include "online_update.h"
@@ -817,6 +820,18 @@ void do_setup() {
 	if (!online_update_in_progress() && ieee802154_is_zigbee_client() && sensor_zigbee_ensure_started()) {
 		sensor_zigbee_open_network(60);
 		DEBUG_PRINTLN("[ZigBee] Auto-join started on boot (60 s)");
+	}
+	#endif
+
+	#if defined(ESP32C5) && defined(OS_MGM210P)
+	// Phase 1 bring-up: probe the external MGM210P co-processor over UART.
+	if (!online_update_in_progress()) {
+		Mgm210pInfo mgm = {};
+		bool ok = mgm210p_probe(&mgm);
+		char line[96];
+		mgm210p_status_line(line, sizeof(line));
+		DEBUG_PRINTF("[MGM210P] probe %s: %s\n", ok ? "OK" : "FAILED", line);
+		if (!ok) mgm210p_diagnose();
 	}
 	#endif
 }
