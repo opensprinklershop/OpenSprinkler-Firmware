@@ -41,12 +41,32 @@ double current_wind = 0.0;
 double current_eto = 0.0;
 double current_radiation = 0.0;
 
+// Set by the callbacks when a valid weather response with usable data was parsed.
+// The weather service can return HTTP 200 with an error body (e.g. "&errCode=50&scale=100")
+// that contains no sensor data; without this flag such a response would be treated as a
+// success, freezing the last value and delaying the next retry by a full hour.
+static bool weather_response_valid = false;
+static bool weather_eto_response_valid = false;
+
+static int parse_weather_errcode(const char *buffer) {
+  const char *e = strstr(buffer, "errCode");
+  if (!e) return 0;
+  e = strchr(e, '=');
+  return e ? atoi(e + 1) : 0;
+}
+
 static void sensor_weather_callback(char *buffer) {
   peel_http_header(buffer);
+  weather_response_valid = false;
+  if (parse_weather_errcode(buffer) != 0) {
+    DEBUG_PRINTLN(F("Weather: service returned errCode, keeping previous data"));
+    return;
+  }
   char buf[20];
   char *s = strstr(buffer, "\"temp\":");
   if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
     current_temp = atof(buf);
+    weather_response_valid = true;
   }
   s = strstr(buffer, "\"humidity\":");
   if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
@@ -66,10 +86,16 @@ static void sensor_weather_callback(char *buffer) {
 
 static void sensor_weather_eto_callback(char *buffer) {
   peel_http_header(buffer);
+  weather_eto_response_valid = false;
+  if (parse_weather_errcode(buffer) != 0) {
+    DEBUG_PRINTLN(F("WeatherEto: service returned errCode, keeping previous data"));
+    return;
+  }
   char buf[20];
   char *s = strstr(buffer, "\"eto\":");
   if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
     current_eto = atof(buf) * 25.4;  // convert to mm
+    weather_eto_response_valid = true;
   }
   s = strstr(buffer, "\"radiation\":");
   if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
@@ -114,13 +140,14 @@ void GetSensorWeather() {
   // DEBUG_PRINTLN(F("GetSensorWeather"));
 
   int ret = os.send_http_request(host, ether_buffer, sensor_weather_callback);
-  if (ret == HTTP_RQT_SUCCESS) {
+  if (ret == HTTP_RQT_SUCCESS && weather_response_valid) {
     current_weather_ok = true;
     last_weather_time = time;
   } else {
-    // Retry after 5 min on failure, don't invalidate previously fetched data
+    // Retry after 5 min on transport failure or on a weather-service error response
+    // (errCode / no data), don't invalidate previously fetched data
     last_weather_time = time - 55 * 60;
-    DEBUG_PRINTLN(F("GetSensorWeather: HTTP request failed"));
+    DEBUG_PRINTLN(F("GetSensorWeather: no valid weather data received"));
   }
 }
 
@@ -162,13 +189,14 @@ void GetSensorWeatherEto() {
   // DEBUG_PRINTLN(F("GetSensorWeatherEto"));
 
   int ret = os.send_http_request(host, ether_buffer, sensor_weather_eto_callback);
-  if (ret == HTTP_RQT_SUCCESS) {
+  if (ret == HTTP_RQT_SUCCESS && weather_eto_response_valid) {
     current_weather_eto_ok = true;
     last_weather_time_eto = time;
   } else {
-    // Retry after 5 min on failure, don't invalidate previously fetched data
+    // Retry after 5 min on transport failure or on a weather-service error response
+    // (errCode / no data), don't invalidate previously fetched data
     last_weather_time_eto = time - 55 * 60;
-    DEBUG_PRINTLN(F("GetSensorWeatherEto: HTTP request failed"));
+    DEBUG_PRINTLN(F("GetSensorWeatherEto: no valid weather data received"));
   }
 }
 
