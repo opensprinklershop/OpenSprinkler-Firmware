@@ -492,25 +492,58 @@ ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 	return result;
 }
 
-void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
+bool file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 #if defined(ESP8266) || defined(ESP32)
 	File f = LittleFS.open(fn, "r+");
-	if(!f) f = LittleFS.open(fn, "w");
-	if(f) {
-		f.seek(pos, SeekSet);
-		f.write((unsigned char*)src, len);
-		f.close();
+	if(!f) {
+		// only create a new file: "w" truncates, which would destroy an existing
+		// structured binary file if it merely failed to open for another reason
+		if(LittleFS.exists(fn)) {
+			DEBUG_PRINTF("file_write_block: cannot open %s for update\n", fn);
+			return false;
+		}
+		f = LittleFS.open(fn, "w");
 	}
+	if(!f) {
+		DEBUG_PRINTF("file_write_block: cannot create %s\n", fn);
+		return false;
+	}
+	if(!f.seek(pos, SeekSet)) {
+		DEBUG_PRINTF("file_write_block: seek failed on %s at %lu\n", fn, (unsigned long)pos);
+		f.close();
+		return false;
+	}
+	size_t written = f.write((const unsigned char*)src, len);
+	f.close();
+	if(written != (size_t)len) {
+		DEBUG_PRINTF("file_write_block: short write on %s at %lu: expected %lu, wrote %lu\n",
+			fn, (unsigned long)pos, (unsigned long)len, (unsigned long)written);
+		return false;
+	}
+	return true;
 
 #elif defined(ARDUINO)
 
 	sd.chdir("/");
 	SdFile file;
 	int ret = file.open(fn, O_CREAT | O_RDWR);
-	if(!ret) return;
-	file.seekSet(pos);
-	file.write(src, len);
+	if(!ret) {
+		DEBUG_PRINTF("file_write_block: cannot open %s\n", fn);
+		return false;
+	}
+	if(!file.seekSet(pos)) {
+		DEBUG_PRINTF("file_write_block: seek failed on %s at %lu\n", fn, (unsigned long)pos);
+		file.close();
+		return false;
+	}
+	int written = file.write(src, len);
 	file.close();
+	if(written < 0 || (ulong)written != len) {
+		DEBUG_PRINTF("file_write_block: short write on %s at %lu: expected %lu, wrote %d\n",
+			fn, (unsigned long)pos, (unsigned long)len, written);
+		return false;
+	}
+	return true;
 
 #else
 
@@ -518,11 +551,23 @@ void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 	if(!fp) {
 		fp = fopen(get_filename_fullpath(fn), "wb+");
 	}
-	if(fp) {
-		fseek(fp, pos, SEEK_SET); //this fails silently without the above change
-		fwrite(src, 1, len, fp);
-		fclose(fp);
+	if(!fp) {
+		DEBUG_PRINTF("file_write_block: cannot open %s\n", fn);
+		return false;
 	}
+	if(fseek(fp, pos, SEEK_SET)) { //this fails silently without the above change
+		DEBUG_PRINTF("file_write_block: seek failed on %s at %lu\n", fn, (unsigned long)pos);
+		fclose(fp);
+		return false;
+	}
+	size_t written = fwrite(src, 1, len, fp);
+	bool ok = (fclose(fp) == 0);
+	if(written != (size_t)len || !ok) {
+		DEBUG_PRINTF("file_write_block: short write on %s at %lu: expected %lu, wrote %lu\n",
+			fn, (unsigned long)pos, (unsigned long)len, (unsigned long)written);
+		return false;
+	}
+	return true;
 
 #endif
 
