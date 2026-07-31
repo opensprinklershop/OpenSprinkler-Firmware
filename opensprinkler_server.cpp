@@ -864,7 +864,10 @@ void server_change_stations(OTF_PARAMS_DEF) {
 			urlDecode(tmp_buffer);
 			#endif
 			strReplaceQuoteBackslash(tmp_buffer);
-			os.set_station_name(sid, tmp_buffer);
+			if(!os.set_station_name(sid, tmp_buffer)) {
+				// the name could not be persisted (e.g. file system full)
+				handle_return(HTML_NOT_ENOUGH_SPACE);
+			}
 		}
 	}
 

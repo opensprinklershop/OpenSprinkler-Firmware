@@ -455,7 +455,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void get_station_data(unsigned char sid, StationData* data); // get station data
 	static void set_station_data(unsigned char sid, StationData* data); // set station data
 	static void get_station_name(unsigned char sid, char buf[]); // get station name
-	static void set_station_name(unsigned char sid, char buf[]); // set station name
+	static bool set_station_name(unsigned char sid, char buf[]); // set station name, false if it could not be stored
 	static unsigned char get_station_type(unsigned char sid); // get station type
 	static unsigned char is_sequential_station(unsigned char sid);
 	static uint16_t get_flow_pulse_rate_100();

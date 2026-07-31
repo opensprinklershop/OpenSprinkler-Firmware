@@ -2512,15 +2512,19 @@ void OpenSprinkler::get_station_name(unsigned char sid, char tmp[]) {
 	file_read_block(STATIONS_FILENAME, tmp, (uint32_t)sid*sizeof(StationData)+offsetof(StationData, name), STATION_NAME_SIZE);
 }
 
-/** Set station name */
-void OpenSprinkler::set_station_name(unsigned char sid, char tmp[]) {
+/** Set station name
+ * Returns true if the name is stored (or already up to date), false on error
+ */
+bool OpenSprinkler::set_station_name(unsigned char sid, char tmp[]) {
+	if(sid>=nstations) return false;
 	tmp[STATION_NAME_SIZE]=0;
 	char n0[STATION_NAME_SIZE+1];
-	get_station_name(sid, n0);
+	n0[STATION_NAME_SIZE]=0;
+	if(file_read_block(STATIONS_FILENAME, n0, (uint32_t)sid*sizeof(StationData)+offsetof(StationData, name), STATION_NAME_SIZE)!=STATION_NAME_SIZE)
+		return false;
 	size_t len = strlen(n0);
-	if(len!=strlen(tmp) || memcmp(n0, tmp, len)!=0) { // only write if the name has changed
-		file_write_block(STATIONS_FILENAME, tmp, (uint32_t)sid*sizeof(StationData)+offsetof(StationData, name), STATION_NAME_SIZE);
-	}
+	if(len==strlen(tmp) && memcmp(n0, tmp, len)==0) return true; // name unchanged, nothing to write
+	return file_write_block(STATIONS_FILENAME, tmp, (uint32_t)sid*sizeof(StationData)+offsetof(StationData, name), STATION_NAME_SIZE);
 }
 
 /** Get station type */
