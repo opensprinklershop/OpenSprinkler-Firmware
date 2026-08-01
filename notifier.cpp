@@ -419,9 +419,12 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	}
 #endif
 
-	// if none if enabled, return here
-	if ((!ifttt_enabled) && (!email_enabled) && (!os.mqtt.enabled()))
-		return;
+	// NOTE: Do NOT return here when no IFTTT/Email/MQTT channel is configured.
+	// The in-memory notification log (/nl) is the mobile app's own delivery
+	// channel (local/push notifications) and must be populated independently of
+	// the other channels. All delivery below is individually guarded
+	// (ifttt_enabled / email_enabled / os.mqtt.enabled()), so falling through is
+	// safe and the event still reaches notif_log_add() at the end.
 
 	if (ifttt_enabled || email_enabled) {
 		strcpy_P(postval, PSTR("{\"value1\":\"On site ["));
