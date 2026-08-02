@@ -956,6 +956,16 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
   // Load from JSON
   new_sensor->fromJson(json);
 
+  // Stamp the creation barrier for a freshly created sensor: API log output
+  // hides entries older than this, so a re-used nr never surfaces the previous
+  // sensor's leftover log data. A barrier supplied by the backup (restore) is
+  // preserved; only default it when the JSON did not carry one and the clock is
+  // actually set (avoid a bogus barrier before NTP sync — 0 = unlimited).
+  if (new_sensor->log_barrier == 0) {
+    time_t nowt = os.now_tz();
+    if (nowt > 1000000000UL) new_sensor->log_barrier = (uint32_t)nowt;
+  }
+
   sensorsMap[nr] = new_sensor;
   if (save) sensor_save();
   sensor_notify_zigbee(new_sensor);
@@ -1012,6 +1022,10 @@ static void sensor_trend_init_from_log(SensorBase *sensor) {
     if (count <= 0) break;
     for (int i = 0; i < count; i++) {
       if (buffer[i].nr == sensor->nr) {
+        // Respect the creation barrier so a re-used nr does not seed the trend
+        // from the previous sensor's leftover log entries.
+        if (sensor->log_barrier && buffer[i].time && buffer[i].time < sensor->log_barrier)
+          continue;
         sensor->trend_add_sample(buffer[i].data, buffer[i].time);
       }
     }
@@ -2767,7 +2781,10 @@ bool checkDiskFree() {
 // more valuable than the oldest, disposable log history, so free space by
 // trimming the inactive (older) log ring files before the save. Removing
 // getlogfile2() keeps all current log data (getlogfile()) intact and only drops
-// the oldest half of the ring. Oldest/least-granular history goes first.
+// the oldest half of the ring. Oldest/least-granular history goes first. If the
+// current (active) ring alone still fills the partition, a last-resort pass also
+// drops current rings (least-valuable first) so a full-device restore can still
+// create its sensors instead of failing with "not enough space".
 void ensureConfigSpace() {
   if (diskFree() >= CONFIG_HEADROOM) return;
   const uint8_t order[] = { LOG_MONTH, LOG_WEEK, LOG_STD };
@@ -2777,6 +2794,26 @@ void ensureConfigSpace() {
       DEBUG_PRINT(F("ensureConfigSpace: trimming old log "));
       DEBUG_PRINTLN(fn);
       remove_file(fn);
+    }
+  }
+
+  // Last resort: the inactive half-rings are gone but the filesystem is still
+  // critically full — i.e. the *current* (active) log ring alone fills the
+  // partition (12 chatty sensors + many monitors). Without this a restore of
+  // all sensors keeps failing with "not enough space" on a full device. Losing
+  // config data is worse than losing recent, regenerable log history, so drop
+  // the current ring too. Order preserves the most valuable data longest: the
+  // high-resolution std log (regenerates fastest) goes first, the long-term
+  // monthly aggregate last.
+  if (diskFree() < CONFIG_HEADROOM) {
+    const uint8_t last_order[] = { LOG_STD, LOG_WEEK, LOG_MONTH };
+    for (uint8_t i = 0; i < 3 && diskFree() < CONFIG_HEADROOM; i++) {
+      const char *fn = getlogfile(last_order[i]);
+      if (fn && fn[0] && file_exists(fn)) {
+        DEBUG_PRINT(F("ensureConfigSpace: trimming current log "));
+        DEBUG_PRINTLN(fn);
+        remove_file(fn);
+      }
     }
   }
 }
@@ -3647,10 +3684,15 @@ void check_monitors() {
         uint16_t time = (seconds_of_day / 3600) * 100 + (seconds_of_day % 3600) / 60; //HHMM
         uint8_t wday = (timeNow / 86400L + 3) % 7; //Monday = 0
         bool in_window = (mon->m.mtime.weekdays >> wday) & 0x01;
+        // time_to is treated as EXCLUSIVE at HH:MM:00 so a window like 09:00–12:00
+        // switches off at exactly 12:00:00 (not 12:01:00) and adjacent windows
+        // (…–17:00 / 17:00–…) hand over seamlessly with no overlap or gap. `time`
+        // is HHMM truncated to the minute, so "< time_to" ends the window at the
+        // start of that minute.
         if (mon->m.mtime.time_from > mon->m.mtime.time_to) // FROM > TO ? Over night value
-          in_window &= time >= mon->m.mtime.time_from || time <= mon->m.mtime.time_to;
+          in_window &= time >= mon->m.mtime.time_from || time < mon->m.mtime.time_to;
         else
-          in_window &= time >= mon->m.mtime.time_from && time <= mon->m.mtime.time_to;
+          in_window &= time >= mon->m.mtime.time_from && time < mon->m.mtime.time_to;
 
         if (mon->reset_seconds == 0) {
           mon->eval_active = in_window;

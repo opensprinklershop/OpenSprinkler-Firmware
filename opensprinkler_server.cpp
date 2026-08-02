@@ -24,6 +24,24 @@
 #include "types.h"
 #include "OpenSprinkler.h"
 #include "program.h"
+template<typename T>
+static void emit_monthly_water_backup_json(T &bfill) {
+	bfill.emit_p(PSTR(",\"mwater\":{\"pr\":$D,\"pd\":$D,\"curr\":{\"ym\":$D,\"flow\":$L},\"records\":["),
+		os.get_flow_pulse_rate_100(),
+		os.get_flow_pulse_divisor(),
+		os.mwdata.curr_ym,
+		(unsigned long)os.mwdata.curr_flow);
+
+	for (uint8_t i = 0; i < os.mwdata.nrecords; i++) {
+		if (i) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("{\"ym\":$D,\"flow\":$L}"),
+			os.mwdata.records[i].ym,
+			(unsigned long)os.mwdata.records[i].flow_count);
+	}
+
+	bfill.emit_p(PSTR("]}"));
+}
+
 #include "opensprinkler_server.h"
 #include "weather.h"
 #include "mqtt.h"
@@ -380,6 +398,11 @@ void send_packet(OTF_PARAMS_DEF) {
 	rewind_ether_buffer();
 }
 
+#if defined(ESP32) || defined(ESP8266)
+// Forward declaration: implementation is in the online-update section below.
+static void bfill_emit_json_escaped(const char* s);
+#endif
+
 char dec2hexchar(unsigned char dec) {
 	if(dec<10) return '0'+dec;
 	else return 'A'+(dec-10);
@@ -720,7 +743,13 @@ void server_json_stations_main(OTF_PARAMS_DEF) {
 	unsigned char sid;
 	for(sid=0;sid<os.nstations;sid++) {
 		os.get_station_name(sid, tmp_buffer);
-		bfill.emit_p(PSTR("\"$S\""), tmp_buffer);
+		#if defined(ESP32) || defined(ESP8266)
+			bfill.emit_p(PSTR("\""));
+			bfill_emit_json_escaped(tmp_buffer);
+			bfill.emit_p(PSTR("\""));
+		#else
+			bfill.emit_p(PSTR("\"$S\""), tmp_buffer);
+		#endif
 		if(sid!=os.nstations-1)
 			bfill.emit_p(PSTR(","));
 		if (available_ether_buffer() <=0 ) {
@@ -3634,6 +3663,7 @@ void server_backup_get(OTF_PARAMS_DEF) {
 		}
 	}
 	bfill.emit_p(PSTR("}"));
+	emit_monthly_water_backup_json(bfill);
 
 	// Close backup JSON
 	bfill.emit_p(PSTR("}"));
@@ -3691,6 +3721,7 @@ void server_backup_get(OTF_PARAMS_DEF) {
 				}
 			}
 			bfill.emit_p(PSTR("\""));
+			emit_monthly_water_backup_json(bfill);
 			first = false;
 		}
 	}
@@ -4325,9 +4356,20 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 			if (before && sensorlog[i].time >= before)
 				continue;
 
+			// Refresh cached sensor for this entry's nr (needed for the barrier
+			// check as well as the type/unit output below).
+			if (!sensor || sensor->nr != sensorlog[i].nr)
+				sensor = sensor_by_nr(sensorlog[i].nr);
+
+			// Temporal barrier: hide log entries older than the sensor's creation
+			// date so a re-created sensor re-using a freed nr does not surface the
+			// previous sensor's leftover entries (log_barrier==0 -> existing
+			// sensor -> unlimited; a 0 timestamp is never filtered).
+			if (sensor && sensor->log_barrier && sensorlog[i].time &&
+			    sensorlog[i].time < sensor->log_barrier)
+				continue;
+
 			if (!shortcsv || type) {
-				if (!sensor || sensor->nr != sensorlog[i].nr)
-					sensor = sensor_by_nr(sensorlog[i].nr);
 				sensor_type = sensor?sensor->type:0;
 				if (type && sensor_type != type)
 					continue;
@@ -5609,6 +5651,7 @@ void server_sensor_types(OTF_PARAMS_DEF) {
  * Monthly water usage data
  * Command: /jw
  * Returns JSON: {"pr":pulse_rate_100, "pd":pulse_divisor, "curr":{"ym":X,"flow":X}, "records":[{"ym":X,"flow":X},...]}
+ * If the optional `mwater` parameter is present, restore that payload instead.
  */
 void server_json_water(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -5620,10 +5663,43 @@ void server_json_water(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	uint16_t pulse_rate = os.get_flow_pulse_rate_100();
-	uint16_t pulse_div = os.get_flow_pulse_divisor();
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("mwater"), true)) {
+		urlDecodeAndUnescape(tmp_buffer);
+		JsonDocument doc;
+		DeserializationError error = deserializeJson(doc, tmp_buffer);
+		if (error || !doc.is<JsonObject>()) {
+			handle_return(HTML_DATA_MISSING);
+		}
+
+		JsonObject obj = doc.as<JsonObject>();
+		JsonObject curr = obj["curr"] | JsonObject();
+		JsonArray records = obj["records"] | JsonArray();
+		const uint16_t MIN_VALID_YM = (uint16_t)(2020U * 12U);
+
+		memset(&os.mwdata, 0, sizeof(os.mwdata));
+		os.mwdata.curr_ym = curr["ym"] | 0;
+		os.mwdata.curr_flow = curr["flow"] | 0;
+		if (os.mwdata.curr_ym != 0 && os.mwdata.curr_ym < MIN_VALID_YM) {
+			os.mwdata.curr_ym = 0;
+		}
+
+		uint8_t n = 0;
+		for (JsonVariantConst rec : records) {
+			if (n >= MONTHLY_WATER_NMONTHS) break;
+			uint16_t ym = rec["ym"] | 0;
+			if (ym < MIN_VALID_YM) continue;
+			os.mwdata.records[n].ym = ym;
+			os.mwdata.records[n].flow_count = rec["flow"] | 0;
+			n++;
+		}
+		os.mwdata.nrecords = n;
+		os.mwdata_save();
+		bfill.emit_p(PSTR("{\"result\":1}"));
+		handle_return(HTML_OK);
+	}
+
 	bfill.emit_p(PSTR("{\"pr\":$D,\"pd\":$D,\"curr\":{\"ym\":$D,\"flow\":$L},\"records\":["),
-		pulse_rate, pulse_div, os.mwdata.curr_ym, (unsigned long)os.mwdata.curr_flow);
+		os.get_flow_pulse_rate_100(), os.get_flow_pulse_divisor(), os.mwdata.curr_ym, (unsigned long)os.mwdata.curr_flow);
 
 	for(uint8_t i = 0; i < os.mwdata.nrecords; i++) {
 		if(i) bfill.emit_p(PSTR(","));

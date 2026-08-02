@@ -39,6 +39,7 @@ public:
   uint id = 0;                    // modbus id or channel
   uint read_interval = 0;         // seconds
   uint log_interval = 0;          // min seconds between log entries (0=off: log on every change)
+  uint32_t log_barrier = 0;       // creation timestamp; log output hides entries older than this (0=existing sensor -> unlimited)
   uint32_t last_native_data = 0;  // last native sensor data
   double last_data = 0.0;         // last converted sensor data
   SensorFlags_t flags = {};       // enable/log/show/data_ok etc.
@@ -224,6 +225,7 @@ public:
     obj[F("id")] = id;
     obj[F("ri")] = read_interval;
     obj[F("li")] = log_interval;
+    obj[F("lb")] = log_barrier;
     obj[F("fac")] = factor;
     obj[F("div")] = divider;
     obj[F("offset")] = offset_mv;
@@ -263,6 +265,7 @@ public:
     if (obj.containsKey(F("id"))) id = obj[F("id")];
     if (obj.containsKey(F("ri"))) read_interval = obj[F("ri")];
     if (obj.containsKey(F("li"))) log_interval = obj[F("li")];
+    if (obj.containsKey(F("lb"))) log_barrier = obj[F("lb")];
     if (obj.containsKey(F("fac"))) factor = obj[F("fac")];
     else if (obj.containsKey(F("factor"))) factor = obj[F("factor")];
     if (obj.containsKey(F("div"))) divider = obj[F("div")];

@@ -6,6 +6,19 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(224)]
+
+### Added
+- **Sensor-Log-Barriere (Anlagedatum als Zeitfilter)**: Jeder Sensor erhält beim **Neuanlegen** einen Zeitstempel (`log_barrier`, JSON-Feld `lb`) mit dem aktuellen Anlagedatum. Alle Log-Ausgaben (Sensor-Log-API `/so`, Trend-Berechnung) blenden Einträge aus, die **älter** als dieses Datum sind. Damit „erbt" ein neu angelegter Sensor, der eine zuvor freigegebene Sensor-Nummer wiederverwendet, **nicht** mehr die Log-Daten des gelöschten Vorgängers – ganz ohne den teuren, minutenlangen Flash-Rewrite, den ein physisches Löschen der Alt-Einträge auf dem W5500-geteilten SPI-Bus verursachte. Bestandssensoren ohne Datum (`lb=0`) bleiben **unbeschränkt** (alle Einträge sichtbar). Das Feld wird in Backup/Restore (`/sx` bzw. `/sc`) mitgeführt, sodass eine wiederhergestellte Konfiguration ihre Barriere behält. Eine UI-Darstellung ist nicht erforderlich.
+
+### Fixed
+- **AI Assistant-Menüpunkt verschwindet jetzt vollständig, wenn der Assistent deaktiviert ist**: Der linke Menüeintrag wird an denselben Enable-Status wie der schwebende Button gekoppelt und bleibt bei `AI Assistant = Off` ausgeblendet, statt als tote Leiche im Seitenmenü zu stehen.
+- **Restore auf (fast) vollem Flash: aktueller Log-Ring wird als letzte Reserve getrimmt**: `ensureConfigSpace()` gab bisher nur die **inaktive** Hälfte der Log-Ringe (`getlogfile2()`) frei. Füllte der **aktive** Ring allein die Partition (z. B. 12 „laute" Sensoren + viele Monitore), blieb der Speicher voll und das Wiederherstellen aller Sensoren scheiterte reproduzierbar mit „nicht genug Speicher" (nur 9 von 12 Sensoren angelegt). Reicht das Trimmen der Alt-Ringe nicht, werden nun als **letzte Reserve** auch die aktuellen Ringe verworfen – am wenigsten wertvolle zuerst (hochauflösender Std-Log vor Wochen- vor Monats-Aggregat), sodass Konfigurationsdaten Vorrang vor regenerierbarer Log-Historie haben. (UI-seitig werden beim Restore zudem die nicht mehr benötigten „Phantom"-Einträge **zuerst** gelöscht und die Backup-Einträge erst danach angelegt, damit auf einem vollen Gerät vor dem Neuanlegen Platz frei wird.)
+- **Zeit-Monitor: `Bis`-Zeit ist jetzt exklusiv (sekundengenauer Übergang)**: Ein Zeitfenster wie `09:00–12:00` schaltet nun exakt um **12:00:00** ab (vorher lief es durch die ganze Minute bis 12:01:00). Da die interne Uhrzeit auf die Minute genau als `HHMM` verglichen wird, war die obere Grenze bisher inklusiv. Angrenzende Fenster (`…–17:00` / `17:00–…`) gehen dadurch **nahtlos** ineinander über – ohne Überlappung und ohne Lücke. Der bisherige Workaround mit `16:59`/`22:59` entfällt.
+- **Monatliche Wasserstatistik bleibt über OTA-Backup/Restore erhalten**: Der `/ub`-App-Backup-Payload enthält jetzt auch die `mwater.dat`-Daten (Monatszähler + laufender Monat). Die Wiederherstellung über den OTA/App-Backup-Flow schreibt diese Daten nach `mwater.dat` zurück, damit jährliche Verbrauchsübersichten und Monatsstände nicht mehr bei einem Firmware-Update verschwinden.
+
+---
+
 ## [2.4.0(223)] — veröffentlicht 2026-07-29
 
 ### Added
