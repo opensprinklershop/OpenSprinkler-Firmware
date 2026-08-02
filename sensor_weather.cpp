@@ -32,6 +32,8 @@
 // Weather
 time_t last_weather_time = 0;
 time_t last_weather_time_eto = 0;
+time_t last_weather_data_time = 0;
+time_t last_weather_data_time_eto = 0;
 bool current_weather_ok = false;
 bool current_weather_eto_ok = false;
 double current_temp = 0.0;
@@ -47,6 +49,16 @@ double current_radiation = 0.0;
 // success, freezing the last value and delaying the next retry by a full hour.
 static bool weather_response_valid = false;
 static bool weather_eto_response_valid = false;
+
+bool weather_sensor_should_refresh_now(uint type, ulong sensor_last_read) {
+  if (type >= SENSOR_WEATHER_TEMP_F && type <= SENSOR_WEATHER_WIND_KMH) {
+    return current_weather_ok && last_weather_data_time > 0 && sensor_last_read < (ulong)last_weather_data_time;
+  }
+  if (type == SENSOR_WEATHER_ETO || type == SENSOR_WEATHER_RADIATION) {
+    return current_weather_eto_ok && last_weather_data_time_eto > 0 && sensor_last_read < (ulong)last_weather_data_time_eto;
+  }
+  return false;
+}
 
 static int parse_weather_errcode(const char *buffer) {
   const char *e = strstr(buffer, "errCode");
@@ -142,6 +154,7 @@ void GetSensorWeather() {
   int ret = os.send_http_request(host, ether_buffer, sensor_weather_callback);
   if (ret == HTTP_RQT_SUCCESS && weather_response_valid) {
     current_weather_ok = true;
+    last_weather_data_time = time;
     last_weather_time = time;
   } else {
     // Retry after 5 min on transport failure or on a weather-service error response
@@ -191,6 +204,7 @@ void GetSensorWeatherEto() {
   int ret = os.send_http_request(host, ether_buffer, sensor_weather_eto_callback);
   if (ret == HTTP_RQT_SUCCESS && weather_eto_response_valid) {
     current_weather_eto_ok = true;
+    last_weather_data_time_eto = time;
     last_weather_time_eto = time;
   } else {
     // Retry after 5 min on transport failure or on a weather-service error response

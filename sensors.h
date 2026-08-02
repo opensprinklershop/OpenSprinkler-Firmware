@@ -574,6 +574,7 @@ bool prog_adjust_uses_fallback(ProgSensorAdjust *p);
 
 void GetSensorWeather();
 void GetSensorWeatherEto();
+bool weather_sensor_should_refresh_now(uint type, ulong sensor_last_read);
 // PUSH Message to MQTT and others:
 void push_message(SensorBase *sensor);
 

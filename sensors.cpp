@@ -956,12 +956,10 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
   // Load from JSON
   new_sensor->fromJson(json);
 
-  // Stamp the creation barrier for a freshly created sensor: API log output
-  // hides entries older than this, so a re-used nr never surfaces the previous
-  // sensor's leftover log data. A barrier supplied by the backup (restore) is
-  // preserved; only default it when the JSON did not carry one and the clock is
-  // actually set (avoid a bogus barrier before NTP sync — 0 = unlimited).
-  if (new_sensor->log_barrier == 0) {
+  // Only brand-new sensors created outside a restore get a creation barrier.
+  // Restore payloads represent existing sensors and must stay barrier-free.
+  const bool is_restore = json.containsKey("restore") && json["restore"].as<int>() != 0;
+  if (!is_restore && new_sensor->log_barrier == 0) {
     time_t nowt = os.now_tz();
     if (nowt > 1000000000UL) new_sensor->log_barrier = (uint32_t)nowt;
   }
@@ -1923,7 +1921,9 @@ void read_all_sensors(boolean online) {
   unsigned long pass_start_ms = millis();
   while (current_sensor && current_sensor_it != sensorsMap.end()) {
     //ulong time_since_last = (current_sensor->last_read == 0) ? 99999 : (time - current_sensor->last_read);
-    boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval || current_sensor->repeat_read);
+    boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval ||
+                 current_sensor->repeat_read ||
+                 weather_sensor_should_refresh_now(current_sensor->type, current_sensor->last_read));
     
     if (should_read) {
       if (!current_sensor->flags.enable || current_sensor->type == SENSOR_TYPE_NONE) {
