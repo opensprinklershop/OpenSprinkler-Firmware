@@ -41,6 +41,11 @@
 	// Option set to 1: modem sleep lets the radio idle between DTIM beacons,
 	// which lowers power and improves weak-signal RX sensitivity.
 	static void apply_wifi_sleep_mode() {
+		// Guard: when Ethernet is the active uplink, avoid touching WiFi
+		// power-save state. On some targets this can crash if WiFi is not
+		// the active transport.
+		if (useEth) return;
+
 		bool modem_sleep = os.iopts[IOPT_WIFI_MODEM_SLEEP];
 	#if defined(ESP8266)
 		wifi_set_sleep_type(modem_sleep ? MODEM_SLEEP_T : NONE_SLEEP_T);
