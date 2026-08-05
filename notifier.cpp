@@ -378,6 +378,19 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	else if (strncmp(rest, "http://", 7) == 0) { usessl = false; rest += 7; }
 	else return; // unsupported scheme
 
+#if defined(ESP8266)
+	// BearSSL needs ~16 KB of contiguous heap for a TLS handshake, which the
+	// RAM-tight ESP8266 rarely has right after boot. The reboot notification is
+	// pushed at startup, so an HTTPS attempt there could crash BearSSL and loop
+	// the device. The forwarder also serves plain HTTP on port 80, so downgrade
+	// to HTTP here (rest already points past the scheme). NOTE: this sends the
+	// device password hash in cleartext, same as the existing local/OTC API.
+	if (usessl) {
+		usessl = false;
+		DEBUG_PRINTLN(F("push: using HTTP on ESP8266 (HTTPS needs too much heap)"));
+	}
+#endif
+
 	char host[120];
 	char path[160];
 	const char* slash = strchr(rest, '/');
