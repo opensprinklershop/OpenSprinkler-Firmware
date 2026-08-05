@@ -327,6 +327,124 @@ bool NotifQueue::run(int n) {
 #define PUSH_TOPIC_LEN	120
 #define PUSH_PAYLOAD_LEN TMP_BUFFER_SIZE
 
+#if defined(ESP8266) || defined(ESP32)
+extern bool useEth;
+
+// Append a JSON-escaped copy of src into dst (bounded). Control characters are
+// dropped; quotes and backslashes are escaped so the body stays valid JSON.
+static void push_json_escape(char* dst, size_t dstlen, const char* src, size_t maxsrc) {
+	size_t di = 0;
+	for (size_t si = 0; src[si] && si < maxsrc && di + 2 < dstlen; si++) {
+		char c = src[si];
+		if (c == '"' || c == '\\') {
+			dst[di++] = '\\';
+			dst[di++] = c;
+		} else if ((unsigned char)c >= 0x20) {
+			dst[di++] = c;
+		}
+	}
+	dst[di] = 0;
+}
+
+// Firmware-initiated push. When enabled via SOPT_PUSH_OPTS ({"en":1,"url":...})
+// the controller POSTs the just-logged notification event to the external push
+// forwarder itself, so real push works without OTC (e.g. on the same LAN or
+// right after a reboot). Ownership is proven by the device password hash (the
+// same value the app knows as pw); the forwarder stores only its sha256.
+static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t bval, uint32_t event_id) {
+	static char push_cfg[MAX_SOPTS_SIZE + 1];
+	os.sopt_load(SOPT_PUSH_OPTS, push_cfg);
+	if (push_cfg[0] == 0) return; // not configured -> disabled (privacy: opt-in only)
+
+	// Wrap the stored object fragment into a JSON object and parse it.
+	static char push_json[MAX_SOPTS_SIZE + 3];
+	size_t clen = strlen(push_cfg);
+	push_json[0] = '{';
+	memcpy(push_json + 1, push_cfg, clen);
+	push_json[clen + 1] = '}';
+	push_json[clen + 2] = 0;
+
+	ArduinoJson::JsonDocument pdoc;
+	if (ArduinoJson::deserializeJson(pdoc, push_json)) return;
+	int en = pdoc["en"] | 0;
+	if (!en) return;
+	const char* url = pdoc["url"] | "";
+	if (!url || url[0] == 0) url = DEFAULT_PUSH_URL;
+
+	// Parse the URL into scheme/host/port/path.
+	bool usessl = false;
+	const char* rest = url;
+	if (strncmp(rest, "https://", 8) == 0) { usessl = true; rest += 8; }
+	else if (strncmp(rest, "http://", 7) == 0) { usessl = false; rest += 7; }
+	else return; // unsupported scheme
+
+	char host[120];
+	char path[160];
+	const char* slash = strchr(rest, '/');
+	size_t hostlen = slash ? (size_t)(slash - rest) : strlen(rest);
+	if (hostlen == 0 || hostlen >= sizeof(host)) return;
+	memcpy(host, rest, hostlen); host[hostlen] = 0;
+	if (slash) { strncpy(path, slash, sizeof(path) - 1); path[sizeof(path) - 1] = 0; }
+	else { strcpy(path, "/"); }
+
+	uint16_t port = usessl ? 443 : 80;
+	char* colon = strchr(host, ':');
+	if (colon) { *colon = 0; int p = atoi(colon + 1); if (p > 0) port = (uint16_t)p; }
+
+	// device_key = the same MAC the controller reports in /jc ("mac").
+	unsigned char mac[6] = {0};
+	os.load_hardware_mac(mac, useEth);
+	char device_key[13];
+	snprintf_P(device_key, sizeof(device_key), PSTR("%02X%02X%02X%02X%02X%02X"),
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+	// auth = the stored device password hash (md5), identical to the app's pw.
+	static char auth[MAX_SOPTS_SIZE + 1];
+	os.sopt_load(SOPT_PASSWORD, auth);
+	if (auth[0] == 0) return;
+
+	char text[160];
+	notif_render_text(type, lval, fval, bval, text, sizeof(text));
+	char text_esc[200];
+	push_json_escape(text_esc, sizeof(text_esc), text, sizeof(text));
+
+	uint8_t prio = notif_priority(type);
+
+	static char body[360];
+	snprintf_P(body, sizeof(body),
+		PSTR("{\"device_key\":\"%s\",\"auth\":\"%s\",\"id\":%lu,\"type\":%lu,\"prio\":%u,\"text\":\"%s\"}"),
+		device_key, auth, (unsigned long)event_id, (unsigned long)type, (unsigned)prio, text_esc);
+
+	// A TLS handshake needs contiguous heap; on memory-tight boards skip the push
+	// (the event is still in /nl) rather than risk a crash, mirroring the email path.
+	if (usessl) {
+		#if defined(ESP8266)
+			const size_t push_mem_needed = 16000;
+		#else
+			const size_t push_mem_needed = 10000;
+		#endif
+		if (!free_tmp_memory(push_mem_needed)) {
+			restore_tmp_memory(push_mem_needed);
+			DEBUG_PRINTLN(F("push: not enough memory for TLS (event still logged)"));
+			return;
+		}
+		restore_tmp_memory(push_mem_needed);
+	}
+
+	BufferFiller bf = BufferFiller(ether_buffer, TMP_BUFFER_SIZE);
+	bf.emit_p(PSTR("POST $S HTTP/1.0\r\n"
+					"Host: $S\r\n"
+					"User-Agent: $S\r\n"
+					"Accept: */*\r\n"
+					"Content-Length: $D\r\n"
+					"Content-Type: application/json\r\n\r\n$S"),
+					path, host, user_agent_string, strlen(body), body);
+
+	// Fire-and-forget: we do not need the response, so avoid blocking on it.
+	os.send_http_request(host, port, ether_buffer, NULL, usessl, 8000, false);
+}
+#endif
+
 void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if (!is_notif_enabled(type)) {
 		return;
@@ -1097,6 +1215,12 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if (influxdb_enabled)
 		os.influxdb.push_message(type, lval, fval, sval);
 
-	if (log_this)
+	if (log_this) {
 		notif_log_add(type, lval, fval, bval);
+		#if defined(ESP8266) || defined(ESP32)
+		// After recording the event, push it out to the forwarder if the user
+		// opted in. This delivers real push without OTC (LAN / post-reboot).
+		push_forward_event(type, lval, fval, bval, notif_log_lastid());
+		#endif
+	}
 }

@@ -558,6 +558,7 @@ const char *OpenSprinkler::sopts[] = {
 	DEFAULT_EMPTY_STRING, // SOPT_EMAIL_OPTS
 	DEFAULT_EMPTY_STRING, // SOPT_FYTA_OPTS
 	DEFAULT_EMPTY_STRING, // SOPT_GARDENA_OPTS
+	DEFAULT_EMPTY_STRING, // SOPT_PUSH_OPTS
 };
 
 /** Weekday strings (stored in PROGMEM to reduce RAM usage) */

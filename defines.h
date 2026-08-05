@@ -243,6 +243,7 @@ enum {
 #define DEFAULT_JAVASCRIPT_URL    "https://ui.opensprinklershop.de/js"
 #define DEFAULT_WEATHER_URL       "weather.opensprinkler.com"
 #define DEFAULT_IFTTT_URL         "maker.ifttt.com"
+#define DEFAULT_PUSH_URL          "https://opensprinklershop.de/wp-json/ospf/v1/event"
 #define DEFAULT_OTC_SERVER_DEV     "ws.cloud.openthings.io"
 #define DEFAULT_OTC_PORT_DEV       80
 #define DEFAULT_OTC_SERVER_APP    "cloud.openthings.io"
@@ -420,6 +421,7 @@ enum {
 	SOPT_EMAIL_OPTS,
 	SOPT_FYTA_OPTS,
 	SOPT_GARDENA_OPTS,
+	SOPT_PUSH_OPTS, // firmware-initiated push forwarder config {"en":0/1,"url":"..."}
 	NUM_SOPTS // total number of string options
 };
 
