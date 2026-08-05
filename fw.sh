@@ -60,7 +60,7 @@
 #
 # Environment variables (optional):
 #   OS_IP           Device IP  (default: 192.168.0.151)
-#   OS_IP_ESP8266   ESP8266 device IP (default: 192.168.0.244); esp8266 upload/
+#   OS_IP_ESP8266   ESP8266 device IP (default: 192.168.0.174); esp8266 upload/
 #                   deploy always goes over IP (no USB) unless FW_UPLOAD_METHOD=usb
 #   OS_PASSWORD     Admin password in plain text (will be MD5 hashed)
 #   OS_HASH         Admin password already as MD5 hash
@@ -106,7 +106,7 @@ fi
 DEVICE_IP="${OS_IP:-192.168.0.151}"
 # ESP8266 device has no USB connection here -> upload/deploy goes over the
 # network (REST/OTA). Override with OS_IP_ESP8266 if its address changes.
-ESP8266_IP="${OS_IP_ESP8266:-192.168.0.244}"
+ESP8266_IP="${OS_IP_ESP8266:-192.168.0.174}"
 PIO_BIN="platformio"
 SILENT="${SILENT:-true}"
 

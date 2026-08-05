@@ -1377,6 +1377,17 @@ void server_change_program(OTF_PARAMS_DEF) {
 		if (auto *rm = OSRainMaker::get()) rm->sync_programs();
 #endif
 	} else {
+		// If this program is currently running / queued with repeat instances,
+		// invalidate all queued entries before applying the new definition so
+		// stale repeats do not keep running with old settings.
+		unsigned char target_pid = (unsigned char)pid + 1;
+		for (int qi = (int)pd.nqueue - 1; qi >= 0; qi--) {
+			RuntimeQueueStruct *q = pd.queue + qi;
+			if (qpid_decode(q->pid) == target_pid) {
+				q->dur = 0;
+			}
+		}
+
 		if(!pd.modify(pid, &prog)) handle_return(HTML_DATA_OUTOFBOUND);
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)
 		if (auto *rm = OSRainMaker::get()) rm->update_program_name((uint8_t)pid);
@@ -2487,11 +2498,22 @@ void server_json_log(OTF_PARAMS_DEF) {
 			if(*ptype != ',') continue; // didn't find comma, move on
 			ptype++;  // move past comma
 
-			if (type_specified && strncmp(type, ptype+1, 2))
+			const bool has_quoted_type = (*ptype == '"');
+			const char *type_value = ptype;
+			if (has_quoted_type) {
+				type_value++;
+				char *type_end = const_cast<char*>(type_value);
+				while(*type_end && *type_end != '"') type_end++;
+				if (!*type_end) continue;
+				if (type_specified) {
+					if (type_end - type_value < 2 || strncmp(type, type_value, 2))
+						continue;
+				} else if (type_end - type_value >= 2 && (!strncmp("wl", type_value, 2) || !strncmp("fl", type_value, 2))) {
+					continue;
+				}
+			} else if (type_specified) {
 				continue;
-			// if type is not specified, output everything except "wl" and "fl" records
-			if (!type_specified && (!strncmp("wl", ptype+1, 2) || !strncmp("fl", ptype+1, 2)))
-				continue;
+			}
 			// if this is the first record, do not print comma
 			if (comma)	bfill.emit_p(PSTR(","));
 			else {comma=1;}
@@ -3787,7 +3809,17 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	uint type = strtoul(tmp_buffer, NULL, 0); // Sensor type
 
 	if (type == 0) {
-		sensor_delete(nr);
+		bool is_restore = false;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("restore"), true))
+			is_restore = strtoul(tmp_buffer, NULL, 0) > 0;
+
+		int dret = sensor_delete(nr, !is_restore);
+		if (dret == HTTP_RQT_SUCCESS && is_restore) {
+			// During restore batches multiple deletes arrive back-to-back. Defer
+			// persistence to the request-save path to avoid rewriting sensor.json
+			// for every single delete under tight flash/RAM conditions.
+			sensor_request_save();
+		}
 		handle_return(HTML_SUCCESS);
 	}
 
@@ -4740,6 +4772,31 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 
 	DEBUG_PRINTLN(F("server_monitor_config"));
 
+	// Parse HH:MM / HHMM into monitor TIME format (HHMM). Accept 24:00 as a
+	// valid day-end marker, reject any other out-of-range values.
+	auto parse_hhmm = [](const char *s, uint16_t *out) -> bool {
+		if (!s || !*s || !out) return false;
+		int h = 0;
+		int m = 0;
+		const char *colon = strchr(s, ':');
+		if (colon) {
+			h = (int)strtoul(s, NULL, 10);
+			m = (int)strtoul(colon + 1, NULL, 10);
+		} else {
+			unsigned long raw = strtoul(s, NULL, 10);
+			h = (int)(raw / 100UL);
+			m = (int)(raw % 100UL);
+		}
+
+		if (h == 24 && m == 0) {
+			*out = 2400;
+			return true;
+		}
+		if (h < 0 || h > 23 || m < 0 || m > 59) return false;
+		*out = (uint16_t)(h * 100 + m);
+		return true;
+	};
+
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
 		handle_return(HTML_DATA_MISSING);
 	uint16_t nr = strtoul(tmp_buffer, NULL, 0); // Adjustment nr
@@ -4834,20 +4891,10 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	uint16_t time_to = 2400;
 	uint8_t wdays = 0xFF;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("from"), true)) { //Format: HHMM or HH:MM
-		const char* colon = strchr(tmp_buffer, ':');
-		if (colon) {
-			time_from = strtoul(tmp_buffer, NULL, 10) * 100 + strtoul(colon + 1, NULL, 10);
-		} else {
-			time_from = strtoul(tmp_buffer, NULL, 10);
-		}
+		if (!parse_hhmm(tmp_buffer, &time_from)) handle_return(HTML_DATA_FORMATERROR);
 	}
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("to"), true)) { //Format: HHMM or HH:MM
-		const char* colon = strchr(tmp_buffer, ':');
-		if (colon) {
-			time_to = strtoul(tmp_buffer, NULL, 10) * 100 + strtoul(colon + 1, NULL, 10);
-		} else {
-			time_to = strtoul(tmp_buffer, NULL, 10);
-		}
+		if (!parse_hhmm(tmp_buffer, &time_to)) handle_return(HTML_DATA_FORMATERROR);
 	}
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wdays"), true)) //0=Monday
 		wdays = strtoul(tmp_buffer, NULL, 0);
@@ -5998,6 +6045,145 @@ void server_sensorconfig_backup(OTF_PARAMS_DEF) {
 	send_packet(OTF_PARAMS);
 
 	handle_return(HTML_OK);
+}
+
+// Maximum size of the universal app/UI config store (JSON object). Keeps the
+// blob small enough to serve in a single response and to bound flash use.
+#define APP_CONFIG_MAX_SIZE 2048
+
+/**
+ * ap
+ * Universal, forward-compatible app/UI config store — return the stored JSON
+ * object as-is (or an empty object if nothing has been saved yet). The device
+ * treats the content opaquely: any keys the UI/HTTP client defines are kept.
+ */
+void server_app_config_get(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	(void)p;
+	print_header();
+#endif
+
+	ulong sz = file_exists(APP_CONFIG_FILENAME) ? file_size(APP_CONFIG_FILENAME) : 0;
+	if (sz == 0 || sz > APP_CONFIG_MAX_SIZE) {
+		bfill.emit_p(PSTR("{}"));
+		handle_return(HTML_OK);
+	}
+
+	// Stream the file in chunks so it never overflows the output buffer.
+	ulong pos = 0;
+	char chunk[257];
+	while (pos < sz) {
+		ulong n = (sz - pos) < (sizeof(chunk) - 1) ? (sz - pos) : (sizeof(chunk) - 1);
+		file_read_block(APP_CONFIG_FILENAME, chunk, pos, n);
+		chunk[n] = 0;
+		bfill.emit_p(PSTR("$S"), chunk);
+		send_packet(OTF_PARAMS);
+		pos += n;
+	}
+	handle_return(HTML_OK);
+}
+
+/**
+ * au
+ * Update the universal app/UI config store. Accepts a JSON object in the
+ * `json` parameter that is MERGED into the stored object: existing keys are
+ * overwritten, a key whose value is null is removed. `reset=1` clears the whole
+ * store. This is intentionally schema-less so new UI/HTTP settings (e.g. 24h
+ * clock, AI off, hidden panels, sort order, …) need no firmware change.
+ */
+void server_app_config_set(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+	(void)p;
+#endif
+
+	// Full reset clears the store.
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("reset"), true) &&
+	    strtoul(tmp_buffer, NULL, 0) > 0) {
+		if (file_exists(APP_CONFIG_FILENAME)) remove_file(APP_CONFIG_FILENAME);
+		handle_return(HTML_SUCCESS);
+	}
+
+	char *jbuf = (char*)malloc(APP_CONFIG_MAX_SIZE);
+	if (!jbuf) handle_return(HTML_DATA_MISSING);
+
+	if (!findKeyVal(FKV_SOURCE, jbuf, APP_CONFIG_MAX_SIZE, PSTR("json"), true)) {
+		free(jbuf);
+		handle_return(HTML_DATA_MISSING);
+	}
+	urlDecodeAndUnescape(jbuf);
+
+	JsonDocument *incoming = new (std::nothrow) JsonDocument();
+	if (!incoming) { free(jbuf); handle_return(HTML_DATA_MISSING); }
+	if (deserializeJson(*incoming, jbuf) != DeserializationError::Ok || !incoming->is<JsonObject>()) {
+		delete incoming;
+		free(jbuf);
+		handle_return(HTML_DATA_FORMATERROR);
+	}
+	free(jbuf);
+
+	// Load the existing store (start empty if missing/corrupt).
+	JsonDocument *store = new (std::nothrow) JsonDocument();
+	if (!store) { delete incoming; handle_return(HTML_DATA_MISSING); }
+
+	ulong sz = file_exists(APP_CONFIG_FILENAME) ? file_size(APP_CONFIG_FILENAME) : 0;
+	if (sz > 0 && sz <= APP_CONFIG_MAX_SIZE) {
+		char *existing = (char*)malloc(sz + 1);
+		if (existing) {
+			file_read_block(APP_CONFIG_FILENAME, existing, 0, sz);
+			existing[sz] = 0;
+			if (deserializeJson(*store, existing) != DeserializationError::Ok || !store->is<JsonObject>()) {
+				store->clear();
+			}
+			free(existing);
+		}
+	}
+	if (!store->is<JsonObject>()) store->to<JsonObject>();
+
+	// Merge: null value removes a key, any other value overwrites/adds it.
+	JsonObject root = store->as<JsonObject>();
+	for (JsonPairConst kv : incoming->as<JsonObjectConst>()) {
+		if (kv.value().isNull()) {
+			root.remove(kv.key());
+		} else {
+			root[kv.key()] = kv.value();
+		}
+	}
+	delete incoming;
+
+	if (store->overflowed()) { delete store; handle_return(HTML_NOT_ENOUGH_SPACE); }
+
+	char *out = (char*)malloc(APP_CONFIG_MAX_SIZE);
+	if (!out) { delete store; handle_return(HTML_DATA_MISSING); }
+	size_t len = serializeJson(*store, out, APP_CONFIG_MAX_SIZE);
+	delete store;
+	if (len < 2 || len >= APP_CONFIG_MAX_SIZE) { free(out); handle_return(HTML_NOT_ENOUGH_SPACE); }
+
+	ensureConfigSpace();  // config takes priority over old logs on a full FS
+
+	// Atomic write: temp file first, validate size, then swap in.
+	const char *tmpfile = APP_CONFIG_FILENAME ".tmp";
+	if (file_exists(tmpfile)) remove_file(tmpfile);
+	file_write_block(tmpfile, out, 0, len);
+	free(out);
+	if (file_size(tmpfile) != (ulong)len) {
+		remove_file(tmpfile);
+		handle_return(HTML_NOT_ENOUGH_SPACE);
+	}
+	if (file_exists(APP_CONFIG_FILENAME)) remove_file(APP_CONFIG_FILENAME);
+	if (!rename_file(tmpfile, APP_CONFIG_FILENAME)) {
+		remove_file(tmpfile);
+		handle_return(HTML_DATA_MISSING);
+	}
+
+	handle_return(HTML_SUCCESS);
 }
 
 /**
@@ -7391,6 +7577,8 @@ const char _url_keys[] PROGMEM =
     "dg"
 	"is"
 	"ig"
+	"ap"  // universal app/UI config store: get JSON
+	"au"  // universal app/UI config store: merge/update JSON
 	"mc"
 	"ml"
 	"mt"
@@ -7498,6 +7686,8 @@ URLHandler urls[] = {
 	server_json_debug_log,  // dg
 	server_influx_set,// is
 	server_influx_get,// ig
+	server_app_config_get,// ap
+	server_app_config_set,// au
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt

@@ -601,8 +601,21 @@ static String tool_get_log(const OTF::Request& req, OTF::Response& res,
       if (*ptype != ',') continue;
       ptype++;
 
-      if (type_specified && strncmp(type_filter, ptype + 1, 2)) continue;
-      if (!type_specified && (!strncmp("wl", ptype + 1, 2) || !strncmp("fl", ptype + 1, 2))) continue;
+      const bool has_quoted_type = (*ptype == '"');
+      const char *type_value = ptype;
+      if (has_quoted_type) {
+        type_value++;
+        char *type_end = const_cast<char*>(type_value);
+        while (*type_end && *type_end != '"') type_end++;
+        if (!*type_end) continue;
+        if (type_specified) {
+          if (type_end - type_value < 2 || strncmp(type_filter, type_value, 2)) continue;
+        } else if (type_end - type_value >= 2 && (!strncmp("wl", type_value, 2) || !strncmp("fl", type_value, 2))) {
+          continue;
+        }
+      } else if (type_specified) {
+        continue;
+      }
 
       if (comma) bfill.emit_p(PSTR(","));
       else comma = true;

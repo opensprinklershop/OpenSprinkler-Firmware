@@ -772,7 +772,7 @@ Monitor* monitor_iterate_next(MonitorIterator& it) {
  *
  * @param nr
  */
-int sensor_delete(uint nr) {
+int sensor_delete(uint nr, bool save_now) {
   auto it = sensorsMap.find(nr);
   if (it == sensorsMap.end()) return HTTP_RQT_NOT_RECEIVED;
   // Do not create a new driver object here; just remove the sensor
@@ -785,7 +785,7 @@ int sensor_delete(uint nr) {
   // minutes and made the /sc delete request appear to "do nothing". Stale
   // entries for this nr age out naturally as the ring log rotates; a re-created
   // sensor re-using the same nr simply sees them until then.
-  sensor_save();
+  if (save_now) sensor_save();
   return HTTP_RQT_SUCCESS;
 }
 
@@ -2590,12 +2590,12 @@ int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
   return prog_adjust_define(obj, true);
 }
 
-int prog_adjust_delete(uint nr) {
+int prog_adjust_delete(uint nr, bool save_now) {
   auto it = progSensorAdjustsMap.find(nr);
   if (it != progSensorAdjustsMap.end()) {
     delete it->second;
     progSensorAdjustsMap.erase(it);
-    prog_adjust_save();
+    if (save_now) prog_adjust_save();
     return HTTP_RQT_SUCCESS;
   }
   return HTTP_RQT_NOT_RECEIVED;
@@ -3324,12 +3324,12 @@ int monitor_count() {
   return monitorsMap.size();
 }
 
-int monitor_delete(uint nr) {
+int monitor_delete(uint nr, bool save_now) {
   auto it = monitorsMap.find(nr);
   if (it != monitorsMap.end()) {
     delete it->second;
     monitorsMap.erase(it);
-    monitor_save();
+    if (save_now) monitor_save();
     return HTTP_RQT_SUCCESS;
   }
   return HTTP_RQT_NOT_RECEIVED;

@@ -112,6 +112,7 @@ typedef unsigned long ulong;
 #define DONE_FILENAME         "done.dat"    // used to indicate the completion of all files
 #define MWATER_FILENAME       "mwater.dat"   // monthly water usage data file
 #define ZIGBEE_LOGICAL_FILENAME "zigbee_logical_devices.json" // persisted ZigBee logical device registry
+#define APP_CONFIG_FILENAME   "appcfg.json"  // universal app/UI key-value config store (JSON object)
 #else
 #define IOPTS_FILENAME        "/iopts.dat"   // integer options data file
 #define SOPTS_FILENAME        "/sopts.dat"   // string options data file
@@ -123,6 +124,7 @@ typedef unsigned long ulong;
 #define DONE_FILENAME         "/done.dat"    // used to indicate the completion of all files
 #define MWATER_FILENAME       "/mwater.dat"   // monthly water usage data file
 #define ZIGBEE_LOGICAL_FILENAME "/zigbee_logical_devices.json" // persisted ZigBee logical device registry
+#define APP_CONFIG_FILENAME   "/appcfg.json"  // universal app/UI key-value config store (JSON object)
 #endif
 
 /** Station macro defines */

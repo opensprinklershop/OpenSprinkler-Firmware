@@ -490,7 +490,7 @@ extern const char *user_agent_string;
 uint16_t CRC16(unsigned char buf[], int len);
 
 // Sensor API functions:
-int sensor_delete(uint nr);
+int sensor_delete(uint nr, bool save_now = true);
 int sensor_define(ArduinoJson::JsonVariantConst json, bool save = false);
 int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
                           const char *userdef_unit, int16_t offset_mv,
@@ -560,7 +560,7 @@ int set_sensor_address(SensorBase *sensor, uint8_t new_address);
 int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save = true);
 int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
                        double factor1, double factor2, double min, double max, char * name);
-int prog_adjust_delete(uint nr);
+int prog_adjust_delete(uint nr, bool save_now = true);
 void prog_adjust_save();
 void prog_adjust_load();
 uint prog_adjust_count();
@@ -584,7 +584,7 @@ void detect_asb_board();
 void monitor_load();
 void monitor_save();
 int monitor_count();
-int monitor_delete(uint nr);
+int monitor_delete(uint nr, bool save_now = true);
 int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0, uint order = 0, uint8_t show = 1);
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);

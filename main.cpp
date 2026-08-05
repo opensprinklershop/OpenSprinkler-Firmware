@@ -2971,22 +2971,20 @@ void stop_program(unsigned char pid) {
 		ProgramStruct p;
 		pd.read(i, &p);
 		if (strncmp(p.name, "Run-Once with repeat", 20) == 0) {
-			// Check if any stations of this run-once program are queued
+			// Always remove ad-hoc repeat programs when an explicit stop is
+			// requested for a program. Otherwise, a run-once repeat currently
+			// between intervals (no queued station right now) survives and fires
+			// again at the next interval.
 			uint8_t run_once_pid = i + 1;
-			bool has_queued = false;
 			for (int j = pd.nqueue - 1; j >= 0; j--) {
 				RuntimeQueueStruct *q = &pd.queue[j];
 				if (q->pid == run_once_pid || q->pid == (run_once_pid | 0x80)) {
-					has_queued = true;
 					// Mark for dequeue (duration = 0)
 					q->dur = 0;
 				}
 			}
-			// Delete the ad-hoc program if it was queued
-			if (has_queued) {
-				pd.del(i);
-				i--;  // adjust index after deletion
-			}
+			pd.del(i);
+			i--;  // adjust index after deletion
 		}
 	}
 
