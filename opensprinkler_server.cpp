@@ -3765,11 +3765,11 @@ void server_backup_get(OTF_PARAMS_DEF) {
 				}
 			}
 			bfill.emit_p(PSTR("\""));
-			emit_monthly_water_backup_json(bfill);
 			first = false;
 		}
 	}
 	bfill.emit_p(PSTR("}"));
+	emit_monthly_water_backup_json(bfill);
 
 	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);

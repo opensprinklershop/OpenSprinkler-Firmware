@@ -1760,6 +1760,9 @@ void do_loop()
 							}
 						}
 					}
+					// Constant weather/historical base for this program; wl gets
+					// overwritten per station for the notification, so keep the base.
+					const unsigned char wl_base = wl;
 
 					// process all selected stations
 					for(unsigned char oi=0;oi<os.nstations;oi++) {
@@ -1775,7 +1778,9 @@ void do_loop()
 							// water time is scaled by watering percentage
 							ulong water_time = water_time_resolve(prog.durations[sid]);
 							// if the program is set to use weather scaling
-							double wl1 = (prog.use_weather ? wl : 100) / 100.0;
+							// Use wl_base (constant per program) so the analog-sensor factor
+							// does not compound across stations of the same program.
+							double wl1 = (prog.use_weather ? wl_base : 100) / 100.0;
 							double wl2 = calc_sensor_watering(pid); //Analog Sensor program adjustment
 							double wl_combined = wl1 * wl2;
 							water_time = (ulong)(water_time * wl_combined);
