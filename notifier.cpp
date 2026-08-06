@@ -346,30 +346,61 @@ static void push_json_escape(char* dst, size_t dstlen, const char* src, size_t m
 	dst[di] = 0;
 }
 
+// Parse an integer value for "key" from the stored config fragment (e.g. en).
+static bool push_cfg_int(const char* cfg, const char* key, int* out) {
+	char pat[20];
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	const char* p = strstr(cfg, pat);
+	if (!p) return false;
+	p = strchr(p + strlen(pat), ':');
+	if (!p) return false;
+	*out = atoi(p + 1);
+	return true;
+}
+
+// Parse a quoted string value for "key" from the stored config fragment (url).
+static bool push_cfg_str(const char* cfg, const char* key, char* out, size_t outlen) {
+	char pat[20];
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	const char* p = strstr(cfg, pat);
+	if (!p) return false;
+	p = strchr(p + strlen(pat), ':');
+	if (!p) return false;
+	p++;
+	while (*p == ' ' || *p == '\t') p++;
+	if (*p != '"') return false;
+	p++;
+	size_t i = 0;
+	while (*p && *p != '"' && i + 1 < outlen) {
+		if (*p == '\\' && *(p + 1)) p++;
+		out[i++] = *p++;
+	}
+	out[i] = 0;
+	return true;
+}
+
 // Firmware-initiated push. When enabled via SOPT_PUSH_OPTS ({"en":1,"url":...})
 // the controller POSTs the just-logged notification event to the external push
 // forwarder itself, so real push works without OTC (e.g. on the same LAN or
 // right after a reboot). Ownership is proven by the device password hash (the
 // same value the app knows as pw); the forwarder stores only its sha256.
 static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t bval, uint32_t event_id) {
-	static char push_cfg[MAX_SOPTS_SIZE + 1];
-	os.sopt_load(SOPT_PUSH_OPTS, push_cfg);
-	if (push_cfg[0] == 0) return; // not configured -> disabled (privacy: opt-in only)
+	// Reuse tmp_buffer (free at this point in push_message) as scratch instead of
+	// permanent static buffers, so RAM is returned to the heap when push is idle.
+	os.sopt_load(SOPT_PUSH_OPTS, tmp_buffer, TMP_BUFFER_SIZE - 1);
+	if (tmp_buffer[0] == 0) return; // not configured -> disabled (privacy: opt-in only)
 
-	// Wrap the stored object fragment into a JSON object and parse it.
-	static char push_json[MAX_SOPTS_SIZE + 3];
-	size_t clen = strlen(push_cfg);
-	push_json[0] = '{';
-	memcpy(push_json + 1, push_cfg, clen);
-	push_json[clen + 1] = '}';
-	push_json[clen + 2] = 0;
+	// Parse the tiny {en,url} fragment manually to avoid a heap-allocating JSON
+	// document on the RAM-tight ESP8266.
+	int en = 0;
+	if (!push_cfg_int(tmp_buffer, "en", &en) || !en) return;
 
-	ArduinoJson::JsonDocument pdoc;
-	if (ArduinoJson::deserializeJson(pdoc, push_json)) return;
-	int en = pdoc["en"] | 0;
-	if (!en) return;
-	const char* url = pdoc["url"] | "";
-	if (!url || url[0] == 0) url = DEFAULT_PUSH_URL;
+	char urlbuf[160];
+	if (!push_cfg_str(tmp_buffer, "url", urlbuf, sizeof(urlbuf)) || urlbuf[0] == 0) {
+		strncpy(urlbuf, DEFAULT_PUSH_URL, sizeof(urlbuf) - 1);
+		urlbuf[sizeof(urlbuf) - 1] = 0;
+	}
+	const char* url = urlbuf;
 
 	// Parse the URL into scheme/host/port/path.
 	bool usessl = false;
@@ -380,19 +411,17 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 
 #if defined(ESP8266)
 	// BearSSL needs ~16 KB of contiguous heap for a TLS handshake, which the
-	// RAM-tight ESP8266 rarely has right after boot. The reboot notification is
-	// pushed at startup, so an HTTPS attempt there could crash BearSSL and loop
-	// the device. The forwarder also serves plain HTTP on port 80, so downgrade
-	// to HTTP here (rest already points past the scheme). NOTE: this sends the
-	// device password hash in cleartext, same as the existing local/OTC API.
+	// RAM-tight ESP8266 rarely has. The forwarder also serves plain HTTP on port
+	// 80, so downgrade to HTTP here. NOTE: this sends the device password hash in
+	// cleartext, same as the existing local/OTC API.
 	if (usessl) {
 		usessl = false;
 		DEBUG_PRINTLN(F("push: using HTTP on ESP8266 (HTTPS needs too much heap)"));
 	}
 #endif
 
-	char host[120];
-	char path[160];
+	char host[96];
+	char path[128];
 	const char* slash = strchr(rest, '/');
 	size_t hostlen = slash ? (size_t)(slash - rest) : strlen(rest);
 	if (hostlen == 0 || hostlen >= sizeof(host)) return;
@@ -404,6 +433,20 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	char* colon = strchr(host, ':');
 	if (colon) { *colon = 0; int p = atoi(colon + 1); if (p > 0) port = (uint16_t)p; }
 
+	// Never OOM the controller mid-watering: skip the push when heap is low or
+	// fragmented. The event is still recorded in /nl for the app to poll.
+#if defined(ESP8266)
+	if (ESP.getFreeHeap() < 14000 || ESP.getMaxFreeBlockSize() < 4000) {
+		DEBUG_PRINTLN(F("push: low heap, skipping (event still logged)"));
+		return;
+	}
+#elif defined(ESP32)
+	if (ESP.getFreeHeap() < 14000) {
+		DEBUG_PRINTLN(F("push: low heap, skipping (event still logged)"));
+		return;
+	}
+#endif
+
 	// device_key = the same MAC the controller reports in /jc ("mac").
 	unsigned char mac[6] = {0};
 	os.load_hardware_mac(mac, useEth);
@@ -412,37 +455,21 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
 	// auth = the stored device password hash (md5), identical to the app's pw.
-	static char auth[MAX_SOPTS_SIZE + 1];
-	os.sopt_load(SOPT_PASSWORD, auth);
+	char auth[40];
+	os.sopt_load(SOPT_PASSWORD, auth, sizeof(auth) - 1);
 	if (auth[0] == 0) return;
 
-	char text[160];
+	char text[128];
 	notif_render_text(type, lval, fval, bval, text, sizeof(text));
-	char text_esc[200];
+	char text_esc[160];
 	push_json_escape(text_esc, sizeof(text_esc), text, sizeof(text));
 
 	uint8_t prio = notif_priority(type);
 
-	static char body[360];
-	snprintf_P(body, sizeof(body),
+	// Build the JSON body into tmp_buffer, then the HTTP request into ether_buffer.
+	snprintf_P(tmp_buffer, TMP_BUFFER_SIZE,
 		PSTR("{\"device_key\":\"%s\",\"auth\":\"%s\",\"id\":%lu,\"type\":%lu,\"prio\":%u,\"text\":\"%s\"}"),
 		device_key, auth, (unsigned long)event_id, (unsigned long)type, (unsigned)prio, text_esc);
-
-	// A TLS handshake needs contiguous heap; on memory-tight boards skip the push
-	// (the event is still in /nl) rather than risk a crash, mirroring the email path.
-	if (usessl) {
-		#if defined(ESP8266)
-			const size_t push_mem_needed = 16000;
-		#else
-			const size_t push_mem_needed = 10000;
-		#endif
-		if (!free_tmp_memory(push_mem_needed)) {
-			restore_tmp_memory(push_mem_needed);
-			DEBUG_PRINTLN(F("push: not enough memory for TLS (event still logged)"));
-			return;
-		}
-		restore_tmp_memory(push_mem_needed);
-	}
 
 	BufferFiller bf = BufferFiller(ether_buffer, TMP_BUFFER_SIZE);
 	bf.emit_p(PSTR("POST $S HTTP/1.0\r\n"
@@ -451,10 +478,12 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 					"Accept: */*\r\n"
 					"Content-Length: $D\r\n"
 					"Content-Type: application/json\r\n\r\n$S"),
-					path, host, user_agent_string, strlen(body), body);
+					path, host, user_agent_string, strlen(tmp_buffer), tmp_buffer);
 
-	// Fire-and-forget: we do not need the response, so avoid blocking on it.
-	os.send_http_request(host, port, ether_buffer, NULL, usessl, 8000, false);
+	// Non-blocking, fire-and-forget: on ESP32 this runs on a short-lived task, on
+	// ESP8266 it is deferred to the main loop, so the notifier never blocks the
+	// web server (a synchronous send here froze the UI).
+	os.send_http_request_async(host, port, ether_buffer, NULL, usessl, 5000, false);
 }
 #endif
 
