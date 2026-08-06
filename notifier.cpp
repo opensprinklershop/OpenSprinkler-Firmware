@@ -483,7 +483,10 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 		PSTR("{\"device_key\":\"%s\",\"auth\":\"%s\",\"id\":%lu,\"type\":%lu,\"prio\":%u,\"text\":\"%s\"}"),
 		device_key, auth, (unsigned long)event_id, (unsigned long)type, (unsigned)prio, text_esc);
 
-	BufferFiller bf = BufferFiller(ether_buffer, TMP_BUFFER_SIZE);
+	// NOTE: the BufferFiller capacity must be the ether_buffer size, NOT
+	// TMP_BUFFER_SIZE (320) — otherwise longer requests are truncated mid-body,
+	// producing invalid JSON that the push forwarder rejects with HTTP 400.
+	BufferFiller bf = BufferFiller(ether_buffer, ETHER_BUFFER_SIZE);
 	bf.emit_p(PSTR("POST $S HTTP/1.0\r\n"
 					"Host: $S\r\n"
 					"User-Agent: $S\r\n"

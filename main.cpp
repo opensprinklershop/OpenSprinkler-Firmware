@@ -3013,10 +3013,12 @@ void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo
 	}
 
 	unsigned char wl = uwt?os.iopts[IOPT_WATER_PERCENTAGE]:100;
+	double prog_adjust = 1.0;
 	if ((pid>0)&&(pid<255)) {
 		pd.read(pid-1, &prog);
 		if (uwt == 255) uwt = prog.use_weather;
 		if(uwt) wl = os.iopts[IOPT_WATER_PERCENTAGE];
+		prog_adjust = calc_sensor_watering(pid-1);
 		notif.add(NOTIFY_PROGRAM_SCHED, pid-1, wl, 1);
 		// get station ordering from program name
 		prog.gen_station_runorder(1, order);
@@ -3035,6 +3037,9 @@ void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo
 			dur = water_time_resolve(prog.durations[sid]);
 		if(uwt) {
 			dur = dur * wl / 100;
+		}
+		if((pid>0)&&(pid<255)) {
+			dur = (ulong)(dur * prog_adjust);
 		}
 		if(dur>0 && !(os.attrib_dis[bid]&(1<<s))) {
 			RuntimeQueueStruct *q = pd.enqueue();
