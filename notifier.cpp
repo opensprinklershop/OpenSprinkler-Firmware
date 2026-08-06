@@ -89,18 +89,24 @@ void notif_log_add(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 
 uint8_t notif_priority(uint32_t type) {
 	switch (type) {
+		// Warnings & alarms -> heads-up + sound (os_high channel)
 		case NOTIFY_FLOW_ALERT:
 		case NOTIFY_CURR_ALERT:
 		case NOTIFY_NOFLOW:
 		case NOTIFY_PIPE_BURST:
+		case NOTIFY_MONITOR_MID:
 		case NOTIFY_MONITOR_HIGH:
 			return 2; // high
-		case NOTIFY_MONITOR_MID:
+		// Start/stop & moderate events -> audible (os_med channel)
+		case NOTIFY_PROGRAM_SCHED:
+		case NOTIFY_STATION_ON:
+		case NOTIFY_STATION_OFF:
 		case NOTIFY_REBOOT:
 		case NOTIFY_RAINDELAY:
+		case NOTIFY_MONITOR_LOW:
 			return 1; // medium
 		default:
-			return 0; // low
+			return 0; // low: weather, sensors, reports -> silent
 	}
 }
 
@@ -327,8 +333,10 @@ bool NotifQueue::run(int n) {
 #define PUSH_TOPIC_LEN	120
 #define PUSH_PAYLOAD_LEN TMP_BUFFER_SIZE
 
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
 #if defined(ESP8266) || defined(ESP32)
 extern bool useEth;
+#endif
 
 // Append a JSON-escaped copy of src into dst (bounded). Control characters are
 // dropped; quotes and backslashes are escaped so the body stays valid JSON.
@@ -449,7 +457,11 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 
 	// device_key = the same MAC the controller reports in /jc ("mac").
 	unsigned char mac[6] = {0};
+	#if defined(ARDUINO)
 	os.load_hardware_mac(mac, useEth);
+	#else
+	os.load_hardware_mac(mac, true); // matches the "mac" reported by /jc on OSPi
+	#endif
 	char device_key[13];
 	snprintf_P(device_key, sizeof(device_key), PSTR("%02X%02X%02X%02X%02X%02X"),
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -1259,7 +1271,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 
 	if (log_this) {
 		notif_log_add(type, lval, fval, bval);
-		#if defined(ESP8266) || defined(ESP32)
+		#if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
 		// After recording the event, push it out to the forwarder if the user
 		// opted in. This delivers real push without OTC (LAN / post-reboot).
 		push_forward_event(type, lval, fval, bval, notif_log_lastid());
