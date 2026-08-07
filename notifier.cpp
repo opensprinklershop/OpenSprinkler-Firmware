@@ -417,17 +417,6 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	else if (strncmp(rest, "http://", 7) == 0) { usessl = false; rest += 7; }
 	else return; // unsupported scheme
 
-#if defined(ESP8266)
-	// BearSSL needs ~16 KB of contiguous heap for a TLS handshake, which the
-	// RAM-tight ESP8266 rarely has. The forwarder also serves plain HTTP on port
-	// 80, so downgrade to HTTP here. NOTE: this sends the device password hash in
-	// cleartext, same as the existing local/OTC API.
-	if (usessl) {
-		usessl = false;
-		DEBUG_PRINTLN(F("push: using HTTP on ESP8266 (HTTPS needs too much heap)"));
-	}
-#endif
-
 	char host[96];
 	char path[128];
 	const char* slash = strchr(rest, '/');
@@ -445,13 +434,11 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	// fragmented. The event is still recorded in /nl for the app to poll.
 #if defined(ESP8266)
 	if (ESP.getFreeHeap() < 14000 || ESP.getMaxFreeBlockSize() < 4000) {
-		DEBUG_PRINTLN(F("push: low heap, skipping (event still logged)"));
-		return;
+		usessl = false; // SSL is more memory-hungry, so skip it if heap is low
 	}
 #elif defined(ESP32)
-	if (ESP.getFreeHeap() < 14000) {
-		DEBUG_PRINTLN(F("push: low heap, skipping (event still logged)"));
-		return;
+	if (ESP.getFreeHeap() < 4000) { //ESP32 uses SPIRAM, so it can run with less free heap than ESP8266
+		usessl = false;
 	}
 #endif
 
@@ -495,10 +482,8 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 					"Content-Type: application/json\r\n\r\n$S"),
 					path, host, user_agent_string, strlen(tmp_buffer), tmp_buffer);
 
-	// Non-blocking, fire-and-forget: on ESP32 this runs on a short-lived task, on
-	// ESP8266 it is deferred to the main loop, so the notifier never blocks the
-	// web server (a synchronous send here froze the UI).
-	os.send_http_request_async(host, port, ether_buffer, NULL, usessl, 5000, false);
+	// Synchronous send: block until the push forwarder has been contacted.
+	os.send_http_request(host, port, ether_buffer, NULL, usessl, 5000, false);
 }
 #endif
 
