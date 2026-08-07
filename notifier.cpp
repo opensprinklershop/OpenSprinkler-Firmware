@@ -393,15 +393,16 @@ static bool push_cfg_str(const char* cfg, const char* key, char* out, size_t out
 // right after a reboot). Ownership is proven by the device password hash (the
 // same value the app knows as pw); the forwarder stores only its sha256.
 static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t bval, uint32_t event_id) {
+	DEBUG_PRINTF("push: enter event id=%lu type=%lu\n", (unsigned long)event_id, (unsigned long)type);
 	// Reuse tmp_buffer (free at this point in push_message) as scratch instead of
 	// permanent static buffers, so RAM is returned to the heap when push is idle.
 	os.sopt_load(SOPT_PUSH_OPTS, tmp_buffer, TMP_BUFFER_SIZE - 1);
-	if (tmp_buffer[0] == 0) return; // not configured -> disabled (privacy: opt-in only)
+	if (tmp_buffer[0] == 0) { DEBUG_PRINTLN(F("push: SKIP - SOPT_PUSH_OPTS empty (not configured)")); return; } // not configured -> disabled (privacy: opt-in only)
 
 	// Parse the tiny {en,url} fragment manually to avoid a heap-allocating JSON
 	// document on the RAM-tight ESP8266.
 	int en = 0;
-	if (!push_cfg_int(tmp_buffer, "en", &en) || !en) return;
+	if (!push_cfg_int(tmp_buffer, "en", &en) || !en) { DEBUG_PRINTF("push: SKIP - disabled (en=%d) cfg=%s\n", en, tmp_buffer); return; }
 
 	char urlbuf[160];
 	if (!push_cfg_str(tmp_buffer, "url", urlbuf, sizeof(urlbuf)) || urlbuf[0] == 0) {
@@ -415,13 +416,13 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	const char* rest = url;
 	if (strncmp(rest, "https://", 8) == 0) { usessl = true; rest += 8; }
 	else if (strncmp(rest, "http://", 7) == 0) { usessl = false; rest += 7; }
-	else return; // unsupported scheme
+	else { DEBUG_PRINTF("push: SKIP - unsupported scheme url=%s\n", url); return; } // unsupported scheme
 
 	char host[96];
 	char path[128];
 	const char* slash = strchr(rest, '/');
 	size_t hostlen = slash ? (size_t)(slash - rest) : strlen(rest);
-	if (hostlen == 0 || hostlen >= sizeof(host)) return;
+	if (hostlen == 0 || hostlen >= sizeof(host)) { DEBUG_PRINTF("push: SKIP - bad host len=%u\n", (unsigned)hostlen); return; }
 	memcpy(host, rest, hostlen); host[hostlen] = 0;
 	if (slash) { strncpy(path, slash, sizeof(path) - 1); path[sizeof(path) - 1] = 0; }
 	else { strcpy(path, "/"); }
@@ -430,13 +431,17 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	char* colon = strchr(host, ':');
 	if (colon) { *colon = 0; int p = atoi(colon + 1); if (p > 0) port = (uint16_t)p; }
 
+	DEBUG_PRINTF("push: url=%s -> host=%s port=%u path=%s ssl=%d\n", url, host, port, path, (int)usessl);
+
 	// Never OOM the controller mid-watering: skip the push when heap is low or
 	// fragmented. The event is still recorded in /nl for the app to poll.
 #if defined(ESP8266)
 	if (ESP.getFreeHeap() < 14000 || ESP.getMaxFreeBlockSize() < 4000) {
 		usessl = false; // SSL is more memory-hungry, so skip it if heap is low
 	}
+	DEBUG_PRINTF("push: ESP8266 freeheap=%u maxblk=%u ssl=%d\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxFreeBlockSize(), (int)usessl);
 #elif defined(ESP32)
+	DEBUG_PRINTF("push: ESP32 freeheap=%u internal=%u ssl=%d\n", (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (int)usessl);
 	if (ESP.getFreeHeap() < 4000) { //ESP32 uses SPIRAM, so it can run with less free heap than ESP8266
 		usessl = false;
 	}
@@ -456,7 +461,7 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	// auth = the stored device password hash (md5), identical to the app's pw.
 	char auth[40];
 	os.sopt_load(SOPT_PASSWORD, auth, sizeof(auth) - 1);
-	if (auth[0] == 0) return;
+	if (auth[0] == 0) { DEBUG_PRINTLN(F("push: SKIP - SOPT_PASSWORD empty")); return; }
 
 	char text[128];
 	notif_render_text(type, lval, fval, bval, text, sizeof(text));
@@ -483,7 +488,9 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 					path, host, user_agent_string, strlen(tmp_buffer), tmp_buffer);
 
 	// Synchronous send: block until the push forwarder has been contacted.
-	os.send_http_request(host, port, ether_buffer, NULL, usessl, 5000, false);
+	DEBUG_PRINTF("push: sending %u body bytes to %s:%u ssl=%d\n", (unsigned)strlen(tmp_buffer), host, port, (int)usessl);
+	int8_t rc = os.send_http_request(host, port, ether_buffer, NULL, usessl, 5000, false);
+	DEBUG_PRINTF("push: send_http_request rc=%d\n", (int)rc);
 }
 #endif
 
