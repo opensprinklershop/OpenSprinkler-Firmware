@@ -597,7 +597,7 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 		// Stop as soon as the final greeting line arrives (see EHLO handling
 		// below): "220 text" ends the reply, "220-text" continues it. Keeps
 		// non-Gmail servers with a different greeting line count from hanging.
-		if (_serverResponce.length() < 4 || _serverResponce.charAt(3) != '-') {
+		if (_serverResponce.length() < 4 || _serverResponce[3] != '-') {
 			break;
 		}
 		response = awaitSMTPResponse(client, "220", "Connection response error ", 2500);
@@ -645,7 +645,7 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 		// "250 text" (space). Servers such as GMX and Zoho return fewer EHLO
 		// lines than Gmail; without this check the loop would block on the
 		// missing lines until a 2500ms timeout and abort before sending.
-		if (_serverResponce.length() < 4 || _serverResponce.charAt(3) != '-') {
+		if (_serverResponce.length() < 4 || _serverResponce[3] != '-') {
 			break;
 		}
 		response = awaitSMTPResponse(client, "250", "EHLO error", 2500);

@@ -536,6 +536,32 @@ void OSMqtt::begin(void) {
 
 	DEBUG_LOGF("MQTT Begin: Config (%s:%d %s) %s\r\n", _host, _port, _username, _enabled ? "Enabled" : "Disabled");
 
+	if (!_enabled) {
+		DEBUG_LOGF("MQTT Begin: disabled -> cleanup\r\n");
+		if (mqtt_client && _connected()) {
+			_disconnect();
+		}
+		if (mqtt_client) {
+			#if defined(ARDUINO)
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Wdelete-non-virtual-dtor"
+			delete mqtt_client;
+			#pragma GCC diagnostic pop
+			#else
+			mosquitto_destroy(mqtt_client);
+			#endif
+			mqtt_client = 0;
+		}
+		#if defined(ARDUINO)
+		if (client) {
+			delete client;
+			client = 0;
+		}
+		#endif
+		_done_subscribed = true;
+		return;
+	}
+
 	if (os.status.network_fails > 0) return;
 
 	if (mqtt_client && _connected()) {

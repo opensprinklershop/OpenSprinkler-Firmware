@@ -431,21 +431,33 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	char* colon = strchr(host, ':');
 	if (colon) { *colon = 0; int p = atoi(colon + 1); if (p > 0) port = (uint16_t)p; }
 
-	DEBUG_PRINTF("push: url=%s -> host=%s port=%u path=%s ssl=%d\n", url, host, port, path, (int)usessl);
-
-	// Never OOM the controller mid-watering: skip the push when heap is low or
-	// fragmented. The event is still recorded in /nl for the app to poll.
+	// Never OOM the controller mid-watering: skip the push when heap is critically low.
+	// The event is still recorded in /nl for the app to poll.
 #if defined(ESP8266)
-	if (ESP.getFreeHeap() < 14000 || ESP.getMaxFreeBlockSize() < 4000) {
-		usessl = false; // SSL is more memory-hungry, so skip it if heap is low
-	}
 	DEBUG_PRINTF("push: ESP8266 freeheap=%u maxblk=%u ssl=%d\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxFreeBlockSize(), (int)usessl);
+	if (ESP.getFreeHeap() < 3500 || ESP.getMaxFreeBlockSize() < 2000) {
+		DEBUG_PRINTLN(F("push: SKIP - low heap"));
+		return;
+	}
+	// TLS (BearSSL) needs ~11KB free plus a large contiguous block. Attempting it
+	// on a low/fragmented heap forces the free_tmp_memory()/restore_tmp_memory()
+	// dance (suspend+re-init MQTT/sensors/InfluxDB) which itself OOM-crashes here.
+	// The forwarder accepts plain-HTTP POST on port 80, so downgrade to HTTP when
+	// there isn't ample TLS headroom — this avoids the memory dance entirely.
+	if (usessl && (ESP.getFreeHeap() < 16000 || ESP.getMaxFreeBlockSize() < 9000)) {
+		DEBUG_PRINTLN(F("push: TLS headroom too low -> HTTP on port 80"));
+		usessl = false;
+		if (port == 443) port = 80;
+	}
 #elif defined(ESP32)
 	DEBUG_PRINTF("push: ESP32 freeheap=%u internal=%u ssl=%d\n", (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (int)usessl);
-	if (ESP.getFreeHeap() < 4000) { //ESP32 uses SPIRAM, so it can run with less free heap than ESP8266
-		usessl = false;
+	if (ESP.getFreeHeap() < 3500) {
+		DEBUG_PRINTLN(F("push: SKIP - low heap"));
+		return;
 	}
 #endif
+
+	DEBUG_PRINTF("push: url=%s -> host=%s port=%u path=%s ssl=%d\n", url, host, port, path, (int)usessl);
 
 	// device_key = the same MAC the controller reports in /jc ("mac").
 	unsigned char mac[6] = {0};
@@ -459,9 +471,21 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
 	// auth = the stored device password hash (md5), identical to the app's pw.
+	// Zero-init: on ESP8266 an unset/short SOPT_PASSWORD could otherwise leave the
+	// buffer as uninitialized stack (leaking earlier scratch like the push cfg
+	// fragment into the JSON body, corrupting it -> forwarder returns 400).
 	char auth[40];
+	memset(auth, 0, sizeof(auth));
 	os.sopt_load(SOPT_PASSWORD, auth, sizeof(auth) - 1);
 	if (auth[0] == 0) { DEBUG_PRINTLN(F("push: SKIP - SOPT_PASSWORD empty")); return; }
+	// The auth value must be a hex password hash. If it contains JSON/quote chars
+	// (e.g. leaked scratch), a raw insert would break the JSON body -> reject.
+	for (size_t ai = 0; auth[ai]; ai++) {
+		if (auth[ai] == '"' || auth[ai] == '\\' || auth[ai] == '{' || auth[ai] == ',') {
+			DEBUG_PRINTF("push: SKIP - SOPT_PASSWORD not a valid hash ('%s')\n", auth);
+			return;
+		}
+	}
 
 	char text[128];
 	notif_render_text(type, lval, fval, bval, text, sizeof(text));
@@ -489,7 +513,7 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 
 	// Synchronous send: block until the push forwarder has been contacted.
 	DEBUG_PRINTF("push: sending %u body bytes to %s:%u ssl=%d\n", (unsigned)strlen(tmp_buffer), host, port, (int)usessl);
-	int8_t rc = os.send_http_request(host, port, ether_buffer, NULL, usessl, 5000, false);
+	int8_t rc = os.send_http_request(host, port, ether_buffer, NULL, usessl, 5000, true);
 	DEBUG_PRINTF("push: send_http_request rc=%d\n", (int)rc);
 }
 #endif
@@ -502,8 +526,8 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	// and show a push/local notification. Reset to false when an event turns out to
 	// be a non-event (e.g. a flow reading below the alert setpoint).
 	bool log_this = true;
-	static char topic[PUSH_TOPIC_LEN+1];
-	static char payload[PUSH_PAYLOAD_LEN+1];
+	char topic[PUSH_TOPIC_LEN+1];
+	char payload[PUSH_PAYLOAD_LEN+1];
 	char* postval = tmp_buffer+1; // +1 so we can fit a opening { before the loaded config
 
 	// check if ifttt key exists and also if the enable bit is set

@@ -1591,7 +1591,7 @@ void server_view_scripturl(OTF_PARAMS_DEF) {
 <tr><td></td><td><button type=button onclick='rst_jsp()'>Reset UI Source</button></td></tr>
 <tr><td><b>Weather</b>:</td><td><input type=text size=40 maxlength=$D value='$O' id=wsp name=wsp></td></tr>
 <tr><td></td><td><button type=button onclick='rst_wsp()'>Reset Weather Server</button></td></tr>
-<tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw><input type=submit value=submit></tr>
+<tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw value='a6d82bced638de3def1e9bbb4983225c'><input type=submit value=submit></tr>
 </table></form>
 <script src=https://ui.opensprinkler.com/js/hasher.js></script>
 <script>function rst_jsp() {document.getElementById('jsp').value='$S';}
@@ -2248,6 +2248,7 @@ void server_change_password(OTF_PARAMS_DEF) {
 		const int pwBufferSize = TMP_BUFFER_SIZE/2;
 		char *tbuf2 = tmp_buffer + pwBufferSize;	// use the second half of tmp_buffer
 		if (findKeyVal(FKV_SOURCE, tbuf2, pwBufferSize, PSTR("cpw"), true) && strncmp(tmp_buffer, tbuf2, pwBufferSize) == 0) {
+			DEBUG_PRINTF("[PW] /sp writing password slot: npw='%.*s' cpw='%.*s'\n", 16, tmp_buffer, 16, tbuf2);
 			os.sopt_save(SOPT_PASSWORD, tmp_buffer);
 			handle_return(HTML_SUCCESS);
 		} else {

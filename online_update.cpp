@@ -1002,6 +1002,7 @@ void online_update_resume() {
 
 				const char* savedPw = doc["pw"] | "";
 				if (savedPw[0]) {
+					DEBUG_PRINTF("[OTA] restoring password slot from manifest pw='%.*s'\n", 16, savedPw);
 					os.sopt_save(SOPT_PASSWORD, savedPw);
 					DEBUG_PRINTLN(F("[OTA] Password restored from phase-0 manifest"));
 				}
@@ -1049,6 +1050,7 @@ void online_update_resume() {
 			if (!ArduinoJson::deserializeJson(doc, json)) {
 				const char* savedPw = doc["pw"] | "";
 				if (savedPw[0]) {
+					DEBUG_PRINTF("[OTA] restoring password slot from continuation pw='%.*s'\n", 16, savedPw);
 					os.sopt_save(SOPT_PASSWORD, savedPw);
 					DEBUG_PRINTLN(F("[OTA] Password restored from continuation file"));
 				}
@@ -1570,7 +1572,10 @@ void online_update_resume() {
 
 	DEBUG_PRINTF("[OTA-ESP8266] Restore pw=%s ssid=%s wifi_mode=%d\n", pw, ssid, (int)wifi_mode);
 
-	if (pw[0]) os.sopt_save(SOPT_PASSWORD, pw);
+	if (pw[0]) {
+		DEBUG_PRINTF("[OTA-ESP8266] restoring password slot from restore file pw='%.*s'\n", 16, pw);
+		os.sopt_save(SOPT_PASSWORD, pw);
+	}
 	if (ssid[0]) {
 		os.sopt_save(SOPT_STA_SSID, ssid);
 		os.wifi_ssid = ssid;

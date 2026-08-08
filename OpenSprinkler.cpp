@@ -2707,7 +2707,13 @@ void OpenSprinkler::attribs_load() {
 
 /** verify if a string matches password */
 unsigned char OpenSprinkler::password_verify(const char *pw) {
-	return (file_cmp_block(SOPTS_FILENAME, pw, SOPT_PASSWORD*MAX_SOPTS_SIZE)==0) ? 1 : 0;
+	unsigned char ok = (file_cmp_block(SOPTS_FILENAME, pw, SOPT_PASSWORD*MAX_SOPTS_SIZE)==0) ? 1 : 0;
+	if (!ok) {
+		char pwtmp[MAX_SOPTS_SIZE + 1];
+		sopt_load(SOPT_PASSWORD, pwtmp, MAX_SOPTS_SIZE);
+		DEBUG_PRINTF("[PW] verify failed, slot0='%.*s'\n", 32, pwtmp);
+	}
+	return ok;
 }
 
 // ==================
@@ -3020,27 +3026,39 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	}
 	#endif
 #if defined(ARDUINO)
+	#if defined(ESP8266)
+	const size_t ssl_tmp_memory_needed = 11000;
+	bool memory_freed_by_ssl = false;
+	#else
 	const size_t ssl_tmp_memory_needed = 10000;
+	#endif
 
 	Client *client = NULL;
 	#if defined(ESP8266)
 		if(usessl) {
 			if (!free_tmp_memory(ssl_tmp_memory_needed)) {
-				// Not enough heap for BearSSL — fall back to plain HTTP to avoid OOM crash
-				DEBUG_PRINTF("[SSL] OOM fallback: free=%d\n", (int)freeMemory());
+				// Not enough contiguous heap for BearSSL. Keep the freed memory
+				// (do NOT restore now — restoring re-inits sensors/MQTT/InfluxDB and
+				// can OOM-crash on the already RAM-tight heap) and send over plain HTTP.
+				memory_freed_by_ssl = true;
+				DEBUG_PRINTF("[SSL] Insufficient heap for TLS (free=%d maxblk=%d) -> HTTP fallback\n", (int)freeMemory(), (int)ESP.getMaxFreeBlockSize());
 				usessl = false;
-				port = 80;
+				if (port == 443) port = 80;
 				client = new WiFiClient();
 			} else {
-				// BearSSL/HTTPS can easily OOM on low-heap ESP8266 builds.
+				memory_freed_by_ssl = true;
+				// Pre-allocate 2048-byte RX buffer so BearSSL does not attempt dynamic realloc during TLS handshake while staying within ESP8266 heap limits.
 				WiFiClientSecure *_c = new WiFiClientSecure();
 				if (!_c) {
-					restore_tmp_memory(ssl_tmp_memory_needed);
-					return HTTP_RQT_CONNECT_ERR;
+					DEBUG_PRINTLN(F("[SSL] WiFiClientSecure alloc failed -> HTTP fallback"));
+					usessl = false;
+					if (port == 443) port = 80;
+					client = new WiFiClient();
+				} else {
+					_c->setInsecure();
+					_c->setBufferSizes(2048, 512);
+					client = _c;
 				}
-				_c->setInsecure();
-				_c->setBufferSizes(512, 512);
-				client = _c;
 			}
 		} else {
 			client = new WiFiClient();
@@ -3091,6 +3109,28 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 			conn_result = client->connect(server, port);
 		}
 		if(conn_result == 1) break;
+		#elif defined(ESP8266)
+		int res = client->connect(server, port);
+		if (res == 1) {
+			break;
+		} else if (usessl) {
+			DEBUG_PRINTLN(F("[SSL] TLS connect failed -> HTTP fallback"));
+			client->stop();
+			delete client;
+			if (memory_freed_by_ssl) {
+				restore_tmp_memory(ssl_tmp_memory_needed);
+				memory_freed_by_ssl = false;
+			}
+			usessl = false;
+			if (port == 443) port = 80;
+			client = new WiFiClient();
+			if (client) {
+				DEBUG_PRINT(server);
+				DEBUG_PRINT(F(":"));
+				DEBUG_PRINTLN(port);
+				if (client->connect(server, port) == 1) break;
+			}
+		}
 		#else
 		if(client->connect(server, port)==1) break;
 		#endif
@@ -3101,7 +3141,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINTLN(F("failed."));
 		client->stop();
 		if (!shared_client) delete client;
-		#if defined(ESP8266) 
+		#if defined(ESP8266)
+		if (memory_freed_by_ssl) restore_tmp_memory(ssl_tmp_memory_needed);
+		#elif defined(ESP32)
 		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 		#endif
 		#if defined(ESP32)
@@ -3148,10 +3190,15 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		// socket and can discard still-buffered TX data (or send an RST),
 		// which truncates the /cm request so the remote controller never
 		// executes it. flush() blocks until the output buffer is drained.
+#if defined(ESP8266)
+		delay(50);
+#endif
 		client->flush();
 		client->stop();
 		if (!shared_client) delete client;
-		#if defined(ESP8266) || defined(ESP32)
+		#if defined(ESP8266)
+		if (memory_freed_by_ssl) restore_tmp_memory(ssl_tmp_memory_needed);
+		#elif defined(ESP32)
 		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 		#endif
 		#if defined(ESP32)
@@ -3166,7 +3213,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINTLN(F("failed to allocate http request buffer"));
 		client->stop();
 		if (!shared_client) delete client;
-		#if defined(ESP8266) || defined(ESP32)
+		#if defined(ESP8266)
+		if (memory_freed_by_ssl) restore_tmp_memory(ssl_tmp_memory_needed);
+		#elif defined(ESP32)
 		if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 		#endif
 		#if defined(ESP32)
@@ -3225,7 +3274,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	http_buffer[pos]=0; // properly end buffer with 0
 	client->stop();
 	if (!shared_client) delete client;
-	#if defined(ESP8266) || defined(ESP32)
+	#if defined(ESP8266)
+	if (memory_freed_by_ssl) restore_tmp_memory(ssl_tmp_memory_needed);
+	#elif defined(ESP32)
 	if (usessl) restore_tmp_memory(ssl_tmp_memory_needed);
 	#endif
 	if(strlen(http_buffer)==0) {
@@ -3520,6 +3571,7 @@ void OpenSprinkler::factory_reset() {
 	for(int i=0; i<NUM_SOPTS; i++) {
 		sopt_save(i, sopts[i]);
 	}
+	DEBUG_PRINTF("[CFG] factory_reset wrote password slot default='%.*s'\n", 16, sopts[SOPT_PASSWORD]);
 
 	zigbee_logical_clear_all();
 	remove_file(ZIGBEE_LOGICAL_FILENAME);
@@ -3635,6 +3687,25 @@ void OpenSprinkler::options_setup() {
 		last_reboot_cause = nvdata.reboot_cause;
 		nvdata.reboot_cause = REBOOT_CAUSE_POWERON;
 		nvdata_save();
+
+		// Self-heal a corrupted SOPT_PASSWORD slot: if it is not a plausible hex
+		// hash (e.g. flash corruption left JSON scratch like "en":1 there, which
+		// breaks the firmware push body), reset it to the factory default so the
+		// device stays usable and push works again after re-registering.
+		{
+			char pwtmp[MAX_SOPTS_SIZE + 1];
+			sopt_load(SOPT_PASSWORD, pwtmp, MAX_SOPTS_SIZE);
+			bool pw_valid = (pwtmp[0] != 0);
+			for (int pi = 0; pwtmp[pi]; pi++) {
+				char c = pwtmp[pi];
+				if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) { pw_valid = false; break; }
+			}
+			if (!pw_valid) {
+				DEBUG_PRINTLN(F("[CFG] SOPT_PASSWORD corrupted -> resetting to default"));
+				DEBUG_PRINTF("[CFG] slot0 before reset='%.*s'\n", 32, pwtmp);
+				sopt_save(SOPT_PASSWORD, DEFAULT_PASSWORD);
+			}
+		}
 		#if defined(ESP8266) || defined(ESP32)
 		wifi_ssid = sopt_load(SOPT_STA_SSID);
 		wifi_pass = sopt_load(SOPT_STA_PASS);
@@ -4055,6 +4126,9 @@ String OpenSprinkler::sopt_load(unsigned char oid) {
 
 /** Save a string option to file */
 bool OpenSprinkler::sopt_save(unsigned char oid, const char *buf) {
+	if (oid == SOPT_PASSWORD) {
+		DEBUG_PRINTF("[SOPT] write slot0 -> '%.*s'\n", 32, buf ? buf : "<null>");
+	}
 	// smart save: if value hasn't changed, don't write
 	if(file_cmp_block(SOPTS_FILENAME, buf, (ulong)MAX_SOPTS_SIZE*oid)==0) return false;
 	int len = strlen(buf);

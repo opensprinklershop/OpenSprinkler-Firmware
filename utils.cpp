@@ -497,7 +497,24 @@ void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 	File f = LittleFS.open(fn, "r+");
 	if(!f) f = LittleFS.open(fn, "w");
 	if(f) {
-		f.seek(pos, SeekSet);
+		if (strcmp(fn, SOPTS_FILENAME) == 0) {
+			DEBUG_PRINTF("[FILE] write %s pos=%lu len=%lu first='%.*s'\n", fn, (unsigned long)pos, (unsigned long)len, 16, (const char*)src);
+		}
+		if ((ulong)f.size() < pos) {
+			static const uint8_t zeros[32] = {0};
+			if (!f.seek(f.size(), SeekSet)) {
+				DEBUG_PRINTF("[FILE] seek-end failed %s size=%lu pos=%lu len=%lu\n", fn, (unsigned long)f.size(), (unsigned long)pos, (unsigned long)len);
+			}
+			ulong gap = pos - (ulong)f.size();
+			while (gap > 0) {
+				ulong chunk = (gap > sizeof(zeros)) ? sizeof(zeros) : gap;
+				f.write(zeros, chunk);
+				gap -= chunk;
+			}
+		}
+		if (!f.seek(pos, SeekSet)) {
+			DEBUG_PRINTF("[FILE] seek failed %s pos=%lu len=%lu\n", fn, (unsigned long)pos, (unsigned long)len);
+		}
 		f.write((unsigned char*)src, len);
 		f.close();
 	}
