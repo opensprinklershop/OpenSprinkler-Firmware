@@ -3687,25 +3687,6 @@ void OpenSprinkler::options_setup() {
 		last_reboot_cause = nvdata.reboot_cause;
 		nvdata.reboot_cause = REBOOT_CAUSE_POWERON;
 		nvdata_save();
-
-		// Self-heal a corrupted SOPT_PASSWORD slot: if it is not a plausible hex
-		// hash (e.g. flash corruption left JSON scratch like "en":1 there, which
-		// breaks the firmware push body), reset it to the factory default so the
-		// device stays usable and push works again after re-registering.
-		{
-			char pwtmp[MAX_SOPTS_SIZE + 1];
-			sopt_load(SOPT_PASSWORD, pwtmp, MAX_SOPTS_SIZE);
-			bool pw_valid = (pwtmp[0] != 0);
-			for (int pi = 0; pwtmp[pi]; pi++) {
-				char c = pwtmp[pi];
-				if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) { pw_valid = false; break; }
-			}
-			if (!pw_valid) {
-				DEBUG_PRINTLN(F("[CFG] SOPT_PASSWORD corrupted -> resetting to default"));
-				DEBUG_PRINTF("[CFG] slot0 before reset='%.*s'\n", 32, pwtmp);
-				sopt_save(SOPT_PASSWORD, DEFAULT_PASSWORD);
-			}
-		}
 		#if defined(ESP8266) || defined(ESP32)
 		wifi_ssid = sopt_load(SOPT_STA_SSID);
 		wifi_pass = sopt_load(SOPT_STA_PASS);
