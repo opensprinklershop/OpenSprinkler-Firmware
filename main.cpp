@@ -279,12 +279,12 @@ static void flow_update_input_mode() {
 	if (want_flow == flow_input_configured) return;
 
 	if (want_flow) {
-		DEBUG_PRINTLN("[FLOW-INPUT-MODE]Configuring flow sensor pin GPIO12");
+		DEBUG_PRINTLN(F("[FLOW-INPUT-MODE]Configuring flow sensor pin GPIO12"));
 		pinMode(PIN_SENSOR1, INPUT_PULLUP);
 		prev_flow_state = HIGH;
 		flow_input_configured = true;
 	} else {
-		DEBUG_PRINTLN("[FLOW-INPUT-MODE]De-configuring flow sensor");
+		DEBUG_PRINTLN(F("[FLOW-INPUT-MODE]De-configuring flow sensor"));
 		flow_input_configured = false;
 	}
 }
@@ -816,7 +816,7 @@ void do_setup() {
 	// In ZigBee Client mode: automatically start network search on boot
 	if (!online_update_in_progress() && ieee802154_is_zigbee_client() && sensor_zigbee_ensure_started()) {
 		sensor_zigbee_open_network(60);
-		DEBUG_PRINTLN("[ZigBee] Auto-join started on boot (60 s)");
+		DEBUG_PRINTLN(F("[ZigBee] Auto-join started on boot (60 s)"));
 	}
 	#endif
 }
@@ -851,10 +851,10 @@ void do_setup() {
 	pd.init();           // ProgramData init
 
 	if (os.start_network()) {  // initialize network
-		DEBUG_PRINTLN("network established.");
+		DEBUG_PRINTLN(F("network established."));
 		os.status.network_fails = 0;
 	} else {
-		DEBUG_PRINTLN("network failed.");
+		DEBUG_PRINTLN(F("network failed."));
 		os.status.network_fails = 1;
 	}
 	os.status.req_network = 0;
@@ -874,7 +874,7 @@ void do_setup() {
 	initialize_otf();
 	// Delayed initialization: sensor_api_connect at 10s, matter_init at 15s
 	// This prevents boot-time conflicts between Zigbee, BLE, and Matter stacks
-	DEBUG_PRINTLN("Delaying sensor_api_connect and matter_init for stack stabilization");
+	DEBUG_PRINTLN(F("Delaying sensor_api_connect and matter_init for stack stabilization"));
 }
 
 #endif
@@ -1239,7 +1239,7 @@ void do_loop()
 			#endif
 			#ifdef ENABLE_MATTER
 			if (ieee802154_is_matter()) {
-				DEBUG_PRINTLN("[Matter] Network up (Ethernet) - initializing Matter");
+				DEBUG_PRINTLN(F("[Matter] Network up (Ethernet) - initializing Matter"));
 				OSMatter::instance().init();
 			}
 			#endif
@@ -1254,7 +1254,7 @@ void do_loop()
 			#ifdef ENABLE_MATTER
 			// AP mode: init Matter for BLE commissioning (mDNS not available in AP mode)
 			if (ieee802154_is_matter()) {
-				DEBUG_PRINTLN("[Matter] AP mode - initializing Matter for BLE commissioning");
+				DEBUG_PRINTLN(F("[Matter] AP mode - initializing Matter for BLE commissioning"));
 				OSMatter::instance().init();
 			}
 			#endif
@@ -1317,7 +1317,7 @@ void do_loop()
 		if (!online_update_in_progress()) {
 		#ifdef ENABLE_MATTER
 		if (ieee802154_is_matter()) {
-			DEBUG_PRINTLN("[Matter] Network up (STA+AP) - initializing Matter");
+			DEBUG_PRINTLN(F("[Matter] Network up (STA+AP) - initializing Matter"));
 			OSMatter::instance().init();
 		}
 		#endif
@@ -1379,7 +1379,7 @@ void do_loop()
 
 			#ifdef ENABLE_MATTER
 			if (ieee802154_is_matter()) {
-				DEBUG_PRINTLN("[Matter] WiFi connected - initializing Matter");
+				DEBUG_PRINTLN(F("[Matter] WiFi connected - initializing Matter"));
 				OSMatter::instance().init();
 			}
 			#endif

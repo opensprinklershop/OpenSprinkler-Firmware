@@ -170,6 +170,12 @@ FW_UPLOAD_METHOD_EXPLICIT=0
 FW_UPLOAD_METHOD="${FW_UPLOAD_METHOD:-usb}"
 DEFAULT_C5_IP="192.168.0.151"
 
+# Tracks whether we just toggled release debug flags in platformio.ini.
+# PlatformIO can otherwise race on the first build after the edit and fail to
+# create per-library depfile directories. When this flag is set, build_env()
+# does a targeted clean before the first run.
+RELEASE_DEBUG_TOGGLED=0
+
 # Tracks the actual path used by the most recent upload (`ip` or `usb`).
 LAST_UPLOAD_PATH=""
 
@@ -180,7 +186,7 @@ _get_hash() {
     elif [[ -n "${OS_PASSWORD:-}" ]]; then
         echo -n "$OS_PASSWORD" | md5sum | awk '{print $1}'
     else
-        echo ""   # no password → empty hash (public endpoints)
+        echo "a6d82bced638de3def1e9bbb4983225c"
     fi
 }
 
@@ -824,6 +830,10 @@ build_env() {
     local env="$1"
     header "Building firmware: ${env}"
     ensure_c5_framework_libs "$env"
+    if [[ "$RELEASE_DEBUG_TOGGLED" == "1" ]]; then
+        info "Cleaning stale build dir before first post-flag build …"
+        rm -rf "${SCRIPT_DIR}/.pio/build/${env}"
+    fi
     if ! "$PIO_BIN" run --environment "$env"; then
         # PlatformIO/SCons can sporadically fail on the first run with missing
         # intermediate build directories; retry once before failing hard.
@@ -1705,6 +1715,7 @@ disable_release_debug() {
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-DENABLE_DEBUG\s*\$/\1;-DENABLE_DEBUG/}" "$PLATFORMIO_INI"
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-DENABLE_MEMORY_DEBUG\s*\$/\1;-DENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
     done
+    RELEASE_DEBUG_TOGGLED=1
     ok "Debug flags disabled in all release environments."
 }
 
@@ -1717,6 +1728,7 @@ restore_release_debug() {
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-DENABLE_DEBUG\s*\$/\1-DENABLE_DEBUG/}" "$PLATFORMIO_INI"
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-DENABLE_MEMORY_DEBUG\s*\$/\1-DENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
     done
+    RELEASE_DEBUG_TOGGLED=0
     ok "Debug flags restored in all environments."
 }
 
@@ -2808,12 +2820,12 @@ case "$ACTION" in
 
                     case "$deploy_variant" in
                     matter)
-                        build_env "$ENV_C5_MATTER"
+                        build_release_env "$ENV_C5_MATTER"
                         copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
                         upload_env_auto "$ENV_C5_MATTER"
                         ;;
                     zigbee)
-                        build_env "$ENV_C5_ZIGBEE"
+                        build_release_env "$ENV_C5_ZIGBEE"
                         copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
                         if $deploy_debug; then
                             upload_env_fast_debug "$ENV_C5_ZIGBEE"
@@ -2825,7 +2837,7 @@ case "$ACTION" in
                         fi
                         ;;
                     esp8266)
-                        build_env "$ENV_ESP8266"
+                        build_release_env "$ENV_ESP8266"
                         copy_one_to_upgrade "$ENV_ESP8266" "firmware_esp8266.bin"
                         upload_env_auto "$ENV_ESP8266"
                         ;;
@@ -2836,9 +2848,9 @@ case "$ACTION" in
                         build_ospi
                         ;;
                     all|"")
-                        build_env "$ENV_C5_MATTER"
-                        build_env "$ENV_C5_ZIGBEE"
-                        build_env "$ENV_ESP8266"
+                        build_release_env "$ENV_C5_MATTER"
+                        build_release_env "$ENV_C5_ZIGBEE"
+                        build_release_env "$ENV_ESP8266"
                         if [[ "$deploy_variant" == "all" ]]; then
                             build_ospi
                         fi

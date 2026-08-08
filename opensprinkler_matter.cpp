@@ -291,7 +291,7 @@ namespace {
       os.iopts_save();
     }
 
-    DEBUG_PRINTLN("[Matter] WiFi credentials stored to OpenSprinkler config");
+    DEBUG_PRINTLN(F("[Matter] WiFi credentials stored to OpenSprinkler config"));
     return true;
   }
   
@@ -468,7 +468,7 @@ namespace {
     esp_matter::lock::status_t lock_status =
       esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
     if (lock_status == esp_matter::lock::FAILED) {
-      DEBUG_PRINTLN("[Matter] Device name update skipped: CHIP lock timeout");
+      DEBUG_PRINTLN(F("[Matter] Device name update skipped: CHIP lock timeout"));
       return false;
     }
 
@@ -501,7 +501,7 @@ namespace {
       return true;
     }
 
-    DEBUG_PRINTLN("[Matter] Pairing info unavailable");
+    DEBUG_PRINTLN(F("[Matter] Pairing info unavailable"));
     return false;
   }
 }
@@ -556,12 +556,12 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
   switch(event) {
     case MATTER_EVENT_COMMISSIONED:
       commissioned = true;
-      DEBUG_PRINTLN("[Matter] Device commissioned");
+      DEBUG_PRINTLN(F("[Matter] Device commissioned"));
       wifi_sync_pending = true;
       break;
     case MATTER_COMMISSIONING_SESSION_STARTED:
     case MATTER_CHIPOBLE_CONNECTION_ESTABLISHED:
-      DEBUG_PRINTLN("[Matter] CHIPoBLE active - acquiring BLE semaphore");
+      DEBUG_PRINTLN(F("[Matter] CHIPoBLE active - acquiring BLE semaphore"));
       #ifdef OS_ENABLE_BLE
       {
         // Stop any ongoing sensor BLE activity first
@@ -570,15 +570,15 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
         // Acquire BLE controller for Matter (CHIPoBLE needs exclusive access)
         if (sensor_ble_acquire(200)) {
           matter_ble_lock_held = true;
-          DEBUG_PRINTLN("[Matter] BLE semaphore acquired for CHIPoBLE");
+          DEBUG_PRINTLN(F("[Matter] BLE semaphore acquired for CHIPoBLE"));
         } else {
-          DEBUG_PRINTLN("[Matter] TIMEOUT: Could not acquire BLE semaphore!");
+          DEBUG_PRINTLN(F("[Matter] TIMEOUT: Could not acquire BLE semaphore!"));
         }
       }
       #endif
       break;
     case MATTER_COMMISSIONING_COMPLETE:
-      DEBUG_PRINTLN("[Matter] Commissioning complete");
+      DEBUG_PRINTLN(F("[Matter] Commissioning complete"));
       commissioned = Matter.isDeviceCommissioned();
       if (!commissioned) {
         commissioned = true;
@@ -590,7 +590,7 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
         if (matter_ble_lock_held) {
           sensor_ble_release();
           matter_ble_lock_held = false;
-          DEBUG_PRINTLN("[Matter] BLE semaphore released after commissioning");
+          DEBUG_PRINTLN(F("[Matter] BLE semaphore released after commissioning"));
         }
       }
       #endif
@@ -601,22 +601,22 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
         commissioned = true;
       }
       wifi_sync_pending = true;
-      DEBUG_PRINTLN("[Matter] Fabric committed");
+      DEBUG_PRINTLN(F("[Matter] Fabric committed"));
       break;
     case MATTER_FABRIC_REMOVED:
       commissioned = Matter.isDeviceCommissioned();
-      DEBUG_PRINTLN("[Matter] Fabric removed");
+      DEBUG_PRINTLN(F("[Matter] Fabric removed"));
       break;
     case MATTER_COMMISSIONING_SESSION_STOPPED:
     case MATTER_COMMISSIONING_WINDOW_CLOSED:
-      DEBUG_PRINTLN("[Matter] Commissioning session/window closed");
+      DEBUG_PRINTLN(F("[Matter] Commissioning session/window closed"));
       #ifdef OS_ENABLE_BLE
       {
         // Release BLE semaphore
         if (matter_ble_lock_held) {
           sensor_ble_release();
           matter_ble_lock_held = false;
-          DEBUG_PRINTLN("[Matter] BLE semaphore released");
+          DEBUG_PRINTLN(F("[Matter] BLE semaphore released"));
         }
       }
       #endif
@@ -624,17 +624,17 @@ void matter_event_handler(matterEvent_t event, const chip::DeviceLayer::ChipDevi
     case MATTER_EVENT_DECOMMISSIONED:
       commissioned = false;
       matter_refresh_pairing_info();
-      DEBUG_PRINTLN("[Matter] Device decommissioned");
+      DEBUG_PRINTLN(F("[Matter] Device decommissioned"));
       break;
     case MATTER_CHIPOBLE_CONNECTION_CLOSED:
-      DEBUG_PRINTLN("[Matter] CHIPoBLE connection closed - releasing BLE semaphore");
+      DEBUG_PRINTLN(F("[Matter] CHIPoBLE connection closed - releasing BLE semaphore"));
       // BLE kann jetzt für Sensoren verwendet werden
       #ifdef OS_ENABLE_BLE
       // Release the BLE semaphore so sensors can use it
       if (matter_ble_lock_held) {
         sensor_ble_release();
         matter_ble_lock_held = false;
-        DEBUG_PRINTLN("[Matter] BLE semaphore released - sensors can now use BLE");
+        DEBUG_PRINTLN(F("[Matter] BLE semaphore released - sensors can now use BLE"));
       }
       #endif
       break;
@@ -653,14 +653,14 @@ void create_station_endpoints(int &budget) {
     if(disabled) continue;
     
     if (budget <= 0) {
-      DEBUG_PRINTLN("[Matter] Dynamic endpoint budget exhausted (stations)");
+      DEBUG_PRINTLN(F("[Matter] Dynamic endpoint budget exhausted (stations)"));
       break;
     }
 
     // Allocate endpoint in PSRAM
     void* mem = heap_caps_malloc(sizeof(MatterWaterValve), MALLOC_CAP_SPIRAM);
     if(!mem) {
-      DEBUG_PRINTLN("[Matter] PSRAM allocation failed for station");
+      DEBUG_PRINTLN(F("[Matter] PSRAM allocation failed for station"));
       continue;
     }
     stations[sid] = std::unique_ptr<MatterWaterValve>(new(mem) MatterWaterValve());
@@ -685,13 +685,13 @@ void create_program_endpoints(int &budget) {
 
   for (uint8_t pid = 0; pid < pd.nprograms; pid++) {
     if (budget <= 0) {
-      DEBUG_PRINTLN("[Matter] Dynamic endpoint budget exhausted (programs)");
+      DEBUG_PRINTLN(F("[Matter] Dynamic endpoint budget exhausted (programs)"));
       break;
     }
 
     void *mem = heap_caps_malloc(sizeof(MatterOnOffPlugin), MALLOC_CAP_SPIRAM);
     if (!mem) {
-      DEBUG_PRINTLN("[Matter] PSRAM allocation failed for program");
+      DEBUG_PRINTLN(F("[Matter] PSRAM allocation failed for program"));
       continue;
     }
     programs[pid] = std::unique_ptr<MatterOnOffPlugin>(new(mem) MatterOnOffPlugin());
@@ -719,13 +719,13 @@ void create_binary_sensor_endpoints(int &budget) {
     }
 
     if (budget <= 0) {
-      DEBUG_PRINTLN("[Matter] Dynamic endpoint budget exhausted (binary sensors)");
+      DEBUG_PRINTLN(F("[Matter] Dynamic endpoint budget exhausted (binary sensors)"));
       break;
     }
 
     void *mem = heap_caps_malloc(sizeof(MatterOnOffLight), MALLOC_CAP_SPIRAM);
     if (!mem) {
-      DEBUG_PRINTLN("[Matter] PSRAM allocation failed for binary sensor light");
+      DEBUG_PRINTLN(F("[Matter] PSRAM allocation failed for binary sensor light"));
       continue;
     }
     binary_sensor_lights[port] = std::unique_ptr<MatterOnOffLight>(new(mem) MatterOnOffLight());
@@ -836,7 +836,7 @@ void create_sensor_endpoints(int &budget) {
     uint16_t key = sensor_key(sensor->type, sensor->nr);
 
     if (budget <= 0) {
-      DEBUG_PRINTLN("[Matter] Dynamic endpoint budget exhausted (sensors)");
+      DEBUG_PRINTLN(F("[Matter] Dynamic endpoint budget exhausted (sensors)"));
       break;
     }
 
@@ -855,7 +855,7 @@ void update_sensor_values() {
   esp_matter::lock::status_t lock_status =
     esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
   if (lock_status == esp_matter::lock::FAILED) {
-    DEBUG_PRINTLN("[Matter] Sensor update skipped: CHIP lock timeout");
+    DEBUG_PRINTLN(F("[Matter] Sensor update skipped: CHIP lock timeout"));
     return;
   }
 
@@ -882,7 +882,7 @@ void update_sensor_values() {
 // ====== Public API ======
 void OSMatter::init() {
   if(matter_started) {
-    DEBUG_PRINTLN("[Matter] Already initialized");
+    DEBUG_PRINTLN(F("[Matter] Already initialized"));
     return;
   }
 
@@ -893,7 +893,7 @@ void OSMatter::init() {
 
   // Runtime check: only start Matter when IEEE 802.15.4 mode is MATTER
   if (!ieee802154_is_matter()) {
-    DEBUG_PRINTLN("[Matter] Not in MATTER mode - Matter disabled");
+    DEBUG_PRINTLN(F("[Matter] Not in MATTER mode - Matter disabled"));
     return;
   }
 
@@ -901,7 +901,7 @@ void OSMatter::init() {
     matter_init_time_ms = millis();
   }
   
-  DEBUG_PRINTLN("[Matter] Initializing...");
+  DEBUG_PRINTLN(F("[Matter] Initializing..."));
   
   #if defined(BOARD_HAS_PSRAM)
   DEBUG_PRINTF("[Matter] Pre-init: Heap %d KB, PSRAM %.2f MB\n",
@@ -912,7 +912,7 @@ void OSMatter::init() {
   
   // If internal heap is below threshold, try to defragment
   if(internal_free < 50000) {
-    DEBUG_PRINTLN("[Matter] WARNING: Low internal heap!");
+    DEBUG_PRINTLN(F("[Matter] WARNING: Low internal heap!"));
     // Try to allocate and immediately free to defragment
     void* defrag_block = heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if(defrag_block) {
@@ -929,7 +929,7 @@ void OSMatter::init() {
   DEBUG_PRINTF("[Matter] Endpoint budget remaining: %d\n", endpoint_budget);
   Matter.onEvent(matter_event_handler);
   
-  DEBUG_PRINTLN("[Matter] Starting Matter.begin()...");
+  DEBUG_PRINTLN(F("[Matter] Starting Matter.begin()..."));
   Matter.begin();
   
   // Give CHIP stack time to process initialization events and set up mDNS.
@@ -949,12 +949,12 @@ void OSMatter::init() {
     matter_refresh_pairing_info();
   } else {
     commissioned = true;
-    DEBUG_PRINTLN("[Matter] Already commissioned");
+    DEBUG_PRINTLN(F("[Matter] Already commissioned"));
     #ifdef OS_ENABLE_BLE
     // Schedule BLE init after Matter settles (1 second delay)
     ble_init_pending = true;
     ble_init_at = millis() + 1000;
-    DEBUG_PRINTLN("[Matter] BLE init scheduled (commissioned device)");
+    DEBUG_PRINTLN(F("[Matter] BLE init scheduled (commissioned device)"));
     #endif
   }
 
@@ -963,20 +963,20 @@ void OSMatter::init() {
   if (!Matter.isBLECommissioningEnabled()) {
     ble_init_pending = true;
     ble_init_at = millis() + 1000;
-    DEBUG_PRINTLN("[Matter] BLE commissioning disabled - BLE init scheduled");
+    DEBUG_PRINTLN(F("[Matter] BLE commissioning disabled - BLE init scheduled"));
   }
   #endif
 
   #ifdef OS_ENABLE_BLE
   // Default: BLE will be managed via event system
   // Do NOT init here - Matter may still be using BLE controller
-  DEBUG_PRINTLN("[Matter] BLE managed via event system");
+  DEBUG_PRINTLN(F("[Matter] BLE managed via event system"));
   #endif
 
   config_signature = compute_config_signature();
   matter_started = true;
   matter_sync_device_name(true);
-  DEBUG_PRINTLN("[Matter] Init complete");
+  DEBUG_PRINTLN(F("[Matter] Init complete"));
 }
 
 static void process_matter_cmds() {
@@ -1018,7 +1018,7 @@ void OSMatter::loop() {
   // Process deferred BLE init
   if (ble_init_pending && millis() >= ble_init_at) {
     ble_init_pending = false;
-    DEBUG_PRINTLN("[Matter] Initializing BLE (deferred)");
+    DEBUG_PRINTLN(F("[Matter] Initializing BLE (deferred)"));
     sensor_ble_init();
   }
   #endif
@@ -1032,7 +1032,7 @@ void OSMatter::loop() {
   // Check config changes
   uint32_t current_sig = compute_config_signature();
   if(current_sig != config_signature) {
-    DEBUG_PRINTLN("[Matter] Config changed - reinitializing");
+    DEBUG_PRINTLN(F("[Matter] Config changed - reinitializing"));
     stations.clear();
     programs.clear();
     binary_sensor_lights.clear();
@@ -1065,7 +1065,7 @@ void OSMatter::update_station(uint8_t sid, bool is_on) {
     esp_matter::lock::status_t lock_status =
       esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
     if (lock_status == esp_matter::lock::FAILED) {
-      DEBUG_PRINTLN("[Matter] Station update skipped: CHIP lock timeout");
+      DEBUG_PRINTLN(F("[Matter] Station update skipped: CHIP lock timeout"));
       return;
     }
     it->second->setOpen(is_on);
@@ -1081,7 +1081,7 @@ void OSMatter::update_program(uint8_t pid, bool running) {
     esp_matter::lock::status_t lock_status =
       esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
     if (lock_status == esp_matter::lock::FAILED) {
-      DEBUG_PRINTLN("[Matter] Program update skipped: CHIP lock timeout");
+      DEBUG_PRINTLN(F("[Matter] Program update skipped: CHIP lock timeout"));
       return;
     }
     it->second->setOnOff(running);
@@ -1111,20 +1111,20 @@ String OSMatter::get_manual_pairing_code() {
 
 bool OSMatter::open_commissioning_window(uint16_t timeout_seconds) {
   if (!matter_started) {
-    DEBUG_PRINTLN("[Matter] Cannot open commissioning window: Matter not started");
+    DEBUG_PRINTLN(F("[Matter] Cannot open commissioning window: Matter not started"));
     return false;
   }
 
   esp_matter::lock::status_t lock_status =
     esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
   if (lock_status == esp_matter::lock::FAILED) {
-    DEBUG_PRINTLN("[Matter] Cannot open commissioning window: CHIP lock timeout");
+    DEBUG_PRINTLN(F("[Matter] Cannot open commissioning window: CHIP lock timeout"));
     return false;
   }
 
   chip::CommissioningWindowManager &mgr = chip::Server::GetInstance().GetCommissioningWindowManager();
   if (mgr.IsCommissioningWindowOpen()) {
-    DEBUG_PRINTLN("[Matter] Commissioning window already open");
+    DEBUG_PRINTLN(F("[Matter] Commissioning window already open"));
     if (lock_status == esp_matter::lock::SUCCESS) {
       esp_matter::lock::chip_stack_unlock();
     }
@@ -1154,14 +1154,14 @@ bool OSMatter::open_commissioning_window(uint16_t timeout_seconds) {
 
 bool OSMatter::remove_commissioning() {
   if (!matter_started) {
-    DEBUG_PRINTLN("[Matter] Cannot remove commissioning: Matter not started");
+    DEBUG_PRINTLN(F("[Matter] Cannot remove commissioning: Matter not started"));
     return false;
   }
 
   esp_matter::lock::status_t lock_status =
     esp_matter::lock::chip_stack_lock(pdMS_TO_TICKS(100));
   if (lock_status == esp_matter::lock::FAILED) {
-    DEBUG_PRINTLN("[Matter] Cannot remove commissioning: CHIP lock timeout");
+    DEBUG_PRINTLN(F("[Matter] Cannot remove commissioning: CHIP lock timeout"));
     return false;
   }
 

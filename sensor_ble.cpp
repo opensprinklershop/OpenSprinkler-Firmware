@@ -230,7 +230,7 @@ static inline bool discovered_devices_lock(uint32_t timeout_ms = 100) {
             ble_dbg_lock_null = ble_dbg_lock_null + 1;
             return false;
         }
-        DEBUG_PRINTLN("[BLE][DBG] discovered_devices_mutex created lazily");
+        DEBUG_PRINTLN(F("[BLE][DBG] discovered_devices_mutex created lazily"));
     }
 
     if (xSemaphoreTake(discovered_devices_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
@@ -1709,12 +1709,12 @@ bool sensor_ble_init()
         ble_initialized = true;
     }
     if (!ble_initialized) {
-        DEBUG_PRINTLN("ERROR: BLE initialization failed");
+        DEBUG_PRINTLN(F("ERROR: BLE initialization failed"));
         ble_init_failed = true;
         ble_init_retry_at = millis() + 10000;
         return false;
     }
-    DEBUG_PRINTLN("BLE initialized successfully");
+    DEBUG_PRINTLN(F("BLE initialized successfully"));
     ble_init_failed = false;
 
     ble_semaphore_init();
@@ -1800,7 +1800,7 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
 
     bool acquired_new = false;
     if (!ble_sensor_lock_acquire(1500, &acquired_new)) {
-        DEBUG_PRINTLN("[BLE] Scan skipped: semaphore busy");
+        DEBUG_PRINTLN(F("[BLE] Scan skipped: semaphore busy"));
         return;
     }
 
@@ -1813,7 +1813,7 @@ void sensor_ble_start_scan(uint16_t duration, bool passive) {
     }
 
     if (discovery_scan_active) {
-        DEBUG_PRINTLN("[BLE] Discovery scan already active");
+        DEBUG_PRINTLN(F("[BLE] Discovery scan already active"));
         ble_sensor_lock_release();
         return;
     }
@@ -1911,7 +1911,7 @@ void sensor_ble_loop() {
 
     // Safety: force-stop discovery scan if overdue
     if (discovery_scan_active && discovery_scan_end > 0 && now > discovery_scan_end + 5000) {
-        DEBUG_PRINTLN("[BLE] Discovery scan timeout - forcing stop");
+        DEBUG_PRINTLN(F("[BLE] Discovery scan timeout - forcing stop"));
         if (pBLEScan && pBLEScan->isScanning()) {
             pBLEScan->stop();
         }
@@ -2529,7 +2529,7 @@ bool sensor_ble_reinit_after_matter() {
     if (!ble_initialized) {
         ble_initialized = sensor_ble_init();
         if (!ble_initialized) {
-            DEBUG_PRINTLN("[BLE] Failed to initialize BLE after Matter");
+            DEBUG_PRINTLN(F("[BLE] Failed to initialize BLE after Matter"));
             return false;
         }
     }
@@ -2576,7 +2576,7 @@ bool sensor_ble_acquire(uint32_t timeout_ms) {
     // Use the same re-entrant lock path as sensors to avoid semaphore state mismatch
     bool acquired = ble_sensor_lock_acquire(timeout_ms);
     if (!acquired) {
-        DEBUG_PRINTLN("[BLE] sensor_ble_acquire timeout");
+        DEBUG_PRINTLN(F("[BLE] sensor_ble_acquire timeout"));
     }
     return acquired;
 }
