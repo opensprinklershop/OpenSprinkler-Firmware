@@ -2458,6 +2458,17 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	// check if the current time is past the scheduled start time,
 	// because we may be turning off a station that hasn't started yet
 	if (curr_time >= q->st) {
+		uint8_t pid = qpid_decode(q->pid);
+		if (pid > 0 && pid <= (uint8_t)pd.nprograms) {
+			bool any_remaining = false;
+			for (unsigned char i = 0; i < pd.nqueue; i++) {
+				if (pd.queue + i == q) continue;
+				if (qpid_decode(pd.queue[i].pid) == pid) { any_remaining = true; break; }
+			}
+			if (!any_remaining) {
+				notif.add(NOTIFY_PROGRAM_END, pid - 1);
+			}
+		}
 		bool skip_log = (sid < MAX_NUM_STATIONS) ? station_log_written_on_handoff[sid] : false;
 		if (sid < MAX_NUM_STATIONS) {
 			station_log_written_on_handoff[sid] = false;

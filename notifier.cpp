@@ -99,6 +99,7 @@ uint8_t notif_priority(uint32_t type) {
 			return 2; // high
 		// Start/stop & moderate events -> audible (os_med channel)
 		case NOTIFY_PROGRAM_SCHED:
+		case NOTIFY_PROGRAM_END:
 		case NOTIFY_STATION_ON:
 		case NOTIFY_STATION_OFF:
 		case NOTIFY_REBOOT:
@@ -139,6 +140,13 @@ void notif_render_text(uint32_t type, uint32_t lval, float fval, uint8_t bval, c
 				snprintf_P(out, outlen, PSTR("Program %s skipped%s"), pname, (bval > 0) ? " (weather)" : "");
 			else
 				snprintf_P(out, outlen, PSTR("Program %s scheduled (%d%% water)"), pname, (int)fval);
+			break;
+		}
+		case NOTIFY_PROGRAM_END: {
+			ProgramStruct prog;
+			const char* pname = "";
+			if (lval < pd.nprograms) { pd.read(lval, &prog); pname = prog.name; }
+			snprintf_P(out, outlen, PSTR("Program %s finished"), pname);
 			break;
 		}
 		case NOTIFY_SENSOR1:
@@ -841,6 +849,23 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE, PSTR(" with %d%% water level."), (int)fval);
 				}
 
+				if(email_enabled) { email_message.subject += PSTR("program event"); }
+			}
+			break;
+
+		case NOTIFY_PROGRAM_END:
+			if (os.mqtt.enabled()) {
+				snprintf_P(topic, PUSH_TOPIC_LEN, PSTR("program/%d"), lval);
+				strcat_P(payload, PSTR("{\"state\":\"finished\"}"));
+			}
+			if (ifttt_enabled || email_enabled) {
+				ProgramStruct prog;
+				pd.read(lval, &prog);
+				if(lval < pd.nprograms) {
+					strcat_P(postval, PSTR("program "));
+					strcat(postval, prog.name);
+					strcat_P(postval, PSTR(" finished."));
+				}
 				if(email_enabled) { email_message.subject += PSTR("program event"); }
 			}
 			break;

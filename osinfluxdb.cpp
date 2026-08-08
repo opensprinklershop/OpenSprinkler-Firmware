@@ -441,6 +441,10 @@ void OSInfluxDB::push_message(uint32_t type, uint32_t lval, float fval, const ch
 			influxdb_send_program("program sched", lval, fval);
 			break;
 
+		case NOTIFY_PROGRAM_END:
+			influxdb_send_program("program end", lval, 0);
+			break;
+
 		case NOTIFY_SENSOR1:
 			influxdb_send_state("sensor1", (int)fval);
 			break;

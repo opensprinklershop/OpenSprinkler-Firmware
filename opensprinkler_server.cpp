@@ -7815,6 +7815,10 @@ void on_firmware_update(OTF_PARAMS_DEF) {
 // Accepted slot args from UI/client: ota0|ota1 (preferred), zigbee|matter (legacy).
 static String s_ota_slot;
 
+// Captures the submitted password from the multipart upload request so the
+// completion callback can still verify auth after the upload body has been parsed.
+static String s_ota_password;
+
 // Tracks whether we suspended MQTT (to free RAM / stop WiFi contention) at the
 // start of a firmware upload so it is only resumed when the update is aborted or
 // fails (a successful update reboots the device). See on_firmware_upload().
@@ -7848,9 +7852,22 @@ static String normalize_ota_slot_arg(const String& slotArgRaw) {
 }
 
 void on_firmware_upload_fin() {
+	String submitted_pw = s_ota_password;
+	if (submitted_pw.length() == 0 && update_server->hasArg("pw")) {
+		submitted_pw = update_server->arg("pw");
+	}
+	DEBUG_PRINTF("[OTA] auth check: saved_pw_len=%u has_arg_pw=%d pw_len=%u\n",
+		(unsigned int)s_ota_password.length(), update_server->hasArg("pw"), (unsigned int)submitted_pw.length());
+	if (update_server->args() > 0) {
+		for (int i = 0; i < update_server->args(); ++i) {
+			DEBUG_PRINTF("[OTA] arg[%d] name='%s' value='%s'\n", i,
+				update_server->argName(i).c_str(), update_server->arg(i).c_str());
+		}
+	}
+
 	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
 		// don't check password
-	} else if(!(update_server->hasArg("pw") && os.password_verify(update_server->arg("pw").c_str()))) {
+	} else if(!(submitted_pw.length() > 0 && os.password_verify(submitted_pw.c_str()))) {
 		update_server_send_result(HTML_UNAUTHORIZED);
 #if defined(ESP32C5)
 		if (s_esp_ota_running) {
@@ -7861,6 +7878,8 @@ void on_firmware_upload_fin() {
 		Update.end(false);
 #endif
 		ota_resume_services();
+		s_ota_password.clear();
+		s_ota_slot.clear();
 		return;
 	}
 
@@ -7902,6 +7921,8 @@ void on_firmware_upload_fin() {
 	}
 #endif
 
+	s_ota_password.clear();
+	s_ota_slot.clear();
 	update_server_send_result(HTML_SUCCESS);
 	delay(1000); // so the UI has time to receive the success code
 	os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
@@ -7953,6 +7974,7 @@ void on_firmware_upload() {
 		// Preferred values: ota0|ota1. Legacy values: zigbee|matter.
 		String slotArg = update_server->hasArg("slot") ? update_server->arg("slot") : "";
 		s_ota_slot = normalize_ota_slot_arg(slotArg);
+		s_ota_password = update_server->hasArg("pw") ? update_server->arg("pw") : "";
 #if defined(ESP32C5)
 		// On the dual-OTA ESP32-C5 board, target explicit OTA slots:
 		// ota0 -> zigbee partition @ 0x10000

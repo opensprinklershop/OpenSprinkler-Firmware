@@ -306,8 +306,15 @@ install_ip() {
     host="${host%%:*}"
     host="${host%%/*}"
     local url="http://${host}:8080/update"
+    local query_parts=()
     if [[ -n "$slot" ]]; then
-        url+="?slot=${slot}"
+        query_parts+=("slot=${slot}")
+    fi
+    if [[ -n "$hash" ]]; then
+        query_parts+=("pw=${hash}")
+    fi
+    if [[ ${#query_parts[@]} -gt 0 ]]; then
+        url+="?$(IFS='&'; echo "${query_parts[*]}")"
     fi
 
     info "Uploading firmware (multipart/form-data) to ${url} ..."

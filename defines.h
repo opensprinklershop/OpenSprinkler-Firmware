@@ -158,6 +158,7 @@ typedef unsigned long ulong;
 #define NOTIFY_MONITOR_LOW     0x4000
 #define NOTIFY_MONITOR_MID     0x8000
 #define NOTIFY_MONITOR_HIGH   0x10000
+#define NOTIFY_PROGRAM_END    0x20000
 
 /** Queue Insertion Mode */
 enum {
