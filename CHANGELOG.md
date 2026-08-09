@@ -6,10 +6,18 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(224)]
+## [2.4.0(224)] — veröffentlicht 2026-08-09
 
 ### Added
+- **Programm-Ende-Benachrichtigungen**: Programme können nun ein Ende als eigenes Ereignis melden, damit die App und externe Kanäle den Abschluss eines Laufs sauber als eigenes Signal erhalten.
+- **Firmwareseitige Push-Benachrichtigungen**: Die Firmware kann Push-Ereignisse jetzt direkt auslösen und mit den Push-Optionen konfigurieren; Benachrichtigungen bleiben auch dann im In-Memory-Log erhalten, wenn externe Kanäle deaktiviert sind.
 - **Sensor-Log-Barriere (Anlagedatum als Zeitfilter)**: Jeder Sensor erhält beim **Neuanlegen** einen Zeitstempel (`log_barrier`, JSON-Feld `lb`) mit dem aktuellen Anlagedatum. Alle Log-Ausgaben (Sensor-Log-API `/so`, Trend-Berechnung) blenden Einträge aus, die **älter** als dieses Datum sind. Damit „erbt" ein neu angelegter Sensor, der eine zuvor freigegebene Sensor-Nummer wiederverwendet, **nicht** mehr die Log-Daten des gelöschten Vorgängers – ganz ohne den teuren, minutenlangen Flash-Rewrite, den ein physisches Löschen der Alt-Einträge auf dem W5500-geteilten SPI-Bus verursachte. Bestandssensoren ohne Datum (`lb=0`) bleiben **unbeschränkt** (alle Einträge sichtbar). Das Feld wird in Backup/Restore (`/sx` bzw. `/sc`) mitgeführt, sodass eine wiederhergestellte Konfiguration ihre Barriere behält. Eine UI-Darstellung ist nicht erforderlich.
+
+### Changed
+- **Konfigurations-Restore mit letzter Reserve**: `ensureConfigSpace()` trimmt bei Bedarf nicht nur die inaktiven, sondern als letzte Reserve auch die aktuellen Log-Ringe. Dadurch haben Konfigurationsdaten Vorrang vor regenerierbarer Log-Historie, wenn der Flash fast voll ist.
+- **Manuelle Programmstarts übernehmen Wetter- und Sensoranpassungen korrekt**: Anpassungen werden jetzt einmal sauber auf den Lauf angewendet, statt sich über einzelne Stationen hinweg zu vervielfachen.
+- **Wetter-Refresh und Cache robuster**: Sensor-Refreshs werden bei API-Aktualisierung sofort angestoßen, und Antwortdaten werden vor dem Caching geprüft, damit fehlerhafte Upstream-Antworten nicht als gültige Wetterdaten hängen bleiben.
+- **Push-Weiterleitung mit besserer Diagnostik**: Die Weiterleitung meldet jetzt mehr Diagnoseinformationen und bleibt auch unter knappem Heap nutzbar, statt Ereignisse still zu verschlucken.
 
 ### Fixed
 - **AI Assistant-Menüpunkt verschwindet jetzt vollständig, wenn der Assistent deaktiviert ist**: Der linke Menüeintrag wird an denselben Enable-Status wie der schwebende Button gekoppelt und bleibt bei `AI Assistant = Off` ausgeblendet, statt als tote Leiche im Seitenmenü zu stehen.
