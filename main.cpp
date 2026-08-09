@@ -1251,13 +1251,6 @@ void do_loop()
 			// WiFi AP is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
 			if (!online_update_in_progress()) {
-			#ifdef ENABLE_MATTER
-			// AP mode: init Matter for BLE commissioning (mDNS not available in AP mode)
-			if (ieee802154_is_matter()) {
-				DEBUG_PRINTLN(F("[Matter] AP mode - initializing Matter for BLE commissioning"));
-				OSMatter::instance().init();
-			}
-			#endif
 			#ifdef ENABLE_RAINMAKER
 			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif

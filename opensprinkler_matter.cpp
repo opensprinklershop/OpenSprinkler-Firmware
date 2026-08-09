@@ -897,6 +897,12 @@ void OSMatter::init() {
     return;
   }
 
+  // Do NOT initialize Matter in WiFi AP mode (prevents boot loops on WiFi reset)
+  if (!useEth && os.get_wifi_mode() == WIFI_MODE_AP) {
+    DEBUG_PRINTLN(F("[Matter] In WiFi AP mode — skipping Matter initialization"));
+    return;
+  }
+
   if (matter_init_time_ms == 0) {
     matter_init_time_ms = millis();
   }
