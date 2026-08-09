@@ -3,9 +3,9 @@
 # fw.sh – OpenSprinkler Firmware Manager
 #
 # Actions:
-#   build   [matter|zigbee|esp8266|all]  – Build firmware
-#   upload  [matter|zigbee|esp8266|all]  – Upload firmware (IP/REST if reachable, USB fallback)
-#   deploy  [matter|zigbee|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
+#   build   [matter|zigbee|esp32|esp8266|all]  – Build firmware
+#   upload  [matter|zigbee|esp32|esp8266|all]  – Upload firmware (IP/REST if reachable, USB fallback)
+#   deploy  [matter|zigbee|esp32|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
 #   release sync-tags                    – Create missing GitHub releases for existing tags
@@ -2724,6 +2724,13 @@ case "$ACTION" in
                 case "$VARIANT" in
                 matter)   build_env "$ENV_C5_MATTER" ;;
                 zigbee)   build_env "$ENV_C5_ZIGBEE" ;;
+                esp32)
+                    build_env "$ENV_C5_MATTER"
+                    build_env "$ENV_C5_ZIGBEE"
+                    header "ESP32 builds successful"
+                    ok "Matter:   .pio/build/${ENV_C5_MATTER}/firmware.bin"
+                    ok "ZigBee:   .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
+                    ;;
                 esp8266)  build_env "$ENV_ESP8266" ;;
                 all|"")
                     build_env "$ENV_C5_MATTER"
@@ -2734,7 +2741,7 @@ case "$ACTION" in
                     ok "ZigBee:   .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
                     ok "ESP8266:  .pio/build/${ENV_ESP8266}/firmware.bin"
                     ;;
-                *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|ospi|all)"; exit 1 ;;
+                *) error "Unknown variant: $VARIANT (matter|zigbee|esp32|esp8266|ospi|all)"; exit 1 ;;
                 esac
                 ;;
         esac
@@ -2745,6 +2752,13 @@ case "$ACTION" in
         case "$VARIANT" in
             matter)   upload_env_auto "$ENV_C5_MATTER" ;;
             zigbee)   upload_env_auto "$ENV_C5_ZIGBEE" ;;
+            esp32)
+                upload_env_auto "$ENV_C5_MATTER"
+                upload_env_auto "$ENV_C5_ZIGBEE"
+                if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
+                    ensure_zigbee_boot_partition
+                fi
+                ;;
             esp8266)  upload_env_auto "$ENV_ESP8266" ;;
             all|"")
                 warn "Uploading all firmwares can reboot the same device multiple times; single-variant upload is recommended."
@@ -2752,7 +2766,7 @@ case "$ACTION" in
                 upload_env_auto "$ENV_C5_ZIGBEE"
                 upload_env_auto "$ENV_ESP8266"
                 ;;
-            *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
+            *) error "Unknown variant: $VARIANT (matter|zigbee|esp32|esp8266|all)"; exit 1 ;;
         esac
         ;;
 
@@ -2774,7 +2788,7 @@ case "$ACTION" in
                     case "$token" in
                     ""|all)
                         ;;
-                    matter|zigbee|esp8266|ospi)
+                    matter|zigbee|esp32|esp8266|ospi)
                         deploy_variant="$token"
                         ;;
                     debug)
@@ -2786,7 +2800,7 @@ case "$ACTION" in
                         ;;
                     *)
                         error "Unknown deploy argument: $token"
-                        error "Allowed: matter|zigbee|esp8266|ospi|all|debug|monitor"
+                        error "Allowed: matter|zigbee|esp32|esp8266|ospi|all|debug|monitor"
                         exit 1
                         ;;
                     esac
@@ -2836,6 +2850,21 @@ case "$ACTION" in
                             ensure_zigbee_boot_partition
                         fi
                         ;;
+                    esp32)
+                        build_release_env "$ENV_C5_MATTER"
+                        build_release_env "$ENV_C5_ZIGBEE"
+                        copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
+                        copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
+                        upload_env_auto "$ENV_C5_MATTER"
+                        upload_env_auto "$ENV_C5_ZIGBEE"
+                        if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
+                            ensure_zigbee_boot_partition
+                        fi
+                        header "ESP32 deploy complete"
+                        ok "Matter:   flashed to ota_1 (0x3A0000)"
+                        ok "ZigBee:   flashed to ota_0 (0x10000)"
+                        ok "upgrade/  updated with matter + zigbee bins"
+                        ;;
                     esp8266)
                         build_release_env "$ENV_ESP8266"
                         copy_one_to_upgrade "$ENV_ESP8266" "firmware_esp8266.bin"
@@ -2867,7 +2896,7 @@ case "$ACTION" in
                         ok "ESP8266:  flashed"
                         ok "upgrade/  synced with current build"
                         ;;
-                    *) error "Unknown variant: $deploy_variant (matter|zigbee|esp8266|ospi|all|debug|monitor)"; exit 1 ;;
+                    *) error "Unknown variant: $deploy_variant (matter|zigbee|esp32|esp8266|ospi|all|debug|monitor)"; exit 1 ;;
                     esac
 
                     if ! $deploy_debug; then
