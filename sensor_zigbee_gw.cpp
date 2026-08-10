@@ -868,7 +868,13 @@ static void gw_process_basic_query_queue() {
 
     bool ok = false;
     if (item.target_attr_id == 0xFFFF) {
-        ok = sensor_zigbee_gw_query_basic_cluster_by_ieee(item.ieee_addr, item.endpoint);
+        if (is_tuya_dev) {
+            // Strict Tuya devices reject 7-attribute batch basic queries; query manufacturer and model individually.
+            ok = sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(item.ieee_addr, item.endpoint, ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID);
+            gw_queue_basic_cluster_query_attr(item.ieee_addr, item.short_addr, item.endpoint, ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, 500UL);
+        } else {
+            ok = sensor_zigbee_gw_query_basic_cluster_by_ieee(item.ieee_addr, item.endpoint);
+        }
     } else {
         ok = sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(item.ieee_addr, item.endpoint, item.target_attr_id);
     }
@@ -1877,13 +1883,28 @@ static void gw_cache_tuya_dp_report(uint64_t ieee_addr, uint8_t src_endpoint,
     if (gw_read_pending && gw_read_pending_cluster == ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC &&
         gw_read_pending_ieee == ieee_addr) {
         gw_read_pending = false;
-        DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Received Tuya DP report successfully, clearing basic query queue for this device"));
-        // Remove basic query requests from the queue for this IEEE
-        for (auto it = gw_basic_query_queue.begin(); it != gw_basic_query_queue.end(); ) {
-            if (it->ieee_addr == ieee_addr) {
-                it = gw_basic_query_queue.erase(it);
-            } else {
-                ++it;
+        ZigbeeDeviceInfo* dev = gw_find_discovered_device(ieee_addr);
+        if (dev && gw_device_needs_basic_info(*dev)) {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Received Tuya DP report, but device still needs Basic Cluster info — scheduling single-attribute Basic Cluster queries while device is awake"));
+            // Clear batch queries for this IEEE and queue single-attribute 0x0004 & 0x0005 reads while device is active
+            for (auto it = gw_basic_query_queue.begin(); it != gw_basic_query_queue.end(); ) {
+                if (it->ieee_addr == ieee_addr) {
+                    it = gw_basic_query_queue.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            gw_queue_basic_cluster_query_attr(ieee_addr, gw_get_short_addr(ieee_addr), src_endpoint, ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, 100UL);
+            gw_queue_basic_cluster_query_attr(ieee_addr, gw_get_short_addr(ieee_addr), src_endpoint, ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, 600UL);
+        } else {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Received Tuya DP report successfully, clearing basic query queue for this device"));
+            // Remove basic query requests from the queue for this IEEE
+            for (auto it = gw_basic_query_queue.begin(); it != gw_basic_query_queue.end(); ) {
+                if (it->ieee_addr == ieee_addr) {
+                    it = gw_basic_query_queue.erase(it);
+                } else {
+                    ++it;
+                }
             }
         }
     }
@@ -4345,6 +4366,27 @@ static void sensor_zigbee_gw_do_lookups() {
                 strncpy(dev.vendor, vnd, sizeof(dev.vendor) - 1);
                 dev.vendor[sizeof(dev.vendor) - 1] = '\0';
                 DEBUG_PRINTF(F("[ZIGBEE-GW] Found vendor: %s\n"), dev.vendor);
+            }
+
+            // Build a default friendly_name from the aliased marketing model
+            // name (e.g. raw "TS0601" -> "GX03") so the device is presented under
+            // its real product name "<vendor> <model_name>" (e.g. "GIEX GX03").
+            // model_id is left untouched — it stays the technical Zigbee model
+            // used for DB fingerprint matching and re-lookups. Never override a
+            // name the user set manually (is_custom_name).
+            const char* model_name = doc["model_name"];
+            if (model_name && model_name[0] && !dev.is_custom_name) {
+                char default_name[sizeof(dev.friendly_name)];
+                if (dev.vendor[0]) {
+                    snprintf(default_name, sizeof(default_name), "%s %s", dev.vendor, model_name);
+                } else {
+                    snprintf(default_name, sizeof(default_name), "%s", model_name);
+                }
+                if (strncmp(dev.friendly_name, default_name, sizeof(dev.friendly_name)) != 0) {
+                    strncpy(dev.friendly_name, default_name, sizeof(dev.friendly_name) - 1);
+                    dev.friendly_name[sizeof(dev.friendly_name) - 1] = '\0';
+                    DEBUG_PRINTF(F("[ZIGBEE-GW] Default friendly name: %s\n"), dev.friendly_name);
+                }
             }
 
             // Extract sensors array
