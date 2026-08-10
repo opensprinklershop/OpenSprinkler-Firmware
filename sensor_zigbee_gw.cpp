@@ -790,6 +790,15 @@ static std::vector<GwBasicQueryRequest> gw_basic_query_queue;
 // never stored.
 #define GW_BASIC_QUERY_ATTEMPT_CAP 12
 
+// Gentle periodic "wake" for devices that never identified themselves. Many
+// Tuya valves only report their DPs (and answer Basic Cluster reads) right
+// after they receive a frame — e.g. when the valve is physically toggled. To
+// mimic that we send ONE payload-less Tuya DP query (0x03, the same lightweight
+// "report all DPs" used on announce) to a single unidentified device per
+// interval. The long interval + one-device-per-tick keeps sleepy end devices
+// from being flooded.
+#define GW_WAKE_UNIDENTIFIED_INTERVAL_MS 60000UL
+
 static bool gw_is_basic_query_queued(uint64_t ieee_addr) {
     for (const auto& q : gw_basic_query_queue) {
         if (q.ieee_addr == ieee_addr) return true;
@@ -4699,6 +4708,41 @@ static void gw_wifi_off_join_service() {
         gw_wj_state = GW_WJ_IDLE;
         break;
     }
+}
+
+// Gently prompt one still-unidentified device per interval with a payload-less
+// Tuya DP query so devices that only report after receiving a frame (e.g. Tuya
+// valves woken by a physical toggle) eventually deliver their DPs and Basic
+// Cluster info. Bounded to one send per GW_WAKE_UNIDENTIFIED_INTERVAL_MS to
+// avoid flooding sleepy end devices.
+static void gw_wake_unidentified_devices() {
+    if (!Zigbee.started() || !Zigbee.connected()) return;
+    if (gw_read_pending) return;  // don't collide with an in-flight read
+    static unsigned long s_last_wake_ms = 0;
+    static size_t s_wake_idx = 0;
+    unsigned long now = millis();
+    if (s_last_wake_ms != 0 && now - s_last_wake_ms < GW_WAKE_UNIDENTIFIED_INTERVAL_MS) return;
+
+    size_t n = gw_discovered_devices.size();
+    if (n == 0) { s_last_wake_ms = now; return; }
+
+    for (size_t scanned = 0; scanned < n; scanned++) {
+        size_t idx = (s_wake_idx + scanned) % n;
+        ZigbeeDeviceInfo& dev = gw_discovered_devices[idx];
+        if (dev.ieee_addr == 0) continue;
+        if (!gw_device_needs_basic_info(dev)) continue;  // already identified
+        // Skip devices that reported recently — the report path re-queries them.
+        if (dev.last_rx_at_ms != 0 && now - dev.last_rx_at_ms < GW_WAKE_UNIDENTIFIED_INTERVAL_MS) continue;
+        uint16_t sa = dev.short_addr;
+        if (sa == 0xFFFF || sa == 0xFFFE) continue;  // need a usable short address
+        uint8_t ep = dev.endpoint ? dev.endpoint : 1;
+        DEBUG_PRINTF(F("[ZIGBEE-GW] Waking unidentified device short=0x%04X ep=%u with Tuya DP query\n"), sa, ep);
+        gw_tuya_send_dp_query(sa, ep);
+        s_wake_idx = idx + 1;
+        s_last_wake_ms = now;
+        return;  // one device per interval
+    }
+    s_last_wake_ms = now;  // nothing to wake this round
 }
 
 void sensor_zigbee_gw_loop() {
