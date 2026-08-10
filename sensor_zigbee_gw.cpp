@@ -4964,6 +4964,9 @@ void sensor_zigbee_gw_loop() {
     // manufacturer/model identification.
     gw_process_basic_query_queue();
 
+    // Gently prompt still-unidentified devices to report (mimics a valve toggle).
+    gw_wake_unidentified_devices();
+
     // Periodic Tuya DP refresh: send a "get all datapoints" query (cmd 0x00) to
     // every confirmed Tuya device that has at least one stale REPORT-mode sensor.
     // This mirrors the Z2M behaviour (dp: true in tuyaBase) and ensures sensors
