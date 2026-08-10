@@ -4288,6 +4288,10 @@ static void sensor_zigbee_gw_do_lookups() {
 
     // Scan through gw_discovered_devices
     for (auto& dev : gw_discovered_devices) {
+        // logical_lookup_done is a runtime flag reset to false on every boot
+        // (gw_reset_discovered_devices_runtime_fields), so each device is
+        // re-evaluated once per session and fully-resolved ones short-circuit
+        // below without an HTTP request.
         if (dev.logical_lookup_done) continue;
         if (dev.ieee_addr == 0) continue;
         if (!dev.manufacturer[0] || !dev.model_id[0]) continue;
@@ -4295,11 +4299,18 @@ static void sensor_zigbee_gw_do_lookups() {
 
         char ieee_buf[17];
         snprintf(ieee_buf, sizeof(ieee_buf), "%016llX", (unsigned long long)dev.ieee_addr);
-        if (OpenSprinkler::zigbee_logical_count_ieee(ieee_buf) > 0) {
+        bool name_resolved = (dev.friendly_name[0] != '\0') || dev.is_custom_name;
+        bool have_logicals = OpenSprinkler::zigbee_logical_count_ieee(ieee_buf) > 0;
+        // Fully resolved: logical devices exist AND a name is set → done.
+        if (have_logicals && name_resolved) {
             dev.logical_lookup_done = true;
             gw_mark_discovered_devices_dirty();
             continue;
         }
+        // If logical devices already exist we still query the DB to fetch the
+        // vendor + aliased model name for friendly_name, but must NOT re-register
+        // the logical devices (would duplicate them).
+        bool skip_register = have_logicals;
 
         // We found a device that needs logical and vendor name lookup!
         // Do NOT mark logical_lookup_done here — only after a SUCCESSFUL lookup
@@ -4391,7 +4402,7 @@ static void sensor_zigbee_gw_do_lookups() {
 
             // Extract sensors array
             ArduinoJson::JsonArrayConst sensors = doc["sensors"].as<ArduinoJson::JsonArrayConst>();
-            if (!sensors.isNull() && sensors.size() > 0) {
+            if (!skip_register && !sensors.isNull() && sensors.size() > 0) {
                 DEBUG_PRINTF(F("[ZIGBEE-GW] Parsing %u sensor definitions\n"), (unsigned int)sensors.size());
 
                 // Pass 1: find battery DP and unit selector DP
