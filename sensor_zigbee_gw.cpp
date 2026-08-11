@@ -4388,21 +4388,26 @@ static void sensor_zigbee_gw_do_lookups() {
                 DEBUG_PRINTF(F("[ZIGBEE-GW] Found vendor: %s\n"), dev.vendor);
             }
 
-            // Build a default friendly_name from the aliased marketing model
-            // name (e.g. raw "TS0601" -> "GX03") so the device is presented under
-            // its real product name "<vendor> <model_name>" (e.g. "GIEX GX03").
-            // model_id is left untouched — it stays the technical Zigbee model
-            // used for DB fingerprint matching and re-lookups. Never override a
-            // name the user set manually (is_custom_name).
-            const char* model_name = doc["model_name"];
-            if (model_name && model_name[0] && !dev.is_custom_name) {
-                char default_name[sizeof(dev.friendly_name)];
-                if (dev.vendor[0]) {
-                    snprintf(default_name, sizeof(default_name), "%s %s", dev.vendor, model_name);
-                } else {
-                    snprintf(default_name, sizeof(default_name), "%s", model_name);
+            // Build a default friendly_name from the DB. Prefer the full
+            // marketing description ("GIEX GX03 2-zone watering timer"); fall
+            // back to "<vendor> <model_name>" ("GIEX GX03"). model_id is left
+            // untouched (technical Zigbee model for fingerprint matching). Never
+            // override a name the user set manually (is_custom_name).
+            const char* model_name  = doc["model_name"];
+            const char* description = doc["description"];
+            if (!dev.is_custom_name) {
+                char default_name[sizeof(dev.friendly_name)] = {0};
+                if (description && description[0]) {
+                    snprintf(default_name, sizeof(default_name), "%s", description);
+                } else if (model_name && model_name[0]) {
+                    if (dev.vendor[0]) {
+                        snprintf(default_name, sizeof(default_name), "%s %s", dev.vendor, model_name);
+                    } else {
+                        snprintf(default_name, sizeof(default_name), "%s", model_name);
+                    }
                 }
-                if (strncmp(dev.friendly_name, default_name, sizeof(dev.friendly_name)) != 0) {
+                if (default_name[0] &&
+                    strncmp(dev.friendly_name, default_name, sizeof(dev.friendly_name)) != 0) {
                     strncpy(dev.friendly_name, default_name, sizeof(dev.friendly_name) - 1);
                     dev.friendly_name[sizeof(dev.friendly_name) - 1] = '\0';
                     DEBUG_PRINTF(F("[ZIGBEE-GW] Default friendly name: %s\n"), dev.friendly_name);

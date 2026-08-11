@@ -4641,6 +4641,11 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 		#endif
 			bfill.emit_p(PSTR("{\"id\":$L,\"nickname\":\"$S\",\"scientific_name\":\"$S\",\"thumb\":\"$S\"}"),
 				id, nickname.c_str(), scientific_name.c_str(), thumb.c_str());
+			// Stream partial output so a long plant list cannot overflow (and
+			// truncate) the fixed ether buffer, which would yield invalid JSON.
+			if (available_ether_buffer() <= 0) {
+				send_packet(OTF_PARAMS);
+			}
 		}
 	}
 	bfill.emit_p(PSTR("]}"));
@@ -6767,7 +6772,7 @@ static const char* zigbee_logical_kind_reg(const ZigBeeLogicalDevice& dev) {
 	}
 }
 
-static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
+static void emit_zigbee_logical_devices(OTF_PARAMS_DEF, uint64_t ieee_addr) {
 	bfill.emit_p(PSTR("\"logical_devices\":["));
 	bool first = true;
 	char ieee_str[17];
@@ -6803,6 +6808,11 @@ static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 			             (int)dev.factor,
 			             (int)dev.divider,
 			             (int)dev.offset);
+			// Flush partial response so a device with many logical entries
+			// cannot overflow (and truncate) the fixed ether buffer.
+			if (available_ether_buffer() <= 0) {
+				send_packet(OTF_PARAMS);
+			}
 		}
 	}
 	bfill.emit_p(PSTR("]"));
@@ -7243,9 +7253,15 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				             (int)devices[i].lqi,
 				             devices[i].friendly_name,
 				             devices[i].is_custom_name ? 1 : 0);
-				emit_zigbee_logical_devices(devices[i].ieee_addr);
+				emit_zigbee_logical_devices(OTF_PARAMS, devices[i].ieee_addr);
 				bfill.emit_p(PSTR("}"));
 				out_count++;
+				// Stream partial output so a long device list cannot overflow
+				// (and truncate) the fixed ether buffer, which would yield
+				// invalid JSON and a "connection error" in the app.
+				if (available_ether_buffer() <= 0) {
+					send_packet(OTF_PARAMS);
+				}
 			}
 			bfill.emit_p(PSTR("],\"count\":$D,\"channel\":$D,\"configured_channel\":$D,\"use_eth\":$D}"), out_count, (int)sensor_zigbee_gw_get_channel(), (int)sensor_zigbee_gw_get_configured_channel(), useEth ? 1 : 0);
 			delete[] devices;
@@ -7320,7 +7336,7 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 			             (int)devices[i].lqi,
 			             devices[i].friendly_name,
 			             devices[i].is_custom_name ? 1 : 0);
-			emit_zigbee_logical_devices(devices[i].ieee_addr);
+			emit_zigbee_logical_devices(OTF_PARAMS, devices[i].ieee_addr);
 			bfill.emit_p(PSTR("}"));
 			send_packet(OTF_PARAMS);
 			out_count++;
@@ -7490,6 +7506,11 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 		             mfr,
 		             mdl,
 		             devices[i].has_adv_data ? devices[i].adv_battery : 0);
+		// Stream partial output so a long device list cannot overflow (and
+		// truncate) the fixed ether buffer, which would yield invalid JSON.
+		if (available_ether_buffer() <= 0) {
+			send_packet(OTF_PARAMS);
+		}
 	}
 
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);
