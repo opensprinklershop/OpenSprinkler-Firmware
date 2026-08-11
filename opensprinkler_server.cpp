@@ -7276,6 +7276,18 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				             (int)devices[i].lqi,
 				             devices[i].friendly_name,
 				             devices[i].is_custom_name ? 1 : 0);
+				// Status lamp fields: wall-clock last-seen age (survives reboots).
+				{
+					uint32_t now_unix = (uint32_t)os.now_tz();
+					bool time_ok = now_unix > 1704067200UL;
+					unsigned long last_rx_s = 4294967295UL; // sentinel: unknown
+					if (devices[i].last_seen > 0 && time_ok && now_unix >= devices[i].last_seen) {
+						last_rx_s = now_unix - devices[i].last_seen;
+					}
+					int online = (last_rx_s < 15UL * 60UL) ? 1 : 0;
+					bfill.emit_p(PSTR("\"last_seen\":$L,\"last_rx_s\":$L,\"online\":$D,"),
+					             (unsigned long)devices[i].last_seen, last_rx_s, online);
+				}
 				emit_zigbee_logical_devices(OTF_PARAMS, devices[i].ieee_addr);
 				bfill.emit_p(PSTR("}"));
 				out_count++;
