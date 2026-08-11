@@ -2834,16 +2834,28 @@ public:
         // targeted — register the device (or refresh its last_rx) so devices
         // that only respond via this callback (no src address info) still show
         // up.  This used to be the "GX02 invisible after join" path.
+        //
+        // The no-address callback CANNOT verify the true responder. A late or
+        // unsolicited Basic response from device A that arrives while device B
+        // is the pending read would otherwise be attributed to B, stamping A's
+        // manufacturer (e.g. a GX03 "_TZE284_8zizsafo") onto an unrelated
+        // standard-ZCL device (cross-contamination). Restrict this lossy path to
+        // Tuya devices, which answer Basic reads exclusively via this callback;
+        // standard ZCL devices reply through the addressed zbAttributeRead()
+        // path, so they never need (and must not be written from) this one.
         if (gw_read_pending && gw_read_pending_cluster == ZB_ZCL_CLUSTER_ID_BASIC &&
             gw_read_pending_ieee != 0) {
-            esp_zb_ieee_addr_t ieee_le;
-            for (int i = 0; i < 8; i++) ieee_le[i] = (uint8_t)(gw_read_pending_ieee >> (i * 8));
-            esp_zb_lock_acquire(portMAX_DELAY);
-            uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
-            esp_zb_lock_release();
-            if (short_addr == 0xFFFF || short_addr == 0xFFFE) short_addr = 0;
-            gw_add_responsive_device(short_addr, gw_read_pending_ieee, 1);
-            gw_handleBasicClusterResponse(short_addr, attribute, gw_read_pending_ieee);
+            ZigbeeDeviceInfo* pend = gw_find_discovered_device(gw_read_pending_ieee);
+            if (pend && pend->is_tuya) {
+                esp_zb_ieee_addr_t ieee_le;
+                for (int i = 0; i < 8; i++) ieee_le[i] = (uint8_t)(gw_read_pending_ieee >> (i * 8));
+                esp_zb_lock_acquire(portMAX_DELAY);
+                uint16_t short_addr = esp_zb_address_short_by_ieee(ieee_le);
+                esp_zb_lock_release();
+                if (short_addr == 0xFFFF || short_addr == 0xFFFE) short_addr = 0;
+                gw_add_responsive_device(short_addr, gw_read_pending_ieee, 1);
+                gw_handleBasicClusterResponse(short_addr, attribute, gw_read_pending_ieee);
+            }
         }
         // Always clear the pending flag.
         if (gw_read_pending && gw_read_pending_cluster == ZB_ZCL_CLUSTER_ID_BASIC) {
@@ -4087,6 +4099,36 @@ void sensor_zigbee_gw_open_network(uint16_t duration) {
                  (unsigned)open_err, esp_err_to_name(open_err));
 }
 
+// Clear a device's cached identity WITHOUT forcing a physical leave/rejoin.
+// Preserves the user's custom friendly name. Used to repair a cross-contaminated
+// manufacturer (e.g. a standard-ZCL soil sensor wrongly stamped with a GX03
+// "_TZE284_..." Tuya code): resets the identity fields so the next Basic read /
+// DB lookup re-identifies the device correctly.
+bool sensor_zigbee_gw_clear_device_identity(uint64_t device_ieee) {
+    if (device_ieee == 0) return false;
+    if (!gw_discovered_devices_loaded) {
+        gw_load_discovered_devices();
+    }
+    ZigbeeDeviceInfo* dev = gw_find_discovered_device(device_ieee);
+    if (!dev) return false;
+
+    char ieee_buf[17] = "";
+    snprintf(ieee_buf, sizeof(ieee_buf), "%016llX", (unsigned long long)device_ieee);
+    OpenSprinkler::zigbee_logical_clear_ieee(ieee_buf);
+
+    dev->manufacturer[0] = '\0';
+    dev->model_id[0] = '\0';
+    dev->vendor[0] = '\0';
+    dev->logical_lookup_done = false;
+    dev->is_tuya = false;
+    dev->basic_query_attempts = 0;
+    dev->silent_query_count = 0;
+    gw_mark_discovered_devices_dirty();
+    gw_save_discovered_devices();
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Cleared cached identity (no rejoin) for ieee=%s\n"), ieee_buf);
+    return true;
+}
+
 // Trigger a forced rejoin for a device and reset Tuya sequence counter.
 // This helps when a device loses sync with the gateway's DP sequence numbering.
 bool sensor_zigbee_gw_rejoin_device(uint64_t device_ieee) {
@@ -4736,6 +4778,11 @@ static void gw_wake_unidentified_devices() {
         ZigbeeDeviceInfo& dev = gw_discovered_devices[idx];
         if (dev.ieee_addr == 0) continue;
         if (!gw_device_needs_basic_info(dev)) continue;  // already identified
+        // Stop nagging devices that already exhausted their Basic-query budget.
+        // Without this cap a standard-ZCL sensor that never answers Basic reads
+        // (and is not Tuya, so the DP "wake" does nothing) is prompted forever.
+        // The budget is refreshed on a genuine re-announce (findEndpoint).
+        if (dev.basic_query_attempts >= GW_BASIC_QUERY_ATTEMPT_CAP) continue;
         // Skip devices that reported recently — the report path re-queries them.
         if (dev.last_rx_at_ms != 0 && now - dev.last_rx_at_ms < GW_WAKE_UNIDENTIFIED_INTERVAL_MS) continue;
         uint16_t sa = dev.short_addr;

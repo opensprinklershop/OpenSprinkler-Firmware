@@ -338,6 +338,38 @@ bool NotifQueue::run(int n) {
 	return true;
 }
 
+// --- Outbound reachability backoff ---------------------------------------
+// push_message() runs in the main loop and performs SYNCHRONOUS, blocking sends
+// (IFTTT ~12s, SMTP TLS connect, InfluxDB, push ~5s). network_connected() only
+// proves the LAN is up, not that the internet is reachable. On a LAN-only/offline
+// site (e.g. only an NTP server) every send fails on a connect timeout, and with
+// scheduled programs constantly refilling the queue the main loop stays blocked
+// in dead network calls -> web server unreachable, "only a reset helps".
+// After a few consecutive send failures we treat the internet as unreachable and
+// skip the blocking channels for a cooldown, while STILL recording the event in
+// /nl so the mobile app loses nothing. Any successful send clears the backoff.
+static uint8_t  s_outbound_fail_streak = 0;
+static uint32_t s_outbound_backoff_until = 0; // millis() deadline; 0 = inactive
+#define OUTBOUND_FAIL_STREAK_MAX 3
+#define OUTBOUND_BACKOFF_MS      (5UL * 60UL * 1000UL) // 5 min
+
+static bool outbound_backoff_active() {
+	return s_outbound_backoff_until != 0 &&
+		(int32_t)(millis() - s_outbound_backoff_until) < 0;
+}
+
+static void outbound_note_result(bool ok) {
+	if (ok) {
+		s_outbound_fail_streak = 0;
+		s_outbound_backoff_until = 0;
+	} else if (s_outbound_fail_streak < 255) {
+		if (++s_outbound_fail_streak >= OUTBOUND_FAIL_STREAK_MAX) {
+			s_outbound_backoff_until = millis() + OUTBOUND_BACKOFF_MS;
+			if (s_outbound_backoff_until == 0) s_outbound_backoff_until = 1; // avoid the 0 sentinel
+		}
+	}
+}
+
 #define PUSH_TOPIC_LEN	120
 #define PUSH_PAYLOAD_LEN TMP_BUFFER_SIZE
 
@@ -523,6 +555,9 @@ static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t
 	DEBUG_PRINTF("push: sending %u body bytes to %s:%u ssl=%d\n", (unsigned)strlen(tmp_buffer), host, port, (int)usessl);
 	int8_t rc = os.send_http_request(host, port, ether_buffer, NULL, usessl, 5000, true);
 	DEBUG_PRINTF("push: send_http_request rc=%d\n", (int)rc);
+	// A connect error means the host was unreachable (the slow, main-loop-stalling
+	// case). Any other result means we reached the forwarder -> internet is up.
+	outbound_note_result(rc != HTTP_RQT_CONNECT_ERR);
 }
 #endif
 
@@ -1222,7 +1257,13 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if (os.mqtt.enabled() && strlen(topic) && strlen(payload))
 		os.mqtt.publish(topic, payload);
 
-	if (ifttt_enabled) {
+	// When the internet has been unreachable for several consecutive events, skip
+	// the blocking online channels (IFTTT/Email/InfluxDB/push) so notif.run() does
+	// not stall the main loop on dead connect timeouts. MQTT (typically a local
+	// broker) and the /nl log below are unaffected.
+	bool skip_online = outbound_backoff_active();
+
+	if (ifttt_enabled && !skip_online) {
 		strcat_P(postval, PSTR("\"}"));
 
 		BufferFiller bf = BufferFiller(ether_buffer, TMP_BUFFER_SIZE);
@@ -1234,10 +1275,11 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						"Content-Type: application/json\r\n\r\n$S"),
 						SOPT_IFTTT_KEY, DEFAULT_IFTTT_URL, user_agent_string, strlen(postval), postval);
 
-		os.send_http_request(DEFAULT_IFTTT_URL, 80, ether_buffer, NULL);
+		int8_t ifttt_rc = os.send_http_request(DEFAULT_IFTTT_URL, 80, ether_buffer, NULL);
+		outbound_note_result(ifttt_rc != HTTP_RQT_CONNECT_ERR);
 	}
 
-	if(email_enabled){
+	if(email_enabled && !skip_online){
 		if(!html_email_set) {
 			email_message.message = strchr(postval, 'O'); // ad-hoc: remove the value1 part from the ifttt message
 		}
@@ -1285,6 +1327,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						DEBUG_PRINTLN(resp.status);
 						DEBUG_PRINTLN(resp.code);
 						DEBUG_PRINTLN(resp.desc);
+						outbound_note_result(resp.status);
 						restore_tmp_memory(email_mem_needed);
 					}
 				}
@@ -1304,13 +1347,14 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				}
 				rc = smtp_mail(smtp, email_message.message.c_str());
 				rc = smtp_close(smtp);
+				outbound_note_result(rc == SMTP_STATUS_OK);
 				if (rc!=SMTP_STATUS_OK) {
 					DEBUG_PRINTF("SMTP: Error %s\n", smtp_status_code_errstr(rc));
 				}
 			}
 		#endif
 	}
-	if (influxdb_enabled)
+	if (influxdb_enabled && !skip_online)
 		os.influxdb.push_message(type, lval, fval, sval);
 
 	if (log_this) {
@@ -1318,7 +1362,8 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 		#if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
 		// After recording the event, push it out to the forwarder if the user
 		// opted in. This delivers real push without OTC (LAN / post-reboot).
-		push_forward_event(type, lval, fval, bval, notif_log_lastid());
+		if (!skip_online)
+			push_forward_event(type, lval, fval, bval, notif_log_lastid());
 		#endif
 	}
 }

@@ -7061,6 +7061,29 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		send_packet(OTF_PARAMS);
 		handle_return(HTML_OK);
 
+	} else if (strcmp(action, "clear_identity") == 0) {
+		// Clear cached identity (manufacturer/model/logical devices) WITHOUT a
+		// physical leave/rejoin — repairs a cross-contaminated manufacturer.
+		char ieee_str[24] = "";
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		bool ok = sensor_zigbee_gw_clear_device_identity(addr);
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"clear_identity\",\"ieee\":\"$S\",\"message\":\"$S\"}"),
+		             ok ? 1 : 0, ieee_str, ok ? "Device identity cleared; will re-identify" : "Device not found");
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+
 	} else if (strcmp(action, "rename") == 0) {
 		char ieee_str[24] = "";
 		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
