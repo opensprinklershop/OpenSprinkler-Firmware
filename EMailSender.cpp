@@ -872,6 +872,12 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 
   client.println(F("MIME-Version: 1.0"));
   client.println(F("Content-Type: Multipart/mixed; boundary=frontier"));
+  // A blank line MUST separate the message headers from the MIME body. Without
+  // it, strict clients (Thunderbird) parse the following "--frontier" line as a
+  // malformed header, absorb the part headers, and end up with a multipart body
+  // that has no opening boundary → the message renders EMPTY. Lenient clients
+  // (Aquamail/Gmail) show it anyway.
+  client.println();
 
   client.println(F("--frontier"));
 
@@ -879,7 +885,7 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
     client.print(email.mime);
     client.println(F("; charset=\"UTF-8\""));
 //  client.println(F("Content-Type: text/html; charset=\"UTF-8\""));
-  client.println(F("Content-Transfer-Encoding: 7bit"));
+  client.println(F("Content-Transfer-Encoding: 8bit"));
   client.println();
   if (email.mime==F("text/html")){
 //	  String body = "<!DOCTYPE html><html lang=\"en\">" + String(email.message) + "</html>";

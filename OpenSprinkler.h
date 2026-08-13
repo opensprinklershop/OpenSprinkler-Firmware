@@ -578,7 +578,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void apply_all_station_bits(void (*post_activation_callback)()=NULL); // apply all station bits (activate/deactive values)
 
 	static int8_t send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
-	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
+	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true, uint16_t resp_buf_size=0);
 	static int8_t send_http_request(char* server_with_port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
 	static int8_t send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=12000, bool expect_response=true);
 	static void process_async_http_requests();

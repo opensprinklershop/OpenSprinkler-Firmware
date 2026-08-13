@@ -3011,7 +3011,7 @@ static AsyncHttpRequestParams* s_http_async_pending = nullptr;
 
 } // namespace
 
-int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout, bool expect_response) {
+int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout, bool expect_response, uint16_t resp_buf_size) {
 	uint16_t effective_timeout = clamp_http_timeout(timeout);
 	bool shared_client = false;
 
@@ -3208,7 +3208,18 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	}
 
 #if defined(ESP32) || defined(OSPI)
-	char *http_buffer = (char *)malloc(ETHER_BUFFER_SIZE + 1);
+	// Allow callers (e.g. the Zigbee device-DB lookup, whose JSON for
+	// multi-sensor devices such as GIEX GX03 exceeds ETHER_BUFFER_SIZE) to
+	// request a larger response buffer. On ESP32 prefer PSRAM so the transient
+	// buffer never pressures the tight internal heap.
+	size_t resp_cap = (resp_buf_size > ETHER_BUFFER_SIZE) ? (size_t)resp_buf_size : (size_t)ETHER_BUFFER_SIZE;
+	char *http_buffer = NULL;
+	#if defined(ESP32)
+	if (resp_cap > (size_t)ETHER_BUFFER_SIZE) {
+		http_buffer = (char *)heap_caps_malloc(resp_cap + 1, MALLOC_CAP_SPIRAM);
+	}
+	#endif
+	if (!http_buffer) http_buffer = (char *)malloc(resp_cap + 1);
 	if (!http_buffer) {
 		DEBUG_PRINTLN(F("failed to allocate http request buffer"));
 		client->stop();
@@ -3223,8 +3234,9 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		#endif
 		return HTTP_RQT_CONNECT_ERR;
 	}
-	memset(http_buffer, 0, ETHER_BUFFER_SIZE + 1);
+	memset(http_buffer, 0, resp_cap + 1);
 #else
+	size_t resp_cap = ETHER_BUFFER_SIZE;
 	char *http_buffer = ether_buffer;
 	memset(http_buffer, 0, ETHER_BUFFER_SIZE);
 #endif
@@ -3239,7 +3251,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 	while(true) {
 		int nbytes = client->available();
 		if(nbytes>0) {
-			if(pos+nbytes>ETHER_BUFFER_SIZE) nbytes=ETHER_BUFFER_SIZE-pos; // cannot read more than buffer size
+			if(pos+nbytes>(int)resp_cap) nbytes=(int)resp_cap-pos; // cannot read more than buffer size
 			client->read((uint8_t*)http_buffer+pos, nbytes);
 			pos+=nbytes;
 		} else {
@@ -3267,7 +3279,7 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		}
 	}
 #else
-	len = client->read((uint8_t *)http_buffer+pos, ETHER_BUFFER_SIZE);
+	len = client->read((uint8_t *)http_buffer+pos, resp_cap);
 	pos += len;
 
 #endif

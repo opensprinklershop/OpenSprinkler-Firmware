@@ -1282,6 +1282,12 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if(email_enabled && !skip_online){
 		if(!html_email_set) {
 			email_message.message = strchr(postval, 'O'); // ad-hoc: remove the value1 part from the ifttt message
+			#if defined(ESP8266) || defined(ESP32)
+				// Plain-text notifications: send as text/plain so line breaks are
+				// preserved. The EMailMessage default (text/html) would wrap the
+				// text in <html> and collapse newlines to a single line.
+				email_message.mime = "text/plain";
+			#endif
 		}
 		#if defined(ARDUINO)
 			#if defined(ESP8266) || defined(ESP32)

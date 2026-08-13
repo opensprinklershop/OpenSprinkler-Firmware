@@ -705,7 +705,12 @@ static uint64_t gw_read_pending_ieee = 0;     // IEEE of the pending active read
 static uint16_t gw_read_pending_cluster = 0;  // cluster of the pending active read
 static uint64_t gw_read_timeout_ieee = 0;     // IEEE that most recently timed out
 static unsigned long gw_read_block_until_ms = 0; // per-device cooldown after timeout
-#define GW_READ_TIMEOUT_MS 10000
+// Shorter read window: a reachable device answers a Basic/Tuya read in well
+// under 1 s; an out-of-range or sleeping device never answers at all.  The old
+// 10 s wall meant a single unreachable device held the one shared read slot for
+// 10 s, saturating identification.  4 s recycles the slot ~2.5× faster without
+// dropping legitimate slow responders.
+#define GW_READ_TIMEOUT_MS 4000
 
 struct GwOneShotThrottleEntry {
     uint64_t ieee_addr;
@@ -1151,7 +1156,7 @@ static uint64_t gw_resolve_ieee(uint16_t short_addr) {
 }
 
 // Add a device that has confirmed its presence via response to query/report
-static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, uint8_t endpoint) {
+static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, uint8_t endpoint, bool from_response = true) {
     ZigbeeDeviceInfo* dev = gw_find_discovered_device(ieee_addr);
     if (dev) {
         bool changed = false;
@@ -1167,9 +1172,11 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
         dev->last_rx_at_ms = millis();     // stamp last reception
         dev->silent_query_count = 0;       // device is alive — reset silence counter
 
-        // Wall-clock last-seen for the UI status lamp (survives reboots). Persist
-        // at most every 30 min to avoid flash wear from chatty devices.
-        {
+        // Wall-clock last-seen for the UI status lamp (survives reboots). Only
+        // stamp on a genuine incoming frame — callers on the outgoing query path
+        // pass from_response=false, so a device that never answers is not shown
+        // as "seen". Persist at most every 30 min to avoid flash wear.
+        if (from_response) {
             uint32_t nowu = (uint32_t)os.now_tz();
             if (nowu > 1704067200UL) {
                 dev->last_seen = nowu;
@@ -1219,7 +1226,7 @@ static void gw_add_responsive_device(uint16_t short_addr, uint64_t ieee_addr, ui
     info.last_rx_at_ms = millis();
     {
         uint32_t nowu = (uint32_t)os.now_tz();
-        info.last_seen = (nowu > 1704067200UL) ? nowu : 0U;
+        info.last_seen = (from_response && nowu > 1704067200UL) ? nowu : 0U;
     }
     info.silent_query_count = 0;
     info.basic_query_attempts = 0;
@@ -1274,14 +1281,13 @@ int sensor_zigbee_gw_get_discovered_devices(ZigbeeDeviceInfo* out, int max_devic
     }
     int count = (gw_discovered_devices.size() < (size_t)max_devices)
                     ? (int)gw_discovered_devices.size() : max_devices;
+    // Read-only snapshot: reading the device list (every /zg,/zd UI poll) must
+    // NOT enqueue Basic Cluster reads.  Doing so amplified the query storm —
+    // each UI refresh re-armed reads for every unresolved (often out-of-range)
+    // device, saturating the single read slot.  Discovery is driven by the
+    // announce path, DP reports and the bounded background wake scanner instead.
     for (int i = 0; i < count; i++) {
         memcpy(&out[i], &gw_discovered_devices[i], sizeof(ZigbeeDeviceInfo));
-        if (gw_device_needs_basic_info(out[i]) &&
-            gw_discovered_devices[i].basic_query_attempts < 3 &&
-            !gw_is_basic_query_queued(out[i].ieee_addr)) {
-            gw_queue_basic_cluster_query(out[i].ieee_addr, out[i].short_addr, out[i].endpoint, 250UL);
-            gw_discovered_devices[i].basic_query_attempts++;
-        }
     }
     return count;
 }
@@ -3171,7 +3177,7 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee(uint64_t device_ieee, uint8_t 
     if (short_addr != 0xFFFF && short_addr != 0xFFFE) {
         read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
         read_req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
-        gw_add_responsive_device(short_addr, device_ieee, endpoint);
+        gw_add_responsive_device(short_addr, device_ieee, endpoint, false);
     } else {
         read_req.address_mode = ESP_ZB_APS_ADDR_MODE_64_ENDP_PRESENT;
         memcpy(read_req.zcl_basic_cmd.dst_addr_u.addr_long, ieee_le, sizeof(ieee_le));
@@ -3249,7 +3255,7 @@ bool sensor_zigbee_gw_query_basic_cluster_by_ieee_attr(uint64_t device_ieee, uin
     if (short_addr != 0xFFFF && short_addr != 0xFFFE) {
         read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
         read_req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
-        gw_add_responsive_device(short_addr, device_ieee, endpoint);
+        gw_add_responsive_device(short_addr, device_ieee, endpoint, false);
     } else {
         read_req.address_mode = ESP_ZB_APS_ADDR_MODE_64_ENDP_PRESENT;
         memcpy(read_req.zcl_basic_cmd.dst_addr_u.addr_long, ieee_le, sizeof(ieee_le));
@@ -4347,14 +4353,21 @@ static void gw_note_lookup_failed(uint64_t ieee) {
 // the response is discarded and the caller's request buffer (ether_buffer) still
 // holds the *request* — so a subsequent parse of ether_buffer sees only the
 // request headers (nothing after the final CRLF) and fails with "EmptyInput".
-// This callback copies the raw response (headers + body) back into ether_buffer
+// This callback copies the raw response (headers + body) into a dedicated buffer
 // so sensor_zigbee_gw_do_lookups() can locate the JSON body after "\r\n\r\n".
+// A dedicated (PSRAM) buffer is used instead of ether_buffer because the DB JSON
+// for multi-sensor devices (e.g. GIEX GX03, 11 sensors) exceeds ETHER_BUFFER_SIZE
+// and would otherwise be truncated → ArduinoJson "IncompleteInput" → the device
+// name never resolves.
+#define GW_LOOKUP_RESP_SIZE 8192
+static char* gw_lookup_resp = nullptr;
+
 static void gw_lookup_http_response_cb(char* response) {
-    if (!response) return;
+    if (!response || !gw_lookup_resp) return;
     size_t n = strlen(response);
-    if (n >= (size_t)ETHER_BUFFER_SIZE) n = ETHER_BUFFER_SIZE - 1;
-    memcpy(ether_buffer, response, n);
-    ether_buffer[n] = '\0';
+    if (n >= (size_t)GW_LOOKUP_RESP_SIZE) n = GW_LOOKUP_RESP_SIZE - 1;
+    memcpy(gw_lookup_resp, response, n);
+    gw_lookup_resp[n] = '\0';
 }
 
 static void sensor_zigbee_gw_do_lookups() {
@@ -4432,7 +4445,16 @@ static void sensor_zigbee_gw_do_lookups() {
         // DB endpoint serves the same JSON over HTTP with no redirect.
         // A callback is REQUIRED on ESP32 (see gw_lookup_http_response_cb): the
         // response is otherwise discarded and ether_buffer keeps the request.
-        int ret = os.send_http_request("opensprinklershop.de", 80, ether_buffer, gw_lookup_http_response_cb, false, 8000);
+        // Read into a dedicated GW_LOOKUP_RESP_SIZE buffer (PSRAM) so large
+        // multi-sensor DB entries (e.g. GX03) are not truncated to
+        // ETHER_BUFFER_SIZE (which caused ArduinoJson "IncompleteInput").
+        if (!gw_lookup_resp) {
+            gw_lookup_resp = (char*)heap_caps_malloc(GW_LOOKUP_RESP_SIZE, MALLOC_CAP_SPIRAM);
+            if (!gw_lookup_resp) gw_lookup_resp = (char*)malloc(GW_LOOKUP_RESP_SIZE);
+        }
+        if (!gw_lookup_resp) { gw_note_lookup_failed(lookup_ieee); return; }
+        gw_lookup_resp[0] = '\0';
+        int ret = os.send_http_request("opensprinklershop.de", 80, ether_buffer, gw_lookup_http_response_cb, false, 8000, true, GW_LOOKUP_RESP_SIZE);
 
         // The blocking request above can run for several seconds. During that
         // window a concurrent device announce may push_back into
@@ -4444,16 +4466,16 @@ static void sensor_zigbee_gw_do_lookups() {
         // the range-for is harmless.
         ZigbeeDeviceInfo* devp = gw_find_discovered_device(lookup_ieee);
         if (!devp) return;
-        ZigbeeDeviceInfo& dev = *devp;
+        ZigbeeDeviceInfo& devr = *devp;  // use this, not the possibly-stale loop `dev`
 
         if (ret == HTTP_RQT_SUCCESS) {
             // Let's parse the HTTP response using ArduinoJson!
             // First locate the JSON start by skipping HTTP headers.
-            const char* json_start = strstr(ether_buffer, "\r\n\r\n");
+            const char* json_start = strstr(gw_lookup_resp, "\r\n\r\n");
             if (json_start) {
                 json_start += 4;
             } else {
-                json_start = ether_buffer;
+                json_start = gw_lookup_resp;
             }
 
             ArduinoJson::JsonDocument doc;
@@ -4467,9 +4489,9 @@ static void sensor_zigbee_gw_do_lookups() {
             // Extract vendor name if available
             const char* vnd = doc["vendor"];
             if (vnd && vnd[0]) {
-                strncpy(dev.vendor, vnd, sizeof(dev.vendor) - 1);
-                dev.vendor[sizeof(dev.vendor) - 1] = '\0';
-                DEBUG_PRINTF(F("[ZIGBEE-GW] Found vendor: %s\n"), dev.vendor);
+                strncpy(devr.vendor, vnd, sizeof(devr.vendor) - 1);
+                devr.vendor[sizeof(devr.vendor) - 1] = '\0';
+                DEBUG_PRINTF(F("[ZIGBEE-GW] Found vendor: %s\n"), devr.vendor);
             }
 
             // Build a default friendly_name from the DB. Prefer the full
@@ -4479,22 +4501,22 @@ static void sensor_zigbee_gw_do_lookups() {
             // override a name the user set manually (is_custom_name).
             const char* model_name  = doc["model_name"];
             const char* description = doc["description"];
-            if (!dev.is_custom_name) {
-                char default_name[sizeof(dev.friendly_name)] = {0};
+            if (!devr.is_custom_name) {
+                char default_name[sizeof(devr.friendly_name)] = {0};
                 if (description && description[0]) {
                     snprintf(default_name, sizeof(default_name), "%s", description);
                 } else if (model_name && model_name[0]) {
-                    if (dev.vendor[0]) {
-                        snprintf(default_name, sizeof(default_name), "%s %s", dev.vendor, model_name);
+                    if (devr.vendor[0]) {
+                        snprintf(default_name, sizeof(default_name), "%s %s", devr.vendor, model_name);
                     } else {
                         snprintf(default_name, sizeof(default_name), "%s", model_name);
                     }
                 }
                 if (default_name[0] &&
-                    strncmp(dev.friendly_name, default_name, sizeof(dev.friendly_name)) != 0) {
-                    strncpy(dev.friendly_name, default_name, sizeof(dev.friendly_name) - 1);
-                    dev.friendly_name[sizeof(dev.friendly_name) - 1] = '\0';
-                    DEBUG_PRINTF(F("[ZIGBEE-GW] Default friendly name: %s\n"), dev.friendly_name);
+                    strncmp(devr.friendly_name, default_name, sizeof(devr.friendly_name)) != 0) {
+                    strncpy(devr.friendly_name, default_name, sizeof(devr.friendly_name) - 1);
+                    devr.friendly_name[sizeof(devr.friendly_name) - 1] = '\0';
+                    DEBUG_PRINTF(F("[ZIGBEE-GW] Default friendly name: %s\n"), devr.friendly_name);
                 }
             }
 
@@ -4673,9 +4695,9 @@ static void sensor_zigbee_gw_do_lookups() {
             }
             // Lookup succeeded (device found in DB).  Mark done so we don't
             // re-query it and clear the failure backoff.
-            dev.logical_lookup_done = true;
+            devr.logical_lookup_done = true;
             gw_mark_discovered_devices_dirty();
-            gw_clear_lookup_failed(dev.ieee_addr);
+            gw_clear_lookup_failed(devr.ieee_addr);
         } else {
             // Transient failure (often TLS/HTTPS out-of-memory on this busy
             // gateway).  Leave logical_lookup_done=false so the next cycle
