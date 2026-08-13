@@ -165,9 +165,22 @@ In `~/.config/claude/claude_desktop_config.json`:
 |------|-------------|--------------|
 | `get_ieee802154_config` | Radio-Konfiguration lesen | `/ir` |
 | `set_ieee802154_config` | Radio-Modus setzen (WiFi, Matter, ZigBee GW/Client) | `/iw` |
-| `get_zigbee_devices` | ZigBee-Geräteliste | `/zg` |
+| `get_zigbee_devices` | ZigBee-Geräteliste (mit `search`, `onlyRegistered`) | `/zg` |
+| `get_zigbee_discovered_devices` | Rohe Discovery-Liste aller gesehenen Geräte | `/zd` |
 | `zigbee_join_network` | ZigBee-Netzwerk beitreten / Netzwerk öffnen | `/zj` |
-| `get_zigbee_status` | ZigBee-Radio-Status | `/zs` |
+| `get_zigbee_status` | ZigBee-Radio-Status (Join-Fenster, Kanal) | `/zs` |
+| `zigbee_open_network` | Gateway-Netzwerk zum Pairing öffnen (Dauer/Kanal/wifiOff) | `/zo` |
+| `zigbee_permit_join` | Permit-Join-Fenster öffnen | `/zg?action=permit` |
+| `zigbee_clear_new_flags` | „Neu"-Flags löschen + Join-Fenster schließen | `/zc` |
+| `zigbee_leave_network` | Netzwerk verlassen (Client-Modus) | `/zl` |
+| `zigbee_query_basic` | Basic-Cluster neu abfragen (Hersteller/Modell) | `/zg?action=query_basic` |
+| `zigbee_query_device_data` | Geräte-Datenabruf anstoßen (Tuya-DP/Attribut) | `/zg?action=query_device_data` |
+| `zigbee_send_logical` | Logisches Gerät (z. B. Ventil) EIN/AUS schalten | `/zg?action=send_logical` |
+| `zigbee_remove_device` | Gerät entfernen (unbind + aus Stack) | `/zg?action=remove` |
+| `zigbee_rejoin_device` | Rejoin erzwingen (Seq-Reset, 60s-Fenster) | `/zg?action=rejoin_device` |
+| `zigbee_clear_identity` | Cache-Identität löschen (Neu-Identifikation) | `/zg?action=clear_identity` |
+| `zigbee_rename_device` | Eigenen Anzeigenamen setzen/löschen | `/zg?action=rename` |
+| `zigbee_clear_logical_devices` | Logische-Geräte-Registry löschen (ein Gerät/alle) | `/zg?action=clear_logical_devices` |
 
 ### BLE (nur ESP32)
 

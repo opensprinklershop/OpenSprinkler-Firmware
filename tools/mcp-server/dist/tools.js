@@ -410,26 +410,48 @@ export function registerTools(server, getClient) {
         const data = await getClient().get("/sg", params);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     });
-    server.tool("get_sensor_log", "Get sensor log data. Equivalent to /so.", {
+    server.tool("get_sensor_log", "Get sensor log data from /so, with proper translation of epoch times to after/before, days/hours filters, or record indices.", {
         nr: z.number().optional().describe("Sensor number"),
-        start: z.number().optional().describe("Start time (epoch seconds)"),
+        start: z.number().optional().describe("Log starting record index (0-based) OR start time (epoch seconds)"),
         end: z.number().optional().describe("End time (epoch seconds)"),
         hist: z.number().optional().describe("History window in days"),
+        max: z.number().optional().describe("Maximum number of records to return"),
         format: z.enum(["json", "csv"]).optional().describe("Output format"),
     }, async (args) => {
         const params = {};
         if (args.nr !== undefined)
             params.nr = args.nr;
-        if (args.start !== undefined)
-            params.start = args.start;
-        if (args.end !== undefined)
-            params.end = args.end;
-        if (args.hist !== undefined)
-            params.hist = args.hist;
-        if (args.format)
-            params.format = args.format;
-        const data = await getClient().get("/so", params);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        if (args.max !== undefined)
+            params.max = args.max;
+        if (args.start !== undefined) {
+            // If start is an epoch timestamp (> 100000000), send as "after"
+            if (args.start > 100000000) {
+                params.after = args.start;
+            }
+            else {
+                params.start = args.start;
+            }
+        }
+        if (args.end !== undefined) {
+            // end maps to "before" in the firmware
+            params.before = args.end;
+        }
+        if (args.hist !== undefined) {
+            // hist maps to "lastdays" in the firmware
+            params.lastdays = args.hist;
+        }
+        const isCsv = args.format === "csv";
+        if (isCsv) {
+            params.csv = 1;
+        }
+        if (isCsv) {
+            const data = await getClient().getRaw("/so", params);
+            return { content: [{ type: "text", text: data }] };
+        }
+        else {
+            const data = await getClient().get("/so", params);
+            return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        }
     });
     server.tool("configure_sensor", "Configure a sensor (add/modify/delete). Equivalent to /sc.", {
         params: z.record(z.string(), z.union([z.string(), z.number()])).describe("Sensor configuration parameters: nr (sensor number), type, name, enable, ip, port, id, ri (read interval), etc. Use nr with delete=1 to remove."),
@@ -479,8 +501,25 @@ export function registerTools(server, getClient) {
         const data = await getClient().command("/iw", { activeMode: args.activeMode });
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
     });
-    server.tool("get_zigbee_devices", "Get ZigBee device list (gateway mode) or discovered devices. ESP32-C5 only. Equivalent to /zg.", {}, async () => {
-        const data = await getClient().get("/zg");
+    server.tool("get_zigbee_devices", "Get ZigBee gateway device list with logical devices, manufacturer/model, battery, LQI and online status. ESP32-C5 gateway mode only. Equivalent to /zg (action=list).", {
+        search: z.string().optional().describe("Filter devices by name/manufacturer/model (case-insensitive substring)."),
+        onlyRegistered: z.boolean().optional().describe("If true, only return devices already bound to a sensor."),
+    }, async (args) => {
+        const params = { action: "list" };
+        if (args.search)
+            params.search = args.search;
+        if (args.onlyRegistered)
+            params.only_registered = 1;
+        const data = await getClient().get("/zg", params);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("get_zigbee_discovered_devices", "Get the raw ZigBee discovery list (all devices seen by the gateway, including not-yet-registered ones) with discovered_at, last_rx age and online status. ESP32-C5 gateway mode only. Equivalent to /zd.", {
+        search: z.string().optional().describe("Filter devices by name/manufacturer/model (case-insensitive substring)."),
+    }, async (args) => {
+        const params = {};
+        if (args.search)
+            params.search = args.search;
+        const data = await getClient().get("/zd", params);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     });
     server.tool("zigbee_join_network", "Join a ZigBee network (client mode) or open network for joining (gateway mode). ESP32-C5 only. Equivalent to /zj.", {
@@ -492,8 +531,107 @@ export function registerTools(server, getClient) {
         const data = await getClient().command("/zj", params);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     });
-    server.tool("get_zigbee_status", "Get ZigBee radio status. ESP32-C5 only. Equivalent to /zs.", {}, async () => {
+    server.tool("get_zigbee_status", "Get ZigBee radio status (active, connected, mode gateway/client, join window remaining, channel). ESP32-C5 only. Equivalent to /zs.", {}, async () => {
         const data = await getClient().get("/zs");
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_open_network", "Open the ZigBee gateway network for device pairing (permit-join). ESP32-C5 gateway mode only. Equivalent to /zo. Use duration=0 to close the join window. Changing the channel triggers a factory reset + reboot.", {
+        duration: z.number().min(0).max(180).optional().describe("Permit-join window in seconds (0 closes it, default 60, max 180)."),
+        channel: z.number().min(11).max(26).optional().describe("ZigBee channel 11-26. Changing it wipes the network and reboots."),
+        wifiOff: z.boolean().optional().describe("On a WiFi-only gateway, temporarily disable WiFi during join to reduce 2.4GHz interference."),
+    }, async (args) => {
+        const params = {};
+        if (args.duration !== undefined)
+            params.duration = args.duration;
+        if (args.channel !== undefined)
+            params.channel = args.channel;
+        if (args.wifiOff)
+            params.wifi_off = 1;
+        const data = await getClient().command("/zo", params);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_permit_join", "Open the gateway permit-join window for a fixed duration. ESP32-C5 gateway mode only. Equivalent to /zg?action=permit.", {
+        duration: z.number().min(1).max(600).optional().describe("Permit-join window in seconds (default 60, max 600)."),
+    }, async (args) => {
+        const params = { action: "permit" };
+        if (args.duration !== undefined)
+            params.duration = args.duration;
+        const data = await getClient().command("/zg", params);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_clear_new_flags", "Clear the 'new device' flags and (in gateway mode) close the permit-join window. Call after finishing a pairing scan. ESP32-C5 only. Equivalent to /zc.", {}, async () => {
+        const data = await getClient().command("/zc");
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_leave_network", "Leave/disconnect from the current ZigBee network (client mode). ESP32-C5 client mode only. Equivalent to /zl.", {}, async () => {
+        const data = await getClient().command("/zl");
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_query_basic", "Re-interview a device's Basic Cluster (manufacturer/model/version). Useful when a device shows up as 'Unknown' or with a wrong manufacturer. ESP32-C5 gateway mode only. Equivalent to /zg?action=query_basic.", {
+        ieee: z.string().describe("Device IEEE address, e.g. '0x7C3E8237BA8C0000'."),
+        endpoint: z.number().min(1).max(240).optional().describe("Endpoint to query (default 1)."),
+    }, async (args) => {
+        const params = { action: "query_basic", ieee: args.ieee };
+        if (args.endpoint !== undefined)
+            params.endpoint = args.endpoint;
+        const data = await getClient().command("/zg", params);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_query_device_data", "Request a fresh data read from a device (Tuya DP query / attribute read) to refresh its sensor values. ESP32-C5 gateway mode only. Equivalent to /zg?action=query_device_data.", {
+        ieee: z.string().describe("Device IEEE address, e.g. '0x7C3E8237BA8C0000'."),
+        endpoint: z.number().min(1).max(240).optional().describe("Endpoint to query (default 1)."),
+    }, async (args) => {
+        const params = { action: "query_device_data", ieee: args.ieee };
+        if (args.endpoint !== undefined)
+            params.endpoint = args.endpoint;
+        const data = await getClient().command("/zg", params);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_send_logical", "Switch a logical device (e.g. a valve) ON or OFF via its logical-device name. Handles standard ZCL on/off and Tuya DP writes automatically. ESP32-C5 gateway mode only. Equivalent to /zg?action=send_logical.", {
+        ieee: z.string().describe("Device IEEE address, e.g. '0xA4C138XXXXXXXXXX'."),
+        logical: z.string().describe("Logical device name as listed in the device's logical_devices."),
+        value: z.number().describe("Value to send: 0 = OFF, non-zero = ON (or a raw value for value-type DPs)."),
+    }, async (args) => {
+        const data = await getClient().command("/zg", {
+            action: "send_logical",
+            ieee: args.ieee,
+            logical: args.logical,
+            value: args.value,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_remove_device", "Remove a device from the ZigBee network: unbinds all sensors using it and removes it from the stack. ESP32-C5 gateway mode only. Equivalent to /zg?action=remove.", {
+        ieee: z.string().describe("Device IEEE address to remove, e.g. '0x7C3E8237BA8C0000'."),
+    }, async (args) => {
+        const data = await getClient().command("/zg", { action: "remove", ieee: args.ieee });
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_rejoin_device", "Force a device rejoin with sequence reset and a 60s join window. Useful when a device stopped responding. ESP32-C5 gateway mode only. Equivalent to /zg?action=rejoin_device.", {
+        ieee: z.string().describe("Device IEEE address, e.g. '0x7C3E8237BA8C0000'."),
+    }, async (args) => {
+        const data = await getClient().command("/zg", { action: "rejoin_device", ieee: args.ieee });
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_clear_identity", "Clear a device's cached identity (manufacturer/model/logical devices) WITHOUT a physical leave/rejoin, forcing re-identification. Repairs a cross-contaminated manufacturer. ESP32-C5 gateway mode only. Equivalent to /zg?action=clear_identity.", {
+        ieee: z.string().describe("Device IEEE address, e.g. '0x7C3E8237BA8C0000'."),
+    }, async (args) => {
+        const data = await getClient().command("/zg", { action: "clear_identity", ieee: args.ieee });
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_rename_device", "Set (or clear) a device's custom friendly name. ESP32-C5 gateway mode only. Equivalent to /zg?action=rename.", {
+        ieee: z.string().describe("Device IEEE address, e.g. '0x7C3E8237BA8C0000'."),
+        name: z.string().describe("New friendly name. Pass an empty string to clear the custom name."),
+    }, async (args) => {
+        const data = await getClient().command("/zg", { action: "rename", ieee: args.ieee, name: args.name });
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    });
+    server.tool("zigbee_clear_logical_devices", "Clear the persisted logical-device registry. Pass ieee to limit to one device, omit it to wipe the whole registry (recovers from orphan/stale entries). ESP32-C5 gateway mode only. Equivalent to /zg?action=clear_logical_devices.", {
+        ieee: z.string().optional().describe("Optional device IEEE address (16 hex chars, with or without 0x). Omit to clear ALL logical devices."),
+    }, async (args) => {
+        const params = { action: "clear_logical_devices" };
+        if (args.ieee)
+            params.ieee = args.ieee;
+        const data = await getClient().command("/zg", params);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     });
     // ─── BLE (ESP32 only) ───────────────────────────────────────────────

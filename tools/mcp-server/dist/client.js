@@ -39,6 +39,22 @@ export class OpenSprinklerClient {
             throw new Error(`Non-JSON response from ${url.pathname}: ${text.slice(0, 200)}`);
         }
     }
+    /** GET request that returns raw text (useful for CSV, plain text, etc.). */
+    async getRaw(path, params = {}) {
+        const url = new URL(path, this.baseUrl);
+        url.searchParams.set("pw", this.pwHash);
+        for (const [k, v] of Object.entries(params)) {
+            if (v !== undefined)
+                url.searchParams.set(k, String(v));
+        }
+        const res = await fetch(url.toString(), {
+            signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status} ${res.statusText} – ${url.pathname}`);
+        }
+        return res.text();
+    }
     /** Convenience: call GET and check for `{"result":1}` success. */
     async command(path, params = {}) {
         return this.get(path, params);

@@ -703,6 +703,13 @@ static bool     gw_read_pending = false;
 static unsigned long gw_read_time = 0;
 static uint64_t gw_read_pending_ieee = 0;     // IEEE of the pending active read
 static uint16_t gw_read_pending_cluster = 0;  // cluster of the pending active read
+// Set by zbReadBasicCluster() after a Basic response was handled; the pending
+// read slot is released on the next loop tick instead of inside the callback.
+// A multi-attribute (batch) Basic read is delivered as several back-to-back
+// zbReadBasicCluster() calls in ONE response frame — clearing gw_read_pending
+// on the first attribute made every following attribute (manufacturer 0x0004,
+// model 0x0005, ...) be dropped, so non-Tuya devices never got their name.
+static volatile bool gw_read_clear_after_basic = false;
 static uint64_t gw_read_timeout_ieee = 0;     // IEEE that most recently timed out
 static unsigned long gw_read_block_until_ms = 0; // per-device cooldown after timeout
 // Shorter read window: a reachable device answers a Basic/Tuya read in well
@@ -851,11 +858,33 @@ static void gw_queue_basic_cluster_query(uint64_t ieee_addr, uint16_t short_addr
 
 static void gw_process_basic_query_queue() {
     if (!Zigbee.started() || !Zigbee.connected()) return;
+    // Release a Basic read slot that was held open across a (possibly
+    // multi-attribute) response so the whole batch could be processed.
+    if (gw_read_clear_after_basic) {
+        gw_read_clear_after_basic = false;
+        gw_read_pending = false;
+    }
     if (gw_read_pending) return;
     if (gw_basic_query_queue.empty()) return;
 
     unsigned long now = millis();
     auto& item = gw_basic_query_queue.front();
+
+    // Settling window after another device's Basic read just timed out.
+    // A sleepy Tuya device frequently answers its Basic read slightly AFTER our
+    // 4 s timeout, and that response arrives via the no-address
+    // zbReadBasicCluster() callback which can only attribute it to whatever
+    // device is currently the pending read. If we immediately start
+    // interviewing a *different* device here, the late response would be
+    // stamped onto the wrong device — the reported "registration gets mixed up
+    // when several devices join at once". By deferring a different device until
+    // the settling window elapses, no read is pending meanwhile, so the stray
+    // late response is safely dropped instead of misattributed.
+    if (gw_read_timeout_ieee != 0 && item.ieee_addr != gw_read_timeout_ieee &&
+        (long)(gw_read_block_until_ms - now) > 0) {
+        return;
+    }
+
     if ((int32_t)(now - item.next_query_ms) < 0) return;
 
     bool is_tuya_dev = false;
@@ -2886,9 +2915,13 @@ public:
             gw_add_responsive_device(short_addr, gw_read_pending_ieee, 1);
             gw_handleBasicClusterResponse(short_addr, attribute, gw_read_pending_ieee);
         }
-        // Always clear the pending flag.
+        // Defer releasing the read slot to the next loop tick. A batch Basic
+        // read arrives as several back-to-back zbReadBasicCluster() calls in the
+        // same response frame; clearing gw_read_pending here would drop every
+        // attribute after the first (including manufacturer/model). All batch
+        // attributes are processed synchronously before the loop runs again.
         if (gw_read_pending && gw_read_pending_cluster == ZB_ZCL_CLUSTER_ID_BASIC) {
-            gw_read_pending = false;
+            gw_read_clear_after_basic = true;
         }
     }
 
