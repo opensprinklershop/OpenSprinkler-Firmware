@@ -2166,6 +2166,7 @@ void check_weather() {
 			wt_restricted = 0; // reset wt_rawData, errCode, and md_scales array
 			wt_rawData[0] = 0;
 			wt_errCode = HTTP_RQT_STALE;
+			wt_errReason = WT_REASON_STALE;
 			md_N = 0;
 		}
 	} else if (!os.checkwt_lasttime || (ntz > os.checkwt_lasttime + check_interval)) {

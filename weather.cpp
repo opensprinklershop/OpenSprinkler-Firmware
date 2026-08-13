@@ -37,6 +37,7 @@ unsigned char md_N = 0;
 unsigned char mda = 0;
 char wt_rawData[TMP_BUFFER_SIZE];
 int wt_errCode = HTTP_RQT_PENDING;
+int wt_errReason = WT_REASON_PENDING;
 unsigned char wt_monthly[12] = {100,100,100,100,100,100,100,100,100,100,100,100};
 unsigned char wt_restricted = 0;
 
@@ -67,7 +68,13 @@ static void getweather_callback(char* buffer) {
 		DEBUG_PRINT(F("errCode: "));
 		DEBUG_PRINTLN(tmp_buffer);
 		wt_errCode = atoi(tmp_buffer);
-		if(wt_errCode==0) os.checkwt_success_lasttime = tnow;
+		if(wt_errCode==0) {
+			os.checkwt_success_lasttime = tnow;
+			wt_errReason = WT_REASON_OK;
+		} else {
+			// weather server was reached but reported an application-level error
+			wt_errReason = WT_REASON_SERVER_ERROR;
+		}
 	}
 
 	// then only parse scale if errCode is 0
@@ -164,7 +171,10 @@ static void getweather_callback_with_peel_header(char* buffer) {
 }
 
 void GetWeather() {
-	if(!os.network_connected()) return;
+	if(!os.network_connected()) {
+		wt_errReason = WT_REASON_NETWORK_DOWN;
+		return;
+	}
 	
 	// Safety check: Don't attempt network operations with critically low heap
 	// This prevents crashes like "udp_new_ip_type: Required to lock TCPIP core"
@@ -173,6 +183,7 @@ void GetWeather() {
 	if (free_heap < 10000) {
 		DEBUG_PRINTF("[WEATHER] Skipping - heap too low (%d bytes)\n", free_heap);
 		wt_errCode = HTTP_RQT_NOT_RECEIVED;
+		wt_errReason = WT_REASON_LOW_MEMORY;
 		return;
 	}
 	#endif
@@ -200,6 +211,13 @@ void GetWeather() {
 	// load weather url to tmp_buffer
 	char *host = tmp_buffer;
 	os.sopt_load(SOPT_WEATHERURL, host);
+
+	if (!host[0]) {
+		wt_errCode = HTTP_RQT_NOT_RECEIVED;
+		wt_errReason = WT_REASON_NO_URL;
+		DEBUG_PRINTLN(F("[WEATHER] No weather server URL configured"));
+		return;
+	}
 
 	// Parse protocol and extract host/port
 	char *host_start = host;
@@ -247,7 +265,22 @@ void GetWeather() {
 	strcat(ether_buffer, user_agent_string);
 	strcat(ether_buffer, "\r\n\r\n");
 
+#if defined(ESP32) || defined(ESP8266)
+	// DNS pre-check: distinguishes a name-resolution failure from a later
+	// TLS/connect error, so the diagnostic reason is precise.
+	{
+		IPAddress wt_ip;
+		if (!os.resolve_host(host_start, wt_ip)) {
+			wt_errCode = HTTP_RQT_CONNECT_ERR;
+			wt_errReason = WT_REASON_DNS_FAILED;
+			DEBUG_PRINTF("[WEATHER] DNS lookup failed for %s\n", host_start);
+			return;
+		}
+	}
+#endif
+
 	wt_errCode = HTTP_RQT_NOT_RECEIVED;
+	wt_errReason = WT_REASON_PENDING;
 	DEBUG_PRINT(ether_buffer);
 #if defined(OS_AVR)
 	int ret = os.send_http_request(host_start, ether_buffer, getweather_callback_with_peel_header);
@@ -261,6 +294,13 @@ void GetWeather() {
 	if(ret!=HTTP_RQT_SUCCESS) {
 		if(wt_errCode < 0) wt_errCode = ret;
 		// if wt_errCode > 0, the call is successful but weather script may return error
+		// map the transport-level failure to a diagnostic reason
+		switch(ret) {
+			case HTTP_RQT_CONNECT_ERR:  wt_errReason = WT_REASON_CONNECT_FAILED; break;
+			case HTTP_RQT_TIMEOUT:      wt_errReason = WT_REASON_TIMEOUT; break;
+			case HTTP_RQT_EMPTY_RETURN: wt_errReason = WT_REASON_EMPTY_RESPONSE; break;
+			default:                    wt_errReason = WT_REASON_NO_RESPONSE; break;
+		}
 	}
 }
 

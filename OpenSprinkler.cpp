@@ -3011,6 +3011,19 @@ static AsyncHttpRequestParams* s_http_async_pending = nullptr;
 
 } // namespace
 
+#if defined(ARDUINO)
+bool OpenSprinkler::resolve_host(const char* host, IPAddress& ip) {
+	if (!host || !host[0]) return false;
+	#if defined(ESP32)
+	return resolve_host_with_cache(host, ip);
+	#elif defined(ESP8266)
+	return WiFi.hostByName(host, ip) == 1;
+	#else
+	return false;
+	#endif
+}
+#endif
+
 int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*), bool usessl, uint16_t timeout, bool expect_response, uint16_t resp_buf_size) {
 	uint16_t effective_timeout = clamp_http_timeout(timeout);
 	bool shared_client = false;

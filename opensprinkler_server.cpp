@@ -1667,8 +1667,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("{$S},\"wtdata\":"), opt_buf);
 
 		emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
-		bfill.emit_p(PSTR(",\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
+		bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
 					 wt_errCode,
+					 wt_errReason,
 					 wt_restricted,
 					 SOPT_DEVICE_NAME);
 	}
@@ -2849,7 +2850,7 @@ void server_json_matter(OTF_PARAMS_DEF) {
 	             os.status.rain_delayed,
 	             os.iopts[IOPT_WATER_PERCENTAGE]);
 	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
-	bfill.emit_p(PSTR(",\"wterr\":$D"), wt_errCode);
+	bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D"), wt_errCode, wt_errReason);
 
 	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);
@@ -6621,7 +6622,7 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 	             os.status.rain_delayed,
 	             os.iopts[IOPT_WATER_PERCENTAGE]);
 	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
-	bfill.emit_p(PSTR(",\"wterr\":$D"), wt_errCode);
+	bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D"), wt_errCode, wt_errReason);
 
 	bfill.emit_p(PSTR("}"));
 	send_packet(OTF_PARAMS);

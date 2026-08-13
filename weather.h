@@ -34,10 +34,26 @@
 
 #define MAX_N_MD_SCALES 14 // maximum number of days that can be stored in md_scales array
 
+// Weather status reason codes (diagnostic detail shown in System Diagnostics).
+// Independent of wt_errCode: explains *why* the last weather update failed.
+#define WT_REASON_OK             0  // last update successful
+#define WT_REASON_PENDING        1  // no update attempted yet / in progress
+#define WT_REASON_NETWORK_DOWN   2  // no network connection
+#define WT_REASON_LOW_MEMORY     3  // free heap too low to start request
+#define WT_REASON_NO_URL         4  // weather server URL not configured
+#define WT_REASON_CONNECT_FAILED 5  // could not connect to weather server
+#define WT_REASON_TIMEOUT        6  // request timed out
+#define WT_REASON_EMPTY_RESPONSE 7  // server returned an empty response
+#define WT_REASON_NO_RESPONSE    8  // no/invalid data received from server
+#define WT_REASON_SERVER_ERROR   9  // weather server returned an error code (errCode>0)
+#define WT_REASON_STALE          10 // cached weather data is stale
+#define WT_REASON_DNS_FAILED     11 // weather server hostname could not be resolved
+
 void GetWeather();
 
 extern char wt_rawData[];
 extern int wt_errCode;
+extern int wt_errReason;
 extern unsigned char md_scales[]; // multiday watering scales
 extern unsigned char md_N; // number of elements in the md_scales array
 extern unsigned char mda;
