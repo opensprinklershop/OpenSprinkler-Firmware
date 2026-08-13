@@ -6,6 +6,30 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(225)] — veröffentlicht 2026-08-13
+
+### Added
+- **Detaillierte Wetter-Diagnosegründe (`wtreason`) inkl. DNS-Vorabprüfung**: Zusätzlich zum bisherigen `wt_errCode` liefert die Firmware jetzt einen zweiten Diagnosewert `wt_errReason` (Feld `"wtreason"`, ausgegeben in `/jc`, Matter- und Zigbee-Status), der bei **jedem** Fehlschlag gesetzt wird und erklärt, *warum* der Wetterdienst „Fehler" meldet: kein Netz, wenig Speicher, keine Wetter-URL konfiguriert, Verbindung fehlgeschlagen, Timeout, leere/keine Antwort, Serverfehler, veraltete Daten oder **DNS-Lookup fehlgeschlagen**. Vor dem Senden führt `GetWeather()` zusätzlich eine DNS-Vorabprüfung durch, um DNS-Probleme sauber von TLS-/Verbindungsfehlern zu unterscheiden. Die App zeigt den Grund im System-Diagnose-Bereich als Klartext an.
+- **Persistente „Zuletzt gesehen"-Erfassung für Zigbee-Geräte**: Jedes Zigbee-Gerät führt nun einen Zeitstempel des letzten Kontakts mit, sodass die App zuverlässig erkennen kann, welche Geräte aktiv bzw. offline sind.
+- **Ausgehende Benachrichtigungs-Drosselung (Offline-Backoff)**: Bei verbundenem lokalem Netz **ohne** Internet blockierten synchron gesendete Ereignisse (IFTTT, E-Mail, InfluxDB, Push-Weiterleitung) bisher den Hauptloop bei jedem Verbindungs-Timeout — nach einigen Stunden war das Gerät nicht mehr erreichbar und nur ein Reset half. Nach drei aufeinanderfolgenden Verbindungsfehlern pausiert die Firmware die internetgebundenen Kanäle jetzt für 5 Minuten; lokale Kanäle (MQTT-Broker) und das In-Memory-Benachrichtigungslog (`/nl`) bleiben unberührt, sodass die App nichts verpasst. Jeder erfolgreiche Sendevorgang hebt die Pause sofort wieder auf.
+
+### Changed
+- **Zigbee-Gateway: robustere und sparsamere Geräteerkennung**: Die Tuya-Geräteerkennung wurde optimiert (weniger redundante Abfragen, sinnvollere Standard-Freundlichnamen). Unidentifizierte Geräte werden zudem periodisch „aufgeweckt", damit schlafende Tuya-Endgeräte (z. B. GIEX-Ventile/-Timer) doch noch Hersteller/Modell melden und korrekt identifiziert werden.
+- **Zigbee-Freundlichname bevorzugt die DB-Beschreibung**: Beim Auflösen des Anzeigenamens über die Geräte-Datenbank wird nun die Beschreibung (z. B. „GIEX GX03 2-Zonen-Bewässerungstimer") bevorzugt, statt eines generischen Hersteller-/Modellnamens.
+- **influxdb-cpp-Submodul aktualisiert**.
+
+### Fixed
+- **WLAN-Reset im Matter-Modus verursachte Boot-Schleife**: Ein WLAN-Reset per Tastenkombination im Matter-Modus startete das Gerät in eine Endlos-Boot-Schleife, weil der Matter-/CHIP-Stack im reinen Access-Point-Modus initialisiert wurde (auf dem ESP32-C5 ein Absturz). Die Matter-Initialisierung wird im WiFi-AP-Modus jetzt übersprungen, sodass die AP-Konfigurationsseite („OSAP-…") normal erscheint.
+- **Zigbee: Geräte-Verwechslung (Hersteller-/Modell-Kreuzkontamination) verhindert**: Antworten schlafender Tuya-Geräte auf Basic-Cluster-Abfragen ohne Quelladresse wurden teils dem falschen Gerät zugeordnet, sodass mehrere unterschiedliche Geräte denselben Hersteller-/Modellnamen erhielten. Die Zuordnung erfolgt jetzt anhand der eindeutigen IEEE-Adresse; es wird zudem kein Hersteller mehr „erfunden".
+- **Zigbee: Puffer-Überlauf in Gerätelisten behoben (`/zg`, `/zd`, `/bd`, `/fy`)**: Große Listen (z. B. GX02 mit vielen logischen Geräten) überschritten den 8-KB-Ethernet-Puffer und wurden mitten im JSON abgeschnitten, worauf die App „Fehler beim Verbinden mit dem Gerät" meldete. Die Ausgabe wird nun während der Erzeugung strömend geleert (Flush je Eintrag).
+- **Zigbee: doppelte Registrierung logischer Geräte bei Hintergrund-Lookups verhindert**.
+- **Zigbee: Absturz/Endlos-Wiederholung bei Hintergrund-Datenbank-Lookups verhindert (baumelnde Geräte-Referenz)**: Ein gleichzeitiges Geräte-Announce während eines blockierenden HTTP-Lookups konnte den internen Gerätevektor umlagern und eine baumelnde Referenz hinterlassen — das Ergebnis wurde in freigegebenen Speicher geschrieben, wodurch das Gerät endlos neu abgefragt wurde. Der Lookup merkt sich jetzt die IEEE-Adresse und holt das Gerät nach dem Aufruf frisch.
+- **Zigbee: große Datenbank-Antworten werden nicht mehr abgeschnitten**: Die Geräte-DB-Antwort für Geräte mit vielen Sensoren (z. B. GX03) überschritt 4 KB und wurde abgeschnitten, sodass der Name nicht aufgelöst werden konnte. Für Lookups steht nun ein größerer (PSRAM-)Antwortpuffer bereit.
+- **E-Mail-Darstellung korrigiert (Thunderbird zeigte leere Mails)**: Eine fehlende Leerzeile vor der ersten MIME-Boundary sowie eine falsche Content-Transfer-Encoding-Deklaration führten dazu, dass strenge Clients (Thunderbird) den Nachrichtentext nicht anzeigten. Klartext-Benachrichtigungen werden nun als `text/plain` versendet (ohne HTML-Rahmen).
+- **Nicht-Arduino-Build (OSPi/Linux) repariert**: Die `resolve_host`-Deklaration wird jetzt korrekt für Nicht-Arduino-Plattformen abgeschirmt, sodass die native Kompilierung wieder durchläuft.
+
+---
+
 ## [2.4.0(224)] — veröffentlicht 2026-08-09
 
 ### Added
