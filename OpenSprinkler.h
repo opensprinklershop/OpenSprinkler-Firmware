@@ -449,7 +449,9 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static unsigned char start_network();  // initialize network with the given mac and port
 	static unsigned char start_ether();  // initialize ethernet with the given mac and port
 	static bool network_connected();  // check if the network is up
+#if defined(ARDUINO)
 	static bool resolve_host(const char* host, IPAddress& ip);  // DNS lookup helper (ARDUINO only)
+#endif
 	static bool load_hardware_mac(unsigned char* buffer, bool wired=false);  // read hardware mac address
 	static time_os_t now_tz();
 	// -- station names and attributes
