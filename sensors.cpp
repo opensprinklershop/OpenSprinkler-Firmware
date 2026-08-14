@@ -2999,15 +2999,17 @@ void add_influx_data(SensorBase *sensor) {
   }
 
   #if defined(ESP8266) || defined(ESP32)
-  Point sensor_data("analogsensor");
-  sensor_data.addTag("devicename", devname_safe);
-  snprintf(tmp_buffer, 10, "%d", sensor->nr);
-  sensor_data.addTag("nr", tmp_buffer);
-  sensor_data.addTag("name", sensor_name_safe);
-  sensor_data.addTag("unit", unit_safe);
-  sensor_data.addField("native_data", sensor->last_native_data);
-  sensor_data.addField("data", sensor->last_data);
-  os.influxdb.write_influx_data(sensor_data);
+  char devesc[128], nameesc[64], unitesc[32];
+  OSInfluxDB::influx_escape(devesc, sizeof(devesc), devname_safe);
+  OSInfluxDB::influx_escape(nameesc, sizeof(nameesc), sensor_name_safe);
+  OSInfluxDB::influx_escape(unitesc, sizeof(unitesc), unit_safe);
+  char tags[256];
+  snprintf(tags, sizeof(tags), "devicename=%s,nr=%d,name=%s,unit=%s",
+           devesc, (int)sensor->nr, nameesc, unitesc);
+  char fields[64];
+  snprintf(fields, sizeof(fields), "native_data=%lui,data=%.2f",
+           (unsigned long)sensor->last_native_data, sensor->last_data);
+  os.influxdb.write_influx_line("analogsensor", tags, fields);
 
   #else
   // Backoff: skip InfluxDB 60s after failure
@@ -3829,6 +3831,21 @@ void check_monitors() {
         // If reset_seconds > 0, we intentionally use pulse behavior: stop only
         // on each new activation edge (or periodic re-activation), not every cycle.
         stop_monitor_action(mon);
+      } else if (!stopOnly && mon->reset_seconds == 0 && mon->zone > 0 && mon->prog == 0) {
+        // Continuously re-assert while active (start/stop mode): the monitor
+        // started a zone with a finite maxRuntime; once the scheduler stops that
+        // zone after maxRuntime, mon->active stays latched true (hysteresis keeps
+        // it active until the deactivation threshold is reached). Without this,
+        // e.g. a cistern-refill MIN monitor would fill exactly once and then
+        // never refill again in the background, even though the condition is
+        // still met (ticket #331). Restart the zone whenever it is no longer
+        // running so the output keeps being enforced until deactivation. Limited
+        // to a pure zone monitor (no program) so we can check station_qid
+        // reliably and avoid stacking repeated program starts.
+        uint sid = mon->zone - 1;
+        if (sid < os.nstations && pd.station_qid[sid] == 0xFF) {
+          start_monitor_action(mon);
+        }
       }
     }
 

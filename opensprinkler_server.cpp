@@ -4098,7 +4098,7 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
  * Checks if required interfaces (I2C/ASB, RS485, MQTT, Zigbee, BLE) are
  * available for the sensor types currently configured.
  */
-void emit_sensor_warnings() {
+void emit_sensor_warnings(bool mqtt_suspended_for_lowmem = false) {
 	bool has_asb = false, has_rs485 = false, has_mqtt = false;
 	bool has_zigbee = false, has_ble = false;
 	uint16_t detected = get_asb_detected_boards();
@@ -4140,7 +4140,12 @@ void emit_sensor_warnings() {
 
 	// MQTT sensor but MQTT not connected
 	if (has_mqtt) {
-		if (!os.mqtt.enabled()) {
+		// On ESP8266, /sl temporarily suspends MQTT to free heap; in that case
+		// _enabled/connected are transiently false, so skip the warnings here to
+		// avoid a bogus MQTT_DISABLED (MQTT is actually enabled/connected).
+		if (mqtt_suspended_for_lowmem) {
+			// MQTT known-enabled but suspended for this response: no warning.
+		} else if (!os.mqtt.enabled()) {
 			if (!first) bfill.emit_p(PSTR(","));
 			bfill.emit_p(PSTR("\"MQTT_DISABLED\""));
 			first = false;
@@ -4204,16 +4209,8 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 	bool sl_suspended_services = false;
 #if defined(ESP8266)
 	// On ESP8266, /sl can run out of heap after long uptimes or large restores.
-	// Temporarily suspend optional subsystems to free memory for JSON generation.
-	if (freeMemory() < 8192) {
-		if (OSMqtt::enabled()) {
-			OSMqtt::suspend();
-			sl_suspended_services = true;
-		}
-		os.influxdb.suspend();
-		delay(5);
-		yield();
-	}
+	// Free the MQTT heap only (sensors stay live) to build the JSON response.
+	sl_suspended_services = free_tmp_memory_light();
 #endif
 
 	uint test = 0;
@@ -4244,7 +4241,7 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 		{
 		bfill.emit_p(PSTR("{\"count\":$D,"), sensor_count());
 		bfill.emit_p(PSTR("\"detected\":$D,"), get_asb_detected_boards());
-		emit_sensor_warnings();
+		emit_sensor_warnings(sl_suspended_services);
 		bfill.emit_p(PSTR("\"sensors\":["));
 		sensorconfig_json(OTF_PARAMS);
 		bfill.emit_p(PSTR("]"));
@@ -4254,8 +4251,7 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 
 #if defined(ESP8266)
 	if (sl_suspended_services) {
-		OSMqtt::resume();
-		os.influxdb.resume();
+		restore_tmp_memory_light(sl_suspended_services);
 	}
 #endif
 	handle_return(HTML_OK);
@@ -5670,6 +5666,32 @@ void restore_tmp_memory(size_t needed) {
 	os.influxdb.resume();
 
 	DEBUG_PRINTF("[MEM] Restored: free=%u\n", (unsigned)freeMemory());
+#endif
+}
+
+// Lightweight variant for read-only endpoints (/sl): only frees the MQTT client
+// heap (~7 KB on ESP8266) under memory pressure. Unlike free_tmp_memory() it does
+// NOT save+release the sensor subsystem, so there is no flash I/O or sensor
+// re-init cost per request. InfluxDB is stateless (holds no heap) and needs no
+// suspend. Returns true if MQTT was suspended (caller must restore it).
+bool free_tmp_memory_light() {
+#if defined(ESP8266)
+	if (freeMemory() >= 8192) return false;
+	if (!OSMqtt::enabled()) return false;
+	OSMqtt::suspend();
+	delay(5);
+	yield();
+	return true;
+#else
+	return false;
+#endif
+}
+
+void restore_tmp_memory_light(bool was_suspended) {
+#if defined(ESP8266)
+	if (was_suspended) OSMqtt::resume();
+#else
+	(void)was_suspended;
 #endif
 }
 

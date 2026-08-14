@@ -1760,6 +1760,16 @@ build_release_env() {
     copy_to_dist "$env"
 }
 
+# Safety net: the OTA distribution dir (upgrade/) must only ever hold clean
+# release builds. ENABLE_DEBUG compiles distinctive serial-log string literals
+# into the image (e.g. "server_sensor_config"); a release build (debug flags
+# disabled) contains none of them. Returns 0 if the binary looks debug-enabled.
+_binary_has_debug() {
+    local bin="$1"
+    [[ -f "$bin" ]] || return 1
+    strings -n 6 "$bin" 2>/dev/null | grep -q "server_sensor_config"
+}
+
 # Copy firmware binaries to upgrade directory
 copy_to_upgrade() {
     mkdir -p "$UPGRADE_DIR"
@@ -1773,6 +1783,11 @@ copy_to_upgrade() {
     for f in "$zigbee_bin" "$matter_bin" "$esp8266_bin"; do
         if [[ ! -f "$f" ]]; then
             error "Binary not found: ${f}"
+            return 1
+        fi
+        if _binary_has_debug "$f"; then
+            error "Refusing to publish ${f##*/}: binary contains ENABLE_DEBUG output — OTA ${UPGRADE_DIR}/ must stay release-only."
+            error "Rebuild without debug flags before syncing OTA (e.g. ./fw.sh deploy / ./fw.sh release)."
             return 1
         fi
     done
@@ -1809,6 +1824,11 @@ copy_one_to_upgrade() {
     if [[ ! -f "$src" ]]; then
         error "Binary not found: ${src}"
         return 1
+    fi
+    if _binary_has_debug "$src"; then
+        warn "Skipping upgrade/${dest_name}: binary contains ENABLE_DEBUG output — OTA ${UPGRADE_DIR}/ must stay release-only."
+        warn "Debug/monitor builds are not published to OTA; rebuild without debug to sync (./fw.sh deploy ${env##*-})."
+        return 0
     fi
     cp "$src" "${UPGRADE_DIR}/${dest_name}"
     ok "upgrade/${dest_name} synced with current build"

@@ -56,12 +56,12 @@ void OSInfluxDB::set_influx_config(ArduinoJson::JsonDocument &doc) {
     size_t size = ArduinoJson::serializeJson(doc, (char*)tmp_buffer, TMP_BUFFER_SIZE_L);
     remove_file(INFLUX_CONFIG_FILE);
     file_write_block(INFLUX_CONFIG_FILE, tmp_buffer, 0, size);
-    #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+    #if defined(OSPI)
     if (client) {
         delete client;
         client = NULL;
     }
-    #else
+    #elif !defined(ESP8266) && !defined(ESP32)
     client = NULL;
     #endif
     enabled = doc["en"];
@@ -84,12 +84,12 @@ void OSInfluxDB::set_influx_config(const char *data) {
         file_write_block(INFLUX_CONFIG_FILE, "}", size + 1, 1);
     }
 
-    #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+    #if defined(OSPI)
     if (client) {
         delete client;
         client = NULL;
     }
-    #else
+    #elif !defined(ESP8266) && !defined(ESP32)
     client = NULL;
     #endif
     enabled = false;
@@ -160,52 +160,112 @@ boolean OSInfluxDB::isEnabled() {
 }
 
 void OSInfluxDB::suspend() {
+#if defined(OSPI)
     if (client) { delete client; client = nullptr; }
     enabled = false;
     initialized = false;
+#endif
+    // ESP8266/ESP32: stateless sender holds no resources -> nothing to free.
 }
 
 void OSInfluxDB::resume() {
+#if defined(OSPI)
     init(); // re-reads from stored config
+#endif
+    // ESP8266/ESP32: stateless sender -> nothing to restore.
 }
 
 #if defined(ESP8266) || defined(ESP32)
 OSInfluxDB::~OSInfluxDB() {
-    if (client) delete client;
+    // Stateless sender: no persistent client to free.
 }
 
-void OSInfluxDB::write_influx_data(Point &sensor_data) {
+size_t OSInfluxDB::influx_escape(char* dst, size_t cap, const char* src) {
+    size_t o = 0;
+    if (!dst || cap == 0) return 0;
+    for (; src && *src; src++) {
+        char c = *src;
+        bool esc = (c == ',' || c == '=' || c == ' ' || c == '\t' || c == '\r' || c == '\n');
+        if (o + (esc ? 2u : 1u) >= cap) break;
+        if (esc) dst[o++] = '\\';
+        dst[o++] = c;
+    }
+    dst[o] = 0;
+    return o;
+}
+
+void OSInfluxDB::write_influx_line(const char* measurement, const char* tagset, const char* fieldset) {
+    if (!measurement || !fieldset || !fieldset[0]) return;
+    char line[384];
+    if (tagset && tagset[0])
+        snprintf(line, sizeof(line), "%s,%s %s", measurement, tagset, fieldset);
+    else
+        snprintf(line, sizeof(line), "%s %s", measurement, fieldset);
+    influx_post_line(line);
+}
+
+// Stateless InfluxDB v2 write: read config, build one HTTP POST into ether_buffer
+// and send it via OpenSprinkler::send_http_request (opens/closes the socket and
+// allocates any TLS buffers only for the duration of the request).
+void OSInfluxDB::influx_post_line(const char* line) {
     if (!initialized) init();
-    if (!enabled) 
-        return;
+    if (!enabled || !line || !line[0]) return;
 
-    if (!client) {
-        //Load influx config:
-        ArduinoJson::JsonDocument doc; 
+    // Copy config into locals: the ArduinoJson string values point into
+    // tmp_buffer, which get_influx_config() overwrites and which we reuse below.
+    char url[128]; char org[64]; char bucket[64]; char token[200];
+    int port = 8086;
+    url[0] = org[0] = bucket[0] = token[0] = 0;
+    {
+        ArduinoJson::JsonDocument doc;
         get_influx_config(doc);
-        if (doc["en"] == 0)
-            return;
-        
-        //InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
-        String url = doc["url"];
-        int port = doc["port"];
-        if (port == 0)
-            port = 8086;
-        url = url + ":" + port;
-        client = new InfluxDBClient(url, doc["org"], doc["bucket"], doc["token"], InfluxDbCloud2CACert);
+        if ((int)(doc["en"] | 0) == 0) return;
+        SAFE_STRNCPY(url, (const char*)(doc["url"] | ""), sizeof(url));
+        port = doc["port"] | 8086; if (port == 0) port = 8086;
+        SAFE_STRNCPY(org, (const char*)(doc["org"] | ""), sizeof(org));
+        SAFE_STRNCPY(bucket, (const char*)(doc["bucket"] | ""), sizeof(bucket));
+        SAFE_STRNCPY(token, (const char*)(doc["token"] | ""), sizeof(token));
+    }
+    if (url[0] == 0) return;
+
+    // Parse scheme + host (+ optional inline :port) + path prefix from the URL.
+    bool usessl;
+    const char* rest = url;
+    if (strncmp(rest, "https://", 8) == 0) { usessl = true; rest += 8; }
+    else if (strncmp(rest, "http://", 7) == 0) { usessl = false; rest += 7; }
+    else { usessl = (port == 443); }
+
+    char host[100];
+    const char* slash = strchr(rest, '/');
+    size_t hostlen = slash ? (size_t)(slash - rest) : strlen(rest);
+    if (hostlen == 0 || hostlen >= sizeof(host)) return;
+    memcpy(host, rest, hostlen); host[hostlen] = 0;
+    char* colon = strchr(host, ':');
+    if (colon) { *colon = 0; int p = atoi(colon + 1); if (p > 0) port = p; }
+
+    char pathprefix[64]; pathprefix[0] = 0;
+    if (slash) {
+        strncpy(pathprefix, slash, sizeof(pathprefix) - 1);
+        pathprefix[sizeof(pathprefix) - 1] = 0;
+        size_t pl = strlen(pathprefix);
+        while (pl > 0 && pathprefix[pl - 1] == '/') pathprefix[--pl] = 0; // drop trailing '/'
     }
 
-    if (client) {
-       // Print what are we exactly writing
-        DEBUG_PRINT("Writing: ");
-        DEBUG_PRINTLN(sensor_data.toLineProtocol());
-  
-        // Write point
-        if (!client->writePoint(sensor_data)) {
-            DEBUG_PRINT("influxdb write failed: ");
-            DEBUG_PRINTLN(client->getLastErrorMessage());
-        }     
+    int n = snprintf(ether_buffer, ETHER_BUFFER_SIZE,
+        "POST %s/api/v2/write?org=%s&bucket=%s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Authorization: Token %s\r\n"
+        "User-Agent: OpenSprinkler\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n\r\n%s",
+        pathprefix, org, bucket, host, token, (int)strlen(line), line);
+    if (n <= 0 || n >= (int)ETHER_BUFFER_SIZE) {
+        DEBUG_PRINTLN(F("influxdb: request exceeds buffer"));
+        return;
     }
+
+    os.send_http_request(host, (uint16_t)port, ether_buffer, NULL, usessl, 5000, false);
 }
 
 #elif defined(OSPI)
@@ -237,71 +297,76 @@ OSInfluxDB::~OSInfluxDB() {
 
 
 #if defined(ESP8266) || defined(ESP32) 
+// Build "devicename=<escaped>" into dst.
+static void influx_devicename_tag(char* dst, size_t cap) {
+    char raw[64]; raw[0] = 0;
+    os.sopt_load(SOPT_DEVICE_NAME, raw, sizeof(raw) - 1);
+    const char* pfx = "devicename=";
+    size_t o = 0;
+    while (*pfx && o + 1 < cap) dst[o++] = *pfx++;
+    o += OSInfluxDB::influx_escape(dst + o, cap - o, raw);
+    dst[o] = 0;
+}
+
 void OSInfluxDB::influxdb_send_state(const char *name, int state) {
-	char tmp[TMP_BUFFER_SIZE];
-    Point data("opensprinkler");
-    os.sopt_load(SOPT_DEVICE_NAME, tmp);
-    data.addTag("devicename", tmp);
-	data.addTag("name", name);
-	data.addField("state", state);
-	write_influx_data(data);
+    char tags[256], nameesc[64], fields[48];
+    influx_devicename_tag(tags, sizeof(tags));
+    influx_escape(nameesc, sizeof(nameesc), name);
+    size_t tl = strlen(tags);
+    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
+    snprintf(fields, sizeof(fields), "state=%di", state);
+    write_influx_line("opensprinkler", tags, fields);
 }
 
 void OSInfluxDB::influxdb_send_station(const char *name, uint32_t station, int state) {
-    Point data("opensprinkler");
-	char tmp[TMP_BUFFER_SIZE];
-    os.sopt_load(SOPT_DEVICE_NAME, tmp);
-    data.addTag("devicename", tmp);
-	data.addTag("name", name);
-	data.addField("station", station);
-	data.addField("state", state);
-	write_influx_data(data);
+    char tags[256], nameesc[64], fields[64];
+    influx_devicename_tag(tags, sizeof(tags));
+    influx_escape(nameesc, sizeof(nameesc), name);
+    size_t tl = strlen(tags);
+    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
+    snprintf(fields, sizeof(fields), "station=%lui,state=%di", (unsigned long)station, state);
+    write_influx_line("opensprinkler", tags, fields);
 }
 
 void OSInfluxDB::influxdb_send_program(const char *name, uint32_t nr, float level) {
-    Point data("opensprinkler");
-	char tmp[TMP_BUFFER_SIZE];
-    os.sopt_load(SOPT_DEVICE_NAME, tmp);
-    data.addTag("devicename", tmp);
-	data.addTag("name", name);
-	data.addField("program", nr);
-	data.addField("level", level);
-	write_influx_data(data);
+    char tags[256], nameesc[64], fields[64];
+    influx_devicename_tag(tags, sizeof(tags));
+    influx_escape(nameesc, sizeof(nameesc), name);
+    size_t tl = strlen(tags);
+    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
+    snprintf(fields, sizeof(fields), "program=%lui,level=%.2f", (unsigned long)nr, level);
+    write_influx_line("opensprinkler", tags, fields);
 }
 
 void OSInfluxDB::influxdb_send_flowsensor(const char *name, uint32_t count, float volume) {
-    Point data("opensprinkler");
-	char tmp[TMP_BUFFER_SIZE];
-    os.sopt_load(SOPT_DEVICE_NAME, tmp);
-    data.addTag("devicename", tmp);
-	data.addTag("name", name);
-	data.addField("count", count);
-	data.addField("volume", volume);
-	write_influx_data(data);
+    char tags[256], nameesc[64], fields[64];
+    influx_devicename_tag(tags, sizeof(tags));
+    influx_escape(nameesc, sizeof(nameesc), name);
+    size_t tl = strlen(tags);
+    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
+    snprintf(fields, sizeof(fields), "count=%lui,volume=%.2f", (unsigned long)count, volume);
+    write_influx_line("opensprinkler", tags, fields);
 }
 
 void OSInfluxDB::influxdb_send_flowalert(const char *name, uint32_t station, int f1, int f2, int f3, int f4, int f5) {
-    Point data("opensprinkler");
-	char tmp[TMP_BUFFER_SIZE];
-    os.sopt_load(SOPT_DEVICE_NAME, tmp);
-    data.addTag("devicename", tmp);
-	data.addTag("name", name);
-	data.addField("station", station);
-	data.addField("flowrate", (double)(f1)+(double)(f2)/100);
-	data.addField("duration", f3);
-	data.addField("alert_setpoint", (double)(f4)+(double)(f5)/100);
-	write_influx_data(data);
+    char tags[256], nameesc[64], fields[96];
+    influx_devicename_tag(tags, sizeof(tags));
+    influx_escape(nameesc, sizeof(nameesc), name);
+    size_t tl = strlen(tags);
+    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
+    snprintf(fields, sizeof(fields), "station=%lui,flowrate=%.2f,duration=%di,alert_setpoint=%.2f",
+        (unsigned long)station, (double)f1 + (double)f2 / 100.0, f3, (double)f4 + (double)f5 / 100.0);
+    write_influx_line("opensprinkler", tags, fields);
 }
 
 void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float value) {
-    Point data("opensprinkler");
-	char tmp[TMP_BUFFER_SIZE];
-    os.sopt_load(SOPT_DEVICE_NAME, tmp);
-    data.addTag("devicename", tmp);
-	data.addTag("warning", name);
-	data.addField("level", (int)level);
-	data.addField("currentvalue", value);
-	write_influx_data(data);
+    char tags[256], nameesc[64], fields[64];
+    influx_devicename_tag(tags, sizeof(tags));
+    influx_escape(nameesc, sizeof(nameesc), name);
+    size_t tl = strlen(tags);
+    snprintf(tags + tl, sizeof(tags) - tl, ",warning=%s", nameesc);
+    snprintf(fields, sizeof(fields), "level=%di,currentvalue=%.2f", (int)level, value);
+    write_influx_line("opensprinkler", tags, fields);
 }
 
 #elif defined(OSPI)

@@ -1033,8 +1033,8 @@ void do_loop()
 	static ulong last_mem_print_8266 = 0;
 	if (millis() - last_mem_print_8266 >= 15000) {
 		last_mem_print_8266 = millis();
-		DEBUG_PRINTF("[MEM] Heap: %d B free | MaxBlock: %d B | Frag: %d%%\n",
-			ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+		DEBUG_PRINTF("[MEM] Heap: %d B free | MaxBlock: %d B | Frag: %d%% | ContStack free(min): %d B\n",
+			ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation(), ESP.getFreeContStack());
 	}
 	#endif
 
