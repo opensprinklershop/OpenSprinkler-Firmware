@@ -200,7 +200,7 @@ void notif_render_text(uint32_t type, uint32_t lval, float fval, uint8_t bval, c
 		case NOTIFY_MONITOR_MID:
 		case NOTIFY_MONITOR_HIGH: {
 			Monitor_t* mon = monitor_by_idx(bval);
-			const char* mname = mon ? mon->name : "";
+			const char* mname = mon ? mon->getName() : "";
 			int v = (int)fval;
 			int frac = (int)(fval*100)%100; if (frac < 0) frac = -frac;
 			snprintf_P(out, outlen, PSTR("Monitor %s: %d.%02d"), mname, v, frac);
@@ -591,43 +591,57 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	const char *email_recipient = NULL;
 	int  email_port = DEFAULT_EMAIL_PORT;
 	int  email_en = 0;
+#if defined(ESP8266)
+	// ESP8266: single heap block (freed at function end) instead of ~965 B of
+	// permanent DRAM for a path only used when email is configured. These are
+	// pointers now -> size via MAX_SOPTS_SIZE, not sizeof().
+	char *email_buf = (char*)malloc(2 * (MAX_SOPTS_SIZE + 1) + (MAX_SOPTS_SIZE + 3));
+	char *saved_email_config = email_buf;
+	char *email_config = email_buf ? email_buf + (MAX_SOPTS_SIZE + 1) : NULL;
+	char *email_json   = email_buf ? email_buf + 2 * (MAX_SOPTS_SIZE + 1) : NULL;
+	bool email_buf_ok = (email_buf != NULL);
+#else
 	static PSRAM_BSS_ATTR char saved_email_config[MAX_SOPTS_SIZE + 1];
 	static PSRAM_BSS_ATTR char email_config[MAX_SOPTS_SIZE + 1];
 	static PSRAM_BSS_ATTR char email_json[MAX_SOPTS_SIZE + 3];
+	bool email_buf_ok = true;
+#endif
 
-	os.sopt_load(SOPT_EMAIL_OPTS, saved_email_config);
-	strcpy(email_config, saved_email_config);
-	if (!normalize_json_object_fragment(email_config, sizeof(email_config))) {
-		email_config[0] = 0;
-	}
-	if (strcmp(saved_email_config, email_config) != 0) {
-		os.sopt_save(SOPT_EMAIL_OPTS, email_config);
-	}
+	if (email_buf_ok) {
+		os.sopt_load(SOPT_EMAIL_OPTS, saved_email_config);
+		strcpy(email_config, saved_email_config);
+		if (!normalize_json_object_fragment(email_config, MAX_SOPTS_SIZE + 1)) {
+			email_config[0] = 0;
+		}
+		if (strcmp(saved_email_config, email_config) != 0) {
+			os.sopt_save(SOPT_EMAIL_OPTS, email_config);
+		}
 
-	if (email_config[0] != 0) {
-		size_t len = strlen(email_config);
-		memmove(email_json + 1, email_config, len + 1);
-		email_json[0] = '{';
-		email_json[len + 1] = '}';
-		email_json[len + 2] = 0;
+		if (email_config[0] != 0) {
+			size_t len = strlen(email_config);
+			memmove(email_json + 1, email_config, len + 1);
+			email_json[0] = '{';
+			email_json[len + 1] = '}';
+			email_json[len + 2] = 0;
 
-		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, email_json);
-		// Test the parsing otherwise parse
-		if (error) {
-			DEBUG_PRINT(F("email: deserializeJson() failed: "));
-			DEBUG_PRINTLN(error.c_str());
-		} else {
-			email_en = doc["en"];
-			email_host = doc["host"];
-			email_port = doc["port"];
-			email_username = doc["user"];
-			email_login = doc["login"];
-			email_password = doc["pass"];
-			email_recipient= doc["recipient"];
-			// If no SMTP host specified, use default
-			if(!email_host || strlen(email_host)==0) email_host = "smtp.gmail.com";
-			// If no separate SMTP login specified, use sender email
-			if(!email_login || strlen(email_login)==0) email_login = email_username;
+			ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, email_json);
+			// Test the parsing otherwise parse
+			if (error) {
+				DEBUG_PRINT(F("email: deserializeJson() failed: "));
+				DEBUG_PRINTLN(error.c_str());
+			} else {
+				email_en = doc["en"];
+				email_host = doc["host"];
+				email_port = doc["port"];
+				email_username = doc["user"];
+				email_login = doc["login"];
+				email_password = doc["pass"];
+				email_recipient= doc["recipient"];
+				// If no SMTP host specified, use default
+				if(!email_host || strlen(email_host)==0) email_host = "smtp.gmail.com";
+				// If no separate SMTP login specified, use sender email
+				if(!email_login || strlen(email_login)==0) email_login = email_username;
+			}
 		}
 	}
 	#endif
@@ -644,7 +658,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	bool email_enabled = false;
 	bool html_email_set = false;
 	bool influxdb_enabled = os.influxdb.isEnabled();
-	char *sval = NULL;
+	const char *sval = NULL;
 #if defined(SUPPORT_EMAIL)
 	if(!email_en){  // todo: this should be simplified
 		email_enabled = false;
@@ -1239,7 +1253,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 		case NOTIFY_MONITOR_HIGH:
 
 			Monitor_t *mon = monitor_by_idx(bval);
-			sval = (mon == NULL) ? NULL : monitor_by_idx(bval)->name;
+			sval = (mon == NULL) ? NULL : monitor_by_idx(bval)->getName();
 			if (os.mqtt.enabled()) {
 				strcpy_P(topic, PSTR("monitoring"));
 				int len = strlen(payload);
@@ -1372,4 +1386,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			push_forward_event(type, lval, fval, bval, notif_log_lastid());
 		#endif
 	}
+#if defined(SUPPORT_EMAIL) && defined(ESP8266)
+	free(email_buf); // safe on NULL; releases the transient email scratch
+#endif
 }

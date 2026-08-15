@@ -135,6 +135,14 @@ unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const c
 // NOTE: std::map cannot use EXT_RAM_BSS_ATTR - has internal tree pointers that need constructor
 static std::map<uint, SensorBase*> sensorsMap;
 static time_t last_save_time = 0;
+// Debounced config persistence: sensor_request_save() marks the config dirty and
+// (re)arms a short deadline; sensor_flush_pending() (called every main loop from
+// read_all_sensors) writes exactly once after the last request. This coalesces a
+// restore's many delete/define writes into one save that reliably reaches flash
+// before a reboot — no explicit client-side commit needed.
+static bool sensor_save_pending = false;
+static unsigned long sensor_save_pending_deadline = 0;
+static const unsigned long SENSOR_SAVE_DEBOUNCE_MS = 1500;
 static boolean apiInit = false;
 static SensorBase * current_sensor = NULL;
 // NOTE: std::map::iterator cannot use EXT_RAM_BSS_ATTR - has internal pointers
@@ -834,7 +842,7 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     
     if (save) sensor_save();
     sensor_notify_zigbee(sensor);
-    if (sensor->type != SENSOR_ZIGBEE) last_save_time = os.now_tz() - 3600 + 5; // force save next time
+    if (sensor->type != SENSOR_ZIGBEE) sensor_request_save(); // debounced persist
     
     return HTTP_RQT_SUCCESS;
   }
@@ -1160,10 +1168,22 @@ void sensor_load() {
  *
  */
 void sensor_request_save() {
-  // Schedule a deferred save (~5 seconds from now) instead of saving immediately.
-  // The periodic sensor loop checks (time - last_save_time > 3600) so setting
-  // last_save_time to now-3595 triggers a save after ~5 seconds.
-  last_save_time = os.now_tz() - 3600 + 5;
+  // Mark the config dirty and (re)arm a short debounce window. read_all_sensors()
+  // flushes it via sensor_flush_pending() shortly after the last request, so a
+  // whole restore batch is persisted with a single save that survives a reboot.
+  sensor_save_pending = true;
+  sensor_save_pending_deadline = millis() + SENSOR_SAVE_DEBOUNCE_MS;
+}
+
+// Flush a pending debounced save once the quiet window has elapsed. Safe to call
+// every loop; a no-op unless sensor_request_save() armed it and the deadline
+// passed. Must run even when sensorsMap is empty so a restore that deleted every
+// sensor still writes the empty file instead of leaving the old one on flash.
+static void sensor_flush_pending() {
+  if (!sensor_save_pending) return;
+  if ((long)(millis() - sensor_save_pending_deadline) < 0) return;
+  sensor_save_pending = false;
+  sensor_save();
 }
 
 void sensor_save() {
@@ -1804,27 +1824,31 @@ static void flush_deferred_mqtt() {
 void push_message(SensorBase *sensor) {
   if (!sensor || !sensor->last_read) return;
 
-  static char EXT_RAM_BSS_ATTR topic[TMP_BUFFER_SIZE];
-  static char EXT_RAM_BSS_ATTR payload[TMP_BUFFER_SIZE];
   char *postval = tmp_buffer;
 
   if (os.mqtt.enabled()) {
-    // DEBUG_PRINTLN(F("push mqtt1"));
-    strncpy_P(topic, PSTR("analogsensor/"), sizeof(topic) - 1);
-    strncat(topic, sensor->name, sizeof(topic) - 1);
-    snprintf_P(payload, TMP_BUFFER_SIZE,
-              PSTR("{\"nr\":%u,\"type\":%u,\"data_ok\":%u,\"time\":%u,"
-                   "\"value\":%d.%02d,\"unit\":\"%s\"}"),
-              sensor->nr, sensor->type, sensor->flags.data_ok,
-              sensor->last_read, (int)sensor->last_data,
-              abs((int)(sensor->last_data * 100) % 100), getSensorUnit(sensor));
-
-    if (os.mqtt.connected()) {
-      os.mqtt.publish(topic, payload);
-    } else {
-      // Keep loopTask stack shallow: MQTT reconnect can trigger a TLS connect
-      // path with high stack usage. Reconnect is handled centrally in os.mqtt.loop().
+    if (!os.mqtt.connected()) {
+      // Not connected: defer and skip building topic/payload. The flush path
+      // rebuilds them from last_read/last_data, so nothing is lost here.
+      // Reconnect is handled centrally in os.mqtt.loop() (keeps loopTask stack shallow).
       mqtt_defer_push(sensor->nr);
+    } else {
+      // Stack-scoped (not static): freed before the influx/TLS path below, so no
+      // permanent RAM and no added peak stack during add_influx_data().
+      // topic = "analogsensor/" (13) + name[30]; payload JSON ~120 B.
+      char topic[64];
+      char payload[192];
+      // DEBUG_PRINTLN(F("push mqtt1"));
+      strncpy_P(topic, PSTR("analogsensor/"), sizeof(topic) - 1);
+      topic[sizeof(topic) - 1] = 0;
+      strncat(topic, sensor->getName(), sizeof(topic) - strlen(topic) - 1);
+      snprintf_P(payload, sizeof(payload),
+                PSTR("{\"nr\":%u,\"type\":%u,\"data_ok\":%u,\"time\":%u,"
+                     "\"value\":%d.%02d,\"unit\":\"%s\"}"),
+                sensor->nr, sensor->type, sensor->flags.data_ok,
+                sensor->last_read, (int)sensor->last_data,
+                abs((int)(sensor->last_data * 100) % 100), getSensorUnit(sensor));
+      os.mqtt.publish(topic, payload);
     }
     // DEBUG_PRINTLN(F("push mqtt2"));
   }
@@ -1864,6 +1888,11 @@ void push_message(SensorBase *sensor) {
 }
 
 void read_all_sensors(boolean online) {
+  // Persist any pending (debounced) config change first. This runs before the
+  // NTP/empty-map early returns below so a restore that deleted sensors — even
+  // all of them — reaches flash and does not reappear after a reboot.
+  sensor_flush_pending();
+
   // Flush deferred MQTT pushes when network is back
   if (online) flush_deferred_mqtt();
 
@@ -1932,7 +1961,7 @@ void read_all_sensors(boolean online) {
       } else if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
         //boolean was_repeat = current_sensor->repeat_read;
         DEBUG_PRINTF(F("[SENSOR] read begin #%d type=%d name='%s' repeat=%d\n"),
-                     current_sensor->nr, current_sensor->type, current_sensor->name, current_sensor->repeat_read);
+                     current_sensor->nr, current_sensor->type, current_sensor->getName(), current_sensor->repeat_read);
         
         unsigned long read_start_ms = millis();
         int result = read_sensor(current_sensor, time);
@@ -2466,7 +2495,7 @@ void ProgSensorAdjust::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("stale_policy")] = stale_policy;
   obj[F("stale_fallback")] = stale_fallback;
   obj[F("order")] = order;
-  obj[F("name")] = name;
+  obj[F("name")] = getName();
 }
 
 void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
@@ -2484,8 +2513,7 @@ void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
   stale_fallback = clamp_adjust_factor(obj[F("stale_fallback")] | 1.0);
   order = obj[F("order")] | order;
   
-  const char* nameStr = obj[F("name")] | "";
-  SAFE_STRNCPY(name, nameStr, sizeof(name));
+  setName(obj[F("name")] | "");
 }
 
 /**
@@ -2870,7 +2898,7 @@ unsigned char SensorBase::getUnitId() const {
 
 const char* SensorBase::getUnit() const {
   int unitid = getUnitId();
-  if (unitid == UNIT_USERDEF) return userdef_unit;
+  if (unitid == UNIT_USERDEF) return getUserdefUnit();
   if (unitid < 0 || unitid >= MAX_SENSOR_UNITNAMES)
     return sensor_unitNames[0];
   return sensor_unitNames[unitid];
@@ -2983,7 +3011,7 @@ void add_influx_data(SensorBase *sensor) {
 
   // Common setup (shared by all platforms)
   char devname_safe[64];
-  char sensor_name_safe[sizeof(sensor->name) + 1];
+  char sensor_name_safe[64];
   char unit_safe[16];
 
   devname_safe[0] = '\0';
@@ -2992,7 +3020,7 @@ void add_influx_data(SensorBase *sensor) {
 
   os.sopt_load(SOPT_DEVICE_NAME, tmp_buffer);
   SAFE_STRNCPY(devname_safe, tmp_buffer, sizeof(devname_safe));
-  SAFE_STRNCPY(sensor_name_safe, sensor->name, sizeof(sensor_name_safe));
+  SAFE_STRNCPY(sensor_name_safe, sensor->getName(), sizeof(sensor_name_safe));
   const char* unit = getSensorUnit(sensor);
   if (unit) {
     SAFE_STRNCPY(unit_safe, unit, sizeof(unit_safe));
@@ -3060,7 +3088,7 @@ void Monitor::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("zone")] = zone;
   obj[F("active")] = active;
   obj[F("time")] = time;
-  obj[F("name")] = name;
+  obj[F("name")] = getName();
   obj[F("maxRuntime")] = maxRuntime;
   obj[F("prio")] = prio;
   obj[F("reset_seconds")] = reset_seconds;
@@ -3124,7 +3152,7 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
   zone = obj[F("zone")] | 0;
   active = obj[F("active")] | false;
   time = obj[F("time")] | 0;
-  SAFE_STRNCPY(name, obj[F("name")] | "", sizeof(name));
+  setName(obj[F("name")] | "");
   maxRuntime = obj[F("maxRuntime")] | 0;
   prio = obj[F("prio")] | 0;
   reset_seconds = obj[F("reset_seconds")] | 0;
@@ -3360,7 +3388,7 @@ int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const 
     p->failsafe_active = failsafe_active;
     if (order) p->order = order;  // only overwrite when an explicit order is provided
     p->show = show;
-    SAFE_STRNCPY(p->name, name, sizeof(p->name));
+    p->setName(name);
   } else {
     // Reject a new monitor when the filesystem is too full to store it safely (#295)
     if (!config_space_for_new_entry(MONITOR_FILENAME)) {
@@ -3384,7 +3412,7 @@ int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const 
     p->failsafe_active = failsafe_active;
     p->order = order;
     p->show = show;
-    SAFE_STRNCPY(p->name, name, sizeof(p->name));
+    p->setName(name);
     
     monitorsMap[nr] = p;
   }
@@ -3504,10 +3532,8 @@ void push_message(Monitor_t * mon, float value, int monidx) {
     case 2: type = NOTIFY_MONITOR_HIGH; break;
     default: return;
   }
-  char name[30];
-  SAFE_STRNCPY(name, mon->name, sizeof(name));
   DEBUG_PRINT(F("monitoring: activated "));
-  DEBUG_PRINT(name);
+  DEBUG_PRINT(mon->getName());
   DEBUG_PRINT(F(" - "));
   DEBUG_PRINTLN(type);
   notif.add(type, (uint32_t)mon->prio, value, (uint8_t)monidx);
@@ -3522,6 +3548,13 @@ bool get_monitor(uint nr, bool inv, bool defaultBool) {
 bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   unsigned char ip[4];
   IP4_EXTRACT_BYTES(ip, mon->m.remote.ip);
+
+  // Skip unconfigured remote targets: a monitor with ip 0.0.0.0 (or port 0) would
+  // otherwise make check_monitors() hammer send_http_request("0.0.0.0",...) every
+  // eval cycle, spamming "0.0.0.0:80 failed" and stalling the main loop.
+  if (mon->m.remote.ip == 0 || mon->m.remote.port == 0) {
+    return defaultBool;
+  }
 
   // DEBUG_PRINTLN(F("read_monitor_http"));
 
@@ -3574,7 +3607,7 @@ static bool get_monitor_eval(uint nr, bool inv, bool defaultBool) {
 }
 
 void check_monitors() {
-  //DEBUG_PRINTLN(F("check_monitors"));
+  DEBUG_PRINTLN(F("check_monitors"));
   time_os_t timeNow = os.now_tz();
 
   os.status.forced_sensor1 = 0;
@@ -3666,7 +3699,18 @@ void check_monitors() {
           // else: within grace period -> keep previous state (seeded above)
         }
         // stale_timeout==0 -> legacy behavior: keep previous eval_active.
-        break; }
+        // Ticket #331 diagnostics: show whether this MIN/MAX monitor is being
+        // evaluated and with which inputs. Values are scaled x100 to stay clear
+        // of ESP8266 %f printf limitations (e.g. data=1001 means 10.01).
+        DEBUG_PRINTF(F("[MON%u] MINMAX sens=%u ok=%d data=%ld v1=%ld v2=%ld stt=%lu act=%d eval=%d\n"),
+          mon->nr, mon->sensor,
+          sensor ? (int)sensor->flags.data_ok : -1,
+          sensor ? (long)(sensor->last_data * 100) : 0L,
+          (long)(mon->m.minmax.value1 * 100), (long)(mon->m.minmax.value2 * 100),
+          (unsigned long)mon->stale_timeout,
+          (int)mon->active, (int)mon->eval_active);
+        break;
+      }
 
       case MONITOR_SENSOR12: {
         if (mon->m.sensor12.sensor12 == 1) {
@@ -3798,6 +3842,8 @@ void check_monitors() {
     bool stopOnly = (mon->output_mode == MONITOR_OUTPUT_STOPONLY);
 
     if (mon->active != wasActive) {
+      DEBUG_PRINTF(F("[MON%u] transition %d->%d zone=%u prog=%u stopOnly=%d\n"),
+        mon->nr, (int)wasActive, (int)mon->active, mon->zone, mon->prog, (int)stopOnly);
       if (mon->active) {
         if (mon->reset_seconds > 0) {
           mon->reset_time = timeNow + mon->reset_seconds; 
@@ -3844,6 +3890,7 @@ void check_monitors() {
         // reliably and avoid stacking repeated program starts.
         uint sid = mon->zone - 1;
         if (sid < os.nstations && pd.station_qid[sid] == 0xFF) {
+          DEBUG_PRINTF(F("[MON%u] re-assert zone %u (not running)\n"), mon->nr, mon->zone);
           start_monitor_action(mon);
         }
       }

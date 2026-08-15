@@ -23,6 +23,9 @@
 #ifndef _SENSORS_H
 #define _SENSORS_H
 
+#include <string.h>
+#include <stdlib.h>
+
 #if defined(ARDUINO)
 #include <Arduino.h>
 #include <sys/stat.h>
@@ -267,7 +270,6 @@ public:
   uint8_t stale_policy;   // PROG_STALE_*
   double stale_fallback;  // adjustment factor, 1.0 = 100%
   uint order;             // display order (0=unset -> sort by nr)
-  char name[30];
   
   /**
    * @brief Constructor
@@ -276,7 +278,19 @@ public:
                        factor1(0.0), factor2(0.0), min(0.0), max(0.0),
                        stale_timeout(0), stale_policy(PROG_STALE_LAST_VALUE),
                        stale_fallback(1.0) {
-    name[0] = 0;
+    setName("");
+  }
+
+  ~ProgSensorAdjust() { free(_name); }
+
+  // name accessors (getName() never returns nullptr) — dynamic to save RAM
+  const char* getName() const { return _name ? _name : ""; }
+  void setName(const char* s) {
+    free(_name);
+    const char* v = (s && s[0]) ? s : "";
+    size_t n = strlen(v);
+    _name = (char*)malloc(n + 1);
+    if (_name) memcpy(_name, v, n + 1);
   }
   
   /**
@@ -290,6 +304,9 @@ public:
    * @param obj JSON object to read from
    */
   void fromJson(ArduinoJson::JsonVariantConst obj);
+
+private:
+  char* _name = nullptr;    // adjustment name — dynamic; access via getName()/setName()
 };
 
 
@@ -381,7 +398,6 @@ public:
   Monitor_Union_t m;
   boolean active;
   ulong time;
-  char name[30];
   ulong maxRuntime;
   uint8_t prio;
   ulong reset_seconds;
@@ -411,7 +427,19 @@ public:
     memset(undef, 0, sizeof(undef));
     order = 0;
     show = 1;
-    name[0] = 0;
+    setName("");
+  }
+
+  ~Monitor() { free(_name); }
+
+  // name accessors (getName() never returns nullptr) — dynamic to save RAM
+  const char* getName() const { return _name ? _name : ""; }
+  void setName(const char* s) {
+    free(_name);
+    const char* v = (s && s[0]) ? s : "";
+    size_t n = strlen(v);
+    _name = (char*)malloc(n + 1);
+    if (_name) memcpy(_name, v, n + 1);
   }
   
   /**
@@ -425,6 +453,9 @@ public:
    * @param obj JSON object to read from
    */
   void fromJson(ArduinoJson::JsonVariantConst obj);
+
+private:
+  char* _name = nullptr;    // monitor name — dynamic; access via getName()/setName()
 };
 
 typedef Monitor Monitor_t;

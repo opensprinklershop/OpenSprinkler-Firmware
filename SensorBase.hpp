@@ -3,6 +3,7 @@
 
 #include "sensors.h"
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include "ArduinoJson.hpp"
 
@@ -30,7 +31,6 @@ public:
 
   // Persistent fields
   uint nr = 0;                    // 1..n sensor-nr, 0=deleted
-  char name[30] = {0};            // name
   uint type = 0;                  // sensor type
   uint group = 0;                 // group assignment
   uint order = 0;                 // display order (0=unset -> sort by nr)
@@ -46,7 +46,6 @@ public:
   uint8_t stdlog = 0;             // also write water consumption to standard log
   int16_t factor = 1;             // factor
   int16_t divider = 1;            // divider
-  char userdef_unit[8] = {0};     // unit for custom sensors
   int16_t offset_mv = 0;          // offset in millivolt
   int16_t offset2 = 0;            // offset unit (1/100)
   unsigned char assigned_unitid = 0;  // unitid for userdef and mqtt sensors
@@ -72,9 +71,37 @@ public:
   int8_t trend_state = TREND_UNAVAILABLE;
 #endif
 
-  SensorBase() {}
-  explicit SensorBase(uint type) {this->type = type; } // for derived classes compatibility
-  virtual ~SensorBase() {}
+  SensorBase() { setName(""); }
+  explicit SensorBase(uint type) { this->type = type; setName(""); } // for derived classes compatibility
+  virtual ~SensorBase() { free(_name); free(_userdef_unit); }
+
+  // --- name accessors (getName() never returns nullptr) ---
+  const char* getName() const { return _name ? _name : ""; }
+  void setName(const char* s) {
+    free(_name);
+    const char* v = (s && s[0]) ? s : "";
+    size_t n = strlen(v);
+    _name = (char*)malloc(n + 1);
+    if (_name) memcpy(_name, v, n + 1);
+  }
+
+  // --- userdef unit accessors (nullptr when unset to save memory) ---
+  const char* getUserdefUnit() const { return _userdef_unit ? _userdef_unit : ""; }
+  bool hasUserdefUnit() const { return _userdef_unit && _userdef_unit[0]; }
+  void setUserdefUnit(const char* s) { set_dyn_str(_userdef_unit, s); }
+
+  // Replace a heap-owned C string with an exact-sized copy of src (NULL/empty ->
+  // frees to nullptr). Lets sensors store JSON-loaded strings dynamically instead
+  // of oversized fixed char[] buffers.
+  static void set_dyn_str(char*& dst, const char* src) {
+    free(dst);
+    dst = nullptr;
+    if (src && src[0]) {
+      size_t n = strlen(src);
+      dst = (char*)malloc(n + 1);
+      if (dst) memcpy(dst, src, n + 1);
+    }
+  }
 
   /** Initialize sensor hardware/connection */
   virtual bool init() { return true; }
@@ -219,7 +246,7 @@ public:
     obj[F("type")] = type;
     obj[F("group")] = group;
     obj[F("order")] = order;
-    obj[F("name")] = name;
+    obj[F("name")] = getName();
     obj[F("ip")] = ip;
     obj[F("port")] = port;
     obj[F("id")] = id;
@@ -257,8 +284,7 @@ public:
     if (obj.containsKey(F("group"))) group = obj[F("group")];
     if (obj.containsKey(F("order"))) order = obj[F("order")];
     if (obj.containsKey(F("name"))) {
-      const char *sname = obj[F("name")].as<const char*>();
-      if (sname) strncpy(name, sname, sizeof(name)-1);
+      setName(obj[F("name")].as<const char*>());
     }
     if (obj.containsKey(F("ip"))) ip = obj[F("ip")];
     if (obj.containsKey(F("port"))) port = obj[F("port")];
@@ -273,8 +299,7 @@ public:
     if (obj.containsKey(F("offset"))) offset_mv = obj[F("offset")];
     if (obj.containsKey(F("offset2"))) offset2 = obj[F("offset2")];
     if (obj.containsKey(F("unit"))) {
-      const char *unit = obj[F("unit")].as<const char*>();
-      if (unit) strncpy(userdef_unit, unit, sizeof(userdef_unit)-1);
+      setUserdefUnit(obj[F("unit")].as<const char*>());
     }
     if (obj.containsKey(F("unitid"))) assigned_unitid = obj[F("unitid")];
     if (obj.containsKey(F("enable"))) flags.enable = obj[F("enable")];
@@ -287,6 +312,10 @@ public:
     if (obj.containsKey(F("nativedata"))) last_native_data = obj[F("nativedata")];
     if (obj.containsKey(F("data"))) last_data = obj[F("data")];
   }
+
+protected:
+  char* _name = nullptr;          // sensor name — dynamic; access via getName()/setName()
+  char* _userdef_unit = nullptr;  // custom unit — nullptr when unset; access via getUserdefUnit()
 };
 
 // Generic sensor for types without specific behaviour.

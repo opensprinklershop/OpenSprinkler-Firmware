@@ -4085,11 +4085,26 @@ void OpenSprinkler::iopts_load() {
 			iopts[IOPT_NTP_IP4] = 0;
 	}
 	populate_master();
-	static PSRAM_BSS_ATTR char saved_wto[MAX_SOPTS_SIZE + 1];
-	sopt_load(SOPT_WEATHER_OPTS, saved_wto);
-	strcpy(tmp_buffer, saved_wto);
-	if (!parse_wto(tmp_buffer) || strcmp(saved_wto, tmp_buffer) != 0) {
-		sopt_save(SOPT_WEATHER_OPTS, tmp_buffer); // save back corrected or normalized wto
+#if defined(ESP8266)
+	// ESP8266: transient heap instead of ~321 B permanent DRAM.
+	char *saved_wto = (char*)malloc(MAX_SOPTS_SIZE + 1);
+#else
+	static PSRAM_BSS_ATTR char saved_wto_arr[MAX_SOPTS_SIZE + 1];
+	char *saved_wto = saved_wto_arr;
+#endif
+	if (saved_wto) {
+		sopt_load(SOPT_WEATHER_OPTS, saved_wto);
+		strcpy(tmp_buffer, saved_wto);
+		if (!parse_wto(tmp_buffer) || strcmp(saved_wto, tmp_buffer) != 0) {
+			sopt_save(SOPT_WEATHER_OPTS, tmp_buffer); // save back corrected or normalized wto
+		}
+#if defined(ESP8266)
+		free(saved_wto);
+#endif
+	} else {
+		// ESP8266 malloc fail (very unlikely): still load+parse, skip change-detection
+		sopt_load(SOPT_WEATHER_OPTS, tmp_buffer);
+		parse_wto(tmp_buffer);
 	}
 	// California restriction is now indicated in wto and no longer by the highest bit of uwt. So we force that bit to 0
 	iopts[IOPT_USE_WEATHER] &= 0x7F;

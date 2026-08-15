@@ -1082,7 +1082,7 @@ void BLESensor::updateDeviceInfo(const char* mac_address, const char* manufactur
             ble->dis_info_queried = true;
             updated = true;
             DEBUG_PRINT(F("[BLE] Updated DIS info for sensor: "));
-            DEBUG_PRINTLN(ble->name);
+            DEBUG_PRINTLN(ble->getName());
         }
     }
 
@@ -1140,9 +1140,9 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
         if (m) {
             ble_copy_stripped(mac_address_cfg, sizeof(mac_address_cfg), m);
         }
-    } else if (ble_is_mac_string(name)) {
+    } else if (ble_is_mac_string(getName())) {
         // Backward-compat: legacy configs used name as MAC. Copy into dedicated field.
-        ble_copy_stripped(mac_address_cfg, sizeof(mac_address_cfg), name);
+        ble_copy_stripped(mac_address_cfg, sizeof(mac_address_cfg), getName());
     }
 
     // Optional explicit BLE config (preferred)
@@ -1166,9 +1166,9 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     }
 
     // Backward-compat: parse legacy `unit` field (userdef_unit) if no explicit uuid provided
-    if (!characteristic_uuid_cfg[0] && userdef_unit[0]) {
+    if (!characteristic_uuid_cfg[0] && hasUserdefUnit()) {
         uint8_t fmt = (uint8_t)FORMAT_TEMP_001;
-        ble_parse_uuid_and_format_legacy(userdef_unit, characteristic_uuid_cfg, sizeof(characteristic_uuid_cfg), &fmt);
+        ble_parse_uuid_and_format_legacy(getUserdefUnit(), characteristic_uuid_cfg, sizeof(characteristic_uuid_cfg), &fmt);
         payload_format_cfg = fmt;
         // Ensure legacy parsing didn't leave whitespace/control chars
         char cleaned[sizeof(characteristic_uuid_cfg)] = {0};
@@ -1193,7 +1193,7 @@ void BLESensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     // Migration: if sensor was auto-disabled by stale adv_last_ok timestamp,
     // re-enable it so it gets a fresh chance at data collection.
     if (obj.containsKey(F("adv_last_ok")) && !flags.enable) {
-        DEBUG_PRINTF("[BLE] Re-enabling auto-disabled sensor: %s\n", name);
+        DEBUG_PRINTF("[BLE] Re-enabling auto-disabled sensor: %s\n", getName());
         flags.enable = true;
     }
 
@@ -2201,7 +2201,7 @@ int BLESensor::read(unsigned long time) {
     // Auto-disable after 24h without data
     if (adv_last_success_time > 0 && time > adv_last_success_time) {
         if ((time - adv_last_success_time) > ADV_DISABLE_TIMEOUT) {
-            DEBUG_PRINTF("[BLE] Auto-disabled %s (no data for 24h)\n", name);
+            DEBUG_PRINTF("[BLE] Auto-disabled %s (no data for 24h)\n", getName());
             flags.enable = false;
             flags.data_ok = false;
             return HTTP_RQT_NOT_RECEIVED;
@@ -2224,8 +2224,8 @@ int BLESensor::read(unsigned long time) {
 
     // Resolve MAC address
     const char* mac_address = mac_address_cfg;
-    if ((!mac_address || !mac_address[0]) && ble_is_mac_string(name)) {
-        mac_address = name;
+    if ((!mac_address || !mac_address[0]) && ble_is_mac_string(getName())) {
+        mac_address = getName();
     }
     if (!mac_address || !mac_address[0] || !ble_is_mac_string(mac_address)) {
         DEBUG_PRINTLN(F("[BLE] ERROR: No valid MAC address configured"));
@@ -2240,9 +2240,9 @@ int BLESensor::read(unsigned long time) {
     PayloadFormat format = (PayloadFormat)payload_format_cfg;
     if (characteristic_uuid_cfg[0]) {
         ble_copy_stripped(characteristic_uuid, sizeof(characteristic_uuid), characteristic_uuid_cfg);
-    } else if (userdef_unit && strlen(userdef_unit) > 0) {
+    } else if (hasUserdefUnit()) {
         uint8_t fmt = (uint8_t)FORMAT_TEMP_001;
-        ble_parse_uuid_and_format_legacy(userdef_unit, characteristic_uuid, sizeof(characteristic_uuid), &fmt);
+        ble_parse_uuid_and_format_legacy(getUserdefUnit(), characteristic_uuid, sizeof(characteristic_uuid), &fmt);
         format = (PayloadFormat)fmt;
     }
     bool has_gatt_config = (characteristic_uuid[0] != 0);
@@ -2274,11 +2274,11 @@ int BLESensor::read(unsigned long time) {
             last_battery = cached_dev->adv_battery;
             adv_last_success_time = time;
             DEBUG_PRINTF("[BLE] %s: broadcast data T=%.1f H=%.1f B=%d\n",
-                         name, cached_dev->adv_temperature, cached_dev->adv_humidity, cached_dev->adv_battery);
+                         getName(), cached_dev->adv_temperature, cached_dev->adv_humidity, cached_dev->adv_battery);
             return HTTP_RQT_SUCCESS;
         }
         // No fresh data yet - background scan will pick it up
-        DEBUG_PRINTF("[BLE] %s: waiting for broadcast data\n", name);
+        DEBUG_PRINTF("[BLE] %s: waiting for broadcast data\n", getName());
         flags.data_ok = false;
         last_read = time;
         return HTTP_RQT_NOT_RECEIVED;
@@ -2520,7 +2520,7 @@ unsigned char BLESensor::getUnitId() const {
 
 const char * BLESensor::getUnit() const {
     if (assigned_unitid == UNIT_USERDEF) {
-        return userdef_unit;
+        return getUserdefUnit();
     }
     return getSensorUnit(assigned_unitid);
 }

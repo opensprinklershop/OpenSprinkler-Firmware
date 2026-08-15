@@ -30,15 +30,15 @@
  */
 class RemoteJsonSensor : public SensorBase {
 public:
-    char url[200] = {0};            // HTTP or HTTPS URL to retrieve JSON from
-    char filter[200] = {0};         // JSON property key filter string (e.g., outer|inner|target)
+    char* url = nullptr;            // HTTP/HTTPS URL — dynamically sized (from JSON)
+    char* filter = nullptr;         // JSON property key filter (e.g. outer|inner|target)
 
     /**
      * @brief Constructor
      * @param type Sensor type identifier
      */
     explicit RemoteJsonSensor(uint type) : SensorBase(type) {}
-    virtual ~RemoteJsonSensor() {}
+    virtual ~RemoteJsonSensor() { free(url); free(filter); }
     
     /**
      * @brief Poll the remote JSON URL, stream response and parse dynamically

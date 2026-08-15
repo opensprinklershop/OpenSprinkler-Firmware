@@ -219,13 +219,13 @@ int OspiBLESensor::read(unsigned long time) {
     // Expected format in userdef_unit: Characteristic UUID (optionally with format: "UUID|format_id")
     //   Example: "00002a1c-0000-1000-8000-00805f9b34fb" or "00002a1c-0000-1000-8000-00805f9b34fb|10"
     
-    const char* mac_address = name; // Use name field for MAC
+    const char* mac_address = getName(); // Use name field for MAC
     char characteristic_uuid[128] = {0};
     PayloadFormat format = FORMAT_TEMP_001; // Default auto-detect
     
     // Parse userdef_unit field: "UUID" or "UUID|format"
-    if (userdef_unit && strlen(userdef_unit) > 0) {
-        strncpy(characteristic_uuid, userdef_unit, sizeof(characteristic_uuid) - 1);
+    if (hasUserdefUnit()) {
+        strncpy(characteristic_uuid, getUserdefUnit(), sizeof(characteristic_uuid) - 1);
         
         // Check for format specifier after |
         char* pipe = strchr(characteristic_uuid, '|');

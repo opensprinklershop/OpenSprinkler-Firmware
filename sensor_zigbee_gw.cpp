@@ -2677,7 +2677,7 @@ static void gw_schedule_configure_reporting_for_ieee(uint64_t ieee, unsigned lon
         if (zb->report_interval_s != 0 && zb->report_interval_s != max_interval) {
             zb->join_anchor_ts = 0;
             DEBUG_PRINTF(F("[ZIGBEE-GW] ConfigReport interval changed %u\u2192%u for '%s' \u2014 anchor cleared\n"),
-                         zb->report_interval_s, max_interval, zb->name);
+                         zb->report_interval_s, max_interval, zb->getName());
         }
         zb->report_interval_s = max_interval;
         delay_ms += 700;
@@ -3042,7 +3042,7 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
             // flags.data_ok / last_read / last / comm_mode — those belong
             // to the actual measurement channel, not the battery channel.
             DEBUG_PRINTF(F("[ZIGBEE-GW] Sensor '%s' battery update: %u%% (no data overwrite)\n"),
-                         zb_sensor->name, (unsigned)batt_pct);
+                         zb_sensor->getName(), (unsigned)batt_pct);
             return;
         }
     }
@@ -3115,7 +3115,7 @@ static void gw_updateSensorFromReport(ZigbeeSensor* zb_sensor, const ZigbeeAttri
             if (zb_sensor->comm_mode != new_mode) {
                 zb_sensor->comm_mode = new_mode;
                 gw_comm_mode_changed = true;
-                DEBUG_PRINTF(F("[ZIGBEE-GW] '%s' comm_mode → %s\n"), zb_sensor->name,
+                DEBUG_PRINTF(F("[ZIGBEE-GW] '%s' comm_mode → %s\n"), zb_sensor->getName(),
                              new_mode == ZB_COMM_REPORT ? "REPORT" : "ACTIVE");
             }
         }
@@ -3847,7 +3847,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                     zb_s->last_lqi = report.lqi;
                     updated_any = true;
                     DEBUG_PRINTF(F("[ZIGBEE-GW] Short-circuit battery update for '%s': %u%%\n"),
-                                 zb_s->name, (unsigned)batt_pct);
+                                 zb_s->getName(), (unsigned)batt_pct);
                 }
             }
             // Always consume the battery report so it doesn't trigger "✗ NO MATCH" warnings
@@ -3892,7 +3892,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
             
             if (matches) {
                 ZB_GW_TRACE(F("[ZIGBEE-GW]   ✓ Matched '%s': c=0x%04X a=0x%04X ieee=%08lX%08lX → raw=%ld\n"),
-                            zb_sensor->name, report.cluster_id, report_attr_unmasked,
+                            zb_sensor->getName(), report.cluster_id, report_attr_unmasked,
                             (unsigned long)(report.ieee_addr >> 32), (unsigned long)(report.ieee_addr & 0xFFFFFFFF),
                             report.value);
                 gw_updateSensorFromReport(zb_sensor, report, report_solicited);
@@ -3936,7 +3936,7 @@ void sensor_zigbee_gw_process_reports(uint64_t ieee_addr, uint8_t endpoint,
                     if (report.ieee_addr == 0 || dbg_zb->device_ieee != report.ieee_addr) continue;
                     same_ieee_found = true;
                     DEBUG_PRINTF(F("[ZIGBEE-GW]   Candidate '%s': ep=%u cluster=0x%04X attr=0x%04X mfr=\"%s\" model=\"%s\" vendor=\"%s\" data_ok=%d\n"),
-                                 dbg_sensor->name,
+                                 dbg_sensor->getName(),
                                  dbg_zb->endpoint,
                                  dbg_zb->cluster_id,
                                  dbg_zb->attribute_id,
@@ -5049,7 +5049,7 @@ void sensor_zigbee_gw_loop() {
                 zb_sq->device_ieee, zb_sq->endpoint ? zb_sq->endpoint : 1);
             if (sent) {
                 DEBUG_PRINTF(F("[ZIGBEE-GW] Startup DP query → '%s' (ieee=%016llX)\n"),
-                             s_sq->name, (unsigned long long)zb_sq->device_ieee);
+                             s_sq->getName(), (unsigned long long)zb_sq->device_ieee);
             }
         }
     }

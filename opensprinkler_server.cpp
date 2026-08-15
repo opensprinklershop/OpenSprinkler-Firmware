@@ -3746,8 +3746,9 @@ void server_backup_get(OTF_PARAMS_DEF) {
 	// Include string options (sopts)
 	bfill.emit_p(PSTR(",\"sopts\":{"));
 	bool first = true;
+	char *buf = (char*)malloc(MAX_SOPTS_SIZE + 1); // transient (was ~321 B static DRAM)
+	if (buf) {
 	for (int i = 0; i < NUM_SOPTS; i++) {
-		static PSRAM_BSS_ATTR char buf[MAX_SOPTS_SIZE + 1];
 		file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
 		buf[MAX_SOPTS_SIZE] = 0;
 		if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {
@@ -3769,6 +3770,8 @@ void server_backup_get(OTF_PARAMS_DEF) {
 			bfill.emit_p(PSTR("\""));
 			first = false;
 		}
+	}
+	free(buf);
 	}
 	bfill.emit_p(PSTR("}"));
 	emit_monthly_water_backup_json(bfill);
@@ -5071,7 +5074,7 @@ void monitorconfig_json(Monitor_t *mon) {
 				mon->zone);
 	// Emit the name JSON-escaped so special characters (backslash, quote, …) do
 	// not produce invalid JSON that breaks the UI/app monitor list (#263).
-	bfill_emit_json_escaped_monitor_name(mon->name);
+	bfill_emit_json_escaped_monitor_name(mon->getName());
 	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,\"om\":$D,\"stt\":$L,\"fsa\":$D,\"order\":$D,\"show\":$D,"),
 				mon->maxRuntime,
 				mon->prio,

@@ -52,7 +52,6 @@ const char PROGMEM b64_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                                     "0123456789+/";
 
 #define encode64(arr) encode64_f(arr,strlen(arr))
-
 inline void a3_to_a4(unsigned char * a4, unsigned char * a3) {
   a4[0] = (a3[0] & 0xfc) >> 2;
   a4[1] = ((a3[0] & 0x03) << 4) + ((a3[1] & 0xf0) >> 4);
@@ -103,19 +102,24 @@ int base64_enc_length(int plainLen) {
   return (n + 2 - ((n + 2) % 3)) / 3 * 4;
 }
 
-const char* encode64_f(char* input, uint8_t len) {
+// Returns base64(input) as a transient String — no permanent static buffer.
+String encode64_f(char* input, uint8_t len) {
   // encoding
 
 	EMAIL_DEBUG_PRINTLN(F("Encoding"));
 	EMAIL_DEBUG_PRINTLN(input);
 	EMAIL_DEBUG_PRINTLN(len);
 
-  //int encodedLen =
- base64_enc_length(len);
-  static char encoded[256];
-  // note input is consumed in this step: it will be empty afterwards
-  base64_encode(encoded, input, len);
-  return encoded;
+  int outLen = base64_enc_length(len);
+  String result;
+  // Sized heap scratch (freed here): base64 of a uint8_t-length input is <= 340 B.
+  char *enc = (char*)malloc(outLen + 1);
+  if (enc) {
+    base64_encode(enc, input, len);
+    result = enc;
+    free(enc);
+  }
+  return result;
 }
 
 // END BASE64 ---------------------------------------------------------
