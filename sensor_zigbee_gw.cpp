@@ -947,6 +947,15 @@ static void gw_process_basic_query_queue() {
 #define TUYA_CMD_DP_REPORT      0x02  // TY_DATA_REPORT: device -> gateway proactive report (two-way ACK)
 #define TUYA_CMD_QUERY_REQ      0x03  // TY_DATA_QUERY: gateway -> device query all DPs
 #define TUYA_CMD_DP_SEND        0x04  // Legacy/vendor variant seen on some devices
+#define TUYA_CMD_ACTIVE_REPORT  0x05  // activeStatusReport: device -> gateway DP report variant
+#define TUYA_CMD_ACTIVE_REPORT2 0x06  // activeStatusReportAlt: device -> gateway DP report variant
+// 0x07: bridged TuyaMCU "report status" (serial CMD 0x07) tunnelled over the
+// Zigbee EF00 cluster by some devices (e.g. GX water valves). Same DP payload
+// layout as 0x02, so parse it as a report instead of dropping it.
+#define TUYA_CMD_MCU_STATUS_REPORT 0x07
+// 0x22: TuyaMCU synchronous status report. Per Tuya docs the DP payload format
+// is identical to the asynchronous 0x07 report, so parse it the same way.
+#define TUYA_CMD_MCU_STATUS_REPORT_SYN 0x22
 #define TUYA_CMD_REPORT_DP_DATA 0x02  // Keep alias for historical naming in this file
 #define TUYA_CMD_REPORT_NO_LINK 0x2C  // Legacy/vendor extension (not primary path)
 #define TUYA_CMD_MCU_VERSION_REQ  0x10  // Device → gateway (MCU version query)
@@ -2469,24 +2478,30 @@ static bool gw_tuya_aps_indication_handler(esp_zb_apsde_data_ind_t ind) {
         return true;
     }
 
+    // Acknowledge the frame the way the device expects. If it left the ZCL
+    // "disable default response" bit (frame control bit 4) CLEARED, it wants a
+    // ZCL Default Response; without it the device retransmits the same frame
+    // repeatedly (the flood). This must run for EVERY command — including
+    // unhandled ones like 0x07 — otherwise the device never gets its ACK and
+    // keeps resending forever. Respond before the unhandled-command bailout and
+    // before the dedup below so every received copy is answered.
+    if ((ind.asdu[0] & 0x10) == 0) {
+        gw_tuya_send_default_response(ind.src_short_addr, ind.src_endpoint,
+                                      seq_number, command_id);
+    }
+
     // Process all known DP-bearing response/report variants.
     if (command_id != TUYA_CMD_DATA_RESPONSE &&
         command_id != TUYA_CMD_DATA_REPORT &&
         command_id != TUYA_CMD_DATA_SEND &&
+        command_id != TUYA_CMD_ACTIVE_REPORT &&
+        command_id != TUYA_CMD_ACTIVE_REPORT2 &&
+        command_id != TUYA_CMD_MCU_STATUS_REPORT &&
+        command_id != TUYA_CMD_MCU_STATUS_REPORT_SYN &&
         command_id != TUYA_CMD_ACTIVE_STATUS) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Unhandled command 0x%02X from 0x%04X\n"),
+        DEBUG_PRINTF(F("[ZIGBEE-GW][TUYA] Unhandled command 0x%02X from 0x%04X (ACKed)\n"),
                 command_id, ind.src_short_addr);
         return true;  // Consume — don't let ZCL stack fail on unknown Tuya commands
-    }
-
-    // Acknowledge the data report the way the device expects. If it left the ZCL
-    // "disable default response" bit (frame control bit 4) CLEARED, it wants a
-    // ZCL Default Response; without it the device retransmits the same frame
-    // repeatedly (the flood). Respond to EVERY received copy (before the dedup
-    // below) so retransmits are answered and stop.
-    if ((ind.asdu[0] & 0x10) == 0) {
-        gw_tuya_send_default_response(ind.src_short_addr, ind.src_endpoint,
-                                      seq_number, command_id);
     }
 
     // Drop retransmitted duplicates of the same DP report (same source +
