@@ -1940,6 +1940,22 @@ void read_all_sensors(boolean online) {
     return;  // wait 30s before first sensor read
   }
 
+  // Evaluate monitors and run periodic post-processing on a steady 1-second
+  // cadence, independent of the sensor-read sweep. With several continuously
+  // averaging ASB sensors the read loop reads 3 sensors per pass and
+  // early-returns before ever reaching the trailing check_monitors(), which
+  // would leave monitors unevaluated in the background (#331). Running it here
+  // guarantees execution once per wall-clock second.
+  static time_os_t s_last_periodic = 0;
+  if (time != s_last_periodic) {
+    s_last_periodic = time;
+    sensor_update_groups();
+    calc_sensorlogs();
+    check_monitors();
+    if (time - last_save_time > 3600)  // 1h
+      sensor_save();
+  }
+
   // Initialize iterator if we're starting over
   if (!current_sensor && !sensorsMap.empty()) {
     current_sensor_it = sensorsMap.begin();
@@ -2046,11 +2062,6 @@ void read_all_sensors(boolean online) {
       current_sensor = NULL;
     }
   }
-  sensor_update_groups();
-  calc_sensorlogs();
-  check_monitors();
-  if (time - last_save_time > 3600)  // 1h
-    sensor_save();
 }
 
 #if defined(ESP8266) || defined(ESP32)
