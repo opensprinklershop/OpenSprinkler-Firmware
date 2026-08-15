@@ -6,6 +6,25 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(226)] — veröffentlicht 2026-08-15
+
+### Added
+- **Vollständiges Zigbee-Toolset im MCP-Server**: Der MCP-Server (`tools/mcp-server`) bietet nun ein komplettes Set an Zigbee-Werkzeugen, mit denen KI-Assistenten die am Gateway angebundenen Zigbee-Geräte abfragen und verwalten können (u. a. Geräteliste, Pairing/Join und logische Geräte).
+
+### Changed
+- **Speicheroptimierung (DRAM/Stack) durch dynamische Sensor-Eigenschaften und transiente Puffer**: Sensor-Eigenschaften werden nun bedarfsgerecht dynamisch verwaltet, und zahlreiche zuvor statisch reservierte Puffer (u. a. für Sensor-, E-Mail- und Konfigurationsverarbeitung) werden nur noch temporär (transient) alloziert. Das senkt den dauerhaften DRAM- und Stack-Verbrauch spürbar und verschafft besonders den RAM-knappen Boards (ESP32-C5, ESP8266) mehr freien Speicher im laufenden Betrieb.
+- **Entprelltes Speichern (Debounce)**: Häufige Konfigurationsschreibvorgänge werden zusammengefasst, um Flash-Schreiblast und kurzzeitige Speicherspitzen zu reduzieren.
+- **Zustandsloser InfluxDB-Writer**: Die InfluxDB-Anbindung wurde auf einen zustandslosen Writer umgestellt, der keine langlebigen Puffer mehr vorhält. Das reduziert den Speicherbedarf und macht die Datenübertragung robuster.
+- **ESP8266-Heap-Optimierung**: Reduzierter Speicherbedarf auf dem ESP8266 sowie zusätzliche Heap-/Cont-Stack-Diagnose.
+- **Zuverlässigeres Zigbee-Pairing**: Der Kopplungsvorgang am Zigbee-Gateway wurde robuster gestaltet.
+
+### Fixed
+- **Monitor-Min/Max-Prüfung korrigiert**: Die Schwellenwertauswertung von Min-/Max-Monitoren war fehlerhaft und wurde korrigiert.
+- **Monitor-Zonen-Reaktivierung korrigiert**: Eine zeitgesteuerte Monitor-Aktion, die eine Zone erneut aktivieren soll, greift nun wieder zuverlässig.
+- **Backup/Restore: Speichermangel (OOM) behoben**: Das Wiederherstellen großer Konfigurationen scheiterte auf RAM-knappen Geräten an Speichermangel; dank der transienten Pufferverwaltung läuft der Restore nun mit deutlich geringerem Spitzenspeicher durch.
+
+---
+
 ## [2.4.0(225)] — veröffentlicht 2026-08-13
 
 ### Added
