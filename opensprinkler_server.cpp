@@ -8033,22 +8033,24 @@ void on_firmware_upload() {
 	HTTPUpload& upload = update_server->upload();
 	if(upload.status == UPLOAD_FILE_START){
 #if !defined(ESP32C5)
-		if(os.iopts[IOPT_WIFI_MODE]==WIFI_MODE_STA) {
-			// Free RAM and stop network contention before flashing. On the
-			// memory-tight ESP8266 an active MQTT client (PubSubClient buffer +
-			// WiFiClient, ~7 KB) competing for the WiFi radio made the FIRST
-			// upload attempt stall while a later retry succeeded (ticket 305).
-			// Suspend MQTT (frees heap) and close UDP sockets (NTP/mDNS). resume()
-			// is deferred to the main loop and only runs if the update is
-			// aborted/failed; a successful update reboots the device.
-			if (OSMqtt::enabled()) {
-				OSMqtt::suspend();
-				s_ota_services_suspended = true;
-			}
-#if defined(ESP8266)
-			WiFiUDP::stopAll();
-#endif
+		// Free RAM and stop network contention before flashing. On the
+		// memory-tight ESP8266 an active MQTT client (PubSubClient buffer +
+		// WiFiClient, ~7 KB) competing for the network made the FIRST upload
+		// attempt stall while a later retry succeeded (ticket 305). On wired
+		// (W5500 TOE) units this was originally gated behind WIFI_MODE_STA and
+		// therefore skipped, so MQTT/sensors kept running during the flash write
+		// and made the OTA upload flaky (random "aborted"/hang mid-transfer).
+		// Free the RAM regardless of WiFi vs Ethernet. Suspend MQTT (frees heap)
+		// and close UDP sockets (NTP/mDNS). resume() is deferred to the main loop
+		// and only runs if the update is aborted/failed; a successful update
+		// reboots the device.
+		if (OSMqtt::enabled()) {
+			OSMqtt::suspend();
+			s_ota_services_suspended = true;
 		}
+#if defined(ESP8266)
+		WiFiUDP::stopAll();
+#endif
 #endif
 		DEBUG_PRINT(F("upload: "));
 		DEBUG_PRINTLN(upload.filename);

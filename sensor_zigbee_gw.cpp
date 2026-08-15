@@ -1127,6 +1127,38 @@ static inline bool ensure_report_cache() {
     return pending_reports != nullptr;
 }
 
+// Reclaim cache slots occupied by already-consumed or expired reports.
+// The regular compaction happens at the end of sensor_zigbee_gw_process_reports(),
+// but a chatty device can burst many distinct reports (e.g. a Tuya valve emitting
+// dozens of DPs) faster than the loop drains, filling the cache. Freeing stale
+// slots on demand keeps fresh reports from being dropped. Returns the new count.
+static size_t gw_reclaim_report_slots() {
+    if (!pending_reports) return 0;
+    unsigned long now = millis();
+    size_t write_idx = 0;
+    for (size_t read_idx = 0; read_idx < pending_report_count; read_idx++) {
+        ZigbeeAttributeReport& r = pending_reports[read_idx];
+        if (r.consumed || (now - r.timestamp) > REPORT_VALIDITY_MS) {
+            continue;  // drop consumed/expired entry
+        }
+        if (write_idx != read_idx) pending_reports[write_idx] = r;
+        write_idx++;
+    }
+    pending_report_count = write_idx;
+    return pending_report_count;
+}
+
+// Throttle the "cache full" warnings so a flooding device can't spam the log.
+static bool gw_report_cache_full_should_log() {
+    static unsigned long last_full_log = 0;
+    unsigned long now = millis();
+    if (now - last_full_log > 5000) {
+        last_full_log = now;
+        return true;
+    }
+    return false;
+}
+
 static bool gw_cache_attribute_report(uint64_t ieee_addr, uint8_t endpoint,
                                       uint16_t cluster_id, uint16_t attr_id,
                                       int32_t value, uint8_t lqi) {
@@ -1145,8 +1177,14 @@ static bool gw_cache_attribute_report(uint64_t ieee_addr, uint8_t endpoint,
     }
 
     if (pending_report_count >= MAX_PENDING_REPORTS) {
-        DEBUG_PRINTF(F("[ZIGBEE-GW] Report cache FULL [%d/%d] - dropping report! cluster=0x%04X attr=0x%04X\n"),
-                    (int)pending_report_count, (int)MAX_PENDING_REPORTS, cluster_id, attr_id);
+        gw_reclaim_report_slots();  // free consumed/expired slots before giving up
+    }
+
+    if (pending_report_count >= MAX_PENDING_REPORTS) {
+        if (gw_report_cache_full_should_log()) {
+            DEBUG_PRINTF(F("[ZIGBEE-GW] Report cache FULL [%d/%d] - dropping report! cluster=0x%04X attr=0x%04X\n"),
+                        (int)pending_report_count, (int)MAX_PENDING_REPORTS, cluster_id, attr_id);
+        }
         return false;
     }
 
@@ -1882,6 +1920,10 @@ static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
     }
 
     // No existing entry — append a new one
+    if (pending_report_count >= MAX_PENDING_REPORTS) {
+        gw_reclaim_report_slots();  // free consumed/expired slots before giving up
+    }
+
     if (pending_report_count < MAX_PENDING_REPORTS) {
         ZigbeeAttributeReport& report = pending_reports[pending_report_count++];
         report.ieee_addr = ieee_addr;
@@ -1896,7 +1938,9 @@ static void gw_cache_tuya_report(uint64_t ieee_addr, uint8_t src_endpoint,
         ZB_GW_TRACE(F("[ZIGBEE-GW][TUYA] Cached DP report: cluster=0x%04X attr=0x%04X value=%ld lqi=%d\n"),
                     mapped_cluster, mapped_attr, value, lqi);
     } else {
-        DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Report cache full — dropping Tuya DP"));
+        if (gw_report_cache_full_should_log()) {
+            DEBUG_PRINTLN(F("[ZIGBEE-GW][TUYA] Report cache full — dropping Tuya DP"));
+        }
     }
 }
 
