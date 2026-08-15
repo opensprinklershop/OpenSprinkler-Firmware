@@ -3236,6 +3236,13 @@ static bool monitor_load_file(const char *fn) {
     Monitor_t *mon = new Monitor_t;
     mon->fromJson(v);
 
+    // The persisted `active` must not suppress the first event after boot: a
+    // monitor whose condition is already met has to (re)fire its start/stop
+    // action once check_monitors() runs. Start inactive so the first evaluation
+    // produces a real transition. This runs only at boot (monitor_load_file is
+    // called solely from monitor_load()), so runtime reloads keep their state.
+    mon->active = false;
+
     // Skip invalid entries
     if (!mon->nr || !mon->type) {
       delete mon;
@@ -3596,15 +3603,10 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   return defaultBool;
 }
 
-// Read a monitor's pending (scratch) state during the combinational
-// evaluation phase. Using the scratch image (eval_active) instead of the
-// live `active` value makes logic monitors (NOT/AND/OR/XOR/SET_SENSOR12)
-// independent of the order in which monitors are stored/evaluated.
-static bool get_monitor_eval(uint nr, bool inv, bool defaultBool) {
-  Monitor_t *mon = monitor_by_nr(nr);
-  if (!mon) return defaultBool;
-  return inv ? !mon->eval_active : mon->eval_active;
-}
+// Transient per-monitor evaluation state. It used to live on the Monitor
+// object (eval_active/eval_value); since it is only needed during a single
+// check_monitors() pass it now lives in a function-local table there.
+struct MonEval { bool active; double value; };
 
 void check_monitors() {
   DEBUG_PRINTLN(F("check_monitors"));
@@ -3632,8 +3634,8 @@ void check_monitors() {
   // ---------------------------------------------------------------------
   // Two-phase, order-independent evaluation.
   //
-  // Phase 1 computes a stable "process image" of every monitor state into
-  // the transient eval_active/eval_value fields without touching outputs:
+  // Phase 1 computes a stable "process image" of every monitor state into a
+  // function-local table (ev) without touching outputs:
   //   1a) input/leaf monitors (sensor min/max, sensor1/2, time, remote)
   //       are evaluated once - they do not depend on other monitors.
   //   1b) logic monitors (NOT/AND/OR/XOR/SET_SENSOR12) are evaluated
@@ -3644,17 +3646,28 @@ void check_monitors() {
   // actions, notifications and reset-timer handling).
   // ---------------------------------------------------------------------
 
-  // Seed the image with the current states (used as latch input and as the
-  // default for monitors that are not (re)computed this cycle).
+  // Function-local evaluation image (monitor nr -> transient state). Seeded with
+  // the current live states — used as the hysteresis latch input and as the
+  // default for monitors that are not (re)computed this cycle.
+  std::map<uint, MonEval> ev;
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
-    mon->eval_active = mon->active;
-    mon->eval_value = 0;
+    ev[mon->nr] = { (bool)mon->active, 0.0 };
   }
+
+  // Read a monitor's pending (image) state during the logic-combination phase.
+  // Reading the image (not the live `active`) keeps logic monitors
+  // (NOT/AND/OR/XOR/SET_SENSOR12) independent of storage/evaluation order.
+  auto getEval = [&](uint nr, bool inv, bool defaultBool) -> bool {
+    auto it = ev.find(nr);
+    if (it == ev.end()) return defaultBool;
+    return inv ? !it->second.active : it->second.active;
+  };
 
   // Phase 1a: input / leaf monitors (independent of other monitors)
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
+    MonEval &e = ev[mon->nr];
 
     switch(mon->type) {
       case MONITOR_MIN:
@@ -3663,28 +3676,28 @@ void check_monitors() {
         if (sensor && sensor->flags.data_ok) {
           mon->last_ok_time = timeNow;
           double value = sensor->last_data;
-          mon->eval_value = value;
+          e.value = value;
 
           double v_min = mon->m.minmax.value1 <= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
           double v_max = mon->m.minmax.value1 >= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
 
           if (v_min == v_max) {
             if (mon->type == MONITOR_MIN) {
-              mon->eval_active = (value <= v_min);
+              e.active = (value <= v_min);
             } else {
-              mon->eval_active = (value >= v_max);
+              e.active = (value >= v_max);
             }
           } else {
             // hysteresis: latch off the previous output state
             if (!mon->active) {
               if ((mon->type == MONITOR_MIN && value <= v_min) ||
                 (mon->type == MONITOR_MAX && value >= v_max)) {
-                mon->eval_active = true;
+                e.active = true;
               }
             } else {
               if ((mon->type == MONITOR_MIN && value >= v_max) ||
                 (mon->type == MONITOR_MAX && value <= v_min)) {
-                mon->eval_active = false;
+                e.active = false;
               }
             }
           }
@@ -3694,11 +3707,11 @@ void check_monitors() {
           // the configured failsafe state instead of latching the last value.
           if (mon->last_ok_time == 0) mon->last_ok_time = timeNow; // seed from boot/first eval
           if (timeNow >= mon->last_ok_time + mon->stale_timeout) {
-            mon->eval_active = (mon->failsafe_active != 0);
+            e.active = (mon->failsafe_active != 0);
           }
           // else: within grace period -> keep previous state (seeded above)
         }
-        // stale_timeout==0 -> legacy behavior: keep previous eval_active.
+        // stale_timeout==0 -> legacy behavior: keep previous eval state.
         // Ticket #331 diagnostics: show whether this MIN/MAX monitor is being
         // evaluated and with which inputs. Values are scaled x100 to stay clear
         // of ESP8266 %f printf limitations (e.g. data=1001 means 10.01).
@@ -3708,18 +3721,18 @@ void check_monitors() {
           sensor ? (long)(sensor->last_data * 100) : 0L,
           (long)(mon->m.minmax.value1 * 100), (long)(mon->m.minmax.value2 * 100),
           (unsigned long)mon->stale_timeout,
-          (int)mon->active, (int)mon->eval_active);
+          (int)mon->active, (int)e.active);
         break;
       }
 
       case MONITOR_SENSOR12: {
         if (mon->m.sensor12.sensor12 == 1) {
           if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
-            mon->eval_active = mon->m.sensor12.invers ? !os.status.sensor1_active : os.status.sensor1_active;
+            e.active = mon->m.sensor12.invers ? !os.status.sensor1_active : os.status.sensor1_active;
           }
         } else if (mon->m.sensor12.sensor12 == 2) {
           if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL) {
-            mon->eval_active = mon->m.sensor12.invers ? !os.status.sensor2_active : os.status.sensor2_active;
+            e.active = mon->m.sensor12.invers ? !os.status.sensor2_active : os.status.sensor2_active;
           }
         }
         break;
@@ -3741,18 +3754,18 @@ void check_monitors() {
           in_window &= time >= mon->m.mtime.time_from && time < mon->m.mtime.time_to;
 
         if (mon->reset_seconds == 0) {
-          mon->eval_active = in_window;
+          e.active = in_window;
         } else {
           if (!in_window) {
-            mon->eval_active = false;
+            e.active = false;
             mon->reset_time = 0;
           } else {
             if (mon->reset_time == 0) {
-              mon->eval_active = true;
+              e.active = true;
             } else if (timeNow < mon->reset_time) {
-              mon->eval_active = true;
+              e.active = true;
             } else {
-              mon->eval_active = false;
+              e.active = false;
             }
           }
         }
@@ -3760,7 +3773,7 @@ void check_monitors() {
       }
 
       case MONITOR_REMOTE:
-        mon->eval_active = get_remote_monitor(mon, mon->active);
+        e.active = get_remote_monitor(mon, mon->active);
         break;
 
       default:
@@ -3778,39 +3791,40 @@ void check_monitors() {
     changed = false;
     for (auto &kv : monitorsMap) {
       Monitor_t *mon = kv.second;
-      bool newState = mon->eval_active;
+      MonEval &e = ev[mon->nr];
+      bool newState = e.active;
 
       switch(mon->type) {
         case MONITOR_SET_SENSOR12:
-          newState = get_monitor_eval(mon->m.set_sensor12.monitor, false, false);
+          newState = getEval(mon->m.set_sensor12.monitor, false, false);
           break;
         case MONITOR_AND:
-          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, true) &&
-            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, true) &&
-            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, true) &&
-            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, true);
+          newState = getEval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, true) &&
+            getEval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, true) &&
+            getEval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, true) &&
+            getEval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, true);
           break;
         case MONITOR_OR:
-          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ||
-            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ||
-            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ||
-            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
+          newState = getEval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ||
+            getEval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ||
+            getEval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ||
+            getEval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
           break;
         case MONITOR_XOR:
-          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ^
-            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ^
-            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ^
-            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
+          newState = getEval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ^
+            getEval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ^
+            getEval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ^
+            getEval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
           break;
         case MONITOR_NOT:
-          newState = get_monitor_eval(mon->m.mnot.monitor, true, false);
+          newState = getEval(mon->m.mnot.monitor, true, false);
           break;
         default:
           continue; // leaf monitor, already final
       }
 
-      if (newState != mon->eval_active) {
-        mon->eval_active = newState;
+      if (newState != e.active) {
+        e.active = newState;
         changed = true;
       }
     }
@@ -3821,10 +3835,10 @@ void check_monitors() {
     Monitor_t *mon = kv.second;
     if (mon->type == MONITOR_SET_SENSOR12) {
       if (mon->m.set_sensor12.sensor12 == 1) {
-        os.status.forced_sensor1 = mon->eval_active;
+        os.status.forced_sensor1 = ev[mon->nr].active;
       }
       if (mon->m.set_sensor12.sensor12 == 2) {
-        os.status.forced_sensor2 = mon->eval_active;
+        os.status.forced_sensor2 = ev[mon->nr].active;
       }
     }
   }
@@ -3836,8 +3850,8 @@ void check_monitors() {
     uint nr = mon->nr;
 
     bool wasActive = mon->active;
-    double value = mon->eval_value;
-    mon->active = mon->eval_active;
+    double value = ev[mon->nr].value;
+    mon->active = ev[mon->nr].active;
 
     bool stopOnly = (mon->output_mode == MONITOR_OUTPUT_STOPONLY);
 

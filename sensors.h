@@ -409,10 +409,9 @@ public:
   unsigned char undef[9];   // for later
   ulong reset_time; // time to reset
 
-  // Transient evaluation scratch (not persisted / not serialized).
-  // Used by check_monitors() for order-independent two-phase evaluation.
-  boolean eval_active;
-  double eval_value;
+  // Transient evaluation scratch lives in a function-local table inside
+  // check_monitors() (not on the object). Only last_ok_time must survive across
+  // calls for the stale-data failsafe.
   ulong last_ok_time;       // last time the referenced sensor delivered valid data (transient)
 
   /**
@@ -422,7 +421,7 @@ public:
               active(false), time(0), maxRuntime(0), prio(0), 
               reset_seconds(0), output_mode(0), stale_timeout(0),
               failsafe_active(0), reset_time(0),
-              eval_active(false), eval_value(0), last_ok_time(0) {
+              last_ok_time(0) {
     memset(&m, 0, sizeof(Monitor_Union_t));
     memset(undef, 0, sizeof(undef));
     order = 0;
