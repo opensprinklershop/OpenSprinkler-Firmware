@@ -20,23 +20,29 @@
 #define ACME_TAG "[ACME]"
 
 // ── Static state ─────────────────────────────────────────────────────────────
+// The char buffers below are request-scoped scratch (challenge/directory/account
+// URLs) but must survive the whole ACME flow and be readable from the main web
+// server (acme_handle_challenge). Rather than heap-managing them across the many
+// task exit paths, place them in PSRAM via PSRAM_BSS_ATTR so they cost no DRAM on
+// ESP32 variants with PSRAM (no-op fallback to DRAM otherwise). BSS = zero-init,
+// so they carry no explicit initializer.
 static AcmeConfig s_config = {};
 static AcmeStatus s_status = ACME_STATUS_IDLE;
-static char s_last_error[128] = "";
+static PSRAM_BSS_ATTR char s_last_error[128];
 static TimerHandle_t s_renewal_timer = nullptr;
 static bool s_requesting = false;
 
 // HTTP-01 challenge state (set during cert request, cleared after)
-static char s_challenge_token[128] = "";
-static char s_challenge_key_auth[512] = "";
+static PSRAM_BSS_ATTR char s_challenge_token[128];
+static PSRAM_BSS_ATTR char s_challenge_key_auth[512];
 
 // ACME directory URLs (populated from directory endpoint)
-static char s_dir_new_nonce[256] = "";
-static char s_dir_new_account[256] = "";
-static char s_dir_new_order[256] = "";
+static PSRAM_BSS_ATTR char s_dir_new_nonce[256];
+static PSRAM_BSS_ATTR char s_dir_new_account[256];
+static PSRAM_BSS_ATTR char s_dir_new_order[256];
 
 // Account URL (from account creation response Location header)
-static char s_account_url[256] = "";
+static PSRAM_BSS_ATTR char s_account_url[256];
 
 // Temporary HTTP server on port 80 for ACME HTTP-01 challenge
 static WebServer* s_challenge_server = nullptr;

@@ -1090,23 +1090,72 @@ void online_update_loop() {
 #include "opensprinkler_server.h"
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
+#include <WiFiUdp.h>
 #include <WiFiClientSecureBearSSL.h>
 #include <Updater.h>
 #include <LittleFS.h>
+#include <memory>
 #include "ArduinoJson.hpp"
 
 extern OpenSprinkler os;
 
-static OnlineUpdateState s_state = { OTA_STATUS_IDLE, 0, "" };
-static OnlineUpdateManifest* s_manifest_ptr = NULL; // heap-allocated only during OTA
-static bool s_update_in_progress = false;
-static bool s_update_pending = false;
-
 #define OTA_ESP8266_RESTORE_FILE "/ota_esp8266_restore.json"
 
-static void ota_set_state(OnlineUpdateStatus status, uint8_t progress, const char* msg);
+// All ESP8266 online-update state and logic is encapsulated here. A single
+// static instance (s_updater) holds what used to be a set of file-scope
+// statics. The public online_update_* free functions (declared in
+// online_update.h, called from the web server and main loop) are thin wrappers
+// that delegate to this instance.
+class ESP8266OTAUpdater {
+public:
+	~ESP8266OTAUpdater() { delete _manifest; }
 
-static void ota_save_esp8266_restore_state() {
+	OnlineUpdateState getState() const { return _state; }
+	bool inProgress() const { return _updateInProgress || _updatePending || _checkPending; }
+	// True when the instance holds no work and no cached manifest, so it can be
+	// freed to return the RAM (incl. the 1 KB stream buffer) to the heap.
+	bool isReleasable() const {
+		return !_updateInProgress && !_updatePending && !_checkPending && _manifest == NULL;
+	}
+	bool check(OnlineUpdateManifest &manifest);
+	bool checkSafe(OnlineUpdateManifest &manifest) { return check(manifest); }
+	void cacheManifest(const OnlineUpdateManifest &manifest);
+	void setVariant(const char* variant) { (void)variant; } // ESP32C5-only; no-op here
+	void start();
+	void loop();
+	static void resume(); // reads LittleFS only — no instance state needed
+
+private:
+	void setState(OnlineUpdateStatus status, uint8_t progress, const char* msg);
+	void saveRestoreState();
+	bool flashViaHttpClient(HTTPClient &http, size_t max_sketch_space, int *last_http_code = NULL);
+	static bool parseHttpUrl(const char* url, String &host, uint16_t &port, String &uri, bool &is_https);
+
+	OnlineUpdateState _state = { OTA_STATUS_IDLE, 0, "" };
+	OnlineUpdateManifest* _manifest = NULL; // heap-allocated only during OTA
+	bool _updateInProgress = false;
+	bool _updatePending = false;
+	// Set by start() when no manifest is cached yet. The (blocking) manifest
+	// download then runs in loop() instead of the web request handler, so the
+	// /uu response is sent immediately and the hardware watchdog is fed during
+	// the fetch (avoids rst cause:4 wdt reset).
+	bool _checkPending = false;
+	uint8_t _streamBuf[1024];
+};
+
+// The updater is created dynamically only while an update is scheduled/running,
+// so idle devices don't reserve its RAM (incl. the 1 KB stream buffer).
+// s_lastState preserves the final status for the UI (/us polling) after the
+// instance has been released.
+static ESP8266OTAUpdater* s_updater = NULL;
+static OnlineUpdateState s_lastState = { OTA_STATUS_IDLE, 0, "" };
+
+static ESP8266OTAUpdater* ota_ensure_updater() {
+	if (!s_updater) s_updater = new ESP8266OTAUpdater();
+	return s_updater;
+}
+
+void ESP8266OTAUpdater::saveRestoreState() {
 	yield();
 	File f = LittleFS.open(OTA_ESP8266_RESTORE_FILE, "w");
 	if (!f) {
@@ -1156,7 +1205,7 @@ static void ota_save_esp8266_restore_state() {
 	DEBUG_PRINTLN(F("[OTA-ESP8266] Sensor files backed up"));
 }
 
-static bool ota_parse_http_url(const char* url, String &host, uint16_t &port, String &uri, bool &is_https) {
+bool ESP8266OTAUpdater::parseHttpUrl(const char* url, String &host, uint16_t &port, String &uri, bool &is_https) {
 	is_https = false;
 	const char* p = nullptr;
 	if (strncmp(url, "https://", 8) == 0) {
@@ -1182,9 +1231,7 @@ static bool ota_parse_http_url(const char* url, String &host, uint16_t &port, St
 	return host.length() > 0;
 }
 
-static uint8_t s_ota_stream_buf[1024];
-
-static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space, int *last_http_code = NULL) {
+bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_space, int *last_http_code) {
 	const char* headerkeys[] = { "Content-Length", "Content-Type", "Location", "x-MD5" };
 	http.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(headerkeys[0]));
 	http.setTimeout(30000);
@@ -1217,7 +1264,7 @@ static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space,
 		}
 		char msg[96];
 		snprintf(msg, sizeof(msg), "HTTP GET returned %d", http_code);
-		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, msg);
+		setState(OTA_STATUS_ERROR_NETWORK, 0, msg);
 		http.end();
 		return false;
 	}
@@ -1226,21 +1273,21 @@ static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space,
 	DEBUG_PRINTF("[OTA-ESP8266] Content-Length: %d\n", content_length);
 	DEBUG_PRINTF("[OTA-ESP8266] Max sketch space: %u\n", (unsigned)max_sketch_space);
 	if (content_length <= 0) {
-		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Missing or invalid Content-Length");
+		setState(OTA_STATUS_ERROR_NETWORK, 0, "Missing or invalid Content-Length");
 		http.end();
 		return false;
 	}
 	if ((uint32_t)content_length > max_sketch_space) {
 		char msg[96];
 		snprintf(msg, sizeof(msg), "Binary too large (%d > %u)", content_length, (unsigned)max_sketch_space);
-		ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, msg);
+		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, msg);
 		http.end();
 		return false;
 	}
 
 	WiFiClient *stream = http.getStreamPtr();
 	if (!stream) {
-		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "HTTP stream unavailable");
+		setState(OTA_STATUS_ERROR_NETWORK, 0, "HTTP stream unavailable");
 		http.end();
 		return false;
 	}
@@ -1254,16 +1301,16 @@ static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space,
 	Update.onError([](uint8_t error) {
 		DEBUG_PRINTF("[OTA-ESP8266] Update error %u: %s\n", error, Update.getErrorString().c_str());
 	});
-	Update.onProgress([](size_t cur, size_t total) {
+	Update.onProgress([this](size_t cur, size_t total) {
 		if (total == 0) return;
 		uint8_t progress = 10 + (uint8_t)((cur * 90ULL) / total);
 		if (progress > 99) progress = 99;
-		s_state.progress = progress;
+		_state.progress = progress;
 	});
 
 	if (!Update.begin((size_t)content_length)) {
 		DEBUG_PRINTF("[OTA-ESP8266] Update.begin failed: %s\n", Update.getErrorString().c_str());
-		ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
+		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
 		http.end();
 		return false;
 	}
@@ -1271,30 +1318,38 @@ static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space,
 		String md5 = http.header("x-MD5");
 		if (md5.length() && !Update.setMD5(md5.c_str())) {
 			DEBUG_PRINTF("[OTA-ESP8266] Update.setMD5 failed for %s\n", md5.c_str());
-			ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Update.setMD5 failed");
+			setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Update.setMD5 failed");
 			Update.end(false);
 			http.end();
 			return false;
 		}
 	}
 
-	ota_set_state(OTA_STATUS_DOWNLOADING_ZIGBEE, 10, "Downloading firmware...");
+	setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 10, "Downloading firmware...");
 	Update.runAsync(false);
+	DEBUG_PRINTF("[OTA-ESP8266] Streaming start: heap=%u connected=%d\n",
+		(unsigned)ESP.getFreeHeap(), stream->connected() ? 1 : 0);
 
 	size_t written = 0;
 	uint32_t last_data_ms = millis();
+	uint32_t loop_start_ms = millis();
+	uint32_t last_progress_log_ms = millis();
+	size_t last_logged_written = 0;
+	uint32_t stall_iters = 0;
 	while (written < (size_t)content_length) {
 		size_t avail = stream->available();
 		if (avail > 0) {
-			size_t to_read = avail < sizeof(s_ota_stream_buf) ? avail : sizeof(s_ota_stream_buf);
-			size_t n = stream->readBytes(s_ota_stream_buf, to_read);
+			stall_iters = 0;
+			size_t to_read = avail < sizeof(_streamBuf) ? avail : sizeof(_streamBuf);
+			size_t n = stream->readBytes(_streamBuf, to_read);
 			if (n > 0) {
-				size_t w = Update.write(s_ota_stream_buf, n);
+				size_t w = Update.write(_streamBuf, n);
 				if (w != n) {
 					String err = Update.getErrorString();
 					if (!err.length()) err = F("Flash write failed");
-					DEBUG_PRINTF("[OTA-ESP8266] Update.write failed: %s\n", err.c_str());
-					ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, err.c_str());
+					DEBUG_PRINTF("[OTA-ESP8266] Update.write failed at %u/%d (wrote %u of %u): %s\n",
+						(unsigned)written, content_length, (unsigned)w, (unsigned)n, err.c_str());
+					setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, err.c_str());
 					Update.end(false);
 					http.end();
 					return false;
@@ -1303,13 +1358,40 @@ static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space,
 				last_data_ms = millis();
 				uint8_t progress = 10 + (uint8_t)((written * 90ULL) / (size_t)content_length);
 				if (progress > 99) progress = 99;
-				s_state.progress = progress;
+				_state.progress = progress;
+			} else {
+				DEBUG_PRINTF("[OTA-ESP8266] readBytes returned 0 (avail=%u) at %u/%d\n",
+					(unsigned)avail, (unsigned)written, content_length);
+			}
+		} else {
+			// No data yet: track how often we spin without progress so a stalled
+			// stream is visible in the log before the 15s timeout trips.
+			stall_iters++;
+			if ((stall_iters % 2000) == 0) {
+				DEBUG_PRINTF("[OTA-ESP8266] Waiting for data: written=%u/%d idle=%lums heap=%u connected=%d\n",
+					(unsigned)written, content_length, (unsigned long)(millis() - last_data_ms),
+					(unsigned)ESP.getFreeHeap(), stream->connected() ? 1 : 0);
 			}
 		}
 
+		// Periodic progress heartbeat (every ~2s) with throughput + heap so a
+		// slow-down or WDT reset can be correlated against the last logged point.
+		if ((millis() - last_progress_log_ms) >= 2000) {
+			uint32_t dt = millis() - last_progress_log_ms;
+			size_t delta = written - last_logged_written;
+			DEBUG_PRINTF("[OTA-ESP8266] Progress %u/%d (%u%%) %uB/s heap=%u elapsed=%lums\n",
+				(unsigned)written, content_length, (unsigned)_state.progress,
+				(unsigned)(dt ? (delta * 1000UL / dt) : 0), (unsigned)ESP.getFreeHeap(),
+				(unsigned long)(millis() - loop_start_ms));
+			last_progress_log_ms = millis();
+			last_logged_written = written;
+		}
+
 		if ((millis() - last_data_ms) > 15000) {
-			DEBUG_PRINTLN(F("[OTA-ESP8266] Stream timeout while reading firmware"));
-			ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Stream Read Timeout");
+			DEBUG_PRINTF("[OTA-ESP8266] Stream timeout: written=%u/%d heap=%u connected=%d\n",
+				(unsigned)written, content_length, (unsigned)ESP.getFreeHeap(),
+				stream->connected() ? 1 : 0);
+			setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Stream Read Timeout");
 			Update.end(false);
 			http.end();
 			return false;
@@ -1318,18 +1400,20 @@ static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space,
 		yield();
 	}
 
-	DEBUG_PRINTF("[OTA-ESP8266] Written bytes: %u of %d\n", (unsigned)written, content_length);
+	DEBUG_PRINTF("[OTA-ESP8266] Streaming done: %u of %d bytes in %lums heap=%u\n",
+		(unsigned)written, content_length, (unsigned long)(millis() - loop_start_ms),
+		(unsigned)ESP.getFreeHeap());
 
 	if (!Update.end()) {
 		DEBUG_PRINTF("[OTA-ESP8266] Update.end failed: %s\n", Update.getErrorString().c_str());
-		ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
+		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
 		http.end();
 		return false;
 	}
 
 	if (Update.hasError()) {
 		DEBUG_PRINTF("[OTA-ESP8266] Update.hasError: %s\n", Update.getErrorString().c_str());
-		ota_set_state(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
+		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
 		http.end();
 		return false;
 	}
@@ -1338,27 +1422,19 @@ static bool ota_flash_via_http_client(HTTPClient &http, size_t max_sketch_space,
 	return true;
 }
 
-static void ota_set_state(OnlineUpdateStatus status, uint8_t progress, const char* msg) {
-	s_state.status = status;
-	s_state.progress = progress;
-	strncpy(s_state.message, msg ? msg : "", sizeof(s_state.message) - 1);
-	s_state.message[sizeof(s_state.message) - 1] = '\0';
+void ESP8266OTAUpdater::setState(OnlineUpdateStatus status, uint8_t progress, const char* msg) {
+	_state.status = status;
+	_state.progress = progress;
+	strncpy(_state.message, msg ? msg : "", sizeof(_state.message) - 1);
+	_state.message[sizeof(_state.message) - 1] = '\0';
 	DEBUG_PRINT(F("[OTA-ESP8266] "));
-	DEBUG_PRINTLN(s_state.message);
+	DEBUG_PRINTLN(_state.message);
 }
 
-OnlineUpdateState online_update_get_state() {
-	return s_state;
-}
-
-bool online_update_in_progress() {
-	return s_update_in_progress || s_update_pending;
-}
-
-bool online_update_check(OnlineUpdateManifest &manifest) {
+bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 	memset(&manifest, 0, sizeof(manifest));
 	manifest.valid = false;
-	ota_set_state(OTA_STATUS_CHECKING, 0, "Checking for updates...");
+	setState(OTA_STATUS_CHECKING, 0, "Checking for updates...");
 
 	// ESP8266 uses plain HTTP — BearSSL cannot negotiate TLS with Ionos
 	// (server ignores max_fragment_length; returned record overflows the 512-byte buffer).
@@ -1379,11 +1455,11 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 		} else {
 			char buf[64];
 			snprintf(buf, sizeof(buf), "HTTP error: %d", http_code);
-			ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, buf);
+			setState(OTA_STATUS_ERROR_NETWORK, 0, buf);
 		}
 		http.end();
 	} else {
-		ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
+		setState(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
 	}
 
 	if (!http_ok) return false;
@@ -1391,7 +1467,7 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	ArduinoJson::JsonDocument doc;
 	ArduinoJson::DeserializationError err = ArduinoJson::deserializeJson(doc, payload);
 	if (err) {
-		ota_set_state(OTA_STATUS_ERROR_PARSE, 0, "JSON parse error");
+		setState(OTA_STATUS_ERROR_PARSE, 0, "JSON parse error");
 		return false;
 	}
 
@@ -1417,73 +1493,103 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	manifest.valid = (manifest.fw_version > 0 && manifest.zigbee_url[0]);
 
 	if (!manifest.valid) {
-		ota_set_state(OTA_STATUS_ERROR_PARSE, 0, "Invalid manifest data");
+		setState(OTA_STATUS_ERROR_PARSE, 0, "Invalid manifest data");
 		return false;
 	}
 
 	bool newer = (manifest.fw_version > OS_FW_VERSION) ||
 	             (manifest.fw_version == OS_FW_VERSION && manifest.fw_minor > OS_FW_MINOR);
 	if (newer) {
-		ota_set_state(OTA_STATUS_AVAILABLE, 0, "Update available");
+		setState(OTA_STATUS_AVAILABLE, 0, "Update available");
 	} else {
-		ota_set_state(OTA_STATUS_UP_TO_DATE, 0, "Firmware is up to date");
+		setState(OTA_STATUS_UP_TO_DATE, 0, "Firmware is up to date");
 	}
 	return newer;
 }
 
-void online_update_cache_manifest(const OnlineUpdateManifest &manifest) {
-	if (!s_manifest_ptr) s_manifest_ptr = new OnlineUpdateManifest();
-	*s_manifest_ptr = manifest;
+void ESP8266OTAUpdater::cacheManifest(const OnlineUpdateManifest &manifest) {
+	if (!_manifest) _manifest = new OnlineUpdateManifest();
+	*_manifest = manifest;
 }
 
-// Variant selection is ESP32C5-only; no-op stub for ESP8266
-void online_update_set_variant(const char* variant) {
-	(void)variant;
-}
-
-// Safe-check wrapper is ESP32-only; on ESP8266 call the regular check directly
-bool online_update_check_safe(OnlineUpdateManifest &manifest) {
-	return online_update_check(manifest);
-}
-
-void online_update_start() {
-	if (s_update_in_progress || s_update_pending) return;
-
-	if (!s_manifest_ptr || !s_manifest_ptr->valid) {
-		if (!s_manifest_ptr) s_manifest_ptr = new OnlineUpdateManifest();
-		if (!online_update_check(*s_manifest_ptr)) {
-			delete s_manifest_ptr;
-			s_manifest_ptr = NULL;
-			return;
-		}
-	}
-
-	s_update_pending = true;
-	ota_set_state(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, "ESP8266 update scheduled...");
-}
-
-void online_update_loop() {
-	if (!s_update_pending || s_update_in_progress) {
+void ESP8266OTAUpdater::start() {
+	DEBUG_PRINTF("[OTA-ESP8266] start(): in_progress=%d pending=%d check_pending=%d manifest=%d\n",
+		_updateInProgress ? 1 : 0, _updatePending ? 1 : 0, _checkPending ? 1 : 0,
+		(_manifest && _manifest->valid) ? 1 : 0);
+	if (_updateInProgress || _updatePending || _checkPending) {
+		DEBUG_PRINTLN(F("[OTA-ESP8266] start ignored: already scheduled/running"));
 		return;
 	}
 
-	s_update_pending = false;
-	s_update_in_progress = true;
+	// If a valid manifest is already cached (e.g. via /uc or a zu= URL override
+	// on /uu), we can flash directly. Otherwise defer the BLOCKING manifest
+	// download to loop() — running it here (inside the /uu web request handler)
+	// blocks the ESP8266 for up to 15s and trips the hardware watchdog
+	// (rst cause:4) before the {"result":1} response is even sent.
+	if (_manifest && _manifest->valid) {
+		_updatePending = true;
+		setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, "ESP8266 update scheduled...");
+	} else {
+		_checkPending = true;
+		setState(OTA_STATUS_CHECKING, 1, "Checking for updates...");
+	}
+}
+
+void ESP8266OTAUpdater::loop() {
+	// Deferred manifest check (kept out of the web request handler). Runs here
+	// so yield()/watchdog feeding happens between HTTP reads and the debug
+	// output is visible on the serial monitor.
+	if (_checkPending && !_updateInProgress) {
+		_checkPending = false;
+		DEBUG_PRINTLN(F("[OTA-ESP8266] Deferred manifest check starting..."));
+		if (!_manifest) _manifest = new OnlineUpdateManifest();
+		if (!check(*_manifest)) {
+			DEBUG_PRINTLN(F("[OTA-ESP8266] Deferred manifest check failed / no update"));
+			delete _manifest;
+			_manifest = NULL;
+			return;
+		}
+		_updatePending = true;
+		setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, "ESP8266 update scheduled...");
+	}
+
+	if (!_updatePending || _updateInProgress) {
+		return;
+	}
+
+	_updatePending = false;
+	_updateInProgress = true;
 	os.status.req_mqtt_restart = false;
 	yield();
-	OnlineUpdateManifest* manifest = s_manifest_ptr;
-	s_manifest_ptr = NULL;
+	OnlineUpdateManifest* manifest = _manifest;
+	_manifest = NULL;
 	if (!manifest) {
-		s_update_in_progress = false;
-		ota_set_state(OTA_STATUS_ERROR_PARSE, 0, "Manifest cache missing");
+		_updateInProgress = false;
+		setState(OTA_STATUS_ERROR_PARSE, 0, "Manifest cache missing");
 		return;
 	}
 	uint32_t max_sketch_space = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
 	DEBUG_PRINTF("[OTA-ESP8266] URL: %s\n", manifest->zigbee_url);
 	DEBUG_PRINTF("[OTA-ESP8266] ESP.getFreeSketchSpace(): %u\n", (unsigned)ESP.getFreeSketchSpace());
 	DEBUG_PRINTF("[OTA-ESP8266] Computed max sketch space: %u\n", (unsigned)max_sketch_space);
+	DEBUG_PRINTF("[OTA-ESP8266] Update start: heap=%u maxblock=%u wifi=%d online=%d\n",
+		(unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxFreeBlockSize(),
+		(int)WiFi.status(), os.network_connected() ? 1 : 0);
 
-	ota_set_state(OTA_STATUS_DOWNLOADING_ZIGBEE, 5, "Starting ESP8266 update...");
+	setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 5, "Starting ESP8266 update...");
+
+	// Free RAM before the download. On the memory-tight ESP8266 the heap can be
+	// as low as ~5 KB with MQTT + sensors + the OTC cloud websocket running,
+	// which makes HTTPClient/Update.begin abort (OOM). Suspend MQTT, close UDP
+	// sockets (NTP/mDNS) and drop the cloud websocket (frees its TLS buffers).
+	// A successful update reboots; these services recover on reboot.
+	if (OSMqtt::enabled()) OSMqtt::suspend();
+	WiFiUDP::stopAll();
+	if (otf) otf->disconnectCloud();
+	yield();
+	DEBUG_PRINTF("[OTA-ESP8266] Heap after freeing services: %u (maxblock=%u)\n",
+		(unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxFreeBlockSize());
+
 	bool ok = false;
 
 	const char* ota_urls[2] = {
@@ -1495,34 +1601,39 @@ void online_update_loop() {
 		if (i > 0) {
 			DEBUG_PRINTF("[OTA-ESP8266] Retrying with fallback URL: %s\n", ota_urls[i]);
 		}
-		// Create the client with reduced BearSSL buffers and let HTTPClient
-		// handle the URL directly. This avoids the extra DNS/IP rewrite path,
-		// which is fragile on some low-memory/network-driver combinations.
-		BearSSL::WiFiClientSecure secureClient;
+		// Only allocate BearSSL (large heap footprint) when the URL is actually
+		// https. ESP8266 OTA URLs are downgraded to plain http, so this stays
+		// null and avoids an OOM abort at ~5 KB free heap.
 		WiFiClient plainClient;
+		std::unique_ptr<BearSSL::WiFiClientSecure> secureClient;
 		HTTPClient http;
 		String host;
 		String uri;
 		uint16_t port = 80;
 		bool is_https = false;
-		if (!ota_parse_http_url(ota_urls[i], host, port, uri, is_https)) {
-			ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "Invalid OTA URL");
+		if (!parseHttpUrl(ota_urls[i], host, port, uri, is_https)) {
+			setState(OTA_STATUS_ERROR_NETWORK, 0, "Invalid OTA URL");
 			continue;
 		}
 		if (is_https) {
-			secureClient.setInsecure();
-			secureClient.setBufferSizes(512, 512);
+			secureClient.reset(new (std::nothrow) BearSSL::WiFiClientSecure());
+			if (!secureClient) {
+				setState(OTA_STATUS_ERROR_NETWORK, 0, "TLS client alloc failed");
+				continue;
+			}
+			secureClient->setInsecure();
+			secureClient->setBufferSizes(512, 512);
 		}
 		http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 		bool began = is_https
-			? http.begin(secureClient, ota_urls[i])
+			? http.begin(*secureClient, ota_urls[i])
 			: http.begin(plainClient, ota_urls[i]);
 		if (!began) {
-			ota_set_state(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
+			setState(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
 			continue;
 		}
 		last_http_code = 0;
-		ok = ota_flash_via_http_client(http, max_sketch_space, &last_http_code);
+		ok = flashViaHttpClient(http, max_sketch_space, &last_http_code);
 		if (!ok && last_http_code != HTTP_CODE_NOT_FOUND) {
 			break;
 		}
@@ -1530,18 +1641,18 @@ void online_update_loop() {
 	delete manifest;
 
 	if (ok) {
-		ota_save_esp8266_restore_state();
-		ota_set_state(OTA_STATUS_DONE, 100, "Update complete. Rebooting...");
+		saveRestoreState();
+		setState(OTA_STATUS_DONE, 100, "Update complete. Rebooting...");
 		delay(500);
-		s_update_in_progress = false;
+		_updateInProgress = false;
 		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
 		return;
 	}
 
-	s_update_in_progress = false;
+	_updateInProgress = false;
 }
 
-void online_update_resume() {
+void ESP8266OTAUpdater::resume() {
 	if (!LittleFS.exists(OTA_ESP8266_RESTORE_FILE)) {
 		return;
 	}
@@ -1620,5 +1731,30 @@ void online_update_resume() {
 	LittleFS.rmdir("/backup");
 	DEBUG_PRINTLN(F("[OTA-ESP8266] Sensor restore complete"));
 }
+
+// --- Public C-style API (declared in online_update.h) — thin wrappers around
+// --- the dynamically-created ESP8266OTAUpdater instance. ------------------
+OnlineUpdateState online_update_get_state() { return s_updater ? s_updater->getState() : s_lastState; }
+bool online_update_in_progress() { return s_updater && s_updater->inProgress(); }
+bool online_update_check(OnlineUpdateManifest &manifest) { return ota_ensure_updater()->check(manifest); }
+bool online_update_check_safe(OnlineUpdateManifest &manifest) { return ota_ensure_updater()->checkSafe(manifest); }
+void online_update_cache_manifest(const OnlineUpdateManifest &manifest) { ota_ensure_updater()->cacheManifest(manifest); }
+void online_update_set_variant(const char* variant) { if (s_updater) s_updater->setVariant(variant); }
+void online_update_start() { ota_ensure_updater()->start(); }
+
+void online_update_loop() {
+	if (!s_updater) return;
+	s_updater->loop();
+	// Release the instance (and its 1 KB stream buffer) once there is nothing
+	// left to do. Preserve the final status so the UI can still poll /us.
+	if (s_updater->isReleasable()) {
+		s_lastState = s_updater->getState();
+		delete s_updater;
+		s_updater = NULL;
+	}
+}
+
+// resume() only reads LittleFS (no persistent instance needed); call statically.
+void online_update_resume() { ESP8266OTAUpdater::resume(); }
 
 #endif // ESP32 / ESP8266

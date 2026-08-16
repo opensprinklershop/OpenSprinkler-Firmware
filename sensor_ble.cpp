@@ -298,7 +298,7 @@ static void ble_ignore_insert(const uint8_t* mac) {
 // read lock-free from the NimBLE scan callback (onResult).
 // ============================================================================
 #define BLE_MAX_MANAGED_MACS 32
-static uint8_t  managed_ble_macs[BLE_MAX_MANAGED_MACS][6];
+static uint8_t EXT_RAM_BSS_ATTR managed_ble_macs[BLE_MAX_MANAGED_MACS][6];
 static volatile int managed_ble_mac_count = 0;
 static uint32_t managed_ble_mac_refresh_at = 0;
 

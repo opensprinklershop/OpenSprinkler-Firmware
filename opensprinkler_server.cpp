@@ -3356,28 +3356,40 @@ void server_update_upgrade(OTF_PARAMS_DEF) {
 	// or fu=firmware_url (ESP8266 direct update)
 	// When provided, build a synthetic manifest and cache it so the OTA task
 	// fetches the caller-specified binaries instead of the latest manifest.
-	char zu_buf[200] = {0};
-	char mu_buf[200] = {0};
-	char fu_buf[200] = {0};
-	char zs_buf[65]  = {0};  // zigbee sha256 (64 hex chars + NUL)
-	char ms_buf[65]  = {0};  // matter sha256
-	bool has_zu = findKeyVal(FKV_SOURCE, zu_buf, sizeof(zu_buf), PSTR("zu"), true) && zu_buf[0];
-	bool has_mu = findKeyVal(FKV_SOURCE, mu_buf, sizeof(mu_buf), PSTR("mu"), true) && mu_buf[0];
-	bool has_fu = findKeyVal(FKV_SOURCE, fu_buf, sizeof(fu_buf), PSTR("fu"), true) && fu_buf[0];
-	bool has_zs = findKeyVal(FKV_SOURCE, zs_buf, sizeof(zs_buf), PSTR("zs"), true) && strlen(zs_buf) == 64;
-	bool has_ms = findKeyVal(FKV_SOURCE, ms_buf, sizeof(ms_buf), PSTR("ms"), true) && strlen(ms_buf) == 64;
-	if (has_zu || has_mu || has_fu) {
-		OnlineUpdateManifest override_manifest = {};
-		strncpy(override_manifest.zigbee_url,
-			has_fu ? fu_buf : (has_zu ? zu_buf : ""),
-			sizeof(override_manifest.zigbee_url) - 1);
-		strncpy(override_manifest.matter_url,  has_mu ? mu_buf : "", sizeof(override_manifest.matter_url)  - 1);
-		if (has_zs) strncpy(override_manifest.zigbee_sha256, zs_buf, sizeof(override_manifest.zigbee_sha256) - 1);
-		if (has_ms) strncpy(override_manifest.matter_sha256, ms_buf, sizeof(override_manifest.matter_sha256) - 1);
-		override_manifest.fw_version = 0;  // not checked by the task
-		override_manifest.fw_minor   = 0;
-		override_manifest.valid      = (override_manifest.zigbee_url[0] != 0);
-		online_update_cache_manifest(override_manifest);
+	// NOTE: the parse buffers + OnlineUpdateManifest total ~1.8 KB. On ESP8266
+	// this handler runs deep in the WebSocket/OTF call chain where the 4 KB
+	// cont stack is already nearly full; keeping them on the stack overflows it
+	// and corrupts the cont context, triggering a __yield panic on the next
+	// yield(). Allocate the scratch space on the heap instead.
+	struct OtaOverrideScratch {
+		char zu_buf[200];
+		char mu_buf[200];
+		char fu_buf[200];
+		char zs_buf[65];   // zigbee sha256 (64 hex chars + NUL)
+		char ms_buf[65];   // matter sha256
+		OnlineUpdateManifest manifest;
+	};
+	OtaOverrideScratch* sc = new (std::nothrow) OtaOverrideScratch();
+	if (sc) {
+		memset(sc, 0, sizeof(*sc));
+		bool has_zu = findKeyVal(FKV_SOURCE, sc->zu_buf, sizeof(sc->zu_buf), PSTR("zu"), true) && sc->zu_buf[0];
+		bool has_mu = findKeyVal(FKV_SOURCE, sc->mu_buf, sizeof(sc->mu_buf), PSTR("mu"), true) && sc->mu_buf[0];
+		bool has_fu = findKeyVal(FKV_SOURCE, sc->fu_buf, sizeof(sc->fu_buf), PSTR("fu"), true) && sc->fu_buf[0];
+		bool has_zs = findKeyVal(FKV_SOURCE, sc->zs_buf, sizeof(sc->zs_buf), PSTR("zs"), true) && strlen(sc->zs_buf) == 64;
+		bool has_ms = findKeyVal(FKV_SOURCE, sc->ms_buf, sizeof(sc->ms_buf), PSTR("ms"), true) && strlen(sc->ms_buf) == 64;
+		if (has_zu || has_mu || has_fu) {
+			strncpy(sc->manifest.zigbee_url,
+				has_fu ? sc->fu_buf : (has_zu ? sc->zu_buf : ""),
+				sizeof(sc->manifest.zigbee_url) - 1);
+			strncpy(sc->manifest.matter_url, has_mu ? sc->mu_buf : "", sizeof(sc->manifest.matter_url) - 1);
+			if (has_zs) strncpy(sc->manifest.zigbee_sha256, sc->zs_buf, sizeof(sc->manifest.zigbee_sha256) - 1);
+			if (has_ms) strncpy(sc->manifest.matter_sha256, sc->ms_buf, sizeof(sc->manifest.matter_sha256) - 1);
+			sc->manifest.fw_version = 0;  // not checked by the task
+			sc->manifest.fw_minor   = 0;
+			sc->manifest.valid      = (sc->manifest.zigbee_url[0] != 0);
+			online_update_cache_manifest(sc->manifest);
+		}
+		delete sc;
 	}
 
 	// Optional variant override: vt=zigbee|matter — selects boot target after OTA
