@@ -3620,7 +3620,7 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
 struct MonEval { bool active; double value; };
 
 void check_monitors() {
-  DEBUG_PRINTLN(F("check_monitors"));
+  //DEBUG_PRINTLN(F("check_monitors"));
   time_os_t timeNow = os.now_tz();
 
   os.status.forced_sensor1 = 0;
