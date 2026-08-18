@@ -714,7 +714,8 @@ unsigned char OpenSprinkler::start_network() {
 	#endif
 
 	if((useEth || get_wifi_mode()==WIFI_MODE_STA) && otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
-		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, false, ether_buffer, ETHER_BUFFER_SIZE);
+		// Use TLS (wss) when the OTC port is 443; plain ws otherwise (e.g. port 80).
+		otf = new OTF::OpenThingsFramework(httpport, otc.server, otc.port, otc.token, otc.port == 443, ether_buffer, ETHER_BUFFER_SIZE);
 		DEBUG_PRINTLN(F("Started OTF with remote connection"));
 	} else {
 		otf = new OTF::OpenThingsFramework(httpport, ether_buffer, ETHER_BUFFER_SIZE);
@@ -1251,7 +1252,8 @@ unsigned char OpenSprinkler::start_network() {
 #endif
 #endif
 	if(otc.en>0 && otc.token.length()>=DEFAULT_OTC_TOKEN_LENGTH) {
-		otf = new OTF::OpenThingsFramework(port, otc.server.c_str(), otc.port, otc.token.c_str(), false, ether_buffer, ETHER_BUFFER_SIZE);
+		// Use TLS (wss) when the OTC port is 443; plain ws otherwise (e.g. port 80).
+		otf = new OTF::OpenThingsFramework(port, otc.server.c_str(), otc.port, otc.token.c_str(), otc.port == 443, ether_buffer, ETHER_BUFFER_SIZE);
 		DEBUG_PRINT(F("Started OTF with remote connection. Local port is: "));
 	} else {
 		otf = new OTF::OpenThingsFramework(port, ether_buffer, ETHER_BUFFER_SIZE);
