@@ -39,6 +39,12 @@ int active_i2c_RS485_mode = 0;
 int i2c_pending = 0;
 static bool i2c_rs485_wire_started = false;
 
+// EFCR Auto-RS485 Richtungssteuerung (RTS steuert DE/RE des Transceivers):
+//   Bit4 = Transmitter steuert RTS, Bit5 = RTS-Polaritaet invertiert.
+//   0x30 = RTS HIGH beim Senden (DE active-high + /RE active-low, zusammengelegt).
+//   0x10 = RTS LOW beim Senden (falls DE/RE-Logik invertiert verdrahtet ist).
+uint8_t i2c_rs485_efcr = 0x30;
+
 // SC16IS752 Register Adressen (Teilauswahl)
 #define REG_RHR     0x00
 #define REG_THR     0x00
@@ -56,19 +62,33 @@ static bool i2c_rs485_wire_started = false;
 
 // Schreib/Rücklese-Test auf dem SC16IS752 Scratch Pad Register (REG_SPR).
 // Stellt sicher, dass wirklich ein SC16IS752 antwortet und nicht ein anderer I2C-Teilnehmer.
-static bool sc16is752_scratch_test(int addr) {
-  const uint8_t TEST_VAL = 0xA5;
+// Ein einzelner Read-back direkt nach dem Write scheitert bei manchen Boards/Bussen
+// (0x48 kollidiert mit dem ADS1115) durch transientes I2C-Timing -> mit Settle-Delay
+// und mehreren Versuchen absichern. Zwei komplementäre Muster verhindern, dass ein
+// schwebender Bus oder ein anderes Device zufällig als SC16IS752 durchgeht.
+static bool sc16is752_scratch_test_pattern(int addr, uint8_t test_val) {
   Wire.beginTransmission(addr);
   Wire.write((REG_SPR << 3) | 0x00);  // Schreibzugriff auf SPR
-  Wire.write(TEST_VAL);
+  Wire.write(test_val);
   if (Wire.endTransmission() != 0) return false;
 
+  delay(1);  // SPR vor dem Rücklesen einschwingen lassen (wie readSC16Register)
   Wire.beginTransmission(addr);
   Wire.write((REG_SPR << 3) | 0x80);  // Lesezugriff auf SPR
   Wire.endTransmission(false);
   Wire.requestFrom(addr, 1);
   if (!Wire.available()) return false;
-  return (Wire.read() == TEST_VAL);
+  return (Wire.read() == test_val);
+}
+
+static bool sc16is752_scratch_test(int addr) {
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    if (sc16is752_scratch_test_pattern(addr, 0xA5) &&
+        sc16is752_scratch_test_pattern(addr, 0x5A))
+      return true;
+    delay(2);
+  }
+  return false;
 }
 
 static bool ensure_i2c_rs485_bus() {
@@ -98,15 +118,21 @@ void sensor_rs485_i2c_init() {
   if (detect_i2c(ASB_I2C_RS485_ADDR)) {    // 0x4C
     if (sc16is752_scratch_test(ASB_I2C_RS485_ADDR)) {
       i2c_rs485_addr = ASB_I2C_RS485_ADDR;
-      // DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
+      DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR);
       add_asb_detected_boards(ASB_I2C_RS485);
     }
   }
   else if (detect_i2c(ASB_I2C_RS485_ADDR_ALT)) {    // 0x48 wrong address, but for backward compatibility we still support it
     if (sc16is752_scratch_test(ASB_I2C_RS485_ADDR_ALT)) {
       i2c_rs485_addr = ASB_I2C_RS485_ADDR_ALT;
-      // DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR_ALT);
+      DEBUG_PRINTF(F("Found I2C RS485 at address %02x\n"), ASB_I2C_RS485_ADDR_ALT);
       add_asb_detected_boards(ASB_I2C_RS485);
+    }
+    else {
+      // 0x48 is shared with the ADS1115 analog board; a failed scratch test here
+      // is expected for analog boards but is a hard failure for an actual RS485
+      // board (no reads, no set-address). Log it so it is diagnosable.
+      DEBUG_PRINTF(F("I2C dev at %02x is not an SC16IS752 (scratch test failed)\n"), ASB_I2C_RS485_ADDR_ALT);
     }
   }
 }
@@ -178,20 +204,24 @@ uint8_t UART_readBytes(uint8_t* buffer, uint8_t len, uint16_t timeout) {
   return count;
 }
 
-void set_RS485_Mode(bool transmitMode) {
+// GPIO7 des SC16IS752 schaltet ueber einen TPS22917 Load-Switch die Versorgung
+// (VCC/Pin 1) des CA-IS3092W Transceivers. GPIO7 HIGH = Transceiver an.
+// Die DE/RE-Richtungsumschaltung macht die Hardware selbst ueber RTS (EFCR Auto-RS485).
+void set_rs485_power(bool on) {
     writeSC16Register(REG_IOD, 0x80); // GPIO7 Output
     uint8_t ioState = readSC16Register(REG_IOS);
 
-    if (transmitMode) {
-      // DEBUG_PRINTLN(F("i2c_rs485: POWER ON"));
-      // Bei RS485: DE=LOW, RE=HIGH -> Pin muss LOW sein
-      ioState |= 0x80; // Setzt Bit 7 auf HIGH
+    if (on) {
+      ioState |= 0x80; // GPIO7 HIGH -> Load-Switch an
     } else {
-      // DEBUG_PRINTLN(F("i2c_rs485: POWER OFF"));
-      // Bei RS485: DE=HIGH, RE=LOW -> Pin muss HIGH sein
-      ioState &= ~0x80; // Löscht Bit 7 auf LOW
+      ioState &= ~0x80; // GPIO7 LOW -> Load-Switch aus
     }
     writeSC16Register(REG_IOS, ioState);
+    if (on) {
+      // Isolierten Transceiver nach dem Einschalten einschwingen lassen,
+      // bevor das erste Byte gesendet wird (sonst geht der erste Frame verloren).
+      delay(2);
+    }
 }
 
 uint16_t datatype2length(uint8_t datatype) {
@@ -241,8 +271,8 @@ void init_SC16IS752(uint32_t baudrate, uint8_t use2stopbits, uint parity) {
   writeSC16Register(REG_DLL, baudf); // Set baud rate to 9600 (assuming 8 MHz clock) (0x34=52=9600)
   writeSC16Register(REG_DLH, 0x00); // Set baud rate to 9600
   writeSC16Register(REG_LCR, lcr); // parity+stopbits (0x1B=1 stop bit, parity even, 8 data bits)
-  set_RS485_Mode(false);
-  writeSC16Register(REG_EFCR, 0x30); // 0x30 = 00110000 RS485 Mode Enable + RTS Inversion
+  set_rs485_power(false);
+  writeSC16Register(REG_EFCR, i2c_rs485_efcr); // Auto-RS485 RTS Richtungssteuerung (siehe i2c_rs485_efcr)
 }
 /**
  * @brief I2C to RS485 Interface
@@ -292,7 +322,7 @@ int RS485I2CSensor::read(unsigned long time) {
   } 
 
   if (active_i2c_RS485_mode == 1) {
-    set_RS485_Mode(true);
+    set_rs485_power(true);
     writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
     writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
 
@@ -309,7 +339,7 @@ int RS485I2CSensor::read(unsigned long time) {
 
   // Send Request
   if (active_i2c_RS485_mode == 2) {
-    // DEBUG_PRINT(F("i2c_rs485: Send Request:"));
+    DEBUG_PRINT(F("i2c_rs485: Send Request:"));
     uint8_t request[8];
     request[0] = id;
     request[1] = code; // Function Code
@@ -321,9 +351,9 @@ int RS485I2CSensor::read(unsigned long time) {
     request[6] = lowByte(crc); // CRC Low Byte
     request[7] = highByte(crc); // CRC High Byte
     for (int i = 0; i < 8; i++) {
-      // DEBUG_PRINTF(F(" %02x"), request[i]);
+       DEBUG_PRINTF(F(" %02x"), request[i]);
     }
-    // DEBUG_PRINTLN();
+    DEBUG_PRINTLN();
     writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
     UART_sendBytes(request, 8);
     active_i2c_RS485_mode = 3;
@@ -333,7 +363,7 @@ int RS485I2CSensor::read(unsigned long time) {
 
   // Read Response
   if (active_i2c_RS485_mode == 3) {
-    // DEBUG_PRINT(F("i2c_rs485: Read Response:"));
+    DEBUG_PRINT(F("i2c_rs485: Read Response:"));
     uint8_t response[20];
     uint8_t expected_length = 5 + (reg_count * 2); // 5 bytes overhead + 2 bytes per register
     uint8_t len = UART_readBytes(response, expected_length, 500); // timeout 500ms
@@ -360,7 +390,7 @@ int RS485I2CSensor::read(unsigned long time) {
       active_i2c_RS485 = 0;
       active_i2c_RS485_mode = 0;
       last_read = time;
-      set_RS485_Mode(false);
+      set_rs485_power(false);
       return HTTP_RQT_NOT_RECEIVED;
     }
 
@@ -435,7 +465,7 @@ int RS485I2CSensor::read(unsigned long time) {
       active_i2c_RS485_mode = 2;
     } else {
       active_i2c_RS485_mode = 0;
-      set_RS485_Mode(false);
+      set_rs485_power(false);
     }
     return HTTP_RQT_SUCCESS;
   }
@@ -447,7 +477,7 @@ int RS485I2CSensor::read(unsigned long time) {
     active_i2c_RS485 = 0;
     active_i2c_RS485_mode = 0;
     last_read = time;
-    set_RS485_Mode(false);
+    set_rs485_power(false);
     DEBUG_PRINTLN(F("i2c_rs485: timeout"));
   }
   DEBUG_PRINTLN(F("i2c_rs485: Exit"));
@@ -467,19 +497,30 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
   // DEBUG_PRINTF(F("set_sensor_address_i2c_rs485: %d %s\n"), nr, name)
   
   if (active_i2c_RS485 > 0 && active_i2c_RS485 != (int)nr) {
-    repeat_read = 1;
-    SensorBase *t = sensor_by_nr(active_i2c_RS485);
-    if (!t || !t->flags.enable)
-      active_i2c_RS485 = 0; //breakout
-    return HTTP_RQT_NOT_RECEIVED;
+    // setAddress is a one-shot HTTP action (no repeat_read loop): wait bounded
+    // for the shared RS485 bus to free up instead of silently dropping the request.
+    uint32_t bus_wait = millis();
+    while (active_i2c_RS485 > 0 && active_i2c_RS485 != (int)nr) {
+      SensorBase *t = sensor_by_nr(active_i2c_RS485);
+      if (!t || !t->flags.enable) {
+        active_i2c_RS485 = 0; //stale holder, breakout
+        break;
+      }
+      if (millis() - bus_wait > 2000) {
+        DEBUG_PRINTLN(F("i2c_rs485: setAddress bus busy, aborting"));
+        return HTTP_RQT_NOT_RECEIVED;
+      }
+      delay(10);
+    }
   }
+  active_i2c_RS485 = nr; // claim the bus for the duration of this operation
 
   // Init chip
   init_SC16IS752(9600, 0, 1); //Truebner default: 9600, 1 stopbit, even parity
   active_i2c_RS485_mode = 0;
 
   // Switch power on
-  set_RS485_Mode(true);
+  set_rs485_power(true);
   writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
   writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
 
@@ -501,13 +542,26 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
 
   UART_sendBytes(request, 8);
   delay(10);
-  uint8_t response[7];
-  int len = UART_readBytes(response, 7, 100); // timeout 100ms
-  for (int i = 0; i < len; i++) {
-    // DEBUG_PRINTF(F(" %02x"), response[i]);
-  }
+  uint8_t response[8];
+  int len = UART_readBytes(response, 8, 100); // timeout 100ms
+  // for (int i = 0; i < len; i++) {
+  //   DEBUG_PRINTF(F(" %02x"), response[i]);
+  // }
   // DEBUG_PRINTLN();
 
+  set_rs485_power(false);
+  active_i2c_RS485 = 0;      // release the shared bus
+  active_i2c_RS485_mode = 0;
+
+  // Validate response (echo of address, func code, reg high/low)
+  if (len < 6 || response[0] != 253 || response[1] != 0x06 || response[2] != 0x00 || response[3] != 0x04) {
+    DEBUG_PRINTLN(F("i2c_rs485: setAddress response invalid"));
+    return HTTP_RQT_NOT_RECEIVED;
+  }
+
+  // Update internal ID and save configuration
+  this->id = new_address;
+  sensor_save();
   return HTTP_RQT_SUCCESS;
 }
 
@@ -522,19 +576,29 @@ int RS485I2CSensor::sendCommand(uint8_t address, uint16_t reg, uint16_t data, bo
   DEBUG_PRINTF(F("send_i2c_rs485_command: %d %d %d %d\n"), address, reg, data, isbit);
   
   if (active_i2c_RS485 > 0) {
-    DEBUG_PRINT(F("cant' send, allocated by sensor "));
-    DEBUG_PRINTLN(active_i2c_RS485);
-    SensorBase *t = sensor_by_nr(active_i2c_RS485);
-    if (!t || !t->flags.enable)
-      active_i2c_RS485 = 0; //breakout
-    return HTTP_RQT_NOT_RECEIVED;
+    // one-shot helper: wait bounded for the shared RS485 bus to free up
+    // instead of silently dropping the command.
+    uint32_t bus_wait = millis();
+    while (active_i2c_RS485 > 0) {
+      SensorBase *t = sensor_by_nr(active_i2c_RS485);
+      if (!t || !t->flags.enable) {
+        active_i2c_RS485 = 0; //stale holder, breakout
+        break;
+      }
+      if (millis() - bus_wait > 2000) {
+        DEBUG_PRINT(F("cant' send, allocated by sensor "));
+        DEBUG_PRINTLN(active_i2c_RS485);
+        return HTTP_RQT_NOT_RECEIVED;
+      }
+      delay(10);
+    }
   }
 
   init_SC16IS752(9600, 0, 0); // 9600, 1 stopbit, no parity
   active_i2c_RS485_mode = 0;
 
   // Switch power on
-  set_RS485_Mode(true);
+  set_rs485_power(true);
   writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
   writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
 
@@ -568,6 +632,8 @@ int RS485I2CSensor::sendCommand(uint8_t address, uint16_t reg, uint16_t data, bo
   }
   // DEBUG_PRINTLN();
   
+  set_rs485_power(false);
+  active_i2c_RS485_mode = 0;
   return HTTP_RQT_SUCCESS;
 }
 
