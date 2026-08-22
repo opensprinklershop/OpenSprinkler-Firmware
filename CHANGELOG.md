@@ -6,6 +6,23 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(227)] — veröffentlicht 2026-08-22
+
+### Added
+- **OTF/Netzwerk**: Unterstützung für TLS-Verschlüsselung bei Cloud-Verbindungen (OTC) über Port 443 hinzugefügt und Push-URL aktualisiert.
+- **Stationsnamen**: Stationsnamen (Zonen) können nun Leerzeichen enthalten, da ein historischer Fehler bei der Verarbeitung behoben ist.
+
+### Changed
+- **RS485-Sensoren**: Verbesserte Bus-Zuteilung und zuverlässigere Erkennung des SC16IS752-Chips. Bei erfolgreicher Adressänderung wird die konfigurierte ID jetzt gespeichert.
+- **OTA/Zigbee**: Während eines Firmware-Uploads werden Hintergrunddienste nun bei allen Verbindungstypen pausiert, um Ressourcen zu schonen; konsumierte Zigbee-Report-Slots werden freigegeben.
+- **OTA/Speicher**: Der OTA-Update-Prozess für ESP8266 wurde überarbeitet, um Stack-Overflows und Out-of-Memory-Fehler (OOM) zu vermeiden. ACME- und BLE-Puffer auf ESP32 wurden in den PSRAM verlagert, um internen Speicher zu sparen.
+- **Zigbee**: Bei allen Tuya-Befehlen wird nun standardmäßig eine Bestätigungsantwort (Default Response) gesendet, um Netzwerk-Flutungen durch wiederholte Anfragen der Endgeräte zu verhindern. Zudem werden "Active/MCU"-Reports jetzt unterstützt.
+- **Monitore**: Periodische Sensor-Aufgaben und die Auswertung von Monitoren wurden an den Anfang der Leseschleife verschoben, was zu einer schnelleren und korrekteren Verarbeitung führt.
+
+### Fixed
+- **Monitore**: Initialisierungsfehler (Init Bug) bei den Monitoren behoben.
+- **App/UI (Geräte-Fallback)**: Behebt einen schwarzen Bildschirm bzw. ein Einfrieren beim Zurückkehren aus der Analog-Sensor-Konfiguration unter Android.
+
 ## [2.4.0(226)] — veröffentlicht 2026-08-15
 
 ### Added
