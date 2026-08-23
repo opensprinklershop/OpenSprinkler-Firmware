@@ -491,10 +491,8 @@ void sensor_api_init(boolean detect_boards) {
     // DEBUG_PRINTLN(F("Opening USB RS485 Adapters:"));
     while (std::getline(file, tty)) {
       modbus_t * ctx;
-      if (tty.find(".") > 0 || tty.find(":") > 0) {
-        if (tty.find(":") > 0) {
-          // IP:port
-          std::string host = tty.substr(0, tty.find(':'));
+      if (tty.find(".") != std::string::npos || tty.find(":") != std::string::npos) {
+        if (tty.find(":") != std::string::npos) {
           std::string port = tty.substr(tty.find(':') + 1);
           ctx = modbus_new_tcp(host.c_str(), atoi(port.c_str()));
         } else {
