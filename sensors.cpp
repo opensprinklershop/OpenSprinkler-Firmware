@@ -493,6 +493,8 @@ void sensor_api_init(boolean detect_boards) {
       modbus_t * ctx;
       if (tty.find(".") != std::string::npos || tty.find(":") != std::string::npos) {
         if (tty.find(":") != std::string::npos) {
+          // IP:port
+          std::string host = tty.substr(0, tty.find(":"));
           std::string port = tty.substr(tty.find(':') + 1);
           ctx = modbus_new_tcp(host.c_str(), atoi(port.c_str()));
         } else {
