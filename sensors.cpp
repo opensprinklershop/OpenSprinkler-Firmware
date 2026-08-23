@@ -3037,7 +3037,6 @@ void add_influx_data(SensorBase *sensor) {
     SAFE_STRNCPY(unit_safe, unit, sizeof(unit_safe));
   }
 
-  #if defined(ESP8266) || defined(ESP32)
   char devesc[128], nameesc[64], unitesc[32];
   OSInfluxDB::influx_escape(devesc, sizeof(devesc), devname_safe);
   OSInfluxDB::influx_escape(nameesc, sizeof(nameesc), sensor_name_safe);
@@ -3050,38 +3049,6 @@ void add_influx_data(SensorBase *sensor) {
            (unsigned long)sensor->last_native_data, sensor->last_data);
   os.influxdb.write_influx_line("analogsensor", tags, fields);
 
-  #else
-  // Backoff: skip InfluxDB 60s after failure
-  static ulong influx_last_fail = 0;
-  static int influx_fail_count = 0;
-  if (influx_fail_count > 0 && (millis() - influx_last_fail) < 60000UL)
-    return;
-
-  influxdb_cpp::server_info * client = os.influxdb.get_client();
-  if (!client)
-    return;
-
-  char nr_buf[10];
-  snprintf(nr_buf, 10, "%d", sensor->nr);
-  int rc = influxdb_cpp::builder()
-    .meas("analogsensor")
-    .tag("devicename", devname_safe)
-    .tag("nr", nr_buf)
-    .tag("name", sensor_name_safe)
-    .tag("unit", unit_safe)
-    .field("native_data", (long)sensor->last_native_data)
-    .field("data", sensor->last_data, 2)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-
-  if (rc != 0) {
-    influx_fail_count++;
-    influx_last_fail = millis();
-  } else {
-    influx_fail_count = 0;
-  }
-
-  #endif
 #endif // DISABLE_INFLUXDB
 }
 

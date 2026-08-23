@@ -56,14 +56,7 @@ void OSInfluxDB::set_influx_config(ArduinoJson::JsonDocument &doc) {
     size_t size = ArduinoJson::serializeJson(doc, (char*)tmp_buffer, TMP_BUFFER_SIZE_L);
     remove_file(INFLUX_CONFIG_FILE);
     file_write_block(INFLUX_CONFIG_FILE, tmp_buffer, 0, size);
-    #if defined(OSPI)
-    if (client) {
-        delete client;
-        client = NULL;
-    }
-    #elif !defined(ESP8266) && !defined(ESP32)
-    client = NULL;
-    #endif
+
     enabled = doc["en"];
     initialized = true;
 }
@@ -84,14 +77,7 @@ void OSInfluxDB::set_influx_config(const char *data) {
         file_write_block(INFLUX_CONFIG_FILE, "}", size + 1, 1);
     }
 
-    #if defined(OSPI)
-    if (client) {
-        delete client;
-        client = NULL;
-    }
-    #elif !defined(ESP8266) && !defined(ESP32)
-    client = NULL;
-    #endif
+
     enabled = false;
     initialized = false;
 }
@@ -160,24 +146,15 @@ boolean OSInfluxDB::isEnabled() {
 }
 
 void OSInfluxDB::suspend() {
-#if defined(OSPI)
-    if (client) { delete client; client = nullptr; }
     enabled = false;
     initialized = false;
-#endif
-    // ESP8266/ESP32: stateless sender holds no resources -> nothing to free.
 }
 
 void OSInfluxDB::resume() {
-#if defined(OSPI)
-    init(); // re-reads from stored config
-#endif
-    // ESP8266/ESP32: stateless sender -> nothing to restore.
+    init();
 }
 
-#if defined(ESP8266) || defined(ESP32)
 OSInfluxDB::~OSInfluxDB() {
-    // Stateless sender: no persistent client to free.
 }
 
 size_t OSInfluxDB::influx_escape(char* dst, size_t cap, const char* src) {
@@ -268,35 +245,9 @@ void OSInfluxDB::influx_post_line(const char* line) {
     os.send_http_request(host, (uint16_t)port, ether_buffer, NULL, usessl, 5000, false);
 }
 
-#elif defined(OSPI)
-OSInfluxDB::~OSInfluxDB() {
-    if (client) delete client;
-}
-
-influxdb_cpp::server_info *OSInfluxDB::get_client() {
-    if (!initialized) init();
-    if (!enabled) 
-        return NULL;
-    if (!client) {
-        //Load influx config:
-        ArduinoJson::JsonDocument doc; 
-        get_influx_config(doc);
-        if (doc["en"] == 0)
-            return NULL;
-        client = new influxdb_cpp::server_info(doc["url"], doc["port"], doc["bucket"], "", "", "ms", doc["token"]);
-    }
-    return client;
-}
-
-#else
-OSInfluxDB::~OSInfluxDB() {
-    client = NULL;
-}
-
-#endif
 
 
-#if defined(ESP8266) || defined(ESP32) 
+
 // Build "devicename=<escaped>" into dst.
 static void influx_devicename_tag(char* dst, size_t cap) {
     char raw[64]; raw[0] = 0;
@@ -369,123 +320,8 @@ void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float v
     write_influx_line("opensprinkler", tags, fields);
 }
 
-#elif defined(OSPI)
-
-void OSInfluxDB::influxdb_send_state(const char *name, int state) {
-  influxdb_cpp::server_info * client = get_client();
-  if (!client)
-    return;
-  char tmp[TMP_BUFFER_SIZE];
-  os.sopt_load(SOPT_DEVICE_NAME, tmp);
-  influxdb_cpp::builder()
-    .meas("opensprinkler")
-    .tag("devicename", tmp)
-    .tag("name", name)
-    .field("state", state)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-}
-
-void OSInfluxDB::influxdb_send_station(const char *name, uint32_t station, int state) {
-  influxdb_cpp::server_info * client = get_client();
-  if (!client)
-    return;
-
-  char tmp[TMP_BUFFER_SIZE];
-  os.sopt_load(SOPT_DEVICE_NAME, tmp);
-  influxdb_cpp::builder()
-    .meas("opensprinkler")
-    .tag("devicename", tmp)
-    .tag("name", name)
-    .field("station", (int)station)
-    .field("state", state)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-}
-
-void OSInfluxDB::influxdb_send_program(const char *name, uint32_t nr, float level) {
-  influxdb_cpp::server_info * client = get_client();
-  if (!client)
-    return;
-
-  char tmp[TMP_BUFFER_SIZE];
-  os.sopt_load(SOPT_DEVICE_NAME, tmp);
-  influxdb_cpp::builder()
-    .meas("opensprinkler")
-    .tag("devicename", tmp)
-    .tag("name", name)
-    .field("program", (int)nr)
-    .field("level", level)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-}
-
-void OSInfluxDB::influxdb_send_flowsensor(const char *name, uint32_t count, float volume) {
-  influxdb_cpp::server_info * client = get_client();
-  if (!client)
-    return;
-
-  char tmp[TMP_BUFFER_SIZE];
-  os.sopt_load(SOPT_DEVICE_NAME, tmp);
-  influxdb_cpp::builder()
-    .meas("opensprinkler")
-    .tag("devicename", tmp)
-    .tag("name", name)
-    .field("count", (int)count)
-    .field("volume", volume)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-}
-
-void OSInfluxDB::influxdb_send_flowalert(const char *name, uint32_t station, int f1, int f2, int f3, int f4, int f5) {
-  influxdb_cpp::server_info * client = get_client();
-  if (!client)
-    return;
-
-  char tmp[TMP_BUFFER_SIZE];
-  os.sopt_load(SOPT_DEVICE_NAME, tmp);
-  influxdb_cpp::builder()
-    .meas("opensprinkler")
-    .tag("devicename", tmp)
-    .tag("name", name)
-    .field("station", (int)(station))
-    .field("flowrate", (double)(f1)+(double)(f2)/100)
-	.field("duration", f3)
-	.field("alert_setpoint", (double)(f4)+(double)(f5)/100)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-}
-
-void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float value) {
-  influxdb_cpp::server_info * client = get_client();
-  if (!client)
-    return;
-
-  char tmp[TMP_BUFFER_SIZE];
-  os.sopt_load(SOPT_DEVICE_NAME, tmp);
-  influxdb_cpp::builder()
-    .meas("opensprinkler")
-    .tag("devicename", tmp)
-    .tag("warning", name)
-    .field("level", (int)level)
-    .field("currentvalue", value)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-}
-#else
-
-// DEMO builds compile without influxdb-cpp. Keep the feature disabled.
-void OSInfluxDB::influxdb_send_state(const char *name, int state) {(void)name; (void)state;}
-void OSInfluxDB::influxdb_send_station(const char *name, uint32_t station, int state) {(void)name; (void)station; (void)state;}
-void OSInfluxDB::influxdb_send_program(const char *name, uint32_t nr, float level) {(void)name; (void)nr; (void)level;}
-void OSInfluxDB::influxdb_send_flowsensor(const char *name, uint32_t count, float volume) {(void)name; (void)count; (void)volume;}
-void OSInfluxDB::influxdb_send_flowalert(const char *name, uint32_t station, int f1, int f2, int f3, int f4, int f5) {(void)name; (void)station; (void)f1; (void)f2; (void)f3; (void)f4; (void)f5;}
-void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float value) {(void)name; (void)level; (void)value;}
-
-#endif
-
 void OSInfluxDB::push_message(uint32_t type, uint32_t lval, float fval, const char* sval) {
-    if (!isEnabled())
+    if (!isEnabled()) return;
         return;
 
    	switch(type) {
