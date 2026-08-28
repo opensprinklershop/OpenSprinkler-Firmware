@@ -174,9 +174,16 @@ void UART_sendByte(uint8_t data) {
 }
 
 void UART_sendBytes(uint8_t data[], uint8_t len) {
+  // Blast all bytes directly to the TX FIFO in a SINGLE I2C transaction!
+  // If we use separate transactions, FreeRTOS might preempt the task between bytes,
+  // causing the TX FIFO to run empty, which causes Auto-RTS to drop the line mid-frame!
+  if (!ensure_i2c_rs485_bus() || i2c_rs485_addr == 0) return;
+  Wire.beginTransmission(i2c_rs485_addr);
+  Wire.write(REG_THR << 3); // Select THR register
   for (uint8_t i = 0; i < len; i++) {
-    UART_sendByte(data[i]);
+    Wire.write(data[i]);
   }
+  Wire.endTransmission();
 }
 
 uint8_t UART_receiveByte() {
@@ -300,110 +307,147 @@ int RS485I2CSensor::read(unsigned long time) {
       i2c_pending = nr;
     return HTTP_RQT_NOT_RECEIVED;
   }
-
-  // DEBUG_PRINTF(F("read_sensor_i2c_rs485: %d %s m=%d\n"), nr, name, active_i2c_RS485_mode);
-
-  if (active_i2c_RS485 != (int)nr) {  
+  
+  if (active_i2c_RS485 == 0) {
     active_i2c_RS485 = nr;
-    if (i2c_pending != (int)nr)
-      active_i2c_RS485_mode = 0;
-    i2c_pending = 0;
-  } 
-  bool isGeneric = type == SENSOR_MODBUS_RTU;
-
-  //Init chip
-  if (active_i2c_RS485_mode == 0) { // Init SC16IS752 for RS485:
-    // DEBUG_PRINTLN(F("i2c_rs485: INIT"));
-    uint32_t baudrate = isGeneric ? generic_baud(rs485_flags.speed) : 9600;
-    uint8_t stopbits = isGeneric ? rs485_flags.stopbits : 0; // 0=1 stopbit
-    uint8_t parity = isGeneric ? rs485_flags.parity : 1; // 1=even parity default for truebner
-    init_SC16IS752(baudrate, stopbits, parity);
-    active_i2c_RS485_mode = 1;
-  } 
-
-  if (active_i2c_RS485_mode == 1) {
-    set_rs485_power(true);
-    writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
-    writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
-
-    active_i2c_RS485_mode = 2;
-    repeat_read = 1;
-    return HTTP_RQT_NOT_RECEIVED;
+    if (i2c_pending == (int)nr)
+      i2c_pending = 0;
   }
-
+  
+  bool isGeneric = type == SENSOR_MODBUS_RTU;
   bool isTemp = type == SENSOR_SMT100_TEMP || type == SENSOR_TH100_TEMP;
   bool isMois = type == SENSOR_SMT100_MOIS || type == SENSOR_TH100_MOIS;
   uint8_t code = isGeneric ? rs485_code : 0x03; // Read Holding Registers
-  uint16_t reg = isGeneric ? rs485_reg : isTemp ? 0x00 : isMois ? 0x01 : 0x02;
-  uint16_t reg_count = isGeneric ? datatype2length(rs485_flags.datatype) : 0x01;
 
-  // Send Request
-  if (active_i2c_RS485_mode == 2) {
+  static uint32_t current_baud = 0;
+  static uint8_t current_stop = 0xFF;
+  static uint8_t current_parity = 0xFF;
+  static uint32_t rs485_power_on_time = 0;
+  static uint32_t rs485_request_time = 0;
+  static bool rs485_power_is_on = false;
+
+  // Mode 0: Init & Power ON
+  if (active_i2c_RS485_mode == 0) {
+    uint32_t baudrate = isGeneric ? generic_baud(rs485_flags.speed) : 9600;
+    uint8_t stopbits = isGeneric ? rs485_flags.stopbits : 0; 
+    uint8_t parity = isGeneric ? rs485_flags.parity : 1;
+    
+    if (baudrate != current_baud || stopbits != current_stop || parity != current_parity) {
+      set_rs485_power(false); // Ensure OFF before init
+      rs485_power_is_on = false;
+      init_SC16IS752(baudrate, stopbits, parity);
+      current_baud = baudrate;
+      current_stop = stopbits;
+      current_parity = parity;
+    }
+    
+    if (!rs485_power_is_on) {
+      // 1. 1s vor der Messung aktivieren
+      set_rs485_power(true);
+      rs485_power_is_on = true;
+      rs485_power_on_time = millis();
+    } else {
+      // Power is already on (chained sensor).
+      // Ensure a strict 20ms Modbus inter-frame silence gap before the next request!
+      rs485_power_on_time = millis() - 1000 + 20;
+    }
+    
+    writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
+    writeSC16Register(REG_FCR, 0x07); // FIFO Enable, Reset
+    
+    active_i2c_RS485_mode = 1;
+    if (repeat_read == 0) repeat_read = 1;
+    return HTTP_RQT_NOT_RECEIVED;
+  } 
+
+  // Mode 1: Wait 1s, then Send Request
+  if (active_i2c_RS485_mode == 1) {
+    if (millis() - rs485_power_on_time < 1000) {
+      return HTTP_RQT_NOT_RECEIVED; // Keep repeat_read as is
+    }
+    
+    uint16_t reg_count = isGeneric ? datatype2length(rs485_flags.datatype) : 0x01;
     DEBUG_PRINT(F("i2c_rs485: Send Request:"));
     uint8_t request[8];
     request[0] = id;
-    request[1] = code; // Function Code
-    request[2] = highByte(reg); // Register Address
-    request[3] = lowByte(reg); // Register Address
-    request[4] = highByte(reg_count); // Number of Registers to read (1 or more)
-    request[5] = lowByte(reg_count); // Number of Registers to read (1 or more)
-    uint16_t crc = CRC16(request, 6); // little-endian!
-    request[6] = lowByte(crc); // CRC Low Byte
-    request[7] = highByte(crc); // CRC High Byte
+    request[1] = code; 
+    request[2] = isGeneric ? (rs485_reg >> 8) : 0x00;
+    request[3] = isGeneric ? (rs485_reg & 0xFF) : (isTemp ? 0x00 : (isMois ? 0x01 : 0x02));
+    request[4] = reg_count >> 8;
+    request[5] = reg_count & 0xFF; 
+    uint16_t crc = CRC16(request, 6);
+    request[6] = lowByte(crc); 
+    request[7] = highByte(crc); 
     for (int i = 0; i < 8; i++) {
        DEBUG_PRINTF(F(" %02x"), request[i]);
     }
     DEBUG_PRINTLN();
-    writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
+    
+    writeSC16Register(REG_FCR, 0x07); // Reset TX/RX FIFO before sending
     UART_sendBytes(request, 8);
-    active_i2c_RS485_mode = 3;
-    repeat_read = 1;
+    
+    rs485_request_time = millis();
+    active_i2c_RS485_mode = 2;
     return HTTP_RQT_NOT_RECEIVED;
   }
 
-  // Read Response
-  if (active_i2c_RS485_mode == 3) {
-    DEBUG_PRINT(F("i2c_rs485: Read Response:"));
-    uint8_t response[20];
-    uint8_t expected_length = 5 + (reg_count * 2); // 5 bytes overhead + 2 bytes per register
-    uint8_t len = UART_readBytes(response, expected_length, 500); // timeout 500ms
-    for (int i = 0; i < len; i++) {
-      // DEBUG_PRINTF(F(" %02x"), response[i]);
+  // Mode 2: Wait for response
+  if (active_i2c_RS485_mode == 2) {
+    // 2. Messung dauert ca 500ms, Antwort nach ca 600ms
+    if (millis() - rs485_request_time < 2000 && !UART_available()) {
+      return HTTP_RQT_NOT_RECEIVED;
     }
-    // DEBUG_PRINTLN();
-    // Expected Response (16bit):
-    // Byte 0: Slave Address
-    // Byte 1: Function Code
-    // Byte 2: Byte Count
-    // Byte 3: Data Low Byte
-    // Byte 4: Data High Byte
-    // Byte 5: CRC Low Byte
-    // Byte 6: CRC High Byte
-    uint16_t crc = len == expected_length?CRC16(response, expected_length-2):0xFFFF;
+    
+    DEBUG_PRINT(F("i2c_rs485: Read Response:"));
+    uint16_t reg_count = isGeneric ? datatype2length(rs485_flags.datatype) : 0x01;
+    uint8_t response[20];
+    uint8_t expected_length = 5 + (reg_count * 2);
+    
+    // Read the incoming bytes. 250ms timeout to catch the rest of the frame once it started.
+    uint8_t len = UART_readBytes(response, expected_length, 250); 
+    for (int i = 0; i < len; i++) {
+      DEBUG_PRINTF(F(" %02x"), response[i]);
+    }
+    DEBUG_PRINTLN("");
+    
+    uint16_t crc = len > 2 ? CRC16(response, len - 2) : 0;
     if (len != expected_length || response[0] != id || response[1] != code || response[2] != reg_count*2 ||
         response[expected_length-2] != lowByte(crc) || response[expected_length-1] != highByte(crc)) {
           
       DEBUG_PRINTLN(F("read_sensor_i2c_rs485: invalid response"));
       DEBUG_PRINT(F("len="));
       DEBUG_PRINTLN(len);
-      repeat_read = 0;
-      active_i2c_RS485 = 0;
-      active_i2c_RS485_mode = 0;
-      last_read = time;
-      set_rs485_power(false);
-      return HTTP_RQT_NOT_RECEIVED;
+      
+      // Retry block
+      repeat_read++;
+      if (repeat_read > 4) {
+        repeat_read = 0;
+        active_i2c_RS485 = 0;
+        active_i2c_RS485_mode = 0;
+        last_read = time;
+        if (!i2c_pending) {
+          set_rs485_power(false); // 3. deaktivieren nur wenn fertig
+          rs485_power_is_on = false;
+        }
+        DEBUG_PRINTLN(F("i2c_rs485: timeout"));
+        return HTTP_RQT_NOT_RECEIVED;
+      } else {
+        // Prepare for retry
+        active_i2c_RS485_mode = 1; // Jump back to Mode 1 to re-send
+        rs485_power_on_time = millis() - 1000; // Skip 1s wait on retry since power is already on
+        return HTTP_RQT_NOT_RECEIVED;
+      }
     }
 
     //Extract Data
-    if (!isGeneric) { // Truebner Sensor Data Extraction
+    if (!isGeneric) { 
       uint16_t data = (response[3] << 8) | response[4];
-      DEBUG_PRINTF(F("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n"), id,
-                   data, response[3], response[4]);
+      DEBUG_PRINTF(F("read_sensor_i2c_rs485: result: %d - %d (%d %d)\n"), id, data, response[3], response[4]);
       double value = isTemp ? (data / 100.0) - 100.0 : (isMois ? data / 100.0 : data);
       last_native_data = data;
       last_data = value;
       flags.data_ok = true;
-    } else {       // Generic Sensor Data Extraction
+    } else {       
       uint64_t data = 0;
       for (uint8_t i = 0; i < reg_count*2; i++) {
         data <<= 8;
@@ -414,73 +458,46 @@ int RS485I2CSensor::read(unsigned long time) {
         }
       }
       DEBUG_PRINTF(F("read_sensor_i2c_rs485: result: %d - %llx\n"), id, data);
-      last_native_data = data; // raw data - only 32bit
+      last_native_data = data; 
       double value = 0.0;
       switch (rs485_flags.datatype) {
-        case RS485FLAGS_DATATYPE_UINT16:
-          value = (uint16_t)data;
-          break;
-        case RS485FLAGS_DATATYPE_INT16:
-          value = (int16_t)data;
-          break;
-        case RS485FLAGS_DATATYPE_UINT32:
-          value = (uint32_t)data;
-          break;
-        case RS485FLAGS_DATATYPE_INT32:
-          value = (int32_t)data;
-          break;
+        case RS485FLAGS_DATATYPE_UINT16: value = (uint16_t)data; break;
+        case RS485FLAGS_DATATYPE_INT16: value = (int16_t)data; break;
+        case RS485FLAGS_DATATYPE_UINT32: value = (uint32_t)data; break;
+        case RS485FLAGS_DATATYPE_INT32: value = (int32_t)data; break;
         case RS485FLAGS_DATATYPE_FLOAT: {
-          float f;
-          uint32_t temp = static_cast<uint32_t>(data);
-          memcpy(&f, &temp, sizeof(float));
-          value = static_cast<double>(f);
-          break;
+          float f; uint32_t temp = static_cast<uint32_t>(data);
+          memcpy(&f, &temp, sizeof(float)); value = static_cast<double>(f); break;
         }
         case RS485FLAGS_DATATYPE_DOUBLE: {
-          double d;
-          uint64_t temp = data;
-          memcpy(&d, &temp, sizeof(double));
-          value = d;
-          break;
+          double d; uint64_t temp = data;
+          memcpy(&d, &temp, sizeof(double)); value = d; break;
         }
-        default:
-          value = static_cast<double>(static_cast<uint16_t>(data));
-          break;
+        default: value = static_cast<double>(static_cast<uint16_t>(data)); break;
       }
-      if (factor && divider)
-        value *= (double)factor / (double)divider;
-      else if (divider)
-        value /= divider;
-      else if (factor)
-        value *= factor;
+      if (factor && divider) value *= (double)factor / (double)divider;
+      else if (divider) value /= divider;
+      else if (factor) value *= factor;
       last_native_data = data;
       last_data = value;
     }
+    
     DEBUG_PRINTF(F("Result = %f %s\n"), last_data, getSensorUnit(this));
     flags.data_ok = true;
     repeat_read = 0;
     active_i2c_RS485 = 0;
     last_read = time;
-    if (i2c_pending) {
-      active_i2c_RS485_mode = 2;
-    } else {
-      active_i2c_RS485_mode = 0;
+    
+    // 3. deaktivieren erst nach dem vollständigen einlesen (wenn kein weiterer wartet)
+    if (!i2c_pending) {
       set_rs485_power(false);
+      rs485_power_is_on = false;
     }
+    
+    active_i2c_RS485_mode = 0;
     return HTTP_RQT_SUCCESS;
   }
-
-  // Timeout
-  repeat_read++;
-  if (repeat_read > 4) {  // timeout
-    repeat_read = 0;
-    active_i2c_RS485 = 0;
-    active_i2c_RS485_mode = 0;
-    last_read = time;
-    set_rs485_power(false);
-    DEBUG_PRINTLN(F("i2c_rs485: timeout"));
-  }
-  DEBUG_PRINTLN(F("i2c_rs485: Exit"));
+  
   return HTTP_RQT_NOT_RECEIVED;
 }
 
@@ -520,7 +537,7 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
   active_i2c_RS485_mode = 0;
 
   // Switch power on
-  set_rs485_power(true);
+  set_rs485_power(true); delay(10);
   writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
   writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
 
@@ -549,7 +566,7 @@ int RS485I2CSensor::setAddress(uint8_t new_address) {
   // }
   // DEBUG_PRINTLN();
 
-  set_rs485_power(false);
+  // Do not turn off RS485 power
   active_i2c_RS485 = 0;      // release the shared bus
   active_i2c_RS485_mode = 0;
 
@@ -598,7 +615,7 @@ int RS485I2CSensor::sendCommand(uint8_t address, uint16_t reg, uint16_t data, bo
   active_i2c_RS485_mode = 0;
 
   // Switch power on
-  set_rs485_power(true);
+  set_rs485_power(true); delay(1000);
   writeSC16Register(REG_FCR, 0x07); // FIFO Enable (FCR): Enable FIFOs, Reset TX/RX FIFO (0x07)
   writeSC16Register(REG_MCR, 0x03); // Enable RTS and Auto RTS/CTS
 

@@ -74,7 +74,8 @@ bool GardenaApi::authenticate(const String &auth) {
 	int res = http.POST(body);
 	if (res == 200) {
 		JsonDocument responseDoc;
-		error = deserializeJson(responseDoc, http.getStream());
+			String payload = http.getString();
+			error = deserializeJson(responseDoc, payload);
 		if (!error && responseDoc.containsKey("access_token")) {
 			authToken = responseDoc["access_token"].as<String>();
 			return true;
@@ -182,7 +183,8 @@ bool GardenaApi::getLocationList(JsonDocument &doc) {
 	http.addHeader("accept", "application/vnd.api+json");
 	int httpCode = http.GET();
 	if (httpCode == 200) {
-		DeserializationError error = deserializeJson(doc, http.getStream());
+		String payload = http.getString();
+		DeserializationError error = deserializeJson(doc, payload);
 		return !error;
 	}
 	return false;
@@ -228,7 +230,8 @@ bool GardenaApi::getLocationData(const String &locationId, JsonDocument &doc) {
 	int httpCode = http.GET();
 	if (httpCode == 200) {
 		JsonDocument raw;
-		DeserializationError error = deserializeJson(raw, http.getStream());
+		String payload = http.getString();
+		DeserializationError error = deserializeJson(raw, payload);
 		if (error) return false;
 		return gardena_fill_services(raw, doc);
 	}
