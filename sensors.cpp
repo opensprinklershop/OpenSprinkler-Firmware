@@ -504,6 +504,12 @@ void sensor_api_init(boolean detect_boards) {
       }
       else
         ctx = modbus_new_rtu(tty.c_str(), 9600, 'E', 8, 1);
+
+      if (ctx == NULL) {
+        DEBUG_PRINT(F("Unable to create libmodbus context for: "));
+        DEBUG_PRINTLN(tty.c_str());
+        continue;
+      }
       // DEBUG_PRINT(idx);
       // DEBUG_PRINT(F(": "));
       // DEBUG_PRINTLN(tty.c_str());
