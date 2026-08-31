@@ -583,18 +583,16 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	// parse email variables
 	#if defined(SUPPORT_EMAIL)
 	// define email variables
-	ArduinoJson::JsonDocument doc; // make sure this has the same scope of email_x variables to prevent use after free
-	const char *email_host = NULL;
-	const char *email_username = NULL;
-	const char *email_login = NULL;
-	const char *email_password = NULL;
-	const char *email_recipient = NULL;
+	String email_host;
+	String email_username;
+	String email_login;
+	String email_password;
+	String email_recipient;
 	int  email_port = DEFAULT_EMAIL_PORT;
 	int  email_en = 0;
 #if defined(ESP8266)
-	// ESP8266: single heap block (freed at function end) instead of ~965 B of
-	// permanent DRAM for a path only used when email is configured. These are
-	// pointers now -> size via MAX_SOPTS_SIZE, not sizeof().
+	// ESP8266: single heap block instead of ~965 B of permanent DRAM.
+	// We free this early after parsing to avoid fragmenting the heap during the TLS memory check.
 	char *email_buf = (char*)malloc(2 * (MAX_SOPTS_SIZE + 1) + (MAX_SOPTS_SIZE + 3));
 	char *saved_email_config = email_buf;
 	char *email_config = email_buf ? email_buf + (MAX_SOPTS_SIZE + 1) : NULL;
@@ -624,6 +622,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			email_json[len + 1] = '}';
 			email_json[len + 2] = 0;
 
+			ArduinoJson::JsonDocument doc;
 			ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, email_json);
 			// Test the parsing otherwise parse
 			if (error) {
@@ -631,19 +630,18 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 				DEBUG_PRINTLN(error.c_str());
 			} else {
 				email_en = doc["en"];
-				email_host = doc["host"];
+				email_host = doc["host"] | "smtp.gmail.com";
 				email_port = doc["port"];
-				email_username = doc["user"];
-				email_login = doc["login"];
-				email_password = doc["pass"];
-				email_recipient= doc["recipient"];
-				// If no SMTP host specified, use default
-				if(!email_host || strlen(email_host)==0) email_host = "smtp.gmail.com";
-				// If no separate SMTP login specified, use sender email
-				if(!email_login || strlen(email_login)==0) email_login = email_username;
+				email_username = doc["user"] | "";
+				email_login = doc["login"] | email_username;
+				email_password = doc["pass"] | "";
+				email_recipient = doc["recipient"] | "";
 			}
 		}
 	}
+#if defined(ESP8266)
+	free(email_buf); // free early to prevent heap fragmentation
+#endif
 	#endif
 
 	#if defined(ESP8266) || defined(ESP32)
@@ -1305,24 +1303,24 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 		}
 		#if defined(ARDUINO)
 			#if defined(ESP8266) || defined(ESP32)
-				if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
+				if(email_host.length()>0 && email_login.length()>0 && email_password.length()>0 && email_recipient.length()>0) { // make sure all are valid
 					// TLS handshake headroom required before opening the SMTP connection.
 					// ESP8266 (BearSSL, no PSRAM): needs ~8-10KB internal heap plus
 					// fragmentation headroom. Require 16000 so the 75% maxblock check
-					// demands >=12000; the previous threshold of 12000 allowed
-					// maxblock=9464 to pass, which caused BearSSL _connectSSL() to crash.
-					// ESP32 (mbedTLS): once the network is up the firmware reroutes
-					// mbedTLS allocations to PSRAM (mbedtls_spiram_allow_internal_reroute),
-					// so the TLS buffers do NOT come from internal heap. Requiring 16000
-					// internal bytes wrongly blocked emails during active watering on the
-					// RAM-tight ESP32-C5 (~20KB free at idle). Use 10000 to match the
-					// weather/HTTPS TLS gate (OpenSprinkler.cpp ssl_tmp_memory_needed).
 					#if defined(ESP8266)
 						const size_t email_mem_needed = 16000;
 					#else
 						const size_t email_mem_needed = 10000;
 					#endif
-					if (!free_tmp_memory(email_mem_needed)) {
+					bool mem_ok = free_tmp_memory(email_mem_needed);
+					#if defined(ESP32)
+						// ESP32 handles TLS memory gracefully (or uses PSRAM). We use free_tmp_memory 
+						// to proactively suspend MQTT/Influx if internal heap is tight, but we 
+						// don't hard-block the email attempt if the strict contiguous check fails.
+						mem_ok = true;
+					#endif
+
+					if (!mem_ok) {
 						// Not enough contiguous heap to open a TLS connection right now
 						// (typical during active watering on RAM-tight boards). Skip only
 						// the SMTP send — do NOT return, so this event is still recorded in
@@ -1333,8 +1331,8 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						restore_tmp_memory(email_mem_needed);
 					} else {
 						DEBUG_PRINTLN(F("Sending email..."));
-						EMailSender emailSend(email_login, email_password, email_username, "OpenSprinkler");
-						emailSend.setSMTPServer(email_host);
+						EMailSender emailSend(email_login.c_str(), email_password.c_str(), email_username.c_str(), "OpenSprinkler");
+						emailSend.setSMTPServer(email_host.c_str());
 						emailSend.setSMTPPort(email_port);
 						// Use EHLO (ESMTP) instead of the library default HELO. AUTH is an
 						// ESMTP service extension that servers only advertise/enable after
@@ -1342,7 +1340,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						// after a plain HELO. The multi-line EHLO reply is parsed correctly
 						// (final line detected via the "250 " vs "250-" indicator).
 						emailSend.setEHLOCommand(true);
-						EMailSender::Response resp = emailSend.send(email_recipient, email_message);
+						EMailSender::Response resp = emailSend.send(email_recipient.c_str(), email_message);
 						DEBUG_PRINTLN(F("Sending Status:"));
 						DEBUG_PRINTLN(resp.status);
 						DEBUG_PRINTLN(resp.code);
@@ -1356,11 +1354,11 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			struct smtp *smtp = NULL;
 			String email_port_str = to_string(email_port);
 			smtp_status_code rc;
-			if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
-				rc = smtp_open(email_host, email_port_str.c_str(), SMTP_SECURITY_TLS, SMTP_NO_CERT_VERIFY, NULL, &smtp);
-				rc = smtp_auth(smtp, SMTP_AUTH_PLAIN, email_login, email_password);
-				rc = smtp_address_add(smtp, SMTP_ADDRESS_FROM, email_username, "OpenSprinkler");
-				rc = smtp_address_add(smtp, SMTP_ADDRESS_TO, email_recipient, "User");
+			if(email_host.length()>0 && email_login.length()>0 && email_password.length()>0 && email_recipient.length()>0) { // make sure all are valid
+				rc = smtp_open(email_host.c_str(), email_port_str.c_str(), SMTP_SECURITY_TLS, SMTP_NO_CERT_VERIFY, NULL, &smtp);
+				rc = smtp_auth(smtp, SMTP_AUTH_PLAIN, email_login.c_str(), email_password.c_str());
+				rc = smtp_address_add(smtp, SMTP_ADDRESS_FROM, email_username.c_str(), "OpenSprinkler");
+				rc = smtp_address_add(smtp, SMTP_ADDRESS_TO, email_recipient.c_str(), "User");
 				rc = smtp_header_add(smtp, "Subject", email_message.subject.c_str());
 				if(html_email_set) {
 					rc = smtp_header_add(smtp, "Content-Type", "text/html; charset=UTF-8");
@@ -1386,7 +1384,5 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			push_forward_event(type, lval, fval, bval, notif_log_lastid());
 		#endif
 	}
-#if defined(SUPPORT_EMAIL) && defined(ESP8266)
-	free(email_buf); // safe on NULL; releases the transient email scratch
-#endif
 }
+

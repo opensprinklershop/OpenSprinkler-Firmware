@@ -777,7 +777,18 @@ struct GwConfigReportRequest {
 };
 static std::vector<GwConfigReportRequest> gw_config_report_queue;
 static unsigned long gw_last_config_report_ms = 0;
+#define GW_DEFAULT_REPORT_INTERVAL 900  // 15 minutes (default reporting interval for sleepy devices)
 #define GW_CONFIG_REPORT_STAGGER_MS 600  // ms between successive configure-report sends
+struct GwBindRequest {
+    uint64_t ieee_addr;
+    uint8_t endpoint;
+    uint16_t cluster_id;
+    unsigned long scheduled_time;
+};
+static std::vector<GwBindRequest> gw_bind_queue;
+static unsigned long gw_last_bind_req_ms = 0;
+#define GW_BIND_REQ_STAGGER_MS 600  // ms between successive bind sends
+
 
 // Tuya manufacturer-specific cluster (manuSpecificTuya)
 #define ZB_ZCL_CLUSTER_ID_TUYA_SPECIFIC             0xEF00
@@ -2637,6 +2648,50 @@ static bool gw_cluster_supports_config_reporting(uint16_t cluster_id, uint16_t a
     return true;
 }
 
+static void gw_zdo_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
+    if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
+        DEBUG_PRINTLN(F("[ZIGBEE-GW] ZDO Bind request SUCCESS"));
+    } else {
+        DEBUG_PRINTF(F("[ZIGBEE-GW] ZDO Bind request FAILED: status %d\n"), zdo_status);
+    }
+}
+
+bool sensor_zigbee_gw_bind_device(uint64_t device_ieee, uint8_t endpoint, uint16_t cluster_id) {
+    if (!gw_zigbee_initialized || !Zigbee.started() || !Zigbee.connected()) {
+        return false;
+    }
+    if (device_ieee == 0) return false;
+
+    esp_zb_ieee_addr_t ieee_le = {0};
+    for (int i = 0; i < 8; i++) {
+        ieee_le[i] = (uint8_t)(device_ieee >> (i * 8));
+    }
+
+    uint16_t short_addr = gw_get_short_addr(device_ieee);
+    if (short_addr == 0xFFFF || short_addr == 0xFFFE) {
+        // We can't bind if we don't know the short address
+        return false;
+    }
+
+    esp_zb_zdo_bind_req_param_t bind_req;
+    memset(&bind_req, 0, sizeof(bind_req));
+    bind_req.req_dst_addr = short_addr;
+    memcpy(bind_req.src_address, ieee_le, 8);
+    bind_req.src_endp = endpoint;
+    bind_req.cluster_id = cluster_id;
+    bind_req.dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
+    esp_zb_get_long_address(bind_req.dst_address_u.addr_long);
+    bind_req.dst_endp = 10; // OpenSprinkler coordinator endpoint
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zdo_device_bind_req(&bind_req, gw_zdo_bind_cb, NULL);
+    esp_zb_lock_release();
+
+    DEBUG_PRINTF(F("[ZIGBEE-GW] ✓ Bind Req sent: ieee=%016llX ep=%d cluster=0x%04X to coord ep=10\n"),
+                 (unsigned long long)device_ieee, endpoint, cluster_id);
+    return true;
+}
+
 // Send a ZCL Configure Reporting command for one attribute.
 // Tells the remote device to push reports every [min_interval..max_interval] seconds.
 bool sensor_zigbee_gw_configure_reporting(uint64_t device_ieee, uint8_t endpoint,
@@ -2698,8 +2753,6 @@ bool sensor_zigbee_gw_configure_reporting(uint64_t device_ieee, uint8_t endpoint
     return true;
 }
 
-// Schedule Configure Reporting for all sensors whose IEEE address matches `ieee`.
-// Used after a device announces itself — deduplicates against existing queue entries.
 static void gw_schedule_configure_reporting_for_ieee(uint64_t ieee, unsigned long delay_ms) {
     if (ieee == 0) return;
     SensorIterator it = sensors_iterate_begin();
@@ -2709,6 +2762,24 @@ static void gw_schedule_configure_reporting_for_ieee(uint64_t ieee, unsigned lon
         if (!s || s->type != SENSOR_ZIGBEE) continue;
         ZigbeeSensor* zb = static_cast<ZigbeeSensor*>(s);
         if (zb->device_ieee != ieee) continue;
+
+        // Queue Bind Request
+        bool bind_found = false;
+        for (const auto& ex : gw_bind_queue) {
+            if (ex.ieee_addr == ieee && ex.cluster_id == zb->cluster_id) {
+                bind_found = true;
+                break;
+            }
+        }
+        if (!bind_found) {
+            GwBindRequest bind_req;
+            bind_req.ieee_addr = ieee;
+            bind_req.endpoint = zb->endpoint;
+            bind_req.cluster_id = zb->cluster_id;
+            bind_req.scheduled_time = now + delay_ms;
+            gw_bind_queue.push_back(bind_req);
+            delay_ms += 150; // Slight stagger before config report
+        }
 
         uint ri = zb->read_interval ? zb->read_interval : 60;
         uint16_t max_interval = (ri >= 15 && ri <= 3600) ? (uint16_t)ri : 120;
@@ -2743,14 +2814,6 @@ static void gw_schedule_configure_reporting_for_ieee(uint64_t ieee, unsigned lon
     }
 }
 
-// Schedule Configure Reporting for common measurement clusters on a newly
-// discovered device that has no matching sensor yet.  The device is still awake
-// during the join window so the commands will be received immediately.
-// This ensures sleeping end devices (e.g. Aqara) configure their reporting
-// interval BEFORE going to sleep — solving the chicken-and-egg problem where
-// sensors only get created after scan finishes.
-static constexpr uint16_t GW_DEFAULT_REPORT_INTERVAL = 900;  // 15 min
-
 static void gw_schedule_default_configure_reporting(uint64_t ieee, uint8_t ep, unsigned long delay_ms) {
     if (ieee == 0) return;
 
@@ -2765,6 +2828,24 @@ static void gw_schedule_default_configure_reporting(uint64_t ieee, uint8_t ep, u
 
     unsigned long now = millis();
     for (size_t i = 0; i < sizeof(common_clusters) / sizeof(common_clusters[0]); i++) {
+        // Queue Bind Request
+        bool bind_found = false;
+        for (const auto& ex : gw_bind_queue) {
+            if (ex.ieee_addr == ieee && ex.cluster_id == common_clusters[i]) {
+                bind_found = true;
+                break;
+            }
+        }
+        if (!bind_found) {
+            GwBindRequest bind_req;
+            bind_req.ieee_addr = ieee;
+            bind_req.endpoint = ep;
+            bind_req.cluster_id = common_clusters[i];
+            bind_req.scheduled_time = now + delay_ms;
+            gw_bind_queue.push_back(bind_req);
+            delay_ms += 150;
+        }
+
         // Check for duplicate entries
         bool found = false;
         for (const auto& ex : gw_config_report_queue) {
@@ -2786,7 +2867,7 @@ static void gw_schedule_default_configure_reporting(uint64_t ieee, uint8_t ep, u
         gw_config_report_queue.push_back(req);
         delay_ms += 700;
     }
-    DEBUG_PRINTF(F("[ZIGBEE-GW] Queued default ConfigReport (900s) for ieee=%016llX ep=%d (%d clusters)\n"),
+    DEBUG_PRINTF(F("[ZIGBEE-GW] Queued default Bind & ConfigReport (900s) for ieee=%016llX ep=%d (%d clusters)\n"),
                  (unsigned long long)ieee, ep, (int)(sizeof(common_clusters) / sizeof(common_clusters[0])));
 }
 
@@ -5244,6 +5325,21 @@ void sensor_zigbee_gw_loop() {
                     gw_last_config_report_ms = now_ms;
                     gw_config_report_queue.erase(it_cr);
                     break;  // send one at a time; restart next loop
+                }
+            }
+        }
+    }
+
+    // Process pending Bind Requests (one per stagger window)
+    if (connected && !gw_bind_queue.empty()) {
+        unsigned long now_ms = millis();
+        if (now_ms - gw_last_bind_req_ms >= GW_BIND_REQ_STAGGER_MS) {
+            for (auto it_br = gw_bind_queue.begin(); it_br != gw_bind_queue.end(); ++it_br) {
+                if (now_ms >= it_br->scheduled_time) {
+                    sensor_zigbee_gw_bind_device(it_br->ieee_addr, it_br->endpoint, it_br->cluster_id);
+                    gw_last_bind_req_ms = now_ms;
+                    gw_bind_queue.erase(it_br);
+                    break;
                 }
             }
         }

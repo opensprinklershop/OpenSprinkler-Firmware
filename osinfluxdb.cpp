@@ -322,7 +322,6 @@ void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float v
 
 void OSInfluxDB::push_message(uint32_t type, uint32_t lval, float fval, const char* sval) {
     if (!isEnabled()) return;
-        return;
 
    	switch(type) {
 		case  NOTIFY_STATION_ON:
