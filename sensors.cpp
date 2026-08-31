@@ -1353,7 +1353,7 @@ void checkLogSwitch(uint8_t log) {
 
 void checkLogSwitchAfterWrite(uint8_t log) {
   ulong size = file_size(getlogfile(log));
-  if ((size / SENSORLOG_STORE_SIZE) >= MAX_LOG_SIZE) {  // switch logs if max reached
+  if (size >= MAX_LOG_SIZE) {  // switch logs if max reached (MAX_LOG_SIZE is a byte limit)
     if (logFileSwitch[log] == 1)
       logFileSwitch[log] = 2;
     else
