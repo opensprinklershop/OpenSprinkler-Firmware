@@ -3348,26 +3348,37 @@ bool delete_log_oldest() {
 #elif defined(ESP32)
 bool delete_log_oldest() {
 	File dir = LittleFS.open(LOG_PREFIX);
-	time_os_t oldest_t = ULONG_MAX;
-	File oldest;
-	if (!dir.isDirectory()) {
-		DEBUG_PRINTLN(F("delete_log_oldest: not a directory"));
+	if (!dir) {
+		DEBUG_PRINTLN(F("delete_log_oldest: cannot open log folder"));
 		return false;
 	}
+	if (!dir.isDirectory()) {
+		DEBUG_PRINTLN(F("delete_log_oldest: not a directory"));
+		dir.close();
+		return false;
+	}
+	// remember the file NAME, not the File handle: the handle is invalidated
+	// by the next openNextFile() call
+	time_os_t oldest_t = ULONG_MAX;
+	String oldest_fn;
 	File file = dir.openNextFile();
 	while (file) {
 		time_os_t t = file.getLastWrite();
 		if(t<oldest_t) {
 			oldest_t = t;
-			oldest = file;
+			oldest_fn = file.name();
 		}
+		file.close();
 		file = dir.openNextFile();
 	}
-	if(oldest.available()) {
+	dir.close();
+	if(oldest_fn.length()>0) {
+		// depending on the arduino-esp32 core version, name() returns either the
+		// bare file name or the full path
+		String path = (oldest_fn[0]=='/') ? oldest_fn : String(LOG_PREFIX) + oldest_fn;
 		DEBUG_PRINT(F("deleting "))
-		DEBUG_PRINTLN(oldest.name());
-		LittleFS.remove(dir.name() + String("/") + oldest.name());
-		return true;
+		DEBUG_PRINTLN(path);
+		return LittleFS.remove(path);
 	} else {
 		return false;
 	}
