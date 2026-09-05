@@ -97,6 +97,30 @@ function resolveByName(items, query) {
         return { kind: "ambiguous", candidates: fuzzy };
     return { kind: "none" };
 }
+function parseSensorChartCsv(csvText) {
+    const rows = [];
+    const lines = String(csvText ?? "").split(/\r?\n/);
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed)
+            continue;
+        const parts = trimmed.split(";");
+        if (parts.length < 3)
+            continue;
+        const nr = Number.parseInt(parts[0], 10);
+        const ts = Number.parseInt(parts[1], 10);
+        const rawValue = Number.parseFloat(parts[2]);
+        if (!Number.isFinite(nr) || !Number.isFinite(ts) || !Number.isFinite(rawValue)) {
+            continue;
+        }
+        rows.push({
+            sensor: nr,
+            timestamp: ts,
+            value: rawValue,
+        });
+    }
+    return rows;
+}
 /**
  * Register all OpenSprinkler tools on the given MCP server instance.
  */
@@ -158,6 +182,30 @@ export function registerTools(server, getClient) {
         }
         const result = note ? { ...obj, _note: note } : obj;
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    });
+    server.tool("get_weather_data", "Get the controller's current weather status, provider metadata, location, and latest weather measurements from /ja or /jo. Useful for weather adjustment decisions.", {
+        includeRaw: z.boolean().optional().describe("If true, include the raw weather payload as returned by the controller."),
+    }, async (args) => {
+        const data = await getClient().get("/ja");
+        const settings = data?.settings;
+        const weatherBlock = settings && typeof settings === "object" ? settings : data;
+        const subset = {
+            loc: weatherBlock?.loc ?? data?.loc,
+            jsp: weatherBlock?.jsp ?? data?.jsp,
+            wsp: weatherBlock?.wsp ?? data?.wsp,
+            wto: weatherBlock?.wto ?? data?.wto,
+            wtdata: weatherBlock?.wtdata ?? data?.wtdata,
+            wterr: weatherBlock?.wterr ?? data?.wterr,
+            wtreason: weatherBlock?.wtreason ?? data?.wtreason,
+            wtrestr: weatherBlock?.wtrestr ?? data?.wtrestr,
+        };
+        const raw = args.includeRaw ? data : undefined;
+        return {
+            content: [{
+                    type: "text",
+                    text: JSON.stringify(raw ? { ...subset, raw } : subset, null, 2),
+                }],
+        };
     });
     // ─── Controller actions ─────────────────────────────────────────────
     server.tool("change_controller_variables", "Change controller variables: enable/disable operation, set rain delay, reset stations, reboot. Equivalent to /cv.", {
@@ -452,6 +500,55 @@ export function registerTools(server, getClient) {
             const data = await getClient().get("/so", params);
             return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
         }
+    });
+    server.tool("get_sensor_chart_data", "Get sensor diagram/chart values from /so in CSV format and convert them to structured time/value records with sensor metadata. This is useful for plotting or inspecting historical sensor trends.", {
+        nr: z.number().optional().describe("Restrict to one sensor number; omit for all sensors."),
+        max: z.number().optional().describe("Maximum number of chart points per sensor; defaults to the controller's usual log limit."),
+        hist: z.number().optional().describe("History window in days."),
+    }, async (args) => {
+        const params = { csv: 2 };
+        if (args.nr !== undefined)
+            params.nr = args.nr;
+        if (args.max !== undefined)
+            params.max = args.max;
+        if (args.hist !== undefined)
+            params.lastdays = args.hist;
+        const csvText = await getClient().getRaw("/so", params);
+        const rows = parseSensorChartCsv(csvText);
+        const sensorsData = await getClient().get("/sl");
+        const sensors = Array.isArray(sensorsData?.sensors)
+            ? sensorsData.sensors
+            : [];
+        const sensorMeta = new Map();
+        for (const sensor of sensors) {
+            const nr = Number(sensor?.nr ?? sensor?.id);
+            if (Number.isFinite(nr)) {
+                sensorMeta.set(nr, sensor);
+            }
+        }
+        const grouped = new Map();
+        for (const row of rows) {
+            const key = Number(row.sensor);
+            const list = grouped.get(key) ?? [];
+            list.push(row);
+            grouped.set(key, list);
+        }
+        const result = Array.from(grouped.entries()).map(([sensorNr, points]) => {
+            const meta = sensorMeta.get(sensorNr) ?? {};
+            return {
+                sensor: sensorNr,
+                name: typeof meta.name === "string" ? meta.name : `sensor_${sensorNr}`,
+                type: meta.type ?? meta.sensorType ?? null,
+                unit: meta.unit ?? meta.units ?? null,
+                points: points.map((p) => ({
+                    timestamp: p.timestamp,
+                    value: p.value,
+                })),
+            };
+        });
+        return {
+            content: [{ type: "text", text: JSON.stringify({ count: result.length, sensors: result }, null, 2) }],
+        };
     });
     server.tool("configure_sensor", "Configure a sensor (add/modify/delete). Equivalent to /sc.", {
         params: z.record(z.string(), z.union([z.string(), z.number()])).describe("Sensor configuration parameters: nr (sensor number), type, name, enable, ip, port, id, ri (read interval), etc. Use nr with delete=1 to remove."),

@@ -151,6 +151,7 @@ In `~/.config/claude/claude_desktop_config.json`:
 | `get_sensors` | Alle konfigurierten Sensoren auflisten | `/sl` |
 | `get_sensor_values` | Sensorwerte abrufen | `/sg` |
 | `get_sensor_log` | Sensor-Logdaten abrufen (JSON/CSV) | `/so` |
+| `get_sensor_chart_data` | Sensor-Diagramm-/Chart-Werte als Zeitreihe aus `/so?csv=2` abrufen | `/so` |
 | `configure_sensor` | Sensor hinzufügen/ändern/löschen | `/sc` |
 | `read_sensor_now` | Sofort-Lesung eines Sensors auslösen | `/sr` |
 | `get_sensor_types` | Verfügbare Sensortypen auflisten | `/sf` |
@@ -158,6 +159,12 @@ In `~/.config/claude/claude_desktop_config.json`:
 | `configure_adjustment` | Sensor-Programmeinstellung konfigurieren | `/sb` |
 | `list_monitors` | Sensor-Monitore (Schwellwert-Trigger) auflisten | `/ml` |
 | `configure_monitor` | Sensor-Monitor konfigurieren | `/mc` |
+
+### Wetter
+
+| Tool | Beschreibung | API-Endpunkt |
+|------|-------------|--------------|
+| `get_weather_data` | Aktueller Wetterstatus, Provider, Standort, Messdaten und Fehlercodes | `/ja` + `/jo` |
 
 ### ZigBee / IEEE 802.15.4 (nur ESP32-C5)
 

@@ -4206,6 +4206,30 @@ void emit_sensor_warnings(bool mqtt_suspended_for_lowmem = false) {
 }
 
 /**
+ * @brief Focused weather summary (subset of /ja) for lightweight clients (MCP).
+ */
+void server_weather_summary(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+	char opt_buf[MAX_SOPTS_SIZE + 1];
+	os.sopt_load(SOPT_WEATHER_OPTS, opt_buf, MAX_SOPTS_SIZE);
+	normalize_json_object_fragment(opt_buf, sizeof(opt_buf));
+	bfill.emit_p(PSTR("{\"loc\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"wl\":$D,\"rd\":$D,\"wtdata\":"),
+				 SOPT_LOCATION, SOPT_WEATHERURL, opt_buf,
+				 os.iopts[IOPT_WATER_PERCENTAGE], os.status.rain_delayed);
+	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
+	bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D,\"wtrestr\":$D,\"sunrise\":$D,\"sunset\":$D}"),
+				 wt_errCode, wt_errReason, wt_restricted,
+				 os.nvdata.sunrise_time, os.nvdata.sunset_time);
+	handle_return(HTML_OK);
+}
+
+/**
  * sl
  * @brief Lists all sensors
  *
@@ -4272,79 +4296,11 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
-/**
- * so
- * @brief output sensorlog
- *
- */
-void server_sensorlog_list(OTF_PARAMS_DEF) {
-#if defined(USE_OTF)
-	if(!process_password(OTF_PARAMS)) return;
-#else
-	char *p = get_buffer;
-#endif
-
-	DEBUG_PRINTLN(F("server_sensorlog_list"));
-
-	uint8_t log = LOG_STD;
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("log"), true)) // Log type 0=DAY 1=WEEK 2=MONTH
-		log = strtoul(tmp_buffer, NULL, 0);
-	if (log > LOG_MONTH)
-		log = LOG_STD;
-	ulong log_size = sensorlog_size(log);
-
-	//start / max:
-	ulong startAt = 0;
-	ulong maxResults = log_size;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("start"), true)) // Log start
-		startAt = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("max"), true)) // Log Lines count
-		maxResults = strtoul(tmp_buffer, NULL, 0);
-
-	//Filters:
-	uint nr = 0;
-	uint type = 0;
-	ulong after = 0;
-	ulong before = 0;
-	ulong lastHours = 0;
-	bool isjson = true;
-	bool shortcsv = false;
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true)) // Filter log for sensor-nr
-		nr = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("type"), true)) // Filter log for sensor-type
-		type = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("after"), true)) // Filter time after
-		after = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("before"), true)) // Filter time before
-		before = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lasthours"), true)) // Filter last hours
-		lastHours = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lastdays"), true)) // Filter last days
-		lastHours = strtoul(tmp_buffer, NULL, 0) * 24 + lastHours;
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("csv"), true)) { // Filter last days
-		int csv = atoi(tmp_buffer);
-		isjson = csv == 0;
-		shortcsv = csv == 2;
-	}
-
-#if defined(USE_OTF)
-	// as the log data can be large, we will use ESP8266's sendContent function to
-	// send multiple packets of data, instead of the standard way of using send().
-	rewind_ether_buffer();
-	if (isjson)	print_header(OTF_PARAMS); else print_header_download(OTF_PARAMS);
-#else
-	if (isjson)	print_header(); else print_header_download();
-#endif
-
+/** Shared sensor-log emitter used by /so and the MCP get_sensor_chart_data tool.
+ *  Emits header + entries + footer into bfill (chunked via send_packet). */
+void server_sensorlog_emit(OTF_PARAMS_DEF, uint8_t log, ulong log_size, ulong startAt,
+						   ulong maxResults, uint nr, uint type, ulong after, ulong before,
+						   ulong lastHours, bool isjson, bool shortcsv) {
 	if (isjson) {
 		bfill.emit_p(PSTR("{\"logtype\":$D,\"logsize\":$D,\"filesize\":$D,\"log\":["),
 			log, log_size, sensorlog_filesize(log));
@@ -4490,8 +4446,86 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 	else
 		bfill.emit_p(PSTR("\r\n"));
 	free(sensorlog);
+#undef BLOCKSIZE
 
 	DEBUG_PRINTLN(F("finish so"));
+}
+
+/**
+ * so
+ * @brief output sensorlog
+ *
+ */
+void server_sensorlog_list(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+#endif
+
+	DEBUG_PRINTLN(F("server_sensorlog_list"));
+
+	uint8_t log = LOG_STD;
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("log"), true)) // Log type 0=DAY 1=WEEK 2=MONTH
+		log = strtoul(tmp_buffer, NULL, 0);
+	if (log > LOG_MONTH)
+		log = LOG_STD;
+	ulong log_size = sensorlog_size(log);
+
+	//start / max:
+	ulong startAt = 0;
+	ulong maxResults = log_size;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("start"), true)) // Log start
+		startAt = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("max"), true)) // Log Lines count
+		maxResults = strtoul(tmp_buffer, NULL, 0);
+
+	//Filters:
+	uint nr = 0;
+	uint type = 0;
+	ulong after = 0;
+	ulong before = 0;
+	ulong lastHours = 0;
+	bool isjson = true;
+	bool shortcsv = false;
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true)) // Filter log for sensor-nr
+		nr = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("type"), true)) // Filter log for sensor-type
+		type = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("after"), true)) // Filter time after
+		after = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("before"), true)) // Filter time before
+		before = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lasthours"), true)) // Filter last hours
+		lastHours = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lastdays"), true)) // Filter last days
+		lastHours = strtoul(tmp_buffer, NULL, 0) * 24 + lastHours;
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("csv"), true)) { // Filter last days
+		int csv = atoi(tmp_buffer);
+		isjson = csv == 0;
+		shortcsv = csv == 2;
+	}
+
+#if defined(USE_OTF)
+	// as the log data can be large, we will use ESP8266's sendContent function to
+	// send multiple packets of data, instead of the standard way of using send().
+	rewind_ether_buffer();
+	if (isjson)	print_header(OTF_PARAMS); else print_header_download(OTF_PARAMS);
+#else
+	if (isjson)	print_header(); else print_header_download();
+#endif
+
+	server_sensorlog_emit(OTF_PARAMS, log, log_size, startAt, maxResults,
+						  nr, type, after, before, lastHours, isjson, shortcsv);
 
 	handle_return(HTML_OK);
 }

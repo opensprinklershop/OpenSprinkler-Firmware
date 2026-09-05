@@ -8,6 +8,7 @@
 #   deploy  [matter|zigbee|esp32|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
+#   release beta [rebuild]              – Build/publish beta firmware into beta files
 #   release sync-tags                    – Create missing GitHub releases for existing tags
 #   libs    [rebuild|deploy|rebuild-copy|deploy-copy]
 #                                        – Rebuild/deploy custom ESP32 Arduino libs
@@ -40,6 +41,8 @@
 #   ./fw.sh deploy matter monitor   -> Build + Upload + Show live serial monitor + save logs to /tmp/zigbee_monitor_matter.log
 #                                      (View logs via MCP: get_monitor_log variant=zigbee)
 #   ./fw.sh release
+#   ./fw.sh release beta
+#   ./fw.sh release beta rebuild
 #   ./fw.sh release rebuild
 #   ./fw.sh libs rebuild
 #   ./fw.sh libs deploy
@@ -124,11 +127,15 @@ if [[ "${OS_UPGRADE_DIR:-}" == "/srv/www/htdocs/upgrade" ]]; then
     OS_UPGRADE_DIR="/data/upgrade"
 fi
 UPGRADE_DIR="${OS_UPGRADE_DIR:-/data/upgrade}"
+BETA_UPGRADE_DIR="${OS_BETA_UPGRADE_DIR:-/data/upgrade-beta}"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
 VERSIONS_JSON="${UPGRADE_DIR}/versions.json"
+BETA_MANIFEST="${BETA_UPGRADE_DIR}/manifest.json"
+BETA_VERSIONS_JSON="${BETA_UPGRADE_DIR}/versions.json"
 CHANGELOG="${SCRIPT_DIR}/CHANGELOG.md"
 PLATFORMIO_INI="${SCRIPT_DIR}/platformio.ini"
 GITHUB_REPO="opensprinklershop/OpenSprinkler-Firmware"
+IONOS_BETA_UPGRADE_TARGET="${IONOS_BETA_UPGRADE_TARGET:-/home/www/public/upgrade-beta}"
 
 # Path to the UI fw.sh script that handles the IONOS online deploy.
 # Credentials (IONOS_SSH_*) live in ui/.env, so we delegate to that script.
@@ -2368,6 +2375,49 @@ online_deploy() {
     ok "Online deploy complete."
 }
 
+online_deploy_beta() {
+    header "Online deploy → IONOS (beta)"
+
+    local remote_target="${IONOS_BETA_UPGRADE_TARGET%/}"
+    local remote="${IONOS_SSH_USER:-}@${IONOS_SSH_HOST:-}"
+    local ssh_port="${IONOS_SSH_PORT:-22}"
+    local ssh_opts=(-o StrictHostKeyChecking=accept-new -p "$ssh_port")
+    local source_dir="${UPGRADE_DIR%/}/"
+
+    if [[ -z "${IONOS_SSH_HOST:-}" || -z "${IONOS_SSH_USER:-}" ]]; then
+        warn "Beta online deploy skipped — IONOS_SSH_HOST / IONOS_SSH_USER are missing in .env."
+        return 0
+    fi
+
+    if [[ -n "${IONOS_SSH_PASS:-}" ]]; then
+        if ! command -v sshpass &>/dev/null; then
+            warn "Beta online deploy skipped — sshpass not found."
+            warn "Install: sudo apt install sshpass"
+            return 0
+        fi
+        export SSHPASS="$IONOS_SSH_PASS"
+        info "Ensuring ${remote_target} exists on ${IONOS_SSH_HOST} …"
+        sshpass -e ssh "${ssh_opts[@]}" "$remote" "mkdir -p '$remote_target'"
+        info "Syncing ${source_dir} → ${remote}:${remote_target}/ …"
+        sshpass -e rsync -az --info=stats2 \
+            -e "ssh -o StrictHostKeyChecking=accept-new -p ${ssh_port}" \
+            "$source_dir" \
+            "$remote:$remote_target/" \
+        || { error "Beta online deploy failed."; exit 1; }
+    else
+        info "Ensuring ${remote_target} exists on ${IONOS_SSH_HOST} …"
+        ssh "${ssh_opts[@]}" "$remote" "mkdir -p '$remote_target'"
+        info "Syncing ${source_dir} → ${remote}:${remote_target}/ …"
+        rsync -az --info=stats2 \
+            -e "ssh -o StrictHostKeyChecking=accept-new -p ${ssh_port}" \
+            "$source_dir" \
+            "$remote:$remote_target/" \
+        || { error "Beta online deploy failed."; exit 1; }
+    fi
+
+    ok "Beta online deploy complete."
+}
+
 # Promote local staged UI from ui-test/dev to ui-live/<release_version>.
 # This must run only in the actual release flow (not buildweb.sh), so dev stays
 # mutable during development and becomes immutable only on release.
@@ -2503,34 +2553,38 @@ ${changelog_section}"
     archive_current_version
     update_versions_catalog "$release_notes"
 
-    # For firmware releases we freeze the current UI dev build into a
-    # versioned ui-live folder. buildweb.sh always remains dev-only.
-    if ! $is_rebuild; then
-        local ui_release_ver="${version_str}.${OS_FW_MINOR}"
-        promote_ui_release "$ui_release_ver"
-    fi
+    if [[ "${RELEASE_VARIANT_LABEL:-stable}" == "beta" ]]; then
+        online_deploy_beta
+    else
+        # For firmware releases we freeze the current UI dev build into a
+        # versioned ui-live folder. buildweb.sh always remains dev-only.
+        if ! $is_rebuild; then
+            local ui_release_ver="${version_str}.${OS_FW_MINOR}"
+            promote_ui_release "$ui_release_ver"
+        fi
 
-    if ! $is_rebuild; then
-        # 7. Update CHANGELOG.md
-        update_changelog "$version_str"
+        if ! $is_rebuild; then
+            # 7. Update CHANGELOG.md
+            update_changelog "$version_str"
 
-        # 8. Git commit, tag, push
-        git_tag_and_push "$tag" "$version_str"
+            # 8. Git commit, tag, push
+            git_tag_and_push "$tag" "$version_str"
 
-        # 9. GitHub release (optional, requires gh CLI authenticated)
-        github_create_release "$tag" "$version_str" "$release_notes"
-    fi
+            # 9. GitHub release (optional, requires gh CLI authenticated)
+            github_create_release "$tag" "$version_str" "$release_notes"
+        fi
 
-    # 10. Online deploy to IONOS (upgrade/ → remote server)
-    online_deploy
+        # 10. Online deploy to IONOS (upgrade/ → remote server)
+        online_deploy
 
-    # 11. Increase minor version number for the next development cycle
-    if ! $is_rebuild; then
-        bump_minor_version
-        git add "$DEFINES_H"
-        git commit -m "Bump version to build $OS_FW_MINOR for next development cycle"
-        git push origin HEAD
-        ok "defines.h updated and pushed for next dev cycle: build ${OS_FW_MINOR}"
+        # 11. Increase minor version number for the next development cycle
+        if ! $is_rebuild; then
+            bump_minor_version
+            git add "$DEFINES_H"
+            git commit -m "Bump version to build $OS_FW_MINOR for next development cycle"
+            git push origin HEAD
+            ok "defines.h updated and pushed for next dev cycle: build ${OS_FW_MINOR}"
+        fi
     fi
 
     # 12. Summary
@@ -2550,6 +2604,17 @@ ${changelog_section}"
     ok "  ${UPGRADE_DIR}/firmware_esp8266.bin"
     echo ""
     info "Firmware v${version_str} build ${OS_FW_MINOR} is now available for OTA upgrade."
+}
+
+do_release_beta() {
+    local mode="${1:-full}"
+    local UPGRADE_DIR="${BETA_UPGRADE_DIR}"
+    local MANIFEST="${BETA_MANIFEST}"
+    local VERSIONS_JSON="${BETA_VERSIONS_JSON}"
+    local UPGRADE_MATTER_KVS_BIN="${UPGRADE_DIR}/matter_kvs.bin"
+    local RELEASE_VARIANT_LABEL="beta"
+
+    do_release "$mode"
 }
 
 usage() {
@@ -2584,9 +2649,12 @@ ${BOLD}Actions:${NC}
   release                                   Bump version, build all firmwares,
                                             copy to upgrade dir, git tag & push,
                                             create GitHub release, deploy to IONOS
+    release beta                              Build all firmwares into beta upgrade files,
+                                                                                        update beta manifest/catalog, deploy beta
   release rebuild                           Rebuild all firmwares without version
                                             bump, no git tag/release — build only,
                                             then deploy to IONOS
+    release beta rebuild                      Rebuild all firmwares for beta files only
     release sync-tags                         Create missing GitHub releases for
                                                                                         existing v* tags
     libs [rebuild|deploy|rebuild-copy|deploy-copy]
@@ -2941,10 +3009,18 @@ case "$ACTION" in
 
     release)
         case "$VARIANT" in
+            beta)
+                case "$MODE_ARG" in
+                    rebuild) do_release_beta rebuild ;;
+                    "")      do_release_beta full ;;
+                    *) error "Unknown beta release mode: $MODE_ARG (rebuild)"; exit 1 ;;
+                esac
+                ;;
+            beta-rebuild) do_release_beta rebuild ;;
             rebuild)  do_release rebuild ;;
             sync-tags) github_sync_tag_releases ;;
             all|"")   do_release full ;;
-            *) error "Unknown release mode: $VARIANT (rebuild|sync-tags)"; exit 1 ;;
+            *) error "Unknown release mode: $VARIANT (beta|beta-rebuild|rebuild|sync-tags)"; exit 1 ;;
         esac
         ;;
 

@@ -115,6 +115,35 @@ function resolveByName(items: NamedItem[], query: string):
   return { kind: "none" };
 }
 
+function parseSensorChartCsv(csvText: string): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+  const lines = String(csvText ?? "").split(/\r?\n/);
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const parts = trimmed.split(";");
+    if (parts.length < 3) continue;
+
+    const nr = Number.parseInt(parts[0], 10);
+    const ts = Number.parseInt(parts[1], 10);
+    const rawValue = Number.parseFloat(parts[2]);
+
+    if (!Number.isFinite(nr) || !Number.isFinite(ts) || !Number.isFinite(rawValue)) {
+      continue;
+    }
+
+    rows.push({
+      sensor: nr,
+      timestamp: ts,
+      value: rawValue,
+    });
+  }
+
+  return rows;
+}
+
 /**
  * Register all OpenSprinkler tools on the given MCP server instance.
  */
@@ -230,6 +259,37 @@ export function registerTools(
 
       const result = note ? { ...obj, _note: note } : obj;
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "get_weather_data",
+    "Get the controller's current weather status, provider metadata, location, and latest weather measurements from /ja or /jo. Useful for weather adjustment decisions.",
+    {
+      includeRaw: z.boolean().optional().describe("If true, include the raw weather payload as returned by the controller."),
+    },
+    async (args) => {
+      const data = await getClient().get("/ja");
+      const settings = (data as Record<string, unknown>)?.settings as Record<string, unknown> | undefined;
+      const weatherBlock = settings && typeof settings === "object" ? settings : (data as Record<string, unknown>);
+      const subset = {
+        loc: (weatherBlock as Record<string, unknown>)?.loc ?? (data as Record<string, unknown>)?.loc,
+        jsp: (weatherBlock as Record<string, unknown>)?.jsp ?? (data as Record<string, unknown>)?.jsp,
+        wsp: (weatherBlock as Record<string, unknown>)?.wsp ?? (data as Record<string, unknown>)?.wsp,
+        wto: (weatherBlock as Record<string, unknown>)?.wto ?? (data as Record<string, unknown>)?.wto,
+        wtdata: (weatherBlock as Record<string, unknown>)?.wtdata ?? (data as Record<string, unknown>)?.wtdata,
+        wterr: (weatherBlock as Record<string, unknown>)?.wterr ?? (data as Record<string, unknown>)?.wterr,
+        wtreason: (weatherBlock as Record<string, unknown>)?.wtreason ?? (data as Record<string, unknown>)?.wtreason,
+        wtrestr: (weatherBlock as Record<string, unknown>)?.wtrestr ?? (data as Record<string, unknown>)?.wtrestr,
+      };
+
+      const raw = args.includeRaw ? data : undefined;
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(raw ? { ...subset, raw } : subset, null, 2),
+        }],
+      };
     },
   );
 
@@ -632,6 +692,63 @@ export function registerTools(
         const data = await getClient().get("/so", params);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
+    },
+  );
+
+  server.tool(
+    "get_sensor_chart_data",
+    "Get sensor diagram/chart values from /so in CSV format and convert them to structured time/value records with sensor metadata. This is useful for plotting or inspecting historical sensor trends.",
+    {
+      nr: z.number().optional().describe("Restrict to one sensor number; omit for all sensors."),
+      max: z.number().optional().describe("Maximum number of chart points per sensor; defaults to the controller's usual log limit."),
+      hist: z.number().optional().describe("History window in days."),
+    },
+    async (args) => {
+      const params: Record<string, string | number | undefined> = { csv: 2 };
+      if (args.nr !== undefined) params.nr = args.nr;
+      if (args.max !== undefined) params.max = args.max;
+      if (args.hist !== undefined) params.lastdays = args.hist;
+
+      const csvText = await getClient().getRaw("/so", params);
+      const rows = parseSensorChartCsv(csvText);
+
+      const sensorsData = await getClient().get("/sl");
+      const sensors = Array.isArray((sensorsData as Record<string, unknown>)?.sensors)
+        ? (sensorsData as Record<string, unknown>).sensors as Array<Record<string, unknown>>
+        : [];
+      const sensorMeta = new Map<number, Record<string, unknown>>();
+      for (const sensor of sensors) {
+        const nr = Number(sensor?.nr ?? sensor?.id);
+        if (Number.isFinite(nr)) {
+          sensorMeta.set(nr, sensor);
+        }
+      }
+
+      const grouped = new Map<number, Array<Record<string, unknown>>>();
+      for (const row of rows) {
+        const key = Number(row.sensor);
+        const list = grouped.get(key) ?? [];
+        list.push(row);
+        grouped.set(key, list);
+      }
+
+      const result = Array.from(grouped.entries()).map(([sensorNr, points]) => {
+        const meta = sensorMeta.get(sensorNr) ?? {};
+        return {
+          sensor: sensorNr,
+          name: typeof meta.name === "string" ? meta.name : `sensor_${sensorNr}`,
+          type: meta.type ?? meta.sensorType ?? null,
+          unit: meta.unit ?? meta.units ?? null,
+          points: points.map((p) => ({
+            timestamp: p.timestamp,
+            value: p.value,
+          })),
+        };
+      });
+
+      return {
+        content: [{ type: "text", text: JSON.stringify({ count: result.length, sensors: result }, null, 2) }],
+      };
     },
   );
 

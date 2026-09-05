@@ -62,6 +62,12 @@ void server_json_programs_main(const OTF::Request& req, OTF::Response& res);
 // Full-handler helpers – callable in capture mode (no-param read queries)
 void server_json_station_special(const OTF::Request& req, OTF::Response& res);
 void server_sensor_list(const OTF::Request& req, OTF::Response& res);
+void server_weather_summary(const OTF::Request& req, OTF::Response& res);
+void server_sensor_get(const OTF::Request& req, OTF::Response& res);
+void server_sensorlog_emit(const OTF::Request& req, OTF::Response& res, uint8_t log,
+                           ulong log_size, ulong startAt, ulong maxResults, uint nr,
+                           uint type, ulong after, ulong before, ulong lastHours,
+                           bool isjson, bool shortcsv);
 void server_usage(const OTF::Request& req, OTF::Response& res);
 void server_sensorprog_list(const OTF::Request& req, OTF::Response& res);
 void server_monitor_list(const OTF::Request& req, OTF::Response& res);
@@ -212,6 +218,102 @@ static void mcp_send_response(OTF::Response& res,
   res.writeHeader(F("Connection"), F("close"));
   res.writeHeader(F("Content-Length"), (int)body.length());
   res.writeBodyData(body.c_str(), body.length());
+}
+
+// ─── Streamed text-result response (large read-only tools) ───────────────────
+// The JSON-RPC envelope for read-only tools embeds a large captured JSON blob
+// as the "text" field.  Building that through an ArduinoJson document requires
+// holding the blob three times in RAM at once (captured String + copy inside
+// the document + serialized body String), which overflows on constrained
+// devices and yields a TRUNCATED response.  Instead we compute the exact
+// Content-Length up front and stream the JSON-escaped blob straight to the
+// already-streaming OTF Response, keeping only the captured String in RAM.
+
+// Number of bytes the string occupies when escaped as a JSON string body
+// (without the surrounding quotes).
+static size_t mcp_json_escaped_length(const char* s, size_t n) {
+  size_t out = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    switch (c) {
+      case '"': case '\\': case '\b': case '\f':
+      case '\n': case '\r': case '\t':
+        out += 2; break;
+      default:
+        out += (c < 0x20) ? 6 /* \u00XX */ : 1;
+    }
+  }
+  return out;
+}
+
+// Convert a 4-bit value to its lowercase hex digit.
+static inline char mcp_hex_nibble(unsigned v) {
+  v &= 0xF;
+  return (char)(v < 10 ? '0' + v : 'a' + (v - 10));
+}
+
+// Escape `s` as a JSON string body (no surrounding quotes) and stream it to the
+// response in small chunks so no large intermediate buffer is needed.
+static void mcp_write_json_escaped(OTF::Response& res, const char* s, size_t n) {
+  char buf[96];
+  size_t bi = 0;
+  for (size_t i = 0; i < n; i++) {
+    // Reserve worst case (6 bytes) before writing this character.
+    if (bi > sizeof(buf) - 6) { res.writeBodyData(buf, bi); bi = 0; }
+    unsigned char c = (unsigned char)s[i];
+    switch (c) {
+      case '"':  buf[bi++]='\\'; buf[bi++]='"';  break;
+      case '\\': buf[bi++]='\\'; buf[bi++]='\\'; break;
+      case '\b': buf[bi++]='\\'; buf[bi++]='b';  break;
+      case '\f': buf[bi++]='\\'; buf[bi++]='f';  break;
+      case '\n': buf[bi++]='\\'; buf[bi++]='n';  break;
+      case '\r': buf[bi++]='\\'; buf[bi++]='r';  break;
+      case '\t': buf[bi++]='\\'; buf[bi++]='t';  break;
+      default:
+        if (c < 0x20) {
+          buf[bi++]='\\'; buf[bi++]='u'; buf[bi++]='0'; buf[bi++]='0';
+          buf[bi++]=mcp_hex_nibble(c >> 4); buf[bi++]=mcp_hex_nibble(c);
+        } else {
+          buf[bi++]=(char)c;
+        }
+    }
+  }
+  if (bi) res.writeBodyData(buf, bi);
+}
+
+// Send a JSON-RPC text result by streaming, using a pre-serialized id string
+// (e.g. "5", "\"abc\"", or "null").  `text` is the captured tool output that is
+// embedded, JSON-escaped, as the single text content item.
+static void mcp_send_text_result_streamed(OTF::Response& res,
+                                          const char* id_str,
+                                          const String& text) {
+  #define MCP_RES_PFX "{\"jsonrpc\":\"2.0\",\"id\":"
+  #define MCP_RES_MID ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\""
+  #define MCP_RES_SFX "\"}]}}"
+
+  const char* text_c = text.c_str();
+  const size_t text_n = text.length();
+  const size_t content_length =
+      (sizeof(MCP_RES_PFX) - 1) + strlen(id_str) + (sizeof(MCP_RES_MID) - 1) +
+      mcp_json_escaped_length(text_c, text_n) + (sizeof(MCP_RES_SFX) - 1);
+
+  res.writeStatus(200, F("OK"));
+  res.writeHeader(F("Content-Type"), F("application/json"));
+  res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+  res.writeHeader(F("Cache-Control"), F("no-store"));
+  res.writeHeader(F("Mcp-Session-Id"), mcp_get_session_id());
+  res.writeHeader(F("Connection"), F("close"));
+  res.writeHeader(F("Content-Length"), (int)content_length);
+
+  res.writeBodyData(MCP_RES_PFX, sizeof(MCP_RES_PFX) - 1);
+  res.writeBodyData(id_str, strlen(id_str));
+  res.writeBodyData(MCP_RES_MID, sizeof(MCP_RES_MID) - 1);
+  mcp_write_json_escaped(res, text_c, text_n);
+  res.writeBodyData(MCP_RES_SFX, sizeof(MCP_RES_SFX) - 1);
+
+  #undef MCP_RES_PFX
+  #undef MCP_RES_MID
+  #undef MCP_RES_SFX
 }
 
 // Build the JSON-RPC error response document.
@@ -387,6 +489,42 @@ static String tool_get_special_stations(const OTF::Request& req, OTF::Response& 
 
 static String tool_get_sensors(const OTF::Request& req, OTF::Response& res) {
   return tool_capture(server_sensor_list, req, res);
+}
+
+// ─── Tool: get_weather_data ──────────────────────────────────────────────────
+
+static String tool_get_weather_data(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_weather_summary, req, res);
+}
+
+// ─── Tool: get_sensor_values ─────────────────────────────────────────────────
+
+static String tool_get_sensor_values(const OTF::Request& req, OTF::Response& res) {
+  return tool_capture(server_sensor_get, req, res);
+}
+
+// ─── Tool: get_sensor_chart_data ─────────────────────────────────────────────
+// Compact chart time series (nr;time;data CSV) via the shared /so emitter,
+// filtered by sensor nr / history days / max points from the MCP arguments.
+
+static String tool_get_sensor_chart_data(const OTF::Request& req, OTF::Response& res,
+                                         const ArduinoJson::JsonObjectConst& args) {
+  uint  nr         = 0;
+  ulong maxResults = 0;
+  ulong lastHours  = 0;
+  if (!args.isNull()) {
+    if (args["nr"].is<int>())   nr        = (uint)args["nr"].as<int>();
+    if (args["max"].is<long>()) maxResults = (ulong)args["max"].as<long>();
+    if (args["hist"].is<long>()) lastHours = (ulong)args["hist"].as<long>() * 24UL;
+  }
+  const uint8_t log = LOG_STD;
+  const ulong log_size = sensorlog_size(log);
+  if (maxResults == 0) maxResults = log_size;
+
+  mcp_begin_capture();
+  server_sensorlog_emit(req, res, log, log_size, 0, maxResults,
+                        nr, 0, 0, 0, lastHours, /*isjson=*/false, /*shortcsv=*/true);
+  return mcp_end_capture();
 }
 
 // ─── Tool: list_adjustments ──────────────────────────────────────────────────
@@ -852,6 +990,27 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
     "Get special station data (RF, remote, GPIO, HTTP/HTTPS, OTC). Equivalent to /je.");
   add_ro("get_sensors",
     "List all configured sensors with their current values. Equivalent to /sl.");
+  add_ro("get_weather_data",
+    "Get focused weather summary: location, provider options, water level, rain delay, latest weather data, error codes, sunrise/sunset. Subset of /ja.");
+  add_ro("get_sensor_values",
+    "Get current values of all sensors (nr, data, unit, last read). Smaller than /sl. Equivalent to /sg.");
+  {
+    auto t = tools.add<ArduinoJson::JsonObject>();
+    t["name"]        = "get_sensor_chart_data";
+    t["description"] = "Get sensor chart/diagram time series as compact CSV (nr;time;data). Filter by sensor nr, history days (hist), and max points. Uses /so with csv=2.";
+    auto schema = t["inputSchema"].to<ArduinoJson::JsonObject>();
+    schema["type"] = "object";
+    auto props = schema["properties"].to<ArduinoJson::JsonObject>();
+    auto p_nr = props["nr"].to<ArduinoJson::JsonObject>();
+    p_nr["type"] = "integer";
+    p_nr["description"] = "Restrict to one sensor number (omit for all).";
+    auto p_hist = props["hist"].to<ArduinoJson::JsonObject>();
+    p_hist["type"] = "integer";
+    p_hist["description"] = "History window in days.";
+    auto p_max = props["max"].to<ArduinoJson::JsonObject>();
+    p_max["type"] = "integer";
+    p_max["description"] = "Maximum number of chart points.";
+  }
   add_ro("list_adjustments",
     "List sensor-based program adjustments. Equivalent to /se.");
   add_ro("list_monitors",
@@ -1183,6 +1342,15 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
     } else if (strcmp(tool_name, "get_sensors") == 0) {
       content_json = tool_get_sensors(req, res);
 
+    } else if (strcmp(tool_name, "get_weather_data") == 0) {
+      content_json = tool_get_weather_data(req, res);
+
+    } else if (strcmp(tool_name, "get_sensor_values") == 0) {
+      content_json = tool_get_sensor_values(req, res);
+
+    } else if (strcmp(tool_name, "get_sensor_chart_data") == 0) {
+      content_json = tool_get_sensor_chart_data(req, res, args);
+
     } else if (strcmp(tool_name, "list_adjustments") == 0) {
       content_json = tool_list_adjustments(req, res);
 
@@ -1279,13 +1447,20 @@ void server_mcp_handler(const OTF::Request& req, OTF::Response& res) {
       return;
     }
 
-    // Return text result (for read-only tools)
-    req_doc.clear();  // free request doc before building large response
-    mcp_build_text_result(resp_doc, rpc_id, content_json);
-    DEBUG_PRINTF("[MCP] capture=%u overflowed=%d\n",
-                 (unsigned)content_json.length(), (int)resp_doc.overflowed());
-    content_json = String();  // free captured data before serializing response
-    mcp_send_response(res, resp_doc);
+    // Return text result (for read-only tools).  Stream the (potentially large)
+    // captured JSON directly to avoid holding it multiple times in RAM, which
+    // previously overflowed constrained devices and truncated the response.
+    // The id must be serialized BEFORE clearing req_doc (rpc_id references it).
+    char id_str[64];
+    {
+      size_t n = ArduinoJson::serializeJson(rpc_id, id_str, sizeof(id_str));
+      if (n == 0 || n >= sizeof(id_str)) { strcpy(id_str, "null"); }
+    }
+    req_doc.clear();   // free request doc before streaming the response
+    resp_doc.clear();  // not needed for the streamed path
+    DEBUG_PRINTF("[MCP] capture=%u (streamed)\n", (unsigned)content_json.length());
+    mcp_send_text_result_streamed(res, id_str, content_json);
+    content_json = String();  // free captured data
     return;
   }
 
