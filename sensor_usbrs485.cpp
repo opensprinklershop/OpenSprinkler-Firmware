@@ -93,8 +93,14 @@ int UsbRs485Sensor::setAddress(uint8_t newAddress) {
   request[5] = newAddress;
   
   if (modbus_send_raw_request(modbusDevs[device], request, 6) > 0) {
+    uint8_t response[MODBUS_RTU_MAX_ADU_LENGTH];
+    int len = modbus_receive_confirmation(modbusDevs[device], response);
     modbus_flush(modbusDevs[device]);
-    return HTTP_RQT_SUCCESS;
+    if (len >= 6 && response[0] == 253 && response[1] == 0x06) {
+      this->id = newAddress;
+      sensor_save();
+      return HTTP_RQT_SUCCESS;
+    }
   }
   return HTTP_RQT_NOT_RECEIVED;
 }

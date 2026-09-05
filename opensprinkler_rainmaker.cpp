@@ -1404,8 +1404,8 @@ static void create_sensor_devices(esp_rmaker_node_t *node) {
     if (s->nr == 0) continue;  // deleted sensor
 
     char dev_name[40];
-    if (s->name[0]) {
-      snprintf(dev_name, sizeof(dev_name), "%.31s", s->name);
+    if (s->getName()[0]) {
+      snprintf(dev_name, sizeof(dev_name), "%.31s", s->getName());
     } else {
       snprintf(dev_name, sizeof(dev_name), "Sensor %u", s->nr);
     }

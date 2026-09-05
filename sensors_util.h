@@ -24,9 +24,17 @@
 
 #include "utils.h"
 #include <map>
+#include <stdlib.h>
 
 #ifndef SENSORS_FILE_IO_BUFFER_SIZE
 #define SENSORS_FILE_IO_BUFFER_SIZE 512
+#endif
+
+// Fallback buffer size used only if the heap allocation fails. Kept small so a
+// stack-resident FileWriter/FileReader adds little to the (tight) ESP8266 cont
+// stack; the primary buffer lives on the heap.
+#ifndef SENSORS_FILE_IO_FALLBACK_SIZE
+#define SENSORS_FILE_IO_FALLBACK_SIZE 64
 #endif
 
 // Forward declarations
@@ -41,8 +49,10 @@ class FileWriter {
 private:
   const char* filename;
   size_t filePos;
-  uint8_t buffer[SENSORS_FILE_IO_BUFFER_SIZE];  // Write buffer
+  uint8_t* buffer;      // heap I/O buffer (keeps it off the tight ESP8266 stack)
+  size_t bufferCap;
   size_t bufferPos;
+  uint8_t fallback[SENSORS_FILE_IO_FALLBACK_SIZE];  // used only if heap alloc fails
   
   /**
    * @brief Flush internal buffer to file
@@ -61,13 +71,18 @@ public:
    * @brief Constructor
    * @param fname Filename to write to
    */
-  FileWriter(const char* fname) : filename(fname), filePos(0), bufferPos(0) {}
+  FileWriter(const char* fname) : filename(fname), filePos(0), bufferPos(0) {
+    buffer = (uint8_t*)malloc(SENSORS_FILE_IO_BUFFER_SIZE);
+    bufferCap = buffer ? SENSORS_FILE_IO_BUFFER_SIZE : sizeof(fallback);
+    if (!buffer) buffer = fallback;
+  }
   
   /**
    * @brief Destructor - flushes remaining buffer data
    */
   ~FileWriter() {
     flush();  // Flush on destruction
+    if (buffer != fallback) free(buffer);
   }
   
   /**
@@ -78,7 +93,7 @@ public:
    */
   size_t write(uint8_t c) {
     buffer[bufferPos++] = c;
-    if (bufferPos >= sizeof(buffer)) {
+    if (bufferPos >= bufferCap) {
       flush();
     }
     return 1;
@@ -93,7 +108,7 @@ public:
    */
   size_t write(const uint8_t* data, size_t length) {
     // If data is larger than buffer, flush and write directly
-    if (length >= sizeof(buffer)) {
+    if (length >= bufferCap) {
       flush();
       file_write_block(filename, data, filePos, length);
       filePos += length;
@@ -103,12 +118,12 @@ public:
     // Otherwise, copy to buffer
     size_t written = 0;
     while (written < length) {
-      size_t toWrite = min(length - written, sizeof(buffer) - bufferPos);
+      size_t toWrite = min(length - written, bufferCap - bufferPos);
       memcpy(buffer + bufferPos, data + written, toWrite);
       bufferPos += toWrite;
       written += toWrite;
       
-      if (bufferPos >= sizeof(buffer)) {
+      if (bufferPos >= bufferCap) {
         flush();
       }
     }
@@ -125,9 +140,11 @@ private:
   const char* filename;
   size_t filePos;      // Position in file
   size_t fileSize;
-  uint8_t buffer[SENSORS_FILE_IO_BUFFER_SIZE]; // Read buffer
+  uint8_t* buffer;     // heap read buffer (keeps it off the tight ESP8266 stack)
+  size_t bufferCap;
   size_t bufferPos;    // Current position in buffer
   size_t bufferLen;    // Valid data in buffer
+  uint8_t fallback[SENSORS_FILE_IO_FALLBACK_SIZE];  // used only if heap alloc fails
   
   /**
    * @brief Fill internal buffer from file
@@ -139,7 +156,7 @@ private:
       return;
     }
     
-    size_t toRead = min(sizeof(buffer), fileSize - filePos);
+    size_t toRead = min(bufferCap, fileSize - filePos);
     file_read_block(filename, buffer, filePos, toRead);
     filePos += toRead;
     bufferLen = toRead;
@@ -152,8 +169,18 @@ public:
    * @param fname Filename to read from
    */
   FileReader(const char* fname) : filename(fname), filePos(0), bufferPos(0), bufferLen(0) {
+    buffer = (uint8_t*)malloc(SENSORS_FILE_IO_BUFFER_SIZE);
+    bufferCap = buffer ? SENSORS_FILE_IO_BUFFER_SIZE : sizeof(fallback);
+    if (!buffer) buffer = fallback;
     fileSize = file_size(fname);
     fillBuffer();  // Prefill buffer
+  }
+
+  /**
+   * @brief Destructor - releases the heap read buffer
+   */
+  ~FileReader() {
+    if (buffer != fallback) free(buffer);
   }
   
   /**

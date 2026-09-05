@@ -68,29 +68,17 @@ public:
 
 #else
 
-#if defined(ESP8266) || defined(ESP32) 
-#include <InfluxDbClient.h>
-#include <InfluxDbCloud.h>
-#elif defined(OSPI)
-#include "influxdb.hpp"
-#else
-// DEMO / generic native builds (esp. Windows) don't ship influxdb-cpp.
-// The integration is compiled out in osinfluxdb.cpp when DEMO is set.
-struct influxdb_cpp_server_info_stub;
-#endif
+
+// ESP8266/ESP32: stateless line-protocol sender, no client library required.
 
 class OSInfluxDB {
 private:
-    #if defined(ESP8266) || defined(ESP32) 
-    InfluxDBClient * client;
-    #elif defined(OSPI)
-    influxdb_cpp::server_info * client;
-    #else
-    void * client;
-    #endif
+
+    // ESP8266/ESP32: stateless, no persistent client held.
     bool enabled;
     bool initialized;
     void init();
+    void influx_post_line(const char* line); // build HTTP POST + send statelessly
     void influxdb_send_state(const char *name, int state);
     void influxdb_send_station(const char *name, uint32_t station, int state);
     void influxdb_send_program(const char *name, uint32_t nr, float level);
@@ -108,11 +96,11 @@ public:
     bool isEnabled();
     void suspend(); // free client and disable (e.g. to free RAM before sending e-mail)
     void resume();  // re-read config from storage and re-enable if configured
-    #if defined(ESP8266) || defined(ESP32) 
-    void write_influx_data(Point &sensor_data);
-    #elif defined(OSPI)
-    influxdb_cpp::server_info * get_client();
-    #endif
+    // Stateless line-protocol writer: assembles "<measurement>,<tagset> <fieldset>"
+    // and POSTs it via OpenSprinkler::send_http_request (no persistent client/RAM).
+    void write_influx_line(const char* measurement, const char* tagset, const char* fieldset);
+    // Escape a tag key/value per InfluxDB line protocol. Returns bytes written.
+    static size_t influx_escape(char* dst, size_t cap, const char* src);
     void push_message(uint32_t type, uint32_t lval, float fval, const char* sval);
 };
 

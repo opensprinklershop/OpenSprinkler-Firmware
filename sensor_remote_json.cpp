@@ -58,19 +58,17 @@ static int remote_json_parse_array_index(const char* s) {
 void RemoteJsonSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
     SensorBase::fromJson(obj);
     if (obj.containsKey(F("url"))) {
-        const char *u = obj[F("url")].as<const char*>();
-        if (u) strncpy(url, u, sizeof(url)-1);
+        set_dyn_str(url, obj[F("url")].as<const char*>());
     }
     if (obj.containsKey(F("filter"))) {
-        const char *f = obj[F("filter")].as<const char*>();
-        if (f) strncpy(filter, f, sizeof(filter)-1);
+        set_dyn_str(filter, obj[F("filter")].as<const char*>());
     }
 }
 
 void RemoteJsonSensor::toJson(ArduinoJson::JsonObject obj) const {
     SensorBase::toJson(obj);
-    if (url[0]) obj[F("url")] = url;
-    if (filter[0]) obj[F("filter")] = filter;
+    if (url && url[0]) obj[F("url")] = url;
+    if (filter && filter[0]) obj[F("filter")] = filter;
 }
 
 unsigned char RemoteJsonSensor::getUnitId() const {
@@ -82,7 +80,7 @@ void RemoteJsonSensor::emitJson(BufferFiller& bfill) const {
 }
 
 int RemoteJsonSensor::read(unsigned long time) {
-    if (url[0] == '\0') {
+    if (!url || url[0] == '\0') {
         flags.data_ok = false;
         return HTTP_RQT_NOT_RECEIVED;
     }
@@ -144,7 +142,7 @@ int RemoteJsonSensor::read(unsigned long time) {
     int num_segments = 0;
     const char* segments[16];
     int arrayIndex = 0;
-    if (filter[0]) {
+    if (filter && filter[0]) {
         strncpy(filter_copy, filter, sizeof(filter_copy) - 1);
         filter_copy[sizeof(filter_copy) - 1] = '\0';
 

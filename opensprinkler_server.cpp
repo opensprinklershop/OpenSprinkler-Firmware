@@ -24,6 +24,24 @@
 #include "types.h"
 #include "OpenSprinkler.h"
 #include "program.h"
+template<typename T>
+static void emit_monthly_water_backup_json(T &bfill) {
+	bfill.emit_p(PSTR(",\"mwater\":{\"pr\":$D,\"pd\":$D,\"curr\":{\"ym\":$D,\"flow\":$L},\"records\":["),
+		os.get_flow_pulse_rate_100(),
+		os.get_flow_pulse_divisor(),
+		os.mwdata.curr_ym,
+		(unsigned long)os.mwdata.curr_flow);
+
+	for (uint8_t i = 0; i < os.mwdata.nrecords; i++) {
+		if (i) bfill.emit_p(PSTR(","));
+		bfill.emit_p(PSTR("{\"ym\":$D,\"flow\":$L}"),
+			os.mwdata.records[i].ym,
+			(unsigned long)os.mwdata.records[i].flow_count);
+	}
+
+	bfill.emit_p(PSTR("]}"));
+}
+
 #include "opensprinkler_server.h"
 #include "weather.h"
 #include "mqtt.h"
@@ -380,6 +398,11 @@ void send_packet(OTF_PARAMS_DEF) {
 	rewind_ether_buffer();
 }
 
+#if defined(ESP32) || defined(ESP8266)
+// Forward declaration: implementation is in the online-update section below.
+static void bfill_emit_json_escaped(const char* s);
+#endif
+
 char dec2hexchar(unsigned char dec) {
 	if(dec<10) return '0'+dec;
 	else return 'A'+(dec-10);
@@ -720,7 +743,13 @@ void server_json_stations_main(OTF_PARAMS_DEF) {
 	unsigned char sid;
 	for(sid=0;sid<os.nstations;sid++) {
 		os.get_station_name(sid, tmp_buffer);
-		bfill.emit_p(PSTR("\"$S\""), tmp_buffer);
+		#if defined(ESP32) || defined(ESP8266)
+			bfill.emit_p(PSTR("\""));
+			bfill_emit_json_escaped(tmp_buffer);
+			bfill.emit_p(PSTR("\""));
+		#else
+			bfill.emit_p(PSTR("\"$S\""), tmp_buffer);
+		#endif
 		if(sid!=os.nstations-1)
 			bfill.emit_p(PSTR(","));
 		if (available_ether_buffer() <=0 ) {
@@ -1348,6 +1377,17 @@ void server_change_program(OTF_PARAMS_DEF) {
 		if (auto *rm = OSRainMaker::get()) rm->sync_programs();
 #endif
 	} else {
+		// If this program is currently running / queued with repeat instances,
+		// invalidate all queued entries before applying the new definition so
+		// stale repeats do not keep running with old settings.
+		unsigned char target_pid = (unsigned char)pid + 1;
+		for (int qi = (int)pd.nqueue - 1; qi >= 0; qi--) {
+			RuntimeQueueStruct *q = pd.queue + qi;
+			if (qpid_decode(q->pid) == target_pid) {
+				q->dur = 0;
+			}
+		}
+
 		if(!pd.modify(pid, &prog)) handle_return(HTML_DATA_OUTOFBOUND);
 #if defined(ESP32) && defined(ENABLE_RAINMAKER)
 		if (auto *rm = OSRainMaker::get()) rm->update_program_name((uint8_t)pid);
@@ -1551,7 +1591,7 @@ void server_view_scripturl(OTF_PARAMS_DEF) {
 <tr><td></td><td><button type=button onclick='rst_jsp()'>Reset UI Source</button></td></tr>
 <tr><td><b>Weather</b>:</td><td><input type=text size=40 maxlength=$D value='$O' id=wsp name=wsp></td></tr>
 <tr><td></td><td><button type=button onclick='rst_wsp()'>Reset Weather Server</button></td></tr>
-<tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw><input type=submit value=submit></tr>
+<tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw value='a6d82bced638de3def1e9bbb4983225c'><input type=submit value=submit></tr>
 </table></form>
 <script src=https://ui.opensprinkler.com/js/hasher.js></script>
 <script>function rst_jsp() {document.getElementById('jsp').value='$S';}
@@ -1627,8 +1667,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR("{$S},\"wtdata\":"), opt_buf);
 
 		emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
-		bfill.emit_p(PSTR(",\"wterr\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
+		bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D,\"wtrestr\":$D,\"dname\":\"$O\","),
 					 wt_errCode,
+					 wt_errReason,
 					 wt_restricted,
 					 SOPT_DEVICE_NAME);
 	}
@@ -1642,6 +1683,14 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 		bfill.emit_p(PSTR(","));
 	}
 #endif
+
+	{
+		char push_buf[MAX_SOPTS_SIZE + 1];
+		os.sopt_load(SOPT_PUSH_OPTS, push_buf, MAX_SOPTS_SIZE);
+		bfill.emit_p(PSTR("\"push\":"));
+		emit_json_object_value_or_empty(push_buf, sizeof(push_buf));
+		bfill.emit_p(PSTR(","));
+	}
 
 	bfill.emit_p(PSTR("\"wls\":["));
 	if (md_N == 0) {
@@ -2087,6 +2136,20 @@ void server_change_options(OTF_PARAMS_DEF)
 		os.sopt_save(SOPT_EMAIL_OPTS, tmp_buffer);
 	}
 
+	keyfound = 0;
+	if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("push"), true, &keyfound)) {
+		#if !defined(USE_OTF)
+		urlDecode(tmp_buffer);
+		#endif
+		if (!normalize_json_object_fragment(tmp_buffer, TMP_BUFFER_SIZE)) {
+			tmp_buffer[0] = 0;
+		}
+		os.sopt_save(SOPT_PUSH_OPTS, tmp_buffer);
+	} else if (keyfound) {
+		tmp_buffer[0]=0;
+		os.sopt_save(SOPT_PUSH_OPTS, tmp_buffer);
+	}
+
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("dname"), true)) {
 		#if !defined(USE_OTF)
 		urlDecode(tmp_buffer);
@@ -2186,6 +2249,7 @@ void server_change_password(OTF_PARAMS_DEF) {
 		const int pwBufferSize = TMP_BUFFER_SIZE/2;
 		char *tbuf2 = tmp_buffer + pwBufferSize;	// use the second half of tmp_buffer
 		if (findKeyVal(FKV_SOURCE, tbuf2, pwBufferSize, PSTR("cpw"), true) && strncmp(tmp_buffer, tbuf2, pwBufferSize) == 0) {
+			DEBUG_PRINTF("[PW] /sp writing password slot: npw='%.*s' cpw='%.*s'\n", 16, tmp_buffer, 16, tbuf2);
 			os.sopt_save(SOPT_PASSWORD, tmp_buffer);
 			handle_return(HTML_SUCCESS);
 		} else {
@@ -2458,11 +2522,22 @@ void server_json_log(OTF_PARAMS_DEF) {
 			if(*ptype != ',') continue; // didn't find comma, move on
 			ptype++;  // move past comma
 
-			if (type_specified && strncmp(type, ptype+1, 2))
+			const bool has_quoted_type = (*ptype == '"');
+			const char *type_value = ptype;
+			if (has_quoted_type) {
+				type_value++;
+				char *type_end = const_cast<char*>(type_value);
+				while(*type_end && *type_end != '"') type_end++;
+				if (!*type_end) continue;
+				if (type_specified) {
+					if (type_end - type_value < 2 || strncmp(type, type_value, 2))
+						continue;
+				} else if (type_end - type_value >= 2 && (!strncmp("wl", type_value, 2) || !strncmp("fl", type_value, 2))) {
+					continue;
+				}
+			} else if (type_specified) {
 				continue;
-			// if type is not specified, output everything except "wl" and "fl" records
-			if (!type_specified && (!strncmp("wl", ptype+1, 2) || !strncmp("fl", ptype+1, 2)))
-				continue;
+			}
 			// if this is the first record, do not print comma
 			if (comma)	bfill.emit_p(PSTR(","));
 			else {comma=1;}
@@ -2775,7 +2850,7 @@ void server_json_matter(OTF_PARAMS_DEF) {
 	             os.status.rain_delayed,
 	             os.iopts[IOPT_WATER_PERCENTAGE]);
 	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
-	bfill.emit_p(PSTR(",\"wterr\":$D"), wt_errCode);
+	bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D"), wt_errCode, wt_errReason);
 
 	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);
@@ -3281,28 +3356,40 @@ void server_update_upgrade(OTF_PARAMS_DEF) {
 	// or fu=firmware_url (ESP8266 direct update)
 	// When provided, build a synthetic manifest and cache it so the OTA task
 	// fetches the caller-specified binaries instead of the latest manifest.
-	char zu_buf[200] = {0};
-	char mu_buf[200] = {0};
-	char fu_buf[200] = {0};
-	char zs_buf[65]  = {0};  // zigbee sha256 (64 hex chars + NUL)
-	char ms_buf[65]  = {0};  // matter sha256
-	bool has_zu = findKeyVal(FKV_SOURCE, zu_buf, sizeof(zu_buf), PSTR("zu"), true) && zu_buf[0];
-	bool has_mu = findKeyVal(FKV_SOURCE, mu_buf, sizeof(mu_buf), PSTR("mu"), true) && mu_buf[0];
-	bool has_fu = findKeyVal(FKV_SOURCE, fu_buf, sizeof(fu_buf), PSTR("fu"), true) && fu_buf[0];
-	bool has_zs = findKeyVal(FKV_SOURCE, zs_buf, sizeof(zs_buf), PSTR("zs"), true) && strlen(zs_buf) == 64;
-	bool has_ms = findKeyVal(FKV_SOURCE, ms_buf, sizeof(ms_buf), PSTR("ms"), true) && strlen(ms_buf) == 64;
-	if (has_zu || has_mu || has_fu) {
-		OnlineUpdateManifest override_manifest = {};
-		strncpy(override_manifest.zigbee_url,
-			has_fu ? fu_buf : (has_zu ? zu_buf : ""),
-			sizeof(override_manifest.zigbee_url) - 1);
-		strncpy(override_manifest.matter_url,  has_mu ? mu_buf : "", sizeof(override_manifest.matter_url)  - 1);
-		if (has_zs) strncpy(override_manifest.zigbee_sha256, zs_buf, sizeof(override_manifest.zigbee_sha256) - 1);
-		if (has_ms) strncpy(override_manifest.matter_sha256, ms_buf, sizeof(override_manifest.matter_sha256) - 1);
-		override_manifest.fw_version = 0;  // not checked by the task
-		override_manifest.fw_minor   = 0;
-		override_manifest.valid      = (override_manifest.zigbee_url[0] != 0);
-		online_update_cache_manifest(override_manifest);
+	// NOTE: the parse buffers + OnlineUpdateManifest total ~1.8 KB. On ESP8266
+	// this handler runs deep in the WebSocket/OTF call chain where the 4 KB
+	// cont stack is already nearly full; keeping them on the stack overflows it
+	// and corrupts the cont context, triggering a __yield panic on the next
+	// yield(). Allocate the scratch space on the heap instead.
+	struct OtaOverrideScratch {
+		char zu_buf[200];
+		char mu_buf[200];
+		char fu_buf[200];
+		char zs_buf[65];   // zigbee sha256 (64 hex chars + NUL)
+		char ms_buf[65];   // matter sha256
+		OnlineUpdateManifest manifest;
+	};
+	OtaOverrideScratch* sc = new (std::nothrow) OtaOverrideScratch();
+	if (sc) {
+		memset(sc, 0, sizeof(*sc));
+		bool has_zu = findKeyVal(FKV_SOURCE, sc->zu_buf, sizeof(sc->zu_buf), PSTR("zu"), true) && sc->zu_buf[0];
+		bool has_mu = findKeyVal(FKV_SOURCE, sc->mu_buf, sizeof(sc->mu_buf), PSTR("mu"), true) && sc->mu_buf[0];
+		bool has_fu = findKeyVal(FKV_SOURCE, sc->fu_buf, sizeof(sc->fu_buf), PSTR("fu"), true) && sc->fu_buf[0];
+		bool has_zs = findKeyVal(FKV_SOURCE, sc->zs_buf, sizeof(sc->zs_buf), PSTR("zs"), true) && strlen(sc->zs_buf) == 64;
+		bool has_ms = findKeyVal(FKV_SOURCE, sc->ms_buf, sizeof(sc->ms_buf), PSTR("ms"), true) && strlen(sc->ms_buf) == 64;
+		if (has_zu || has_mu || has_fu) {
+			strncpy(sc->manifest.zigbee_url,
+				has_fu ? sc->fu_buf : (has_zu ? sc->zu_buf : ""),
+				sizeof(sc->manifest.zigbee_url) - 1);
+			strncpy(sc->manifest.matter_url, has_mu ? sc->mu_buf : "", sizeof(sc->manifest.matter_url) - 1);
+			if (has_zs) strncpy(sc->manifest.zigbee_sha256, sc->zs_buf, sizeof(sc->manifest.zigbee_sha256) - 1);
+			if (has_ms) strncpy(sc->manifest.matter_sha256, sc->ms_buf, sizeof(sc->manifest.matter_sha256) - 1);
+			sc->manifest.fw_version = 0;  // not checked by the task
+			sc->manifest.fw_minor   = 0;
+			sc->manifest.valid      = (sc->manifest.zigbee_url[0] != 0);
+			online_update_cache_manifest(sc->manifest);
+		}
+		delete sc;
 	}
 
 	// Optional variant override: vt=zigbee|matter — selects boot target after OTA
@@ -3634,6 +3721,7 @@ void server_backup_get(OTF_PARAMS_DEF) {
 		}
 	}
 	bfill.emit_p(PSTR("}"));
+	emit_monthly_water_backup_json(bfill);
 
 	// Close backup JSON
 	bfill.emit_p(PSTR("}"));
@@ -3670,8 +3758,9 @@ void server_backup_get(OTF_PARAMS_DEF) {
 	// Include string options (sopts)
 	bfill.emit_p(PSTR(",\"sopts\":{"));
 	bool first = true;
+	char *buf = (char*)malloc(MAX_SOPTS_SIZE + 1); // transient (was ~321 B static DRAM)
+	if (buf) {
 	for (int i = 0; i < NUM_SOPTS; i++) {
-		static PSRAM_BSS_ATTR char buf[MAX_SOPTS_SIZE + 1];
 		file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
 		buf[MAX_SOPTS_SIZE] = 0;
 		if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {
@@ -3694,7 +3783,10 @@ void server_backup_get(OTF_PARAMS_DEF) {
 			first = false;
 		}
 	}
+	free(buf);
+	}
 	bfill.emit_p(PSTR("}"));
+	emit_monthly_water_backup_json(bfill);
 
 	bfill.emit_p(PSTR("}"));
 	handle_return(HTML_OK);
@@ -3756,7 +3848,17 @@ void server_sensor_config(OTF_PARAMS_DEF)
 	uint type = strtoul(tmp_buffer, NULL, 0); // Sensor type
 
 	if (type == 0) {
-		sensor_delete(nr);
+		bool is_restore = false;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("restore"), true))
+			is_restore = strtoul(tmp_buffer, NULL, 0) > 0;
+
+		int dret = sensor_delete(nr, !is_restore);
+		if (dret == HTTP_RQT_SUCCESS && is_restore) {
+			// During restore batches multiple deletes arrive back-to-back. Defer
+			// persistence to the request-save path to avoid rewriting sensor.json
+			// for every single delete under tight flash/RAM conditions.
+			sensor_request_save();
+		}
 		handle_return(HTML_SUCCESS);
 	}
 
@@ -4011,7 +4113,7 @@ void sensorconfig_json(OTF_PARAMS_DEF) {
  * Checks if required interfaces (I2C/ASB, RS485, MQTT, Zigbee, BLE) are
  * available for the sensor types currently configured.
  */
-void emit_sensor_warnings() {
+void emit_sensor_warnings(bool mqtt_suspended_for_lowmem = false) {
 	bool has_asb = false, has_rs485 = false, has_mqtt = false;
 	bool has_zigbee = false, has_ble = false;
 	uint16_t detected = get_asb_detected_boards();
@@ -4053,7 +4155,12 @@ void emit_sensor_warnings() {
 
 	// MQTT sensor but MQTT not connected
 	if (has_mqtt) {
-		if (!os.mqtt.enabled()) {
+		// On ESP8266, /sl temporarily suspends MQTT to free heap; in that case
+		// _enabled/connected are transiently false, so skip the warnings here to
+		// avoid a bogus MQTT_DISABLED (MQTT is actually enabled/connected).
+		if (mqtt_suspended_for_lowmem) {
+			// MQTT known-enabled but suspended for this response: no warning.
+		} else if (!os.mqtt.enabled()) {
 			if (!first) bfill.emit_p(PSTR(","));
 			bfill.emit_p(PSTR("\"MQTT_DISABLED\""));
 			first = false;
@@ -4099,6 +4206,30 @@ void emit_sensor_warnings() {
 }
 
 /**
+ * @brief Focused weather summary (subset of /ja) for lightweight clients (MCP).
+ */
+void server_weather_summary(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+	char opt_buf[MAX_SOPTS_SIZE + 1];
+	os.sopt_load(SOPT_WEATHER_OPTS, opt_buf, MAX_SOPTS_SIZE);
+	normalize_json_object_fragment(opt_buf, sizeof(opt_buf));
+	bfill.emit_p(PSTR("{\"loc\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"wl\":$D,\"rd\":$D,\"wtdata\":"),
+				 SOPT_LOCATION, SOPT_WEATHERURL, opt_buf,
+				 os.iopts[IOPT_WATER_PERCENTAGE], os.status.rain_delayed);
+	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
+	bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D,\"wtrestr\":$D,\"sunrise\":$D,\"sunset\":$D}"),
+				 wt_errCode, wt_errReason, wt_restricted,
+				 os.nvdata.sunrise_time, os.nvdata.sunset_time);
+	handle_return(HTML_OK);
+}
+
+/**
  * sl
  * @brief Lists all sensors
  *
@@ -4117,16 +4248,8 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 	bool sl_suspended_services = false;
 #if defined(ESP8266)
 	// On ESP8266, /sl can run out of heap after long uptimes or large restores.
-	// Temporarily suspend optional subsystems to free memory for JSON generation.
-	if (freeMemory() < 8192) {
-		if (OSMqtt::enabled()) {
-			OSMqtt::suspend();
-			sl_suspended_services = true;
-		}
-		os.influxdb.suspend();
-		delay(5);
-		yield();
-	}
+	// Free the MQTT heap only (sensors stay live) to build the JSON response.
+	sl_suspended_services = free_tmp_memory_light();
 #endif
 
 	uint test = 0;
@@ -4157,7 +4280,7 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 		{
 		bfill.emit_p(PSTR("{\"count\":$D,"), sensor_count());
 		bfill.emit_p(PSTR("\"detected\":$D,"), get_asb_detected_boards());
-		emit_sensor_warnings();
+		emit_sensor_warnings(sl_suspended_services);
 		bfill.emit_p(PSTR("\"sensors\":["));
 		sensorconfig_json(OTF_PARAMS);
 		bfill.emit_p(PSTR("]"));
@@ -4167,86 +4290,17 @@ void server_sensor_list(OTF_PARAMS_DEF) {
 
 #if defined(ESP8266)
 	if (sl_suspended_services) {
-		OSMqtt::resume();
-		os.influxdb.resume();
+		restore_tmp_memory_light(sl_suspended_services);
 	}
 #endif
 	handle_return(HTML_OK);
 }
 
-/**
- * so
- * @brief output sensorlog
- *
- */
-void server_sensorlog_list(OTF_PARAMS_DEF) {
-#if defined(USE_OTF)
-	if(!process_password(OTF_PARAMS)) return;
-#else
-	char *p = get_buffer;
-#endif
-
-	DEBUG_PRINTLN(F("server_sensorlog_list"));
-
-	uint8_t log = LOG_STD;
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("log"), true)) // Log type 0=DAY 1=WEEK 2=MONTH
-		log = strtoul(tmp_buffer, NULL, 0);
-	if (log > LOG_MONTH)
-		log = LOG_STD;
-	ulong log_size = sensorlog_size(log);
-
-	//start / max:
-	ulong startAt = 0;
-	ulong maxResults = log_size;
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("start"), true)) // Log start
-		startAt = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("max"), true)) // Log Lines count
-		maxResults = strtoul(tmp_buffer, NULL, 0);
-
-	//Filters:
-	uint nr = 0;
-	uint type = 0;
-	ulong after = 0;
-	ulong before = 0;
-	ulong lastHours = 0;
-	bool isjson = true;
-	bool shortcsv = false;
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true)) // Filter log for sensor-nr
-		nr = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("type"), true)) // Filter log for sensor-type
-		type = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("after"), true)) // Filter time after
-		after = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("before"), true)) // Filter time before
-		before = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lasthours"), true)) // Filter last hours
-		lastHours = strtoul(tmp_buffer, NULL, 0);
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lastdays"), true)) // Filter last days
-		lastHours = strtoul(tmp_buffer, NULL, 0) * 24 + lastHours;
-
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("csv"), true)) { // Filter last days
-		int csv = atoi(tmp_buffer);
-		isjson = csv == 0;
-		shortcsv = csv == 2;
-	}
-
-#if defined(USE_OTF)
-	// as the log data can be large, we will use ESP8266's sendContent function to
-	// send multiple packets of data, instead of the standard way of using send().
-	rewind_ether_buffer();
-	if (isjson)	print_header(OTF_PARAMS); else print_header_download(OTF_PARAMS);
-#else
-	if (isjson)	print_header(); else print_header_download();
-#endif
-
+/** Shared sensor-log emitter used by /so and the MCP get_sensor_chart_data tool.
+ *  Emits header + entries + footer into bfill (chunked via send_packet). */
+void server_sensorlog_emit(OTF_PARAMS_DEF, uint8_t log, ulong log_size, ulong startAt,
+						   ulong maxResults, uint nr, uint type, ulong after, ulong before,
+						   ulong lastHours, bool isjson, bool shortcsv) {
 	if (isjson) {
 		bfill.emit_p(PSTR("{\"logtype\":$D,\"logsize\":$D,\"filesize\":$D,\"log\":["),
 			log, log_size, sensorlog_filesize(log));
@@ -4325,9 +4379,20 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 			if (before && sensorlog[i].time >= before)
 				continue;
 
+			// Refresh cached sensor for this entry's nr (needed for the barrier
+			// check as well as the type/unit output below).
+			if (!sensor || sensor->nr != sensorlog[i].nr)
+				sensor = sensor_by_nr(sensorlog[i].nr);
+
+			// Temporal barrier: hide log entries older than the sensor's creation
+			// date so a re-created sensor re-using a freed nr does not surface the
+			// previous sensor's leftover entries (log_barrier==0 -> existing
+			// sensor -> unlimited; a 0 timestamp is never filtered).
+			if (sensor && sensor->log_barrier && sensorlog[i].time &&
+			    sensorlog[i].time < sensor->log_barrier)
+				continue;
+
 			if (!shortcsv || type) {
-				if (!sensor || sensor->nr != sensorlog[i].nr)
-					sensor = sensor_by_nr(sensorlog[i].nr);
 				sensor_type = sensor?sensor->type:0;
 				if (type && sensor_type != type)
 					continue;
@@ -4381,8 +4446,86 @@ void server_sensorlog_list(OTF_PARAMS_DEF) {
 	else
 		bfill.emit_p(PSTR("\r\n"));
 	free(sensorlog);
+#undef BLOCKSIZE
 
 	DEBUG_PRINTLN(F("finish so"));
+}
+
+/**
+ * so
+ * @brief output sensorlog
+ *
+ */
+void server_sensorlog_list(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+#endif
+
+	DEBUG_PRINTLN(F("server_sensorlog_list"));
+
+	uint8_t log = LOG_STD;
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("log"), true)) // Log type 0=DAY 1=WEEK 2=MONTH
+		log = strtoul(tmp_buffer, NULL, 0);
+	if (log > LOG_MONTH)
+		log = LOG_STD;
+	ulong log_size = sensorlog_size(log);
+
+	//start / max:
+	ulong startAt = 0;
+	ulong maxResults = log_size;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("start"), true)) // Log start
+		startAt = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("max"), true)) // Log Lines count
+		maxResults = strtoul(tmp_buffer, NULL, 0);
+
+	//Filters:
+	uint nr = 0;
+	uint type = 0;
+	ulong after = 0;
+	ulong before = 0;
+	ulong lastHours = 0;
+	bool isjson = true;
+	bool shortcsv = false;
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true)) // Filter log for sensor-nr
+		nr = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("type"), true)) // Filter log for sensor-type
+		type = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("after"), true)) // Filter time after
+		after = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("before"), true)) // Filter time before
+		before = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lasthours"), true)) // Filter last hours
+		lastHours = strtoul(tmp_buffer, NULL, 0);
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lastdays"), true)) // Filter last days
+		lastHours = strtoul(tmp_buffer, NULL, 0) * 24 + lastHours;
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("csv"), true)) { // Filter last days
+		int csv = atoi(tmp_buffer);
+		isjson = csv == 0;
+		shortcsv = csv == 2;
+	}
+
+#if defined(USE_OTF)
+	// as the log data can be large, we will use ESP8266's sendContent function to
+	// send multiple packets of data, instead of the standard way of using send().
+	rewind_ether_buffer();
+	if (isjson)	print_header(OTF_PARAMS); else print_header_download(OTF_PARAMS);
+#else
+	if (isjson)	print_header(); else print_header_download();
+#endif
+
+	server_sensorlog_emit(OTF_PARAMS, log, log_size, startAt, maxResults,
+						  nr, type, after, before, lastHours, isjson, shortcsv);
 
 	handle_return(HTML_OK);
 }
@@ -4544,6 +4687,11 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 		#endif
 			bfill.emit_p(PSTR("{\"id\":$L,\"nickname\":\"$S\",\"scientific_name\":\"$S\",\"thumb\":\"$S\"}"),
 				id, nickname.c_str(), scientific_name.c_str(), thumb.c_str());
+			// Stream partial output so a long plant list cannot overflow (and
+			// truncate) the fixed ether buffer, which would yield invalid JSON.
+			if (available_ether_buffer() <= 0) {
+				send_packet(OTF_PARAMS);
+			}
 		}
 	}
 	bfill.emit_p(PSTR("]}"));
@@ -4698,6 +4846,31 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 
 	DEBUG_PRINTLN(F("server_monitor_config"));
 
+	// Parse HH:MM / HHMM into monitor TIME format (HHMM). Accept 24:00 as a
+	// valid day-end marker, reject any other out-of-range values.
+	auto parse_hhmm = [](const char *s, uint16_t *out) -> bool {
+		if (!s || !*s || !out) return false;
+		int h = 0;
+		int m = 0;
+		const char *colon = strchr(s, ':');
+		if (colon) {
+			h = (int)strtoul(s, NULL, 10);
+			m = (int)strtoul(colon + 1, NULL, 10);
+		} else {
+			unsigned long raw = strtoul(s, NULL, 10);
+			h = (int)(raw / 100UL);
+			m = (int)(raw % 100UL);
+		}
+
+		if (h == 24 && m == 0) {
+			*out = 2400;
+			return true;
+		}
+		if (h < 0 || h > 23 || m < 0 || m > 59) return false;
+		*out = (uint16_t)(h * 100 + m);
+		return true;
+	};
+
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("nr"), true))
 		handle_return(HTML_DATA_MISSING);
 	uint16_t nr = strtoul(tmp_buffer, NULL, 0); // Adjustment nr
@@ -4792,20 +4965,10 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	uint16_t time_to = 2400;
 	uint8_t wdays = 0xFF;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("from"), true)) { //Format: HHMM or HH:MM
-		const char* colon = strchr(tmp_buffer, ':');
-		if (colon) {
-			time_from = strtoul(tmp_buffer, NULL, 10) * 100 + strtoul(colon + 1, NULL, 10);
-		} else {
-			time_from = strtoul(tmp_buffer, NULL, 10);
-		}
+		if (!parse_hhmm(tmp_buffer, &time_from)) handle_return(HTML_DATA_FORMATERROR);
 	}
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("to"), true)) { //Format: HHMM or HH:MM
-		const char* colon = strchr(tmp_buffer, ':');
-		if (colon) {
-			time_to = strtoul(tmp_buffer, NULL, 10) * 100 + strtoul(colon + 1, NULL, 10);
-		} else {
-			time_to = strtoul(tmp_buffer, NULL, 10);
-		}
+		if (!parse_hhmm(tmp_buffer, &time_to)) handle_return(HTML_DATA_FORMATERROR);
 	}
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wdays"), true)) //0=Monday
 		wdays = strtoul(tmp_buffer, NULL, 0);
@@ -4957,7 +5120,7 @@ void monitorconfig_json(Monitor_t *mon) {
 				mon->zone);
 	// Emit the name JSON-escaped so special characters (backslash, quote, …) do
 	// not produce invalid JSON that breaks the UI/app monitor list (#263).
-	bfill_emit_json_escaped_monitor_name(mon->name);
+	bfill_emit_json_escaped_monitor_name(mon->getName());
 	bfill.emit_p(PSTR("\",\"maxrun\":$L,\"prio\":$D,\"active\":$D,\"time\":$L,\"rs\":$L,\"ts\":$L,\"om\":$D,\"stt\":$L,\"fsa\":$D,\"order\":$D,\"show\":$D,"),
 				mon->maxRuntime,
 				mon->prio,
@@ -5555,6 +5718,32 @@ void restore_tmp_memory(size_t needed) {
 #endif
 }
 
+// Lightweight variant for read-only endpoints (/sl): only frees the MQTT client
+// heap (~7 KB on ESP8266) under memory pressure. Unlike free_tmp_memory() it does
+// NOT save+release the sensor subsystem, so there is no flash I/O or sensor
+// re-init cost per request. InfluxDB is stateless (holds no heap) and needs no
+// suspend. Returns true if MQTT was suspended (caller must restore it).
+bool free_tmp_memory_light() {
+#if defined(ESP8266)
+	if (freeMemory() >= 8192) return false;
+	if (!OSMqtt::enabled()) return false;
+	OSMqtt::suspend();
+	delay(5);
+	yield();
+	return true;
+#else
+	return false;
+#endif
+}
+
+void restore_tmp_memory_light(bool was_suspended) {
+#if defined(ESP8266)
+	if (was_suspended) OSMqtt::resume();
+#else
+	(void)was_suspended;
+#endif
+}
+
 /**
  * sf
  * List supported sensor types
@@ -5609,6 +5798,7 @@ void server_sensor_types(OTF_PARAMS_DEF) {
  * Monthly water usage data
  * Command: /jw
  * Returns JSON: {"pr":pulse_rate_100, "pd":pulse_divisor, "curr":{"ym":X,"flow":X}, "records":[{"ym":X,"flow":X},...]}
+ * If the optional `mwater` parameter is present, restore that payload instead.
  */
 void server_json_water(OTF_PARAMS_DEF) {
 #if defined(USE_OTF)
@@ -5620,10 +5810,43 @@ void server_json_water(OTF_PARAMS_DEF) {
 	print_header();
 #endif
 
-	uint16_t pulse_rate = os.get_flow_pulse_rate_100();
-	uint16_t pulse_div = os.get_flow_pulse_divisor();
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("mwater"), true)) {
+		urlDecodeAndUnescape(tmp_buffer);
+		JsonDocument doc;
+		DeserializationError error = deserializeJson(doc, tmp_buffer);
+		if (error || !doc.is<JsonObject>()) {
+			handle_return(HTML_DATA_MISSING);
+		}
+
+		JsonObject obj = doc.as<JsonObject>();
+		JsonObject curr = obj["curr"] | JsonObject();
+		JsonArray records = obj["records"] | JsonArray();
+		const uint16_t MIN_VALID_YM = (uint16_t)(2020U * 12U);
+
+		memset(&os.mwdata, 0, sizeof(os.mwdata));
+		os.mwdata.curr_ym = curr["ym"] | 0;
+		os.mwdata.curr_flow = curr["flow"] | 0;
+		if (os.mwdata.curr_ym != 0 && os.mwdata.curr_ym < MIN_VALID_YM) {
+			os.mwdata.curr_ym = 0;
+		}
+
+		uint8_t n = 0;
+		for (JsonVariantConst rec : records) {
+			if (n >= MONTHLY_WATER_NMONTHS) break;
+			uint16_t ym = rec["ym"] | 0;
+			if (ym < MIN_VALID_YM) continue;
+			os.mwdata.records[n].ym = ym;
+			os.mwdata.records[n].flow_count = rec["flow"] | 0;
+			n++;
+		}
+		os.mwdata.nrecords = n;
+		os.mwdata_save();
+		bfill.emit_p(PSTR("{\"result\":1}"));
+		handle_return(HTML_OK);
+	}
+
 	bfill.emit_p(PSTR("{\"pr\":$D,\"pd\":$D,\"curr\":{\"ym\":$D,\"flow\":$L},\"records\":["),
-		pulse_rate, pulse_div, os.mwdata.curr_ym, (unsigned long)os.mwdata.curr_flow);
+		os.get_flow_pulse_rate_100(), os.get_flow_pulse_divisor(), os.mwdata.curr_ym, (unsigned long)os.mwdata.curr_flow);
 
 	for(uint8_t i = 0; i < os.mwdata.nrecords; i++) {
 		if(i) bfill.emit_p(PSTR(","));
@@ -5922,6 +6145,145 @@ void server_sensorconfig_backup(OTF_PARAMS_DEF) {
 	send_packet(OTF_PARAMS);
 
 	handle_return(HTML_OK);
+}
+
+// Maximum size of the universal app/UI config store (JSON object). Keeps the
+// blob small enough to serve in a single response and to bound flash use.
+#define APP_CONFIG_MAX_SIZE 2048
+
+/**
+ * ap
+ * Universal, forward-compatible app/UI config store — return the stored JSON
+ * object as-is (or an empty object if nothing has been saved yet). The device
+ * treats the content opaquely: any keys the UI/HTTP client defines are kept.
+ */
+void server_app_config_get(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	char *p = get_buffer;
+	(void)p;
+	print_header();
+#endif
+
+	ulong sz = file_exists(APP_CONFIG_FILENAME) ? file_size(APP_CONFIG_FILENAME) : 0;
+	if (sz == 0 || sz > APP_CONFIG_MAX_SIZE) {
+		bfill.emit_p(PSTR("{}"));
+		handle_return(HTML_OK);
+	}
+
+	// Stream the file in chunks so it never overflows the output buffer.
+	ulong pos = 0;
+	char chunk[257];
+	while (pos < sz) {
+		ulong n = (sz - pos) < (sizeof(chunk) - 1) ? (sz - pos) : (sizeof(chunk) - 1);
+		file_read_block(APP_CONFIG_FILENAME, chunk, pos, n);
+		chunk[n] = 0;
+		bfill.emit_p(PSTR("$S"), chunk);
+		send_packet(OTF_PARAMS);
+		pos += n;
+	}
+	handle_return(HTML_OK);
+}
+
+/**
+ * au
+ * Update the universal app/UI config store. Accepts a JSON object in the
+ * `json` parameter that is MERGED into the stored object: existing keys are
+ * overwritten, a key whose value is null is removed. `reset=1` clears the whole
+ * store. This is intentionally schema-less so new UI/HTTP settings (e.g. 24h
+ * clock, AI off, hidden panels, sort order, …) need no firmware change.
+ */
+void server_app_config_set(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+#else
+	char *p = get_buffer;
+	(void)p;
+#endif
+
+	// Full reset clears the store.
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("reset"), true) &&
+	    strtoul(tmp_buffer, NULL, 0) > 0) {
+		if (file_exists(APP_CONFIG_FILENAME)) remove_file(APP_CONFIG_FILENAME);
+		handle_return(HTML_SUCCESS);
+	}
+
+	char *jbuf = (char*)malloc(APP_CONFIG_MAX_SIZE);
+	if (!jbuf) handle_return(HTML_DATA_MISSING);
+
+	if (!findKeyVal(FKV_SOURCE, jbuf, APP_CONFIG_MAX_SIZE, PSTR("json"), true)) {
+		free(jbuf);
+		handle_return(HTML_DATA_MISSING);
+	}
+	urlDecodeAndUnescape(jbuf);
+
+	JsonDocument *incoming = new (std::nothrow) JsonDocument();
+	if (!incoming) { free(jbuf); handle_return(HTML_DATA_MISSING); }
+	if (deserializeJson(*incoming, jbuf) != DeserializationError::Ok || !incoming->is<JsonObject>()) {
+		delete incoming;
+		free(jbuf);
+		handle_return(HTML_DATA_FORMATERROR);
+	}
+	free(jbuf);
+
+	// Load the existing store (start empty if missing/corrupt).
+	JsonDocument *store = new (std::nothrow) JsonDocument();
+	if (!store) { delete incoming; handle_return(HTML_DATA_MISSING); }
+
+	ulong sz = file_exists(APP_CONFIG_FILENAME) ? file_size(APP_CONFIG_FILENAME) : 0;
+	if (sz > 0 && sz <= APP_CONFIG_MAX_SIZE) {
+		char *existing = (char*)malloc(sz + 1);
+		if (existing) {
+			file_read_block(APP_CONFIG_FILENAME, existing, 0, sz);
+			existing[sz] = 0;
+			if (deserializeJson(*store, existing) != DeserializationError::Ok || !store->is<JsonObject>()) {
+				store->clear();
+			}
+			free(existing);
+		}
+	}
+	if (!store->is<JsonObject>()) store->to<JsonObject>();
+
+	// Merge: null value removes a key, any other value overwrites/adds it.
+	JsonObject root = store->as<JsonObject>();
+	for (JsonPairConst kv : incoming->as<JsonObjectConst>()) {
+		if (kv.value().isNull()) {
+			root.remove(kv.key());
+		} else {
+			root[kv.key()] = kv.value();
+		}
+	}
+	delete incoming;
+
+	if (store->overflowed()) { delete store; handle_return(HTML_NOT_ENOUGH_SPACE); }
+
+	char *out = (char*)malloc(APP_CONFIG_MAX_SIZE);
+	if (!out) { delete store; handle_return(HTML_DATA_MISSING); }
+	size_t len = serializeJson(*store, out, APP_CONFIG_MAX_SIZE);
+	delete store;
+	if (len < 2 || len >= APP_CONFIG_MAX_SIZE) { free(out); handle_return(HTML_NOT_ENOUGH_SPACE); }
+
+	ensureConfigSpace();  // config takes priority over old logs on a full FS
+
+	// Atomic write: temp file first, validate size, then swap in.
+	const char *tmpfile = APP_CONFIG_FILENAME ".tmp";
+	if (file_exists(tmpfile)) remove_file(tmpfile);
+	file_write_block(tmpfile, out, 0, len);
+	free(out);
+	if (file_size(tmpfile) != (ulong)len) {
+		remove_file(tmpfile);
+		handle_return(HTML_NOT_ENOUGH_SPACE);
+	}
+	if (file_exists(APP_CONFIG_FILENAME)) remove_file(APP_CONFIG_FILENAME);
+	if (!rename_file(tmpfile, APP_CONFIG_FILENAME)) {
+		remove_file(tmpfile);
+		handle_return(HTML_DATA_MISSING);
+	}
+
+	handle_return(HTML_SUCCESS);
 }
 
 /**
@@ -6331,7 +6693,7 @@ void server_zigbee_status(OTF_PARAMS_DEF) {
 	             os.status.rain_delayed,
 	             os.iopts[IOPT_WATER_PERCENTAGE]);
 	emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
-	bfill.emit_p(PSTR(",\"wterr\":$D"), wt_errCode);
+	bfill.emit_p(PSTR(",\"wterr\":$D,\"wtreason\":$D"), wt_errCode, wt_errReason);
 
 	bfill.emit_p(PSTR("}"));
 	send_packet(OTF_PARAMS);
@@ -6482,7 +6844,7 @@ static const char* zigbee_logical_kind_reg(const ZigBeeLogicalDevice& dev) {
 	}
 }
 
-static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
+static void emit_zigbee_logical_devices(OTF_PARAMS_DEF, uint64_t ieee_addr) {
 	bfill.emit_p(PSTR("\"logical_devices\":["));
 	bool first = true;
 	char ieee_str[17];
@@ -6518,6 +6880,11 @@ static void emit_zigbee_logical_devices(uint64_t ieee_addr) {
 			             (int)dev.factor,
 			             (int)dev.divider,
 			             (int)dev.offset);
+			// Flush partial response so a device with many logical entries
+			// cannot overflow (and truncate) the fixed ether buffer.
+			if (available_ether_buffer() <= 0) {
+				send_packet(OTF_PARAMS);
+			}
 		}
 	}
 	bfill.emit_p(PSTR("]"));
@@ -6766,6 +7133,29 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 		send_packet(OTF_PARAMS);
 		handle_return(HTML_OK);
 
+	} else if (strcmp(action, "clear_identity") == 0) {
+		// Clear cached identity (manufacturer/model/logical devices) WITHOUT a
+		// physical leave/rejoin — repairs a cross-contaminated manufacturer.
+		char ieee_str[24] = "";
+		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"missing ieee parameter\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		uint64_t addr = ZigbeeSensor::parseIeeeAddress(ieee_str);
+		if (addr == 0) {
+			bfill.emit_p(PSTR("{\"result\":0,\"error\":\"invalid ieee address\"}"));
+			send_packet(OTF_PARAMS);
+			handle_return(HTML_OK);
+			return;
+		}
+		bool ok = sensor_zigbee_gw_clear_device_identity(addr);
+		bfill.emit_p(PSTR("{\"result\":$D,\"action\":\"clear_identity\",\"ieee\":\"$S\",\"message\":\"$S\"}"),
+		             ok ? 1 : 0, ieee_str, ok ? "Device identity cleared; will re-identify" : "Device not found");
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+
 	} else if (strcmp(action, "rename") == 0) {
 		char ieee_str[24] = "";
 		if (!findKeyVal(FKV_SOURCE, ieee_str, sizeof(ieee_str), PSTR("ieee"), true) || !ieee_str[0]) {
@@ -6958,9 +7348,27 @@ void server_zigbee_gw_manage(OTF_PARAMS_DEF) {
 				             (int)devices[i].lqi,
 				             devices[i].friendly_name,
 				             devices[i].is_custom_name ? 1 : 0);
-				emit_zigbee_logical_devices(devices[i].ieee_addr);
+				// Status lamp fields: wall-clock last-seen age (survives reboots).
+				{
+					uint32_t now_unix = (uint32_t)os.now_tz();
+					bool time_ok = now_unix > 1704067200UL;
+					unsigned long last_rx_s = 4294967295UL; // sentinel: unknown
+					if (devices[i].last_seen > 0 && time_ok && now_unix >= devices[i].last_seen) {
+						last_rx_s = now_unix - devices[i].last_seen;
+					}
+					int online = (last_rx_s < 15UL * 60UL) ? 1 : 0;
+					bfill.emit_p(PSTR("\"last_seen\":$L,\"last_rx_s\":$L,\"online\":$D,"),
+					             (unsigned long)devices[i].last_seen, last_rx_s, online);
+				}
+				emit_zigbee_logical_devices(OTF_PARAMS, devices[i].ieee_addr);
 				bfill.emit_p(PSTR("}"));
 				out_count++;
+				// Stream partial output so a long device list cannot overflow
+				// (and truncate) the fixed ether buffer, which would yield
+				// invalid JSON and a "connection error" in the app.
+				if (available_ether_buffer() <= 0) {
+					send_packet(OTF_PARAMS);
+				}
 			}
 			bfill.emit_p(PSTR("],\"count\":$D,\"channel\":$D,\"configured_channel\":$D,\"use_eth\":$D}"), out_count, (int)sensor_zigbee_gw_get_channel(), (int)sensor_zigbee_gw_get_configured_channel(), useEth ? 1 : 0);
 			delete[] devices;
@@ -7035,7 +7443,7 @@ void server_zigbee_discovered_devices(OTF_PARAMS_DEF) {
 			             (int)devices[i].lqi,
 			             devices[i].friendly_name,
 			             devices[i].is_custom_name ? 1 : 0);
-			emit_zigbee_logical_devices(devices[i].ieee_addr);
+			emit_zigbee_logical_devices(OTF_PARAMS, devices[i].ieee_addr);
 			bfill.emit_p(PSTR("}"));
 			send_packet(OTF_PARAMS);
 			out_count++;
@@ -7205,6 +7613,11 @@ void server_ble_discovered_devices(OTF_PARAMS_DEF) {
 		             mfr,
 		             mdl,
 		             devices[i].has_adv_data ? devices[i].adv_battery : 0);
+		// Stream partial output so a long device list cannot overflow (and
+		// truncate) the fixed ether buffer, which would yield invalid JSON.
+		if (available_ether_buffer() <= 0) {
+			send_packet(OTF_PARAMS);
+		}
 	}
 
 	bfill.emit_p(PSTR("],\"count\":$D}"), count);
@@ -7315,6 +7728,8 @@ const char _url_keys[] PROGMEM =
     "dg"
 	"is"
 	"ig"
+	"ap"  // universal app/UI config store: get JSON
+	"au"  // universal app/UI config store: merge/update JSON
 	"mc"
 	"ml"
 	"mt"
@@ -7422,6 +7837,8 @@ URLHandler urls[] = {
 	server_json_debug_log,  // dg
 	server_influx_set,// is
 	server_influx_get,// ig
+	server_app_config_get,// ap
+	server_app_config_set,// au
 	server_monitor_config, // mc
 	server_monitor_list, // ml
 	server_monitor_types, // mt
@@ -7526,6 +7943,10 @@ void on_firmware_update(OTF_PARAMS_DEF) {
 // Accepted slot args from UI/client: ota0|ota1 (preferred), zigbee|matter (legacy).
 static String s_ota_slot;
 
+// Captures the submitted password from the multipart upload request so the
+// completion callback can still verify auth after the upload body has been parsed.
+static String s_ota_password;
+
 // Tracks whether we suspended MQTT (to free RAM / stop WiFi contention) at the
 // start of a firmware upload so it is only resumed when the update is aborted or
 // fails (a successful update reboots the device). See on_firmware_upload().
@@ -7559,9 +7980,22 @@ static String normalize_ota_slot_arg(const String& slotArgRaw) {
 }
 
 void on_firmware_upload_fin() {
+	String submitted_pw = s_ota_password;
+	if (submitted_pw.length() == 0 && update_server->hasArg("pw")) {
+		submitted_pw = update_server->arg("pw");
+	}
+	DEBUG_PRINTF("[OTA] auth check: saved_pw_len=%u has_arg_pw=%d pw_len=%u\n",
+		(unsigned int)s_ota_password.length(), update_server->hasArg("pw"), (unsigned int)submitted_pw.length());
+	if (update_server->args() > 0) {
+		for (int i = 0; i < update_server->args(); ++i) {
+			DEBUG_PRINTF("[OTA] arg[%d] name='%s' value='%s'\n", i,
+				update_server->argName(i).c_str(), update_server->arg(i).c_str());
+		}
+	}
+
 	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
 		// don't check password
-	} else if(!(update_server->hasArg("pw") && os.password_verify(update_server->arg("pw").c_str()))) {
+	} else if(!(submitted_pw.length() > 0 && os.password_verify(submitted_pw.c_str()))) {
 		update_server_send_result(HTML_UNAUTHORIZED);
 #if defined(ESP32C5)
 		if (s_esp_ota_running) {
@@ -7572,6 +8006,8 @@ void on_firmware_upload_fin() {
 		Update.end(false);
 #endif
 		ota_resume_services();
+		s_ota_password.clear();
+		s_ota_slot.clear();
 		return;
 	}
 
@@ -7613,6 +8049,8 @@ void on_firmware_upload_fin() {
 	}
 #endif
 
+	s_ota_password.clear();
+	s_ota_slot.clear();
 	update_server_send_result(HTML_SUCCESS);
 	delay(1000); // so the UI has time to receive the success code
 	os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
@@ -7641,22 +8079,24 @@ void on_firmware_upload() {
 	HTTPUpload& upload = update_server->upload();
 	if(upload.status == UPLOAD_FILE_START){
 #if !defined(ESP32C5)
-		if(os.iopts[IOPT_WIFI_MODE]==WIFI_MODE_STA) {
-			// Free RAM and stop network contention before flashing. On the
-			// memory-tight ESP8266 an active MQTT client (PubSubClient buffer +
-			// WiFiClient, ~7 KB) competing for the WiFi radio made the FIRST
-			// upload attempt stall while a later retry succeeded (ticket 305).
-			// Suspend MQTT (frees heap) and close UDP sockets (NTP/mDNS). resume()
-			// is deferred to the main loop and only runs if the update is
-			// aborted/failed; a successful update reboots the device.
-			if (OSMqtt::enabled()) {
-				OSMqtt::suspend();
-				s_ota_services_suspended = true;
-			}
-#if defined(ESP8266)
-			WiFiUDP::stopAll();
-#endif
+		// Free RAM and stop network contention before flashing. On the
+		// memory-tight ESP8266 an active MQTT client (PubSubClient buffer +
+		// WiFiClient, ~7 KB) competing for the network made the FIRST upload
+		// attempt stall while a later retry succeeded (ticket 305). On wired
+		// (W5500 TOE) units this was originally gated behind WIFI_MODE_STA and
+		// therefore skipped, so MQTT/sensors kept running during the flash write
+		// and made the OTA upload flaky (random "aborted"/hang mid-transfer).
+		// Free the RAM regardless of WiFi vs Ethernet. Suspend MQTT (frees heap)
+		// and close UDP sockets (NTP/mDNS). resume() is deferred to the main loop
+		// and only runs if the update is aborted/failed; a successful update
+		// reboots the device.
+		if (OSMqtt::enabled()) {
+			OSMqtt::suspend();
+			s_ota_services_suspended = true;
 		}
+#if defined(ESP8266)
+		WiFiUDP::stopAll();
+#endif
 #endif
 		DEBUG_PRINT(F("upload: "));
 		DEBUG_PRINTLN(upload.filename);
@@ -7664,6 +8104,7 @@ void on_firmware_upload() {
 		// Preferred values: ota0|ota1. Legacy values: zigbee|matter.
 		String slotArg = update_server->hasArg("slot") ? update_server->arg("slot") : "";
 		s_ota_slot = normalize_ota_slot_arg(slotArg);
+		s_ota_password = update_server->hasArg("pw") ? update_server->arg("pw") : "";
 #if defined(ESP32C5)
 		// On the dual-OTA ESP32-C5 board, target explicit OTA slots:
 		// ota0 -> zigbee partition @ 0x10000

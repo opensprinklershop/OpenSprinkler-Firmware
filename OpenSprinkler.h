@@ -449,6 +449,9 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static unsigned char start_network();  // initialize network with the given mac and port
 	static unsigned char start_ether();  // initialize ethernet with the given mac and port
 	static bool network_connected();  // check if the network is up
+#if defined(ARDUINO)
+	static bool resolve_host(const char* host, IPAddress& ip);  // DNS lookup helper (ARDUINO only)
+#endif
 	static bool load_hardware_mac(unsigned char* buffer, bool wired=false);  // read hardware mac address
 	static time_os_t now_tz();
 	// -- station names and attributes
@@ -578,7 +581,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static void apply_all_station_bits(void (*post_activation_callback)()=NULL); // apply all station bits (activate/deactive values)
 
 	static int8_t send_http_request(uint32_t ip4, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
-	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
+	static int8_t send_http_request(const char* server, uint16_t port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true, uint16_t resp_buf_size=0);
 	static int8_t send_http_request(char* server_with_port, char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=5000, bool expect_response=true);
 	static int8_t send_http_request_async(const char* server, uint16_t port, const char* p, void(*callback)(char*)=NULL, bool usessl=false, uint16_t timeout=12000, bool expect_response=true);
 	static void process_async_http_requests();

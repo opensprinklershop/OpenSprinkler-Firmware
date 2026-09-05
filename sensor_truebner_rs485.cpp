@@ -163,7 +163,11 @@ int TruebnerRS485Sensor::setAddress(uint8_t new_address) {
   if (Wire.available()) {
     delay(10);
     uint8_t modbus_address = Wire.read();
-    if (modbus_address == new_address) return HTTP_RQT_SUCCESS;
+    if (modbus_address == new_address) {
+      this->id = new_address;
+      sensor_save();
+      return HTTP_RQT_SUCCESS;
+    }
   }
   return HTTP_RQT_NOT_RECEIVED;
 }

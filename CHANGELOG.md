@@ -6,6 +6,87 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(227)] — veröffentlicht 2026-08-22
+
+### Added
+- **OTF/Netzwerk**: Unterstützung für TLS-Verschlüsselung bei Cloud-Verbindungen (OTC) über Port 443 hinzugefügt und Push-URL aktualisiert.
+- **Stationsnamen**: Stationsnamen (Zonen) können nun Leerzeichen enthalten, da ein historischer Fehler bei der Verarbeitung behoben ist.
+
+### Changed
+- **RS485-Sensoren**: Verbesserte Bus-Zuteilung und zuverlässigere Erkennung des SC16IS752-Chips. Bei erfolgreicher Adressänderung wird die konfigurierte ID jetzt gespeichert.
+- **OTA/Zigbee**: Während eines Firmware-Uploads werden Hintergrunddienste nun bei allen Verbindungstypen pausiert, um Ressourcen zu schonen; konsumierte Zigbee-Report-Slots werden freigegeben.
+- **OTA/Speicher**: Der OTA-Update-Prozess für ESP8266 wurde überarbeitet, um Stack-Overflows und Out-of-Memory-Fehler (OOM) zu vermeiden. ACME- und BLE-Puffer auf ESP32 wurden in den PSRAM verlagert, um internen Speicher zu sparen.
+- **Zigbee**: Bei allen Tuya-Befehlen wird nun standardmäßig eine Bestätigungsantwort (Default Response) gesendet, um Netzwerk-Flutungen durch wiederholte Anfragen der Endgeräte zu verhindern. Zudem werden "Active/MCU"-Reports jetzt unterstützt.
+- **Monitore**: Periodische Sensor-Aufgaben und die Auswertung von Monitoren wurden an den Anfang der Leseschleife verschoben, was zu einer schnelleren und korrekteren Verarbeitung führt.
+
+### Fixed
+- **Monitore**: Initialisierungsfehler (Init Bug) bei den Monitoren behoben.
+- **App/UI (Geräte-Fallback)**: Behebt einen schwarzen Bildschirm bzw. ein Einfrieren beim Zurückkehren aus der Analog-Sensor-Konfiguration unter Android.
+
+## [2.4.0(226)] — veröffentlicht 2026-08-15
+
+### Added
+- **Vollständiges Zigbee-Toolset im MCP-Server**: Der MCP-Server (`tools/mcp-server`) bietet nun ein komplettes Set an Zigbee-Werkzeugen, mit denen KI-Assistenten die am Gateway angebundenen Zigbee-Geräte abfragen und verwalten können (u. a. Geräteliste, Pairing/Join und logische Geräte).
+
+### Changed
+- **Speicheroptimierung (DRAM/Stack) durch dynamische Sensor-Eigenschaften und transiente Puffer**: Sensor-Eigenschaften werden nun bedarfsgerecht dynamisch verwaltet, und zahlreiche zuvor statisch reservierte Puffer (u. a. für Sensor-, E-Mail- und Konfigurationsverarbeitung) werden nur noch temporär (transient) alloziert. Das senkt den dauerhaften DRAM- und Stack-Verbrauch spürbar und verschafft besonders den RAM-knappen Boards (ESP32-C5, ESP8266) mehr freien Speicher im laufenden Betrieb.
+- **Entprelltes Speichern (Debounce)**: Häufige Konfigurationsschreibvorgänge werden zusammengefasst, um Flash-Schreiblast und kurzzeitige Speicherspitzen zu reduzieren.
+- **Zustandsloser InfluxDB-Writer**: Die InfluxDB-Anbindung wurde auf einen zustandslosen Writer umgestellt, der keine langlebigen Puffer mehr vorhält. Das reduziert den Speicherbedarf und macht die Datenübertragung robuster.
+- **ESP8266-Heap-Optimierung**: Reduzierter Speicherbedarf auf dem ESP8266 sowie zusätzliche Heap-/Cont-Stack-Diagnose.
+- **Zuverlässigeres Zigbee-Pairing**: Der Kopplungsvorgang am Zigbee-Gateway wurde robuster gestaltet.
+
+### Fixed
+- **Monitor-Min/Max-Prüfung korrigiert**: Die Schwellenwertauswertung von Min-/Max-Monitoren war fehlerhaft und wurde korrigiert.
+- **Monitor-Zonen-Reaktivierung korrigiert**: Eine zeitgesteuerte Monitor-Aktion, die eine Zone erneut aktivieren soll, greift nun wieder zuverlässig.
+- **Backup/Restore: Speichermangel (OOM) behoben**: Das Wiederherstellen großer Konfigurationen scheiterte auf RAM-knappen Geräten an Speichermangel; dank der transienten Pufferverwaltung läuft der Restore nun mit deutlich geringerem Spitzenspeicher durch.
+
+---
+
+## [2.4.0(225)] — veröffentlicht 2026-08-13
+
+### Added
+- **Detaillierte Wetter-Diagnosegründe (`wtreason`) inkl. DNS-Vorabprüfung**: Zusätzlich zum bisherigen `wt_errCode` liefert die Firmware jetzt einen zweiten Diagnosewert `wt_errReason` (Feld `"wtreason"`, ausgegeben in `/jc`, Matter- und Zigbee-Status), der bei **jedem** Fehlschlag gesetzt wird und erklärt, *warum* der Wetterdienst „Fehler" meldet: kein Netz, wenig Speicher, keine Wetter-URL konfiguriert, Verbindung fehlgeschlagen, Timeout, leere/keine Antwort, Serverfehler, veraltete Daten oder **DNS-Lookup fehlgeschlagen**. Vor dem Senden führt `GetWeather()` zusätzlich eine DNS-Vorabprüfung durch, um DNS-Probleme sauber von TLS-/Verbindungsfehlern zu unterscheiden. Die App zeigt den Grund im System-Diagnose-Bereich als Klartext an.
+- **Persistente „Zuletzt gesehen"-Erfassung für Zigbee-Geräte**: Jedes Zigbee-Gerät führt nun einen Zeitstempel des letzten Kontakts mit, sodass die App zuverlässig erkennen kann, welche Geräte aktiv bzw. offline sind.
+- **Ausgehende Benachrichtigungs-Drosselung (Offline-Backoff)**: Bei verbundenem lokalem Netz **ohne** Internet blockierten synchron gesendete Ereignisse (IFTTT, E-Mail, InfluxDB, Push-Weiterleitung) bisher den Hauptloop bei jedem Verbindungs-Timeout — nach einigen Stunden war das Gerät nicht mehr erreichbar und nur ein Reset half. Nach drei aufeinanderfolgenden Verbindungsfehlern pausiert die Firmware die internetgebundenen Kanäle jetzt für 5 Minuten; lokale Kanäle (MQTT-Broker) und das In-Memory-Benachrichtigungslog (`/nl`) bleiben unberührt, sodass die App nichts verpasst. Jeder erfolgreiche Sendevorgang hebt die Pause sofort wieder auf.
+
+### Changed
+- **Zigbee-Gateway: robustere und sparsamere Geräteerkennung**: Die Tuya-Geräteerkennung wurde optimiert (weniger redundante Abfragen, sinnvollere Standard-Freundlichnamen). Unidentifizierte Geräte werden zudem periodisch „aufgeweckt", damit schlafende Tuya-Endgeräte (z. B. GIEX-Ventile/-Timer) doch noch Hersteller/Modell melden und korrekt identifiziert werden.
+- **Zigbee-Freundlichname bevorzugt die DB-Beschreibung**: Beim Auflösen des Anzeigenamens über die Geräte-Datenbank wird nun die Beschreibung (z. B. „GIEX GX03 2-Zonen-Bewässerungstimer") bevorzugt, statt eines generischen Hersteller-/Modellnamens.
+- **influxdb-cpp-Submodul aktualisiert**.
+
+### Fixed
+- **WLAN-Reset im Matter-Modus verursachte Boot-Schleife**: Ein WLAN-Reset per Tastenkombination im Matter-Modus startete das Gerät in eine Endlos-Boot-Schleife, weil der Matter-/CHIP-Stack im reinen Access-Point-Modus initialisiert wurde (auf dem ESP32-C5 ein Absturz). Die Matter-Initialisierung wird im WiFi-AP-Modus jetzt übersprungen, sodass die AP-Konfigurationsseite („OSAP-…") normal erscheint.
+- **Zigbee: Geräte-Verwechslung (Hersteller-/Modell-Kreuzkontamination) verhindert**: Antworten schlafender Tuya-Geräte auf Basic-Cluster-Abfragen ohne Quelladresse wurden teils dem falschen Gerät zugeordnet, sodass mehrere unterschiedliche Geräte denselben Hersteller-/Modellnamen erhielten. Die Zuordnung erfolgt jetzt anhand der eindeutigen IEEE-Adresse; es wird zudem kein Hersteller mehr „erfunden".
+- **Zigbee: Puffer-Überlauf in Gerätelisten behoben (`/zg`, `/zd`, `/bd`, `/fy`)**: Große Listen (z. B. GX02 mit vielen logischen Geräten) überschritten den 8-KB-Ethernet-Puffer und wurden mitten im JSON abgeschnitten, worauf die App „Fehler beim Verbinden mit dem Gerät" meldete. Die Ausgabe wird nun während der Erzeugung strömend geleert (Flush je Eintrag).
+- **Zigbee: doppelte Registrierung logischer Geräte bei Hintergrund-Lookups verhindert**.
+- **Zigbee: Absturz/Endlos-Wiederholung bei Hintergrund-Datenbank-Lookups verhindert (baumelnde Geräte-Referenz)**: Ein gleichzeitiges Geräte-Announce während eines blockierenden HTTP-Lookups konnte den internen Gerätevektor umlagern und eine baumelnde Referenz hinterlassen — das Ergebnis wurde in freigegebenen Speicher geschrieben, wodurch das Gerät endlos neu abgefragt wurde. Der Lookup merkt sich jetzt die IEEE-Adresse und holt das Gerät nach dem Aufruf frisch.
+- **Zigbee: große Datenbank-Antworten werden nicht mehr abgeschnitten**: Die Geräte-DB-Antwort für Geräte mit vielen Sensoren (z. B. GX03) überschritt 4 KB und wurde abgeschnitten, sodass der Name nicht aufgelöst werden konnte. Für Lookups steht nun ein größerer (PSRAM-)Antwortpuffer bereit.
+- **E-Mail-Darstellung korrigiert (Thunderbird zeigte leere Mails)**: Eine fehlende Leerzeile vor der ersten MIME-Boundary sowie eine falsche Content-Transfer-Encoding-Deklaration führten dazu, dass strenge Clients (Thunderbird) den Nachrichtentext nicht anzeigten. Klartext-Benachrichtigungen werden nun als `text/plain` versendet (ohne HTML-Rahmen).
+- **Nicht-Arduino-Build (OSPi/Linux) repariert**: Die `resolve_host`-Deklaration wird jetzt korrekt für Nicht-Arduino-Plattformen abgeschirmt, sodass die native Kompilierung wieder durchläuft.
+
+---
+
+## [2.4.0(224)] — veröffentlicht 2026-08-09
+
+### Added
+- **Programm-Ende-Benachrichtigungen**: Programme können nun ein Ende als eigenes Ereignis melden, damit die App und externe Kanäle den Abschluss eines Laufs sauber als eigenes Signal erhalten.
+- **Firmwareseitige Push-Benachrichtigungen**: Die Firmware kann Push-Ereignisse jetzt direkt auslösen und mit den Push-Optionen konfigurieren; Benachrichtigungen bleiben auch dann im In-Memory-Log erhalten, wenn externe Kanäle deaktiviert sind.
+- **Sensor-Log-Barriere (Anlagedatum als Zeitfilter)**: Jeder Sensor erhält beim **Neuanlegen** einen Zeitstempel (`log_barrier`, JSON-Feld `lb`) mit dem aktuellen Anlagedatum. Alle Log-Ausgaben (Sensor-Log-API `/so`, Trend-Berechnung) blenden Einträge aus, die **älter** als dieses Datum sind. Damit „erbt" ein neu angelegter Sensor, der eine zuvor freigegebene Sensor-Nummer wiederverwendet, **nicht** mehr die Log-Daten des gelöschten Vorgängers – ganz ohne den teuren, minutenlangen Flash-Rewrite, den ein physisches Löschen der Alt-Einträge auf dem W5500-geteilten SPI-Bus verursachte. Bestandssensoren ohne Datum (`lb=0`) bleiben **unbeschränkt** (alle Einträge sichtbar). Das Feld wird in Backup/Restore (`/sx` bzw. `/sc`) mitgeführt, sodass eine wiederhergestellte Konfiguration ihre Barriere behält. Eine UI-Darstellung ist nicht erforderlich.
+
+### Changed
+- **Konfigurations-Restore mit letzter Reserve**: `ensureConfigSpace()` trimmt bei Bedarf nicht nur die inaktiven, sondern als letzte Reserve auch die aktuellen Log-Ringe. Dadurch haben Konfigurationsdaten Vorrang vor regenerierbarer Log-Historie, wenn der Flash fast voll ist.
+- **Manuelle Programmstarts übernehmen Wetter- und Sensoranpassungen korrekt**: Anpassungen werden jetzt einmal sauber auf den Lauf angewendet, statt sich über einzelne Stationen hinweg zu vervielfachen.
+- **Wetter-Refresh und Cache robuster**: Sensor-Refreshs werden bei API-Aktualisierung sofort angestoßen, und Antwortdaten werden vor dem Caching geprüft, damit fehlerhafte Upstream-Antworten nicht als gültige Wetterdaten hängen bleiben.
+- **Push-Weiterleitung mit besserer Diagnostik**: Die Weiterleitung meldet jetzt mehr Diagnoseinformationen und bleibt auch unter knappem Heap nutzbar, statt Ereignisse still zu verschlucken.
+
+### Fixed
+- **AI Assistant-Menüpunkt verschwindet jetzt vollständig, wenn der Assistent deaktiviert ist**: Der linke Menüeintrag wird an denselben Enable-Status wie der schwebende Button gekoppelt und bleibt bei `AI Assistant = Off` ausgeblendet, statt als tote Leiche im Seitenmenü zu stehen.
+- **Restore auf (fast) vollem Flash: aktueller Log-Ring wird als letzte Reserve getrimmt**: `ensureConfigSpace()` gab bisher nur die **inaktive** Hälfte der Log-Ringe (`getlogfile2()`) frei. Füllte der **aktive** Ring allein die Partition (z. B. 12 „laute" Sensoren + viele Monitore), blieb der Speicher voll und das Wiederherstellen aller Sensoren scheiterte reproduzierbar mit „nicht genug Speicher" (nur 9 von 12 Sensoren angelegt). Reicht das Trimmen der Alt-Ringe nicht, werden nun als **letzte Reserve** auch die aktuellen Ringe verworfen – am wenigsten wertvolle zuerst (hochauflösender Std-Log vor Wochen- vor Monats-Aggregat), sodass Konfigurationsdaten Vorrang vor regenerierbarer Log-Historie haben. (UI-seitig werden beim Restore zudem die nicht mehr benötigten „Phantom"-Einträge **zuerst** gelöscht und die Backup-Einträge erst danach angelegt, damit auf einem vollen Gerät vor dem Neuanlegen Platz frei wird.)
+- **Zeit-Monitor: `Bis`-Zeit ist jetzt exklusiv (sekundengenauer Übergang)**: Ein Zeitfenster wie `09:00–12:00` schaltet nun exakt um **12:00:00** ab (vorher lief es durch die ganze Minute bis 12:01:00). Da die interne Uhrzeit auf die Minute genau als `HHMM` verglichen wird, war die obere Grenze bisher inklusiv. Angrenzende Fenster (`…–17:00` / `17:00–…`) gehen dadurch **nahtlos** ineinander über – ohne Überlappung und ohne Lücke. Der bisherige Workaround mit `16:59`/`22:59` entfällt.
+- **Monatliche Wasserstatistik bleibt über OTA-Backup/Restore erhalten**: Der `/ub`-App-Backup-Payload enthält jetzt auch die `mwater.dat`-Daten (Monatszähler + laufender Monat). Die Wiederherstellung über den OTA/App-Backup-Flow schreibt diese Daten nach `mwater.dat` zurück, damit jährliche Verbrauchsübersichten und Monatsstände nicht mehr bei einem Firmware-Update verschwinden.
+
+---
+
 ## [2.4.0(223)] — veröffentlicht 2026-07-29
 
 ### Added

@@ -87,7 +87,7 @@ typedef unsigned long ulong;
 														// if this number is different from the one stored in non-volatile memory
 														// a device reset will be automatically triggered
 
-#define OS_FW_MINOR      224  // Firmware minor version
+#define OS_FW_MINOR      228 // Firmware minor version
 
 /** Hardware version base numbers */
 #define OS_HW_VERSION_BASE   0x00 // OpenSprinkler
@@ -112,6 +112,7 @@ typedef unsigned long ulong;
 #define DONE_FILENAME         "done.dat"    // used to indicate the completion of all files
 #define MWATER_FILENAME       "mwater.dat"   // monthly water usage data file
 #define ZIGBEE_LOGICAL_FILENAME "zigbee_logical_devices.json" // persisted ZigBee logical device registry
+#define APP_CONFIG_FILENAME   "appcfg.json"  // universal app/UI key-value config store (JSON object)
 #else
 #define IOPTS_FILENAME        "/iopts.dat"   // integer options data file
 #define SOPTS_FILENAME        "/sopts.dat"   // string options data file
@@ -123,6 +124,7 @@ typedef unsigned long ulong;
 #define DONE_FILENAME         "/done.dat"    // used to indicate the completion of all files
 #define MWATER_FILENAME       "/mwater.dat"   // monthly water usage data file
 #define ZIGBEE_LOGICAL_FILENAME "/zigbee_logical_devices.json" // persisted ZigBee logical device registry
+#define APP_CONFIG_FILENAME   "/appcfg.json"  // universal app/UI key-value config store (JSON object)
 #endif
 
 /** Station macro defines */
@@ -156,6 +158,7 @@ typedef unsigned long ulong;
 #define NOTIFY_MONITOR_LOW     0x4000
 #define NOTIFY_MONITOR_MID     0x8000
 #define NOTIFY_MONITOR_HIGH   0x10000
+#define NOTIFY_PROGRAM_END    0x20000
 
 /** Queue Insertion Mode */
 enum {
@@ -241,6 +244,7 @@ enum {
 #define DEFAULT_JAVASCRIPT_URL    "https://ui.opensprinklershop.de/js"
 #define DEFAULT_WEATHER_URL       "weather.opensprinkler.com"
 #define DEFAULT_IFTTT_URL         "maker.ifttt.com"
+#define DEFAULT_PUSH_URL          "https://io.opensprinklershop.de/wp-json/ospf/v1/event"
 #define DEFAULT_OTC_SERVER_DEV     "ws.cloud.openthings.io"
 #define DEFAULT_OTC_PORT_DEV       80
 #define DEFAULT_OTC_SERVER_APP    "cloud.openthings.io"
@@ -418,6 +422,7 @@ enum {
 	SOPT_EMAIL_OPTS,
 	SOPT_FYTA_OPTS,
 	SOPT_GARDENA_OPTS,
+	SOPT_PUSH_OPTS, // firmware-initiated push forwarder config {"en":0/1,"url":"..."}
 	NUM_SOPTS // total number of string options
 };
 

@@ -279,7 +279,7 @@ void client_expose_create_endpoints() {
                 case SENSOR_EP_TEMPERATURE: {
                     auto* ts = new OSZigbeeEndpoint<ZigbeeTempSensor>(ep_num);
                     ts->setMinMaxValue(-40.0f, 125.0f);
-                    ts->setOpenSprinklerIdentity(sensor->name);
+                    ts->setOpenSprinklerIdentity(sensor->getName());
                     ep = ts;
                     break;
                 }
@@ -287,13 +287,13 @@ void client_expose_create_endpoints() {
                     // Use TempSensor with humidity cluster added
                     auto* ts = new OSZigbeeEndpoint<ZigbeeTempSensor>(ep_num);
                     ts->addHumiditySensor();
-                    ts->setOpenSprinklerIdentity(sensor->name);
+                    ts->setOpenSprinklerIdentity(sensor->getName());
                     ep = ts;
                     break;
                 }
                 case SENSOR_EP_FLOW: {
                     auto* fs = new OSZigbeeEndpoint<ZigbeeFlowSensor>(ep_num);
-                    fs->setOpenSprinklerIdentity(sensor->name);
+                    fs->setOpenSprinklerIdentity(sensor->getName());
                     ep = fs;
                     break;
                 }
@@ -301,8 +301,8 @@ void client_expose_create_endpoints() {
                 default: {
                     auto* as = new OSZigbeeEndpoint<ZigbeeAnalog>(ep_num);
                     as->addAnalogInput();
-                    as->setAnalogInputDescription(sensor->name);
-                    as->setOpenSprinklerIdentity(sensor->name);
+                    as->setAnalogInputDescription(sensor->getName());
+                    as->setOpenSprinklerIdentity(sensor->getName());
                     ep = as;
                     break;
                 }
@@ -311,7 +311,7 @@ void client_expose_create_endpoints() {
             Zigbee.addEndpoint(ep);
             s_sensor_eps.push_back({ep, sensor->nr, etype});
             DEBUG_PRINTF(F("[ZB-EXPOSE] Sensor ep=%d nr=%d name='%s' type=%d\n"),
-                         ep_num, sensor->nr, sensor->name, etype);
+                         ep_num, sensor->nr, sensor->getName(), etype);
             ep_num++;
         }
     }

@@ -19,6 +19,8 @@ export declare class OpenSprinklerClient {
     constructor(config: OpenSprinklerClientConfig);
     /** Generic GET request. Returns parsed JSON. */
     get<T = Record<string, unknown>>(path: string, params?: Record<string, string | number | undefined>): Promise<T>;
+    /** GET request that returns raw text (useful for CSV, plain text, etc.). */
+    getRaw(path: string, params?: Record<string, string | number | undefined>): Promise<string>;
     /** Convenience: call GET and check for `{"result":1}` success. */
     command(path: string, params?: Record<string, string | number | undefined>): Promise<{
         result: number;

@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import re
+import sys
 
 Import("env")
 
@@ -85,8 +86,50 @@ def patch_zigbee_psram_task(source, target, env):
         f.write(content)
     print("[FIX_BUILD] Patched ZigbeeCore.cpp: Zigbee_main task stack → internal RAM (PSRAM fallback)")
 
+def ensure_build_output_dirs(source, target, env):
+    """Create the build output directories before compilation starts."""
+    build_dir = env.subst("$BUILD_DIR")
+    if build_dir:
+        os.makedirs(build_dir, exist_ok=True)
+        for subdir in ["src", "lib", "lib974", "lib879"]:
+            os.makedirs(os.path.join(build_dir, subdir), exist_ok=True)
+    print(f"[FIX_BUILD] Ensured build dir exists: {build_dir}")
+
+
+def ensure_esptool_wrapper():
+    """Create a platformio-compatible esptool wrapper when the entry point is missing."""
+    penv_bin = os.path.expanduser("~/.platformio/penv/bin")
+    os.makedirs(penv_bin, exist_ok=True)
+
+    wrapper = os.path.join(penv_bin, "esptool")
+    # Use the Python interpreter that actually has the upgraded esptool package
+    # installed. The PlatformIO venv may still have an older esptool module wired
+    # in via its local scripts, so prefer the system Python from the current
+    # environment rather than the venv interpreter.
+    python_exe = "/usr/bin/python3"
+    if not os.path.exists(python_exe):
+        python_exe = sys.executable
+
+    if os.path.exists(wrapper) and os.access(wrapper, os.X_OK):
+        # Keep the wrapper up to date with the current Python environment.
+        with open(wrapper, "r", encoding="utf-8") as fh:
+            current = fh.read()
+        target = f'#!/bin/sh\nexec "{python_exe}" -m esptool "$@"\n'
+        if current == target:
+            return
+
+    with open(wrapper, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\n")
+        fh.write(f'exec "{python_exe}" -m esptool "$@"\n')
+    os.chmod(wrapper, 0o755)
+    print(f"[FIX_BUILD] Created esptool wrapper: {wrapper}")
+
+
 env.AddPreAction("buildprog", patch_zigbee_psram_task)
+env.AddPreAction("buildprog", ensure_build_output_dirs)
+ensure_esptool_wrapper()
 patch_zigbee_psram_task(None, None, env)
+ensure_build_output_dirs(None, None, env)
 
 
 def patch_zigbee_application_controlled_steering(source, target, env):
@@ -147,12 +190,23 @@ env.AddPreAction("buildprog", patch_zigbee_application_controlled_steering)
 patch_zigbee_application_controlled_steering(None, None, env)
 
 # --- Parallel build: use all available CPU cores ---
-num_cores = multiprocessing.cpu_count()
+# The ESP32-C5 toolchain occasionally races when many jobs compile the
+# framework's Network library and try to create depfiles in parallel.
+# Keep a single job to avoid missing .d files and intermittent build failures.
+num_cores = 1
 env.SetOption("num_jobs", num_cores)
-print(f"ESP32-C5 Fix: Parallel build enabled ({num_cores} jobs)")
+print(f"ESP32-C5 Fix: Parallel build disabled; using {num_cores} job")
 
 def remove_mlongcalls_flag(node):
     """Remove unsupported flags and enforce LTO for ESP32-C5 builds."""
+    try:
+        target_path = node.get_abspath()
+    except Exception:
+        target_path = None
+
+    if target_path:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
     for flag_var in ["ASFLAGS", "CCFLAGS", "CFLAGS", "CXXFLAGS", "LINKFLAGS"]:
         flags = node.get(flag_var, [])
         if isinstance(flags, list):

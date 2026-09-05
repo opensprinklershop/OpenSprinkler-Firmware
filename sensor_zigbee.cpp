@@ -1213,7 +1213,7 @@ static void client_zigbee_loop_internal() {
                         item.discovered_time = millis() - CLIENT_BASIC_QUERY_DELAY_MS + 2000UL;
                         client_basic_query_queue.push_back(item);
                         DEBUG_PRINTF(F("[ZIGBEE-CLIENT] Boot: queued Basic Cluster query for sensor '%s' (0x%016llX)\n"),
-                                     zb->name, (unsigned long long)zb->device_ieee);
+                                     zb->getName(), (unsigned long long)zb->device_ieee);
                     }
                 }
             }
@@ -1604,7 +1604,7 @@ static void sensor_zigbee_do_vendor_lookups() {
         if (!zb->zb_vendor_pending) continue;
         if (!zb->zb_manufacturer[0] || !zb->zb_model[0]) {
             DEBUG_PRINTF(F("[ZB] Vendor lookup skipped for '%s': incomplete Basic Cluster data mfr=\"%s\" model=\"%s\" ieee=0x%016llX\n"),
-                         zb->name,
+                         zb->getName(),
                          zb->zb_manufacturer[0] ? zb->zb_manufacturer : "",
                          zb->zb_model[0] ? zb->zb_model : "",
                          (unsigned long long)zb->device_ieee);
@@ -1764,7 +1764,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
         }
         
         if (matches) {
-            DEBUG_PRINTF(F("[ZIGBEE] Updating sensor: %s%s\n"), sensor->name,
+            DEBUG_PRINTF(F("[ZIGBEE] Updating sensor: %s%s\n"), sensor->getName(),
                          is_tuya_prescaled ? " (Tuya)" : "");
 
             // Battery reports must only refresh last_battery and must never
@@ -1775,7 +1775,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
                 zb_sensor->last_battery = batt_pct;
                 zb_sensor->last_lqi = lqi;
                 DEBUG_PRINTF(F("[ZIGBEE-BATT] Sensor='%s' ieee=0x%016llX ep=%u raw=%ld -> batt=%u%% lqi=%u (no last_data overwrite)\n"),
-                             sensor->name,
+                             sensor->getName(),
                              (unsigned long long)ieee_addr,
                              (unsigned)endpoint,
                              (long)value,
@@ -1838,7 +1838,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
                     zb_sensor->join_anchor_ts = new_anchor;
                     s_comm_mode_changed = true;
                     DEBUG_PRINTF(F("[ZIGBEE] Predictive anchor updated for '%s': %lu (ri=%u)\n"),
-                                 zb_sensor->name, (unsigned long)zb_sensor->join_anchor_ts,
+                                 zb_sensor->getName(), (unsigned long)zb_sensor->join_anchor_ts,
                                  zb_sensor->read_interval);
                 }
             }
@@ -1858,7 +1858,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
                     if (zb_sensor->comm_mode != new_mode) {
                         zb_sensor->comm_mode = new_mode;
                         s_comm_mode_changed = true;
-                        DEBUG_PRINTF(F("[ZIGBEE] '%s' comm_mode → %s\n"), sensor->name,
+                        DEBUG_PRINTF(F("[ZIGBEE] '%s' comm_mode → %s\n"), sensor->getName(),
                                      new_mode == ZB_COMM_REPORT ? "REPORT" : "ACTIVE");
                     }
                 }
@@ -1866,7 +1866,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
 
             DEBUG_PRINTF(F("[ZIGBEE] Raw: %d -> Converted: %.2f\n"), value, converted_value);
             DEBUG_PRINTF(F("[ZIGBEE-DATA] Sensor='%s' ieee=0x%016llX ep=%u cluster=0x%04X attr=0x%04X native=%ld data=%.3f batt=%u lqi=%u\n"),
-                         sensor->name,
+                         sensor->getName(),
                          (unsigned long long)ieee_addr,
                          (unsigned)endpoint,
                          (unsigned)cluster_id,
@@ -1883,7 +1883,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
             zb_sensor->tuya_unit = (value < 0) ? 0xFF : (uint8_t)value;
             zb_sensor->last_lqi = lqi;
             DEBUG_PRINTF(F("[ZIGBEE-UNIT] Sensor='%s' ieee=0x%016llX ep=%u dp=%u unit=%ld lqi=%u\n"),
-                 sensor->name,
+                 sensor->getName(),
                  (unsigned long long)ieee_addr,
                  (unsigned)endpoint,
                  (unsigned)raw_attr_id,
@@ -1896,7 +1896,7 @@ void ZigbeeSensor::zigbee_attribute_callback(uint64_t ieee_addr, uint8_t endpoin
             uint32_t batt_pct = zigbee_battery_percent_from_report(is_tuya_prescaled, raw_attr_id, tuya_type, zb_sensor->tuya_dp_battery, value);
             zb_sensor->last_battery = batt_pct;
             DEBUG_PRINTF(F("[ZIGBEE-BATT] Linked sensor='%s' ieee=0x%016llX ep=%u raw=%ld -> batt=%u%% lqi=%u\n"),
-                         sensor->name,
+                         sensor->getName(),
                          (unsigned long long)ieee_addr,
                          (unsigned)endpoint,
                          (long)value,
@@ -2692,7 +2692,7 @@ void ZigbeeSensor::updateBasicClusterInfo(uint64_t ieee_addr, const char* manufa
         }
 
         DEBUG_PRINTF(F("[ZIGBEE] Basic Cluster for '%s': ieee=0x%016llX mfr=\"%s\" model=\"%s\" vendor_pending=%d\n"),
-                     zb->name,
+                     zb->getName(),
                      (unsigned long long)zb->device_ieee,
                      zb->zb_manufacturer,
                      zb->zb_model,
@@ -2744,7 +2744,7 @@ void ZigbeeSensor::updateProfileInfo(uint64_t ieee_addr, const char* manufacture
         }
 
         DEBUG_PRINTF(F("[ZIGBEE] Profile for '%s': ieee=0x%016llX mfr=\"%s\" model=\"%s\" vendor=\"%s\"\n"),
-                     zb->name,
+                     zb->getName(),
                      (unsigned long long)zb->device_ieee,
                      zb->zb_manufacturer,
                      zb->zb_model,

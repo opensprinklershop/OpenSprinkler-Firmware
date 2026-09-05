@@ -52,10 +52,12 @@ bool FytaApi::authenticate(const String &auth) {
     http.addHeader("Content-Type", "application/json");
     http.addHeader("accept", "application/json");
 
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     int res = http.POST(auth.c_str());
     if (res == 200) {
+        String payload = http.getString();
         JsonDocument responseDoc;
-        DeserializationError error = deserializeJson(responseDoc, http.getStream());
+        DeserializationError error = deserializeJson(responseDoc, payload);
         if (!error && responseDoc.containsKey("access_token")) {
             authToken = responseDoc["access_token"].as<String>();
             return true;
@@ -108,6 +110,7 @@ bool FytaApi::getSensorData(ulong plantId, JsonDocument& doc) {
     http.addHeader("Authorization", "Bearer " + authToken);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("accept", "application/json");
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     int httpCode = http.GET();
     if (httpCode == 200) {
         JsonDocument filter;
@@ -115,11 +118,12 @@ bool FytaApi::getSensorData(ulong plantId, JsonDocument& doc) {
         filter["plant"]["measurements"]["temperature"]["values"]["current"] = true;
         filter["plant"]["measurements"]["moisture"]["values"]["current"] = true;
 
-        DeserializationError error = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+        String payload = http.getString();
+        DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
         doc["error"] = error.c_str();
         return !error;
     }
-    doc["error"] = httpCode;
+    doc["error"] = String(httpCode);
     return false;
 #elif defined(OSPI)
     if (authToken.empty()) return false;
@@ -170,6 +174,7 @@ bool FytaApi::getPlantList(JsonDocument& doc) {
     http.addHeader("Content-Type", "application/json");
     http.addHeader("accept", "application/json");
 
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     int httpCode = http.GET();
     if (httpCode == 200) {
         JsonDocument filter;
@@ -179,11 +184,12 @@ bool FytaApi::getPlantList(JsonDocument& doc) {
         filter["plants"][0]["thumb_path"] = true;
         filter["plants"][0]["sensor"]["has_sensor"] = true;
 
-        DeserializationError error = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+        String payload = http.getString();
+        DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
         doc["error"] = error.c_str();
         return !error;
     }
-    doc["error"] = httpCode;
+    doc["error"] = String(httpCode);
     return false;
 #elif defined(OSPI)
     if (authToken.empty()) return false;
@@ -213,6 +219,7 @@ bool FytaApi::getPlantList(JsonDocument& doc) {
     DeserializationError error = deserializeJson(doc, body, bodyLength, DeserializationOption::Filter(filter));
     if (naettGetStatus(res) < 0 || !body || !bodyLength || error) {
         DEBUG_PRINTLN("FYTA Request failed!");
+        doc["error"] = error ? error.c_str() : "HTTP error or empty body";
         naettClose(res);
         naettFree(req);
         return false;

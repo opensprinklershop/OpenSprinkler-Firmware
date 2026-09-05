@@ -38,8 +38,19 @@ public:
    * @brief Constructor
    * @param type Sensor type identifier
    */
-  explicit WeatherSensor(uint type) : SensorBase() { this->type = type; }
+  explicit WeatherSensor(uint type) : SensorBase() {
+    this->type = type;
+    this->read_interval = 60 * 60;
+  }
   virtual ~WeatherSensor() {}
+
+  virtual void fromJson(ArduinoJson::JsonVariantConst obj) override {
+    SensorBase::fromJson(obj);
+    // Weather provider data is designed for hourly refresh; cap legacy 6h configs.
+    if (this->read_interval == 0 || this->read_interval > 60 * 60) {
+      this->read_interval = 60 * 60;
+    }
+  }
 
   /**
    * @brief Read weather data from configured weather service

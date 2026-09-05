@@ -282,12 +282,12 @@ static void flow_update_input_mode() {
 	if (want_flow == flow_input_configured) return;
 
 	if (want_flow) {
-		DEBUG_PRINTLN("[FLOW-INPUT-MODE]Configuring flow sensor pin GPIO12");
+		DEBUG_PRINTLN(F("[FLOW-INPUT-MODE]Configuring flow sensor pin GPIO12"));
 		pinMode(PIN_SENSOR1, INPUT_PULLUP);
 		prev_flow_state = HIGH;
 		flow_input_configured = true;
 	} else {
-		DEBUG_PRINTLN("[FLOW-INPUT-MODE]De-configuring flow sensor");
+		DEBUG_PRINTLN(F("[FLOW-INPUT-MODE]De-configuring flow sensor"));
 		flow_input_configured = false;
 	}
 }
@@ -819,7 +819,7 @@ void do_setup() {
 	// In ZigBee Client mode: automatically start network search on boot
 	if (!online_update_in_progress() && ieee802154_is_zigbee_client() && sensor_zigbee_ensure_started()) {
 		sensor_zigbee_open_network(60);
-		DEBUG_PRINTLN("[ZigBee] Auto-join started on boot (60 s)");
+		DEBUG_PRINTLN(F("[ZigBee] Auto-join started on boot (60 s)"));
 	}
 	#endif
 
@@ -866,10 +866,10 @@ void do_setup() {
 	pd.init();           // ProgramData init
 
 	if (os.start_network()) {  // initialize network
-		DEBUG_PRINTLN("network established.");
+		DEBUG_PRINTLN(F("network established."));
 		os.status.network_fails = 0;
 	} else {
-		DEBUG_PRINTLN("network failed.");
+		DEBUG_PRINTLN(F("network failed."));
 		os.status.network_fails = 1;
 	}
 	os.status.req_network = 0;
@@ -889,7 +889,7 @@ void do_setup() {
 	initialize_otf();
 	// Delayed initialization: sensor_api_connect at 10s, matter_init at 15s
 	// This prevents boot-time conflicts between Zigbee, BLE, and Matter stacks
-	DEBUG_PRINTLN("Delaying sensor_api_connect and matter_init for stack stabilization");
+	DEBUG_PRINTLN(F("Delaying sensor_api_connect and matter_init for stack stabilization"));
 }
 
 #endif
@@ -1048,8 +1048,8 @@ void do_loop()
 	static ulong last_mem_print_8266 = 0;
 	if (millis() - last_mem_print_8266 >= 15000) {
 		last_mem_print_8266 = millis();
-		DEBUG_PRINTF("[MEM] Heap: %d B free | MaxBlock: %d B | Frag: %d%%\n",
-			ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+		DEBUG_PRINTF("[MEM] Heap: %d B free | MaxBlock: %d B | Frag: %d%% | ContStack free(min): %d B\n",
+			ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation(), ESP.getFreeContStack());
 	}
 	#endif
 
@@ -1254,7 +1254,7 @@ void do_loop()
 			#endif
 			#ifdef ENABLE_MATTER
 			if (ieee802154_is_matter()) {
-				DEBUG_PRINTLN("[Matter] Network up (Ethernet) - initializing Matter");
+				DEBUG_PRINTLN(F("[Matter] Network up (Ethernet) - initializing Matter"));
 				OSMatter::instance().init();
 			}
 			#endif
@@ -1266,13 +1266,6 @@ void do_loop()
 			// WiFi AP is up — safe to route malloc back to PSRAM
 			psram_restore_after_wifi_init();
 			if (!online_update_in_progress()) {
-			#ifdef ENABLE_MATTER
-			// AP mode: init Matter for BLE commissioning (mDNS not available in AP mode)
-			if (ieee802154_is_matter()) {
-				DEBUG_PRINTLN("[Matter] AP mode - initializing Matter for BLE commissioning");
-				OSMatter::instance().init();
-			}
-			#endif
 			#ifdef ENABLE_RAINMAKER
 			if (os.iopts[IOPT_RAINMAKER_ENABLE]) OSRainMaker::instance().init();
 			#endif
@@ -1332,7 +1325,7 @@ void do_loop()
 		if (!online_update_in_progress()) {
 		#ifdef ENABLE_MATTER
 		if (ieee802154_is_matter()) {
-			DEBUG_PRINTLN("[Matter] Network up (STA+AP) - initializing Matter");
+			DEBUG_PRINTLN(F("[Matter] Network up (STA+AP) - initializing Matter"));
 			OSMatter::instance().init();
 		}
 		#endif
@@ -1394,7 +1387,7 @@ void do_loop()
 
 			#ifdef ENABLE_MATTER
 			if (ieee802154_is_matter()) {
-				DEBUG_PRINTLN("[Matter] WiFi connected - initializing Matter");
+				DEBUG_PRINTLN(F("[Matter] WiFi connected - initializing Matter"));
 				OSMatter::instance().init();
 			}
 			#endif
@@ -1775,6 +1768,9 @@ void do_loop()
 							}
 						}
 					}
+					// Constant weather/historical base for this program; wl gets
+					// overwritten per station for the notification, so keep the base.
+					const unsigned char wl_base = wl;
 
 					// process all selected stations
 					for(unsigned char oi=0;oi<os.nstations;oi++) {
@@ -1790,11 +1786,16 @@ void do_loop()
 							// water time is scaled by watering percentage
 							ulong water_time = water_time_resolve(prog.durations[sid]);
 							// if the program is set to use weather scaling
-							double wl1 = (prog.use_weather ? os.iopts[IOPT_WATER_PERCENTAGE] : 100) / 100.0;
+							// Use wl_base (constant per program) so the analog-sensor factor
+							// does not compound across stations of the same program.
+							double wl1 = (prog.use_weather ? wl_base : 100) / 100.0;
 							double wl2 = calc_sensor_watering(pid); //Analog Sensor program adjustment
 							double wl_combined = wl1 * wl2;
 							water_time = (ulong)(water_time * wl_combined);
-							wl = (unsigned char)(wl_combined * 100);
+							int wl_percent = (int)(wl_combined * 100.0 + 0.5);
+							if (wl_percent < 0) wl_percent = 0;
+							if (wl_percent > 255) wl_percent = 255;
+							wl = (unsigned char)wl_percent;
 							// Belowmode handling:
 							uint16_t below_value = os.iopts[IOPT_BELOW2] | os.iopts[IOPT_BELOW1] << 8;
 							switch (os.iopts[IOPT_BELOW_HANDLING]) {
@@ -2180,6 +2181,7 @@ void check_weather() {
 			wt_restricted = 0; // reset wt_rawData, errCode, and md_scales array
 			wt_rawData[0] = 0;
 			wt_errCode = HTTP_RQT_STALE;
+			wt_errReason = WT_REASON_STALE;
 			md_N = 0;
 		}
 	} else if (!os.checkwt_lasttime || (ntz > os.checkwt_lasttime + check_interval)) {
@@ -2465,6 +2467,17 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 	// check if the current time is past the scheduled start time,
 	// because we may be turning off a station that hasn't started yet
 	if (curr_time >= q->st) {
+		uint8_t pid = qpid_decode(q->pid);
+		if (pid > 0 && pid <= (uint8_t)pd.nprograms) {
+			bool any_remaining = false;
+			for (unsigned char i = 0; i < pd.nqueue; i++) {
+				if (pd.queue + i == q) continue;
+				if (qpid_decode(pd.queue[i].pid) == pid) { any_remaining = true; break; }
+			}
+			if (!any_remaining) {
+				notif.add(NOTIFY_PROGRAM_END, pid - 1);
+			}
+		}
 		bool skip_log = (sid < MAX_NUM_STATIONS) ? station_log_written_on_handoff[sid] : false;
 		if (sid < MAX_NUM_STATIONS) {
 			station_log_written_on_handoff[sid] = false;
@@ -2983,22 +2996,20 @@ void stop_program(unsigned char pid) {
 		ProgramStruct p;
 		pd.read(i, &p);
 		if (strncmp(p.name, "Run-Once with repeat", 20) == 0) {
-			// Check if any stations of this run-once program are queued
+			// Always remove ad-hoc repeat programs when an explicit stop is
+			// requested for a program. Otherwise, a run-once repeat currently
+			// between intervals (no queued station right now) survives and fires
+			// again at the next interval.
 			uint8_t run_once_pid = i + 1;
-			bool has_queued = false;
 			for (int j = pd.nqueue - 1; j >= 0; j--) {
 				RuntimeQueueStruct *q = &pd.queue[j];
 				if (q->pid == run_once_pid || q->pid == (run_once_pid | 0x80)) {
-					has_queued = true;
 					// Mark for dequeue (duration = 0)
 					q->dur = 0;
 				}
 			}
-			// Delete the ad-hoc program if it was queued
-			if (has_queued) {
-				pd.del(i);
-				i--;  // adjust index after deletion
-			}
+			pd.del(i);
+			i--;  // adjust index after deletion
 		}
 	}
 
@@ -3027,10 +3038,12 @@ void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo
 	}
 
 	unsigned char wl = uwt?os.iopts[IOPT_WATER_PERCENTAGE]:100;
+	double prog_adjust = 1.0;
 	if ((pid>0)&&(pid<255)) {
 		pd.read(pid-1, &prog);
 		if (uwt == 255) uwt = prog.use_weather;
 		if(uwt) wl = os.iopts[IOPT_WATER_PERCENTAGE];
+		prog_adjust = calc_sensor_watering(pid-1);
 		notif.add(NOTIFY_PROGRAM_SCHED, pid-1, wl, 1);
 		// get station ordering from program name
 		prog.gen_station_runorder(1, order);
@@ -3049,6 +3062,9 @@ void manual_start_program(unsigned char pid, unsigned char uwt, unsigned char qo
 			dur = water_time_resolve(prog.durations[sid]);
 		if(uwt) {
 			dur = dur * wl / 100;
+		}
+		if((pid>0)&&(pid<255)) {
+			dur = (ulong)(dur * prog_adjust);
 		}
 		if(dur>0 && !(os.attrib_dis[bid]&(1<<s))) {
 			RuntimeQueueStruct *q = pd.enqueue();

@@ -51,6 +51,13 @@ int RemoteSensor::read(unsigned long time) {
   IP4_EXTRACT_BYTES(ip, this->ip);
   ulong prev_last_read = this->last_read;
 
+  // Skip unconfigured remote targets (ip 0.0.0.0 or port 0) to avoid hammering
+  // send_http_request("0.0.0.0",...) and stalling the main loop.
+  if (this->ip == 0 || this->port == 0) {
+    flags.data_ok = false;
+    return HTTP_RQT_NOT_RECEIVED;
+  }
+
   // DEBUG_PRINTLN(F("RemoteSensor::read"));
 
   char *p = tmp_buffer;
@@ -98,7 +105,7 @@ int RemoteSensor::read(unsigned long time) {
     s = strstr(p, "\"unit\":");
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
       urlDecodeAndUnescape(buf);
-      strncpy(this->userdef_unit, buf, sizeof(this->userdef_unit) - 1);
+      setUserdefUnit(buf);
     }
     s = strstr(p, "\"last\":");
     if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {

@@ -89,18 +89,25 @@ void notif_log_add(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 
 uint8_t notif_priority(uint32_t type) {
 	switch (type) {
+		// Warnings & alarms -> heads-up + sound (os_high channel)
 		case NOTIFY_FLOW_ALERT:
 		case NOTIFY_CURR_ALERT:
 		case NOTIFY_NOFLOW:
 		case NOTIFY_PIPE_BURST:
+		case NOTIFY_MONITOR_MID:
 		case NOTIFY_MONITOR_HIGH:
 			return 2; // high
-		case NOTIFY_MONITOR_MID:
+		// Start/stop & moderate events -> audible (os_med channel)
+		case NOTIFY_PROGRAM_SCHED:
+		case NOTIFY_PROGRAM_END:
+		case NOTIFY_STATION_ON:
+		case NOTIFY_STATION_OFF:
 		case NOTIFY_REBOOT:
 		case NOTIFY_RAINDELAY:
+		case NOTIFY_MONITOR_LOW:
 			return 1; // medium
 		default:
-			return 0; // low
+			return 0; // low: weather, sensors, reports -> silent
 	}
 }
 
@@ -133,6 +140,13 @@ void notif_render_text(uint32_t type, uint32_t lval, float fval, uint8_t bval, c
 				snprintf_P(out, outlen, PSTR("Program %s skipped%s"), pname, (bval > 0) ? " (weather)" : "");
 			else
 				snprintf_P(out, outlen, PSTR("Program %s scheduled (%d%% water)"), pname, (int)fval);
+			break;
+		}
+		case NOTIFY_PROGRAM_END: {
+			ProgramStruct prog;
+			const char* pname = "";
+			if (lval < pd.nprograms) { pd.read(lval, &prog); pname = prog.name; }
+			snprintf_P(out, outlen, PSTR("Program %s finished"), pname);
 			break;
 		}
 		case NOTIFY_SENSOR1:
@@ -186,7 +200,7 @@ void notif_render_text(uint32_t type, uint32_t lval, float fval, uint8_t bval, c
 		case NOTIFY_MONITOR_MID:
 		case NOTIFY_MONITOR_HIGH: {
 			Monitor_t* mon = monitor_by_idx(bval);
-			const char* mname = mon ? mon->name : "";
+			const char* mname = mon ? mon->getName() : "";
 			int v = (int)fval;
 			int frac = (int)(fval*100)%100; if (frac < 0) frac = -frac;
 			snprintf_P(out, outlen, PSTR("Monitor %s: %d.%02d"), mname, v, frac);
@@ -324,8 +338,228 @@ bool NotifQueue::run(int n) {
 	return true;
 }
 
+// --- Outbound reachability backoff ---------------------------------------
+// push_message() runs in the main loop and performs SYNCHRONOUS, blocking sends
+// (IFTTT ~12s, SMTP TLS connect, InfluxDB, push ~5s). network_connected() only
+// proves the LAN is up, not that the internet is reachable. On a LAN-only/offline
+// site (e.g. only an NTP server) every send fails on a connect timeout, and with
+// scheduled programs constantly refilling the queue the main loop stays blocked
+// in dead network calls -> web server unreachable, "only a reset helps".
+// After a few consecutive send failures we treat the internet as unreachable and
+// skip the blocking channels for a cooldown, while STILL recording the event in
+// /nl so the mobile app loses nothing. Any successful send clears the backoff.
+static uint8_t  s_outbound_fail_streak = 0;
+static uint32_t s_outbound_backoff_until = 0; // millis() deadline; 0 = inactive
+#define OUTBOUND_FAIL_STREAK_MAX 3
+#define OUTBOUND_BACKOFF_MS      (5UL * 60UL * 1000UL) // 5 min
+
+static bool outbound_backoff_active() {
+	return s_outbound_backoff_until != 0 &&
+		(int32_t)(millis() - s_outbound_backoff_until) < 0;
+}
+
+static void outbound_note_result(bool ok) {
+	if (ok) {
+		s_outbound_fail_streak = 0;
+		s_outbound_backoff_until = 0;
+	} else if (s_outbound_fail_streak < 255) {
+		if (++s_outbound_fail_streak >= OUTBOUND_FAIL_STREAK_MAX) {
+			s_outbound_backoff_until = millis() + OUTBOUND_BACKOFF_MS;
+			if (s_outbound_backoff_until == 0) s_outbound_backoff_until = 1; // avoid the 0 sentinel
+		}
+	}
+}
+
 #define PUSH_TOPIC_LEN	120
 #define PUSH_PAYLOAD_LEN TMP_BUFFER_SIZE
+
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
+#if defined(ESP8266) || defined(ESP32)
+extern bool useEth;
+#endif
+
+// Append a JSON-escaped copy of src into dst (bounded). Control characters are
+// dropped; quotes and backslashes are escaped so the body stays valid JSON.
+static void push_json_escape(char* dst, size_t dstlen, const char* src, size_t maxsrc) {
+	size_t di = 0;
+	for (size_t si = 0; src[si] && si < maxsrc && di + 2 < dstlen; si++) {
+		char c = src[si];
+		if (c == '"' || c == '\\') {
+			dst[di++] = '\\';
+			dst[di++] = c;
+		} else if ((unsigned char)c >= 0x20) {
+			dst[di++] = c;
+		}
+	}
+	dst[di] = 0;
+}
+
+// Parse an integer value for "key" from the stored config fragment (e.g. en).
+static bool push_cfg_int(const char* cfg, const char* key, int* out) {
+	char pat[20];
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	const char* p = strstr(cfg, pat);
+	if (!p) return false;
+	p = strchr(p + strlen(pat), ':');
+	if (!p) return false;
+	*out = atoi(p + 1);
+	return true;
+}
+
+// Parse a quoted string value for "key" from the stored config fragment (url).
+static bool push_cfg_str(const char* cfg, const char* key, char* out, size_t outlen) {
+	char pat[20];
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	const char* p = strstr(cfg, pat);
+	if (!p) return false;
+	p = strchr(p + strlen(pat), ':');
+	if (!p) return false;
+	p++;
+	while (*p == ' ' || *p == '\t') p++;
+	if (*p != '"') return false;
+	p++;
+	size_t i = 0;
+	while (*p && *p != '"' && i + 1 < outlen) {
+		if (*p == '\\' && *(p + 1)) p++;
+		out[i++] = *p++;
+	}
+	out[i] = 0;
+	return true;
+}
+
+// Firmware-initiated push. When enabled via SOPT_PUSH_OPTS ({"en":1,"url":...})
+// the controller POSTs the just-logged notification event to the external push
+// forwarder itself, so real push works without OTC (e.g. on the same LAN or
+// right after a reboot). Ownership is proven by the device password hash (the
+// same value the app knows as pw); the forwarder stores only its sha256.
+static void push_forward_event(uint32_t type, uint32_t lval, float fval, uint8_t bval, uint32_t event_id) {
+	DEBUG_PRINTF("push: enter event id=%lu type=%lu\n", (unsigned long)event_id, (unsigned long)type);
+	// Reuse tmp_buffer (free at this point in push_message) as scratch instead of
+	// permanent static buffers, so RAM is returned to the heap when push is idle.
+	os.sopt_load(SOPT_PUSH_OPTS, tmp_buffer, TMP_BUFFER_SIZE - 1);
+	if (tmp_buffer[0] == 0) { DEBUG_PRINTLN(F("push: SKIP - SOPT_PUSH_OPTS empty (not configured)")); return; } // not configured -> disabled (privacy: opt-in only)
+
+	// Parse the tiny {en,url} fragment manually to avoid a heap-allocating JSON
+	// document on the RAM-tight ESP8266.
+	int en = 0;
+	if (!push_cfg_int(tmp_buffer, "en", &en) || !en) { DEBUG_PRINTF("push: SKIP - disabled (en=%d) cfg=%s\n", en, tmp_buffer); return; }
+
+	char urlbuf[160];
+	if (!push_cfg_str(tmp_buffer, "url", urlbuf, sizeof(urlbuf)) || urlbuf[0] == 0) {
+		strncpy(urlbuf, DEFAULT_PUSH_URL, sizeof(urlbuf) - 1);
+		urlbuf[sizeof(urlbuf) - 1] = 0;
+	}
+	const char* url = urlbuf;
+
+	// Parse the URL into scheme/host/port/path.
+	bool usessl = false;
+	const char* rest = url;
+	if (strncmp(rest, "https://", 8) == 0) { usessl = true; rest += 8; }
+	else if (strncmp(rest, "http://", 7) == 0) { usessl = false; rest += 7; }
+	else { DEBUG_PRINTF("push: SKIP - unsupported scheme url=%s\n", url); return; } // unsupported scheme
+
+	char host[96];
+	char path[128];
+	const char* slash = strchr(rest, '/');
+	size_t hostlen = slash ? (size_t)(slash - rest) : strlen(rest);
+	if (hostlen == 0 || hostlen >= sizeof(host)) { DEBUG_PRINTF("push: SKIP - bad host len=%u\n", (unsigned)hostlen); return; }
+	memcpy(host, rest, hostlen); host[hostlen] = 0;
+	if (slash) { strncpy(path, slash, sizeof(path) - 1); path[sizeof(path) - 1] = 0; }
+	else { strcpy(path, "/"); }
+
+	uint16_t port = usessl ? 443 : 80;
+	char* colon = strchr(host, ':');
+	if (colon) { *colon = 0; int p = atoi(colon + 1); if (p > 0) port = (uint16_t)p; }
+
+	// Never OOM the controller mid-watering: skip the push when heap is critically low.
+	// The event is still recorded in /nl for the app to poll.
+#if defined(ESP8266)
+	DEBUG_PRINTF("push: ESP8266 freeheap=%u maxblk=%u ssl=%d\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxFreeBlockSize(), (int)usessl);
+	if (ESP.getFreeHeap() < 3500 || ESP.getMaxFreeBlockSize() < 2000) {
+		DEBUG_PRINTLN(F("push: SKIP - low heap"));
+		return;
+	}
+	// TLS (BearSSL) needs ~11KB free plus a large contiguous block. Attempting it
+	// on a low/fragmented heap forces the free_tmp_memory()/restore_tmp_memory()
+	// dance (suspend+re-init MQTT/sensors/InfluxDB) which itself OOM-crashes here.
+	// The forwarder accepts plain-HTTP POST on port 80, so downgrade to HTTP when
+	// there isn't ample TLS headroom — this avoids the memory dance entirely.
+	if (usessl && (ESP.getFreeHeap() < 16000 || ESP.getMaxFreeBlockSize() < 9000)) {
+		DEBUG_PRINTLN(F("push: TLS headroom too low -> HTTP on port 80"));
+		usessl = false;
+		if (port == 443) port = 80;
+	}
+#elif defined(ESP32)
+	DEBUG_PRINTF("push: ESP32 freeheap=%u internal=%u ssl=%d\n", (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (int)usessl);
+	if (ESP.getFreeHeap() < 3500) {
+		DEBUG_PRINTLN(F("push: SKIP - low heap"));
+		return;
+	}
+#endif
+
+	DEBUG_PRINTF("push: url=%s -> host=%s port=%u path=%s ssl=%d\n", url, host, port, path, (int)usessl);
+
+	// device_key = the same MAC the controller reports in /jc ("mac").
+	unsigned char mac[6] = {0};
+	#if defined(ARDUINO)
+	os.load_hardware_mac(mac, useEth);
+	#else
+	os.load_hardware_mac(mac, true); // matches the "mac" reported by /jc on OSPi
+	#endif
+	char device_key[13];
+	snprintf_P(device_key, sizeof(device_key), PSTR("%02X%02X%02X%02X%02X%02X"),
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+	// auth = the stored device password hash (md5), identical to the app's pw.
+	// Zero-init: on ESP8266 an unset/short SOPT_PASSWORD could otherwise leave the
+	// buffer as uninitialized stack (leaking earlier scratch like the push cfg
+	// fragment into the JSON body, corrupting it -> forwarder returns 400).
+	char auth[40];
+	memset(auth, 0, sizeof(auth));
+	os.sopt_load(SOPT_PASSWORD, auth, sizeof(auth) - 1);
+	if (auth[0] == 0) { DEBUG_PRINTLN(F("push: SKIP - SOPT_PASSWORD empty")); return; }
+	// The auth value must be a hex password hash. If it contains JSON/quote chars
+	// (e.g. leaked scratch), a raw insert would break the JSON body -> reject.
+	for (size_t ai = 0; auth[ai]; ai++) {
+		if (auth[ai] == '"' || auth[ai] == '\\' || auth[ai] == '{' || auth[ai] == ',') {
+			DEBUG_PRINTF("push: SKIP - SOPT_PASSWORD not a valid hash ('%s')\n", auth);
+			return;
+		}
+	}
+
+	char text[128];
+	notif_render_text(type, lval, fval, bval, text, sizeof(text));
+	char text_esc[160];
+	push_json_escape(text_esc, sizeof(text_esc), text, sizeof(text));
+
+	uint8_t prio = notif_priority(type);
+
+	// Build the JSON body into tmp_buffer, then the HTTP request into ether_buffer.
+	snprintf_P(tmp_buffer, TMP_BUFFER_SIZE,
+		PSTR("{\"device_key\":\"%s\",\"auth\":\"%s\",\"id\":%lu,\"type\":%lu,\"prio\":%u,\"text\":\"%s\"}"),
+		device_key, auth, (unsigned long)event_id, (unsigned long)type, (unsigned)prio, text_esc);
+
+	// NOTE: the BufferFiller capacity must be the ether_buffer size, NOT
+	// TMP_BUFFER_SIZE (320) — otherwise longer requests are truncated mid-body,
+	// producing invalid JSON that the push forwarder rejects with HTTP 400.
+	BufferFiller bf = BufferFiller(ether_buffer, ETHER_BUFFER_SIZE);
+	bf.emit_p(PSTR("POST $S HTTP/1.0\r\n"
+					"Host: $S\r\n"
+					"User-Agent: $S\r\n"
+					"Accept: */*\r\n"
+					"Content-Length: $D\r\n"
+					"Content-Type: application/json\r\n\r\n$S"),
+					path, host, user_agent_string, strlen(tmp_buffer), tmp_buffer);
+
+	// Synchronous send: block until the push forwarder has been contacted.
+	DEBUG_PRINTF("push: sending %u body bytes to %s:%u ssl=%d\n", (unsigned)strlen(tmp_buffer), host, port, (int)usessl);
+	int8_t rc = os.send_http_request(host, port, ether_buffer, NULL, usessl, 5000, true);
+	DEBUG_PRINTF("push: send_http_request rc=%d\n", (int)rc);
+	// A connect error means the host was unreachable (the slow, main-loop-stalling
+	// case). Any other result means we reached the forwarder -> internet is up.
+	outbound_note_result(rc != HTTP_RQT_CONNECT_ERR);
+}
+#endif
 
 void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if (!is_notif_enabled(type)) {
@@ -335,8 +569,8 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	// and show a push/local notification. Reset to false when an event turns out to
 	// be a non-event (e.g. a flow reading below the alert setpoint).
 	bool log_this = true;
-	static char topic[PUSH_TOPIC_LEN+1];
-	static char payload[PUSH_PAYLOAD_LEN+1];
+	char topic[PUSH_TOPIC_LEN+1];
+	char payload[PUSH_PAYLOAD_LEN+1];
 	char* postval = tmp_buffer+1; // +1 so we can fit a opening { before the loaded config
 
 	// check if ifttt key exists and also if the enable bit is set
@@ -349,53 +583,65 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	// parse email variables
 	#if defined(SUPPORT_EMAIL)
 	// define email variables
-	ArduinoJson::JsonDocument doc; // make sure this has the same scope of email_x variables to prevent use after free
-	const char *email_host = NULL;
-	const char *email_username = NULL;
-	const char *email_login = NULL;
-	const char *email_password = NULL;
-	const char *email_recipient = NULL;
+	String email_host;
+	String email_username;
+	String email_login;
+	String email_password;
+	String email_recipient;
 	int  email_port = DEFAULT_EMAIL_PORT;
 	int  email_en = 0;
+#if defined(ESP8266)
+	// ESP8266: single heap block instead of ~965 B of permanent DRAM.
+	// We free this early after parsing to avoid fragmenting the heap during the TLS memory check.
+	char *email_buf = (char*)malloc(2 * (MAX_SOPTS_SIZE + 1) + (MAX_SOPTS_SIZE + 3));
+	char *saved_email_config = email_buf;
+	char *email_config = email_buf ? email_buf + (MAX_SOPTS_SIZE + 1) : NULL;
+	char *email_json   = email_buf ? email_buf + 2 * (MAX_SOPTS_SIZE + 1) : NULL;
+	bool email_buf_ok = (email_buf != NULL);
+#else
 	static PSRAM_BSS_ATTR char saved_email_config[MAX_SOPTS_SIZE + 1];
 	static PSRAM_BSS_ATTR char email_config[MAX_SOPTS_SIZE + 1];
 	static PSRAM_BSS_ATTR char email_json[MAX_SOPTS_SIZE + 3];
+	bool email_buf_ok = true;
+#endif
 
-	os.sopt_load(SOPT_EMAIL_OPTS, saved_email_config);
-	strcpy(email_config, saved_email_config);
-	if (!normalize_json_object_fragment(email_config, sizeof(email_config))) {
-		email_config[0] = 0;
-	}
-	if (strcmp(saved_email_config, email_config) != 0) {
-		os.sopt_save(SOPT_EMAIL_OPTS, email_config);
-	}
+	if (email_buf_ok) {
+		os.sopt_load(SOPT_EMAIL_OPTS, saved_email_config);
+		strcpy(email_config, saved_email_config);
+		if (!normalize_json_object_fragment(email_config, MAX_SOPTS_SIZE + 1)) {
+			email_config[0] = 0;
+		}
+		if (strcmp(saved_email_config, email_config) != 0) {
+			os.sopt_save(SOPT_EMAIL_OPTS, email_config);
+		}
 
-	if (email_config[0] != 0) {
-		size_t len = strlen(email_config);
-		memmove(email_json + 1, email_config, len + 1);
-		email_json[0] = '{';
-		email_json[len + 1] = '}';
-		email_json[len + 2] = 0;
+		if (email_config[0] != 0) {
+			size_t len = strlen(email_config);
+			memmove(email_json + 1, email_config, len + 1);
+			email_json[0] = '{';
+			email_json[len + 1] = '}';
+			email_json[len + 2] = 0;
 
-		ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, email_json);
-		// Test the parsing otherwise parse
-		if (error) {
-			DEBUG_PRINT(F("email: deserializeJson() failed: "));
-			DEBUG_PRINTLN(error.c_str());
-		} else {
-			email_en = doc["en"];
-			email_host = doc["host"];
-			email_port = doc["port"];
-			email_username = doc["user"];
-			email_login = doc["login"];
-			email_password = doc["pass"];
-			email_recipient= doc["recipient"];
-			// If no SMTP host specified, use default
-			if(!email_host || strlen(email_host)==0) email_host = "smtp.gmail.com";
-			// If no separate SMTP login specified, use sender email
-			if(!email_login || strlen(email_login)==0) email_login = email_username;
+			ArduinoJson::JsonDocument doc;
+			ArduinoJson::DeserializationError error = ArduinoJson::deserializeJson(doc, email_json);
+			// Test the parsing otherwise parse
+			if (error) {
+				DEBUG_PRINT(F("email: deserializeJson() failed: "));
+				DEBUG_PRINTLN(error.c_str());
+			} else {
+				email_en = doc["en"];
+				email_host = doc["host"] | "smtp.gmail.com";
+				email_port = doc["port"];
+				email_username = doc["user"] | "";
+				email_login = doc["login"] | email_username;
+				email_password = doc["pass"] | "";
+				email_recipient = doc["recipient"] | "";
+			}
 		}
 	}
+#if defined(ESP8266)
+	free(email_buf); // free early to prevent heap fragmentation
+#endif
 	#endif
 
 	#if defined(ESP8266) || defined(ESP32)
@@ -410,7 +656,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	bool email_enabled = false;
 	bool html_email_set = false;
 	bool influxdb_enabled = os.influxdb.isEnabled();
-	char *sval = NULL;
+	const char *sval = NULL;
 #if defined(SUPPORT_EMAIL)
 	if(!email_en){  // todo: this should be simplified
 		email_enabled = false;
@@ -419,9 +665,12 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	}
 #endif
 
-	// if none if enabled, return here
-	if ((!ifttt_enabled) && (!email_enabled) && (!os.mqtt.enabled()))
-		return;
+	// NOTE: Do NOT return here when no IFTTT/Email/MQTT channel is configured.
+	// The in-memory notification log (/nl) is the mobile app's own delivery
+	// channel (local/push notifications) and must be populated independently of
+	// the other channels. All delivery below is individually guarded
+	// (ifttt_enabled / email_enabled / os.mqtt.enabled()), so falling through is
+	// safe and the event still reaches notif_log_add() at the end.
 
 	if (ifttt_enabled || email_enabled) {
 		strcpy_P(postval, PSTR("{\"value1\":\"On site ["));
@@ -647,6 +896,23 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 					snprintf_P(postval+strlen(postval), TMP_BUFFER_SIZE, PSTR(" with %d%% water level."), (int)fval);
 				}
 
+				if(email_enabled) { email_message.subject += PSTR("program event"); }
+			}
+			break;
+
+		case NOTIFY_PROGRAM_END:
+			if (os.mqtt.enabled()) {
+				snprintf_P(topic, PUSH_TOPIC_LEN, PSTR("program/%d"), lval);
+				strcat_P(payload, PSTR("{\"state\":\"finished\"}"));
+			}
+			if (ifttt_enabled || email_enabled) {
+				ProgramStruct prog;
+				pd.read(lval, &prog);
+				if(lval < pd.nprograms) {
+					strcat_P(postval, PSTR("program "));
+					strcat(postval, prog.name);
+					strcat_P(postval, PSTR(" finished."));
+				}
 				if(email_enabled) { email_message.subject += PSTR("program event"); }
 			}
 			break;
@@ -985,7 +1251,7 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 		case NOTIFY_MONITOR_HIGH:
 
 			Monitor_t *mon = monitor_by_idx(bval);
-			sval = (mon == NULL) ? NULL : monitor_by_idx(bval)->name;
+			sval = (mon == NULL) ? NULL : monitor_by_idx(bval)->getName();
 			if (os.mqtt.enabled()) {
 				strcpy_P(topic, PSTR("monitoring"));
 				int len = strlen(payload);
@@ -1003,7 +1269,13 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 	if (os.mqtt.enabled() && strlen(topic) && strlen(payload))
 		os.mqtt.publish(topic, payload);
 
-	if (ifttt_enabled) {
+	// When the internet has been unreachable for several consecutive events, skip
+	// the blocking online channels (IFTTT/Email/InfluxDB/push) so notif.run() does
+	// not stall the main loop on dead connect timeouts. MQTT (typically a local
+	// broker) and the /nl log below are unaffected.
+	bool skip_online = outbound_backoff_active();
+
+	if (ifttt_enabled && !skip_online) {
 		strcat_P(postval, PSTR("\"}"));
 
 		BufferFiller bf = BufferFiller(ether_buffer, TMP_BUFFER_SIZE);
@@ -1015,33 +1287,40 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						"Content-Type: application/json\r\n\r\n$S"),
 						SOPT_IFTTT_KEY, DEFAULT_IFTTT_URL, user_agent_string, strlen(postval), postval);
 
-		os.send_http_request(DEFAULT_IFTTT_URL, 80, ether_buffer, NULL);
+		int8_t ifttt_rc = os.send_http_request(DEFAULT_IFTTT_URL, 80, ether_buffer, NULL);
+		outbound_note_result(ifttt_rc != HTTP_RQT_CONNECT_ERR);
 	}
 
-	if(email_enabled){
+	if(email_enabled && !skip_online){
 		if(!html_email_set) {
 			email_message.message = strchr(postval, 'O'); // ad-hoc: remove the value1 part from the ifttt message
+			#if defined(ESP8266) || defined(ESP32)
+				// Plain-text notifications: send as text/plain so line breaks are
+				// preserved. The EMailMessage default (text/html) would wrap the
+				// text in <html> and collapse newlines to a single line.
+				email_message.mime = "text/plain";
+			#endif
 		}
 		#if defined(ARDUINO)
 			#if defined(ESP8266) || defined(ESP32)
-				if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
+				if(email_host.length()>0 && email_login.length()>0 && email_password.length()>0 && email_recipient.length()>0) { // make sure all are valid
 					// TLS handshake headroom required before opening the SMTP connection.
 					// ESP8266 (BearSSL, no PSRAM): needs ~8-10KB internal heap plus
 					// fragmentation headroom. Require 16000 so the 75% maxblock check
-					// demands >=12000; the previous threshold of 12000 allowed
-					// maxblock=9464 to pass, which caused BearSSL _connectSSL() to crash.
-					// ESP32 (mbedTLS): once the network is up the firmware reroutes
-					// mbedTLS allocations to PSRAM (mbedtls_spiram_allow_internal_reroute),
-					// so the TLS buffers do NOT come from internal heap. Requiring 16000
-					// internal bytes wrongly blocked emails during active watering on the
-					// RAM-tight ESP32-C5 (~20KB free at idle). Use 10000 to match the
-					// weather/HTTPS TLS gate (OpenSprinkler.cpp ssl_tmp_memory_needed).
 					#if defined(ESP8266)
 						const size_t email_mem_needed = 16000;
 					#else
 						const size_t email_mem_needed = 10000;
 					#endif
-					if (!free_tmp_memory(email_mem_needed)) {
+					bool mem_ok = free_tmp_memory(email_mem_needed);
+					#if defined(ESP32)
+						// ESP32 handles TLS memory gracefully (or uses PSRAM). We use free_tmp_memory 
+						// to proactively suspend MQTT/Influx if internal heap is tight, but we 
+						// don't hard-block the email attempt if the strict contiguous check fails.
+						mem_ok = true;
+					#endif
+
+					if (!mem_ok) {
 						// Not enough contiguous heap to open a TLS connection right now
 						// (typical during active watering on RAM-tight boards). Skip only
 						// the SMTP send — do NOT return, so this event is still recorded in
@@ -1052,8 +1331,8 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						restore_tmp_memory(email_mem_needed);
 					} else {
 						DEBUG_PRINTLN(F("Sending email..."));
-						EMailSender emailSend(email_login, email_password, email_username, "OpenSprinkler");
-						emailSend.setSMTPServer(email_host);
+						EMailSender emailSend(email_login.c_str(), email_password.c_str(), email_username.c_str(), "OpenSprinkler");
+						emailSend.setSMTPServer(email_host.c_str());
 						emailSend.setSMTPPort(email_port);
 						// Use EHLO (ESMTP) instead of the library default HELO. AUTH is an
 						// ESMTP service extension that servers only advertise/enable after
@@ -1061,11 +1340,12 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						// after a plain HELO. The multi-line EHLO reply is parsed correctly
 						// (final line detected via the "250 " vs "250-" indicator).
 						emailSend.setEHLOCommand(true);
-						EMailSender::Response resp = emailSend.send(email_recipient, email_message);
+						EMailSender::Response resp = emailSend.send(email_recipient.c_str(), email_message);
 						DEBUG_PRINTLN(F("Sending Status:"));
 						DEBUG_PRINTLN(resp.status);
 						DEBUG_PRINTLN(resp.code);
 						DEBUG_PRINTLN(resp.desc);
+						outbound_note_result(resp.status);
 						restore_tmp_memory(email_mem_needed);
 					}
 				}
@@ -1074,26 +1354,35 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 			struct smtp *smtp = NULL;
 			String email_port_str = to_string(email_port);
 			smtp_status_code rc;
-			if(email_host && email_login && email_password && email_recipient) { // make sure all are valid
-				rc = smtp_open(email_host, email_port_str.c_str(), SMTP_SECURITY_TLS, SMTP_NO_CERT_VERIFY, NULL, &smtp);
-				rc = smtp_auth(smtp, SMTP_AUTH_PLAIN, email_login, email_password);
-				rc = smtp_address_add(smtp, SMTP_ADDRESS_FROM, email_username, "OpenSprinkler");
-				rc = smtp_address_add(smtp, SMTP_ADDRESS_TO, email_recipient, "User");
+			if(email_host.length()>0 && email_login.length()>0 && email_password.length()>0 && email_recipient.length()>0) { // make sure all are valid
+				rc = smtp_open(email_host.c_str(), email_port_str.c_str(), SMTP_SECURITY_TLS, SMTP_NO_CERT_VERIFY, NULL, &smtp);
+				rc = smtp_auth(smtp, SMTP_AUTH_PLAIN, email_login.c_str(), email_password.c_str());
+				rc = smtp_address_add(smtp, SMTP_ADDRESS_FROM, email_username.c_str(), "OpenSprinkler");
+				rc = smtp_address_add(smtp, SMTP_ADDRESS_TO, email_recipient.c_str(), "User");
 				rc = smtp_header_add(smtp, "Subject", email_message.subject.c_str());
 				if(html_email_set) {
 					rc = smtp_header_add(smtp, "Content-Type", "text/html; charset=UTF-8");
 				}
 				rc = smtp_mail(smtp, email_message.message.c_str());
 				rc = smtp_close(smtp);
+				outbound_note_result(rc == SMTP_STATUS_OK);
 				if (rc!=SMTP_STATUS_OK) {
 					DEBUG_PRINTF("SMTP: Error %s\n", smtp_status_code_errstr(rc));
 				}
 			}
 		#endif
 	}
-	if (influxdb_enabled)
+	if (influxdb_enabled && !skip_online)
 		os.influxdb.push_message(type, lval, fval, sval);
 
-	if (log_this)
+	if (log_this) {
 		notif_log_add(type, lval, fval, bval);
+		#if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
+		// After recording the event, push it out to the forwarder if the user
+		// opted in. This delivers real push without OTC (LAN / post-reboot).
+		if (!skip_online)
+			push_forward_event(type, lval, fval, bval, notif_log_lastid());
+		#endif
+	}
 }
+

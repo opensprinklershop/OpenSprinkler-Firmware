@@ -135,6 +135,14 @@ unsigned char findKeyVal(const char *str, char *strbuf, uint16_t maxlen, const c
 // NOTE: std::map cannot use EXT_RAM_BSS_ATTR - has internal tree pointers that need constructor
 static std::map<uint, SensorBase*> sensorsMap;
 static time_t last_save_time = 0;
+// Debounced config persistence: sensor_request_save() marks the config dirty and
+// (re)arms a short deadline; sensor_flush_pending() (called every main loop from
+// read_all_sensors) writes exactly once after the last request. This coalesces a
+// restore's many delete/define writes into one save that reliably reaches flash
+// before a reboot — no explicit client-side commit needed.
+static bool sensor_save_pending = false;
+static unsigned long sensor_save_pending_deadline = 0;
+static const unsigned long SENSOR_SAVE_DEBOUNCE_MS = 1500;
 static boolean apiInit = false;
 static SensorBase * current_sensor = NULL;
 // NOTE: std::map::iterator cannot use EXT_RAM_BSS_ATTR - has internal pointers
@@ -483,10 +491,10 @@ void sensor_api_init(boolean detect_boards) {
     // DEBUG_PRINTLN(F("Opening USB RS485 Adapters:"));
     while (std::getline(file, tty)) {
       modbus_t * ctx;
-      if (tty.find(".") > 0 || tty.find(":") > 0) {
-        if (tty.find(":") > 0) {
+      if (tty.find(".") != std::string::npos || tty.find(":") != std::string::npos) {
+        if (tty.find(":") != std::string::npos) {
           // IP:port
-          std::string host = tty.substr(0, tty.find(':'));
+          std::string host = tty.substr(0, tty.find(":"));
           std::string port = tty.substr(tty.find(':') + 1);
           ctx = modbus_new_tcp(host.c_str(), atoi(port.c_str()));
         } else {
@@ -496,6 +504,12 @@ void sensor_api_init(boolean detect_boards) {
       }
       else
         ctx = modbus_new_rtu(tty.c_str(), 9600, 'E', 8, 1);
+
+      if (ctx == NULL) {
+        DEBUG_PRINT(F("Unable to create libmodbus context for: "));
+        DEBUG_PRINTLN(tty.c_str());
+        continue;
+      }
       // DEBUG_PRINT(idx);
       // DEBUG_PRINT(F(": "));
       // DEBUG_PRINTLN(tty.c_str());
@@ -772,7 +786,7 @@ Monitor* monitor_iterate_next(MonitorIterator& it) {
  *
  * @param nr
  */
-int sensor_delete(uint nr) {
+int sensor_delete(uint nr, bool save_now) {
   auto it = sensorsMap.find(nr);
   if (it == sensorsMap.end()) return HTTP_RQT_NOT_RECEIVED;
   // Do not create a new driver object here; just remove the sensor
@@ -785,7 +799,7 @@ int sensor_delete(uint nr) {
   // minutes and made the /sc delete request appear to "do nothing". Stale
   // entries for this nr age out naturally as the ring log rotates; a re-created
   // sensor re-using the same nr simply sees them until then.
-  sensor_save();
+  if (save_now) sensor_save();
   return HTTP_RQT_SUCCESS;
 }
 
@@ -834,7 +848,7 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     
     if (save) sensor_save();
     sensor_notify_zigbee(sensor);
-    if (sensor->type != SENSOR_ZIGBEE) last_save_time = os.now_tz() - 3600 + 5; // force save next time
+    if (sensor->type != SENSOR_ZIGBEE) sensor_request_save(); // debounced persist
     
     return HTTP_RQT_SUCCESS;
   }
@@ -956,6 +970,14 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
   // Load from JSON
   new_sensor->fromJson(json);
 
+  // Only brand-new sensors created outside a restore get a creation barrier.
+  // Restore payloads represent existing sensors and must stay barrier-free.
+  const bool is_restore = json.containsKey("restore") && json["restore"].as<int>() != 0;
+  if (!is_restore && new_sensor->log_barrier == 0) {
+    time_t nowt = os.now_tz();
+    if (nowt > 1000000000UL) new_sensor->log_barrier = (uint32_t)nowt;
+  }
+
   sensorsMap[nr] = new_sensor;
   if (save) sensor_save();
   sensor_notify_zigbee(new_sensor);
@@ -1012,6 +1034,10 @@ static void sensor_trend_init_from_log(SensorBase *sensor) {
     if (count <= 0) break;
     for (int i = 0; i < count; i++) {
       if (buffer[i].nr == sensor->nr) {
+        // Respect the creation barrier so a re-used nr does not seed the trend
+        // from the previous sensor's leftover log entries.
+        if (sensor->log_barrier && buffer[i].time && buffer[i].time < sensor->log_barrier)
+          continue;
         sensor->trend_add_sample(buffer[i].data, buffer[i].time);
       }
     }
@@ -1148,10 +1174,22 @@ void sensor_load() {
  *
  */
 void sensor_request_save() {
-  // Schedule a deferred save (~5 seconds from now) instead of saving immediately.
-  // The periodic sensor loop checks (time - last_save_time > 3600) so setting
-  // last_save_time to now-3595 triggers a save after ~5 seconds.
-  last_save_time = os.now_tz() - 3600 + 5;
+  // Mark the config dirty and (re)arm a short debounce window. read_all_sensors()
+  // flushes it via sensor_flush_pending() shortly after the last request, so a
+  // whole restore batch is persisted with a single save that survives a reboot.
+  sensor_save_pending = true;
+  sensor_save_pending_deadline = millis() + SENSOR_SAVE_DEBOUNCE_MS;
+}
+
+// Flush a pending debounced save once the quiet window has elapsed. Safe to call
+// every loop; a no-op unless sensor_request_save() armed it and the deadline
+// passed. Must run even when sensorsMap is empty so a restore that deleted every
+// sensor still writes the empty file instead of leaving the old one on flash.
+static void sensor_flush_pending() {
+  if (!sensor_save_pending) return;
+  if ((long)(millis() - sensor_save_pending_deadline) < 0) return;
+  sensor_save_pending = false;
+  sensor_save();
 }
 
 void sensor_save() {
@@ -1792,27 +1830,31 @@ static void flush_deferred_mqtt() {
 void push_message(SensorBase *sensor) {
   if (!sensor || !sensor->last_read) return;
 
-  static char EXT_RAM_BSS_ATTR topic[TMP_BUFFER_SIZE];
-  static char EXT_RAM_BSS_ATTR payload[TMP_BUFFER_SIZE];
   char *postval = tmp_buffer;
 
   if (os.mqtt.enabled()) {
-    // DEBUG_PRINTLN(F("push mqtt1"));
-    strncpy_P(topic, PSTR("analogsensor/"), sizeof(topic) - 1);
-    strncat(topic, sensor->name, sizeof(topic) - 1);
-    snprintf_P(payload, TMP_BUFFER_SIZE,
-              PSTR("{\"nr\":%u,\"type\":%u,\"data_ok\":%u,\"time\":%u,"
-                   "\"value\":%d.%02d,\"unit\":\"%s\"}"),
-              sensor->nr, sensor->type, sensor->flags.data_ok,
-              sensor->last_read, (int)sensor->last_data,
-              abs((int)(sensor->last_data * 100) % 100), getSensorUnit(sensor));
-
-    if (os.mqtt.connected()) {
-      os.mqtt.publish(topic, payload);
-    } else {
-      // Keep loopTask stack shallow: MQTT reconnect can trigger a TLS connect
-      // path with high stack usage. Reconnect is handled centrally in os.mqtt.loop().
+    if (!os.mqtt.connected()) {
+      // Not connected: defer and skip building topic/payload. The flush path
+      // rebuilds them from last_read/last_data, so nothing is lost here.
+      // Reconnect is handled centrally in os.mqtt.loop() (keeps loopTask stack shallow).
       mqtt_defer_push(sensor->nr);
+    } else {
+      // Stack-scoped (not static): freed before the influx/TLS path below, so no
+      // permanent RAM and no added peak stack during add_influx_data().
+      // topic = "analogsensor/" (13) + name[30]; payload JSON ~120 B.
+      char topic[64];
+      char payload[192];
+      // DEBUG_PRINTLN(F("push mqtt1"));
+      strncpy_P(topic, PSTR("analogsensor/"), sizeof(topic) - 1);
+      topic[sizeof(topic) - 1] = 0;
+      strncat(topic, sensor->getName(), sizeof(topic) - strlen(topic) - 1);
+      snprintf_P(payload, sizeof(payload),
+                PSTR("{\"nr\":%u,\"type\":%u,\"data_ok\":%u,\"time\":%u,"
+                     "\"value\":%d.%02d,\"unit\":\"%s\"}"),
+                sensor->nr, sensor->type, sensor->flags.data_ok,
+                sensor->last_read, (int)sensor->last_data,
+                abs((int)(sensor->last_data * 100) % 100), getSensorUnit(sensor));
+      os.mqtt.publish(topic, payload);
     }
     // DEBUG_PRINTLN(F("push mqtt2"));
   }
@@ -1852,6 +1894,11 @@ void push_message(SensorBase *sensor) {
 }
 
 void read_all_sensors(boolean online) {
+  // Persist any pending (debounced) config change first. This runs before the
+  // NTP/empty-map early returns below so a restore that deleted sensors — even
+  // all of them — reaches flash and does not reappear after a reboot.
+  sensor_flush_pending();
+
   // Flush deferred MQTT pushes when network is back
   if (online) flush_deferred_mqtt();
 
@@ -1899,6 +1946,22 @@ void read_all_sensors(boolean online) {
     return;  // wait 30s before first sensor read
   }
 
+  // Evaluate monitors and run periodic post-processing on a steady 1-second
+  // cadence, independent of the sensor-read sweep. With several continuously
+  // averaging ASB sensors the read loop reads 3 sensors per pass and
+  // early-returns before ever reaching the trailing check_monitors(), which
+  // would leave monitors unevaluated in the background (#331). Running it here
+  // guarantees execution once per wall-clock second.
+  static time_os_t s_last_periodic = 0;
+  if (time != s_last_periodic) {
+    s_last_periodic = time;
+    sensor_update_groups();
+    calc_sensorlogs();
+    check_monitors();
+    if (time - last_save_time > 3600)  // 1h
+      sensor_save();
+  }
+
   // Initialize iterator if we're starting over
   if (!current_sensor && !sensorsMap.empty()) {
     current_sensor_it = sensorsMap.begin();
@@ -1909,7 +1972,9 @@ void read_all_sensors(boolean online) {
   unsigned long pass_start_ms = millis();
   while (current_sensor && current_sensor_it != sensorsMap.end()) {
     //ulong time_since_last = (current_sensor->last_read == 0) ? 99999 : (time - current_sensor->last_read);
-    boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval || current_sensor->repeat_read);
+    boolean should_read = (time >= current_sensor->last_read + current_sensor->read_interval ||
+                 current_sensor->repeat_read ||
+                 weather_sensor_should_refresh_now(current_sensor->type, current_sensor->last_read));
     
     if (should_read) {
       if (!current_sensor->flags.enable || current_sensor->type == SENSOR_TYPE_NONE) {
@@ -1918,7 +1983,7 @@ void read_all_sensors(boolean online) {
       } else if (online || (current_sensor->ip == 0 && current_sensor->type != SENSOR_MQTT)) {
         //boolean was_repeat = current_sensor->repeat_read;
         DEBUG_PRINTF(F("[SENSOR] read begin #%d type=%d name='%s' repeat=%d\n"),
-                     current_sensor->nr, current_sensor->type, current_sensor->name, current_sensor->repeat_read);
+                     current_sensor->nr, current_sensor->type, current_sensor->getName(), current_sensor->repeat_read);
         
         unsigned long read_start_ms = millis();
         int result = read_sensor(current_sensor, time);
@@ -2003,11 +2068,6 @@ void read_all_sensors(boolean online) {
       current_sensor = NULL;
     }
   }
-  sensor_update_groups();
-  calc_sensorlogs();
-  check_monitors();
-  if (time - last_save_time > 3600)  // 1h
-    sensor_save();
 }
 
 #if defined(ESP8266) || defined(ESP32)
@@ -2452,7 +2512,7 @@ void ProgSensorAdjust::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("stale_policy")] = stale_policy;
   obj[F("stale_fallback")] = stale_fallback;
   obj[F("order")] = order;
-  obj[F("name")] = name;
+  obj[F("name")] = getName();
 }
 
 void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
@@ -2470,8 +2530,7 @@ void ProgSensorAdjust::fromJson(ArduinoJson::JsonVariantConst obj) {
   stale_fallback = clamp_adjust_factor(obj[F("stale_fallback")] | 1.0);
   order = obj[F("order")] | order;
   
-  const char* nameStr = obj[F("name")] | "";
-  SAFE_STRNCPY(name, nameStr, sizeof(name));
+  setName(obj[F("name")] | "");
 }
 
 /**
@@ -2576,12 +2635,12 @@ int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
   return prog_adjust_define(obj, true);
 }
 
-int prog_adjust_delete(uint nr) {
+int prog_adjust_delete(uint nr, bool save_now) {
   auto it = progSensorAdjustsMap.find(nr);
   if (it != progSensorAdjustsMap.end()) {
     delete it->second;
     progSensorAdjustsMap.erase(it);
-    prog_adjust_save();
+    if (save_now) prog_adjust_save();
     return HTTP_RQT_SUCCESS;
   }
   return HTTP_RQT_NOT_RECEIVED;
@@ -2767,7 +2826,10 @@ bool checkDiskFree() {
 // more valuable than the oldest, disposable log history, so free space by
 // trimming the inactive (older) log ring files before the save. Removing
 // getlogfile2() keeps all current log data (getlogfile()) intact and only drops
-// the oldest half of the ring. Oldest/least-granular history goes first.
+// the oldest half of the ring. Oldest/least-granular history goes first. If the
+// current (active) ring alone still fills the partition, a last-resort pass also
+// drops current rings (least-valuable first) so a full-device restore can still
+// create its sensors instead of failing with "not enough space".
 void ensureConfigSpace() {
   if (diskFree() >= CONFIG_HEADROOM) return;
   const uint8_t order[] = { LOG_MONTH, LOG_WEEK, LOG_STD };
@@ -2777,6 +2839,26 @@ void ensureConfigSpace() {
       DEBUG_PRINT(F("ensureConfigSpace: trimming old log "));
       DEBUG_PRINTLN(fn);
       remove_file(fn);
+    }
+  }
+
+  // Last resort: the inactive half-rings are gone but the filesystem is still
+  // critically full — i.e. the *current* (active) log ring alone fills the
+  // partition (12 chatty sensors + many monitors). Without this a restore of
+  // all sensors keeps failing with "not enough space" on a full device. Losing
+  // config data is worse than losing recent, regenerable log history, so drop
+  // the current ring too. Order preserves the most valuable data longest: the
+  // high-resolution std log (regenerates fastest) goes first, the long-term
+  // monthly aggregate last.
+  if (diskFree() < CONFIG_HEADROOM) {
+    const uint8_t last_order[] = { LOG_STD, LOG_WEEK, LOG_MONTH };
+    for (uint8_t i = 0; i < 3 && diskFree() < CONFIG_HEADROOM; i++) {
+      const char *fn = getlogfile(last_order[i]);
+      if (fn && fn[0] && file_exists(fn)) {
+        DEBUG_PRINT(F("ensureConfigSpace: trimming current log "));
+        DEBUG_PRINTLN(fn);
+        remove_file(fn);
+      }
     }
   }
 }
@@ -2833,7 +2915,7 @@ unsigned char SensorBase::getUnitId() const {
 
 const char* SensorBase::getUnit() const {
   int unitid = getUnitId();
-  if (unitid == UNIT_USERDEF) return userdef_unit;
+  if (unitid == UNIT_USERDEF) return getUserdefUnit();
   if (unitid < 0 || unitid >= MAX_SENSOR_UNITNAMES)
     return sensor_unitNames[0];
   return sensor_unitNames[unitid];
@@ -2946,7 +3028,7 @@ void add_influx_data(SensorBase *sensor) {
 
   // Common setup (shared by all platforms)
   char devname_safe[64];
-  char sensor_name_safe[sizeof(sensor->name) + 1];
+  char sensor_name_safe[64];
   char unit_safe[16];
 
   devname_safe[0] = '\0';
@@ -2955,55 +3037,24 @@ void add_influx_data(SensorBase *sensor) {
 
   os.sopt_load(SOPT_DEVICE_NAME, tmp_buffer);
   SAFE_STRNCPY(devname_safe, tmp_buffer, sizeof(devname_safe));
-  SAFE_STRNCPY(sensor_name_safe, sensor->name, sizeof(sensor_name_safe));
+  SAFE_STRNCPY(sensor_name_safe, sensor->getName(), sizeof(sensor_name_safe));
   const char* unit = getSensorUnit(sensor);
   if (unit) {
     SAFE_STRNCPY(unit_safe, unit, sizeof(unit_safe));
   }
 
-  #if defined(ESP8266) || defined(ESP32)
-  Point sensor_data("analogsensor");
-  sensor_data.addTag("devicename", devname_safe);
-  snprintf(tmp_buffer, 10, "%d", sensor->nr);
-  sensor_data.addTag("nr", tmp_buffer);
-  sensor_data.addTag("name", sensor_name_safe);
-  sensor_data.addTag("unit", unit_safe);
-  sensor_data.addField("native_data", sensor->last_native_data);
-  sensor_data.addField("data", sensor->last_data);
-  os.influxdb.write_influx_data(sensor_data);
+  char devesc[128], nameesc[64], unitesc[32];
+  OSInfluxDB::influx_escape(devesc, sizeof(devesc), devname_safe);
+  OSInfluxDB::influx_escape(nameesc, sizeof(nameesc), sensor_name_safe);
+  OSInfluxDB::influx_escape(unitesc, sizeof(unitesc), unit_safe);
+  char tags[256];
+  snprintf(tags, sizeof(tags), "devicename=%s,nr=%d,name=%s,unit=%s",
+           devesc, (int)sensor->nr, nameesc, unitesc);
+  char fields[64];
+  snprintf(fields, sizeof(fields), "native_data=%lui,data=%.2f",
+           (unsigned long)sensor->last_native_data, sensor->last_data);
+  os.influxdb.write_influx_line("analogsensor", tags, fields);
 
-  #else
-  // Backoff: skip InfluxDB 60s after failure
-  static ulong influx_last_fail = 0;
-  static int influx_fail_count = 0;
-  if (influx_fail_count > 0 && (millis() - influx_last_fail) < 60000UL)
-    return;
-
-  influxdb_cpp::server_info * client = os.influxdb.get_client();
-  if (!client)
-    return;
-
-  char nr_buf[10];
-  snprintf(nr_buf, 10, "%d", sensor->nr);
-  int rc = influxdb_cpp::builder()
-    .meas("analogsensor")
-    .tag("devicename", devname_safe)
-    .tag("nr", nr_buf)
-    .tag("name", sensor_name_safe)
-    .tag("unit", unit_safe)
-    .field("native_data", (long)sensor->last_native_data)
-    .field("data", sensor->last_data, 2)
-    .timestamp(millis())
-    .post_http(*client, NULL, 5);
-
-  if (rc != 0) {
-    influx_fail_count++;
-    influx_last_fail = millis();
-  } else {
-    influx_fail_count = 0;
-  }
-
-  #endif
 #endif // DISABLE_INFLUXDB
 }
 
@@ -3021,7 +3072,7 @@ void Monitor::toJson(ArduinoJson::JsonObject obj) const {
   obj[F("zone")] = zone;
   obj[F("active")] = active;
   obj[F("time")] = time;
-  obj[F("name")] = name;
+  obj[F("name")] = getName();
   obj[F("maxRuntime")] = maxRuntime;
   obj[F("prio")] = prio;
   obj[F("reset_seconds")] = reset_seconds;
@@ -3085,7 +3136,7 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
   zone = obj[F("zone")] | 0;
   active = obj[F("active")] | false;
   time = obj[F("time")] | 0;
-  SAFE_STRNCPY(name, obj[F("name")] | "", sizeof(name));
+  setName(obj[F("name")] | "");
   maxRuntime = obj[F("maxRuntime")] | 0;
   prio = obj[F("prio")] | 0;
   reset_seconds = obj[F("reset_seconds")] | 0;
@@ -3168,6 +3219,13 @@ static bool monitor_load_file(const char *fn) {
   for (ArduinoJson::JsonVariantConst v : array) {
     Monitor_t *mon = new Monitor_t;
     mon->fromJson(v);
+
+    // The persisted `active` must not suppress the first event after boot: a
+    // monitor whose condition is already met has to (re)fire its start/stop
+    // action once check_monitors() runs. Start inactive so the first evaluation
+    // produces a real transition. This runs only at boot (monitor_load_file is
+    // called solely from monitor_load()), so runtime reloads keep their state.
+    mon->active = false;
 
     // Skip invalid entries
     if (!mon->nr || !mon->type) {
@@ -3287,12 +3345,12 @@ int monitor_count() {
   return monitorsMap.size();
 }
 
-int monitor_delete(uint nr) {
+int monitor_delete(uint nr, bool save_now) {
   auto it = monitorsMap.find(nr);
   if (it != monitorsMap.end()) {
     delete it->second;
     monitorsMap.erase(it);
-    monitor_save();
+    if (save_now) monitor_save();
     return HTTP_RQT_SUCCESS;
   }
   return HTTP_RQT_NOT_RECEIVED;
@@ -3321,7 +3379,7 @@ int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const 
     p->failsafe_active = failsafe_active;
     if (order) p->order = order;  // only overwrite when an explicit order is provided
     p->show = show;
-    SAFE_STRNCPY(p->name, name, sizeof(p->name));
+    p->setName(name);
   } else {
     // Reject a new monitor when the filesystem is too full to store it safely (#295)
     if (!config_space_for_new_entry(MONITOR_FILENAME)) {
@@ -3345,7 +3403,7 @@ int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const 
     p->failsafe_active = failsafe_active;
     p->order = order;
     p->show = show;
-    SAFE_STRNCPY(p->name, name, sizeof(p->name));
+    p->setName(name);
     
     monitorsMap[nr] = p;
   }
@@ -3465,10 +3523,8 @@ void push_message(Monitor_t * mon, float value, int monidx) {
     case 2: type = NOTIFY_MONITOR_HIGH; break;
     default: return;
   }
-  char name[30];
-  SAFE_STRNCPY(name, mon->name, sizeof(name));
   DEBUG_PRINT(F("monitoring: activated "));
-  DEBUG_PRINT(name);
+  DEBUG_PRINT(mon->getName());
   DEBUG_PRINT(F(" - "));
   DEBUG_PRINTLN(type);
   notif.add(type, (uint32_t)mon->prio, value, (uint8_t)monidx);
@@ -3483,6 +3539,13 @@ bool get_monitor(uint nr, bool inv, bool defaultBool) {
 bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   unsigned char ip[4];
   IP4_EXTRACT_BYTES(ip, mon->m.remote.ip);
+
+  // Skip unconfigured remote targets: a monitor with ip 0.0.0.0 (or port 0) would
+  // otherwise make check_monitors() hammer send_http_request("0.0.0.0",...) every
+  // eval cycle, spamming "0.0.0.0:80 failed" and stalling the main loop.
+  if (mon->m.remote.ip == 0 || mon->m.remote.port == 0) {
+    return defaultBool;
+  }
 
   // DEBUG_PRINTLN(F("read_monitor_http"));
 
@@ -3524,15 +3587,10 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   return defaultBool;
 }
 
-// Read a monitor's pending (scratch) state during the combinational
-// evaluation phase. Using the scratch image (eval_active) instead of the
-// live `active` value makes logic monitors (NOT/AND/OR/XOR/SET_SENSOR12)
-// independent of the order in which monitors are stored/evaluated.
-static bool get_monitor_eval(uint nr, bool inv, bool defaultBool) {
-  Monitor_t *mon = monitor_by_nr(nr);
-  if (!mon) return defaultBool;
-  return inv ? !mon->eval_active : mon->eval_active;
-}
+// Transient per-monitor evaluation state. It used to live on the Monitor
+// object (eval_active/eval_value); since it is only needed during a single
+// check_monitors() pass it now lives in a function-local table there.
+struct MonEval { bool active; double value; };
 
 void check_monitors() {
   //DEBUG_PRINTLN(F("check_monitors"));
@@ -3560,8 +3618,8 @@ void check_monitors() {
   // ---------------------------------------------------------------------
   // Two-phase, order-independent evaluation.
   //
-  // Phase 1 computes a stable "process image" of every monitor state into
-  // the transient eval_active/eval_value fields without touching outputs:
+  // Phase 1 computes a stable "process image" of every monitor state into a
+  // function-local table (ev) without touching outputs:
   //   1a) input/leaf monitors (sensor min/max, sensor1/2, time, remote)
   //       are evaluated once - they do not depend on other monitors.
   //   1b) logic monitors (NOT/AND/OR/XOR/SET_SENSOR12) are evaluated
@@ -3572,17 +3630,28 @@ void check_monitors() {
   // actions, notifications and reset-timer handling).
   // ---------------------------------------------------------------------
 
-  // Seed the image with the current states (used as latch input and as the
-  // default for monitors that are not (re)computed this cycle).
+  // Function-local evaluation image (monitor nr -> transient state). Seeded with
+  // the current live states — used as the hysteresis latch input and as the
+  // default for monitors that are not (re)computed this cycle.
+  std::map<uint, MonEval> ev;
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
-    mon->eval_active = mon->active;
-    mon->eval_value = 0;
+    ev[mon->nr] = { (bool)mon->active, 0.0 };
   }
+
+  // Read a monitor's pending (image) state during the logic-combination phase.
+  // Reading the image (not the live `active`) keeps logic monitors
+  // (NOT/AND/OR/XOR/SET_SENSOR12) independent of storage/evaluation order.
+  auto getEval = [&](uint nr, bool inv, bool defaultBool) -> bool {
+    auto it = ev.find(nr);
+    if (it == ev.end()) return defaultBool;
+    return inv ? !it->second.active : it->second.active;
+  };
 
   // Phase 1a: input / leaf monitors (independent of other monitors)
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
+    MonEval &e = ev[mon->nr];
 
     switch(mon->type) {
       case MONITOR_MIN:
@@ -3591,28 +3660,28 @@ void check_monitors() {
         if (sensor && sensor->flags.data_ok) {
           mon->last_ok_time = timeNow;
           double value = sensor->last_data;
-          mon->eval_value = value;
+          e.value = value;
 
           double v_min = mon->m.minmax.value1 <= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
           double v_max = mon->m.minmax.value1 >= mon->m.minmax.value2 ? mon->m.minmax.value1 : mon->m.minmax.value2;
 
           if (v_min == v_max) {
             if (mon->type == MONITOR_MIN) {
-              mon->eval_active = (value <= v_min);
+              e.active = (value <= v_min);
             } else {
-              mon->eval_active = (value >= v_max);
+              e.active = (value >= v_max);
             }
           } else {
             // hysteresis: latch off the previous output state
             if (!mon->active) {
               if ((mon->type == MONITOR_MIN && value <= v_min) ||
                 (mon->type == MONITOR_MAX && value >= v_max)) {
-                mon->eval_active = true;
+                e.active = true;
               }
             } else {
               if ((mon->type == MONITOR_MIN && value >= v_max) ||
                 (mon->type == MONITOR_MAX && value <= v_min)) {
-                mon->eval_active = false;
+                e.active = false;
               }
             }
           }
@@ -3622,21 +3691,32 @@ void check_monitors() {
           // the configured failsafe state instead of latching the last value.
           if (mon->last_ok_time == 0) mon->last_ok_time = timeNow; // seed from boot/first eval
           if (timeNow >= mon->last_ok_time + mon->stale_timeout) {
-            mon->eval_active = (mon->failsafe_active != 0);
+            e.active = (mon->failsafe_active != 0);
           }
           // else: within grace period -> keep previous state (seeded above)
         }
-        // stale_timeout==0 -> legacy behavior: keep previous eval_active.
-        break; }
+        // stale_timeout==0 -> legacy behavior: keep previous eval state.
+        // Ticket #331 diagnostics: show whether this MIN/MAX monitor is being
+        // evaluated and with which inputs. Values are scaled x100 to stay clear
+        // of ESP8266 %f printf limitations (e.g. data=1001 means 10.01).
+        DEBUG_PRINTF(F("[MON%u] MINMAX sens=%u ok=%d data=%ld v1=%ld v2=%ld stt=%lu act=%d eval=%d\n"),
+          mon->nr, mon->sensor,
+          sensor ? (int)sensor->flags.data_ok : -1,
+          sensor ? (long)(sensor->last_data * 100) : 0L,
+          (long)(mon->m.minmax.value1 * 100), (long)(mon->m.minmax.value2 * 100),
+          (unsigned long)mon->stale_timeout,
+          (int)mon->active, (int)e.active);
+        break;
+      }
 
       case MONITOR_SENSOR12: {
         if (mon->m.sensor12.sensor12 == 1) {
           if (os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR1_TYPE] == SENSOR_TYPE_SOIL) {
-            mon->eval_active = mon->m.sensor12.invers ? !os.status.sensor1_active : os.status.sensor1_active;
+            e.active = mon->m.sensor12.invers ? !os.status.sensor1_active : os.status.sensor1_active;
           }
         } else if (mon->m.sensor12.sensor12 == 2) {
           if (os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_NONE || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_RAIN || os.iopts[IOPT_SENSOR2_TYPE] == SENSOR_TYPE_SOIL) {
-            mon->eval_active = mon->m.sensor12.invers ? !os.status.sensor2_active : os.status.sensor2_active;
+            e.active = mon->m.sensor12.invers ? !os.status.sensor2_active : os.status.sensor2_active;
           }
         }
         break;
@@ -3647,24 +3727,29 @@ void check_monitors() {
         uint16_t time = (seconds_of_day / 3600) * 100 + (seconds_of_day % 3600) / 60; //HHMM
         uint8_t wday = (timeNow / 86400L + 3) % 7; //Monday = 0
         bool in_window = (mon->m.mtime.weekdays >> wday) & 0x01;
+        // time_to is treated as EXCLUSIVE at HH:MM:00 so a window like 09:00–12:00
+        // switches off at exactly 12:00:00 (not 12:01:00) and adjacent windows
+        // (…–17:00 / 17:00–…) hand over seamlessly with no overlap or gap. `time`
+        // is HHMM truncated to the minute, so "< time_to" ends the window at the
+        // start of that minute.
         if (mon->m.mtime.time_from > mon->m.mtime.time_to) // FROM > TO ? Over night value
-          in_window &= time >= mon->m.mtime.time_from || time <= mon->m.mtime.time_to;
+          in_window &= time >= mon->m.mtime.time_from || time < mon->m.mtime.time_to;
         else
-          in_window &= time >= mon->m.mtime.time_from && time <= mon->m.mtime.time_to;
+          in_window &= time >= mon->m.mtime.time_from && time < mon->m.mtime.time_to;
 
         if (mon->reset_seconds == 0) {
-          mon->eval_active = in_window;
+          e.active = in_window;
         } else {
           if (!in_window) {
-            mon->eval_active = false;
+            e.active = false;
             mon->reset_time = 0;
           } else {
             if (mon->reset_time == 0) {
-              mon->eval_active = true;
+              e.active = true;
             } else if (timeNow < mon->reset_time) {
-              mon->eval_active = true;
+              e.active = true;
             } else {
-              mon->eval_active = false;
+              e.active = false;
             }
           }
         }
@@ -3672,7 +3757,7 @@ void check_monitors() {
       }
 
       case MONITOR_REMOTE:
-        mon->eval_active = get_remote_monitor(mon, mon->active);
+        e.active = get_remote_monitor(mon, mon->active);
         break;
 
       default:
@@ -3690,39 +3775,40 @@ void check_monitors() {
     changed = false;
     for (auto &kv : monitorsMap) {
       Monitor_t *mon = kv.second;
-      bool newState = mon->eval_active;
+      MonEval &e = ev[mon->nr];
+      bool newState = e.active;
 
       switch(mon->type) {
         case MONITOR_SET_SENSOR12:
-          newState = get_monitor_eval(mon->m.set_sensor12.monitor, false, false);
+          newState = getEval(mon->m.set_sensor12.monitor, false, false);
           break;
         case MONITOR_AND:
-          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, true) &&
-            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, true) &&
-            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, true) &&
-            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, true);
+          newState = getEval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, true) &&
+            getEval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, true) &&
+            getEval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, true) &&
+            getEval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, true);
           break;
         case MONITOR_OR:
-          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ||
-            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ||
-            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ||
-            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
+          newState = getEval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ||
+            getEval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ||
+            getEval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ||
+            getEval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
           break;
         case MONITOR_XOR:
-          newState = get_monitor_eval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ^
-            get_monitor_eval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ^
-            get_monitor_eval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ^
-            get_monitor_eval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
+          newState = getEval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, false) ^
+            getEval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, false) ^
+            getEval(mon->m.andorxor.monitor3, mon->m.andorxor.invers3, false) ^
+            getEval(mon->m.andorxor.monitor4, mon->m.andorxor.invers4, false);
           break;
         case MONITOR_NOT:
-          newState = get_monitor_eval(mon->m.mnot.monitor, true, false);
+          newState = getEval(mon->m.mnot.monitor, true, false);
           break;
         default:
           continue; // leaf monitor, already final
       }
 
-      if (newState != mon->eval_active) {
-        mon->eval_active = newState;
+      if (newState != e.active) {
+        e.active = newState;
         changed = true;
       }
     }
@@ -3733,10 +3819,10 @@ void check_monitors() {
     Monitor_t *mon = kv.second;
     if (mon->type == MONITOR_SET_SENSOR12) {
       if (mon->m.set_sensor12.sensor12 == 1) {
-        os.status.forced_sensor1 = mon->eval_active;
+        os.status.forced_sensor1 = ev[mon->nr].active;
       }
       if (mon->m.set_sensor12.sensor12 == 2) {
-        os.status.forced_sensor2 = mon->eval_active;
+        os.status.forced_sensor2 = ev[mon->nr].active;
       }
     }
   }
@@ -3748,12 +3834,14 @@ void check_monitors() {
     uint nr = mon->nr;
 
     bool wasActive = mon->active;
-    double value = mon->eval_value;
-    mon->active = mon->eval_active;
+    double value = ev[mon->nr].value;
+    mon->active = ev[mon->nr].active;
 
     bool stopOnly = (mon->output_mode == MONITOR_OUTPUT_STOPONLY);
 
     if (mon->active != wasActive) {
+      DEBUG_PRINTF(F("[MON%u] transition %d->%d zone=%u prog=%u stopOnly=%d\n"),
+        mon->nr, (int)wasActive, (int)mon->active, mon->zone, mon->prog, (int)stopOnly);
       if (mon->active) {
         if (mon->reset_seconds > 0) {
           mon->reset_time = timeNow + mon->reset_seconds; 
@@ -3787,6 +3875,22 @@ void check_monitors() {
         // If reset_seconds > 0, we intentionally use pulse behavior: stop only
         // on each new activation edge (or periodic re-activation), not every cycle.
         stop_monitor_action(mon);
+      } else if (!stopOnly && mon->reset_seconds == 0 && mon->zone > 0 && mon->prog == 0) {
+        // Continuously re-assert while active (start/stop mode): the monitor
+        // started a zone with a finite maxRuntime; once the scheduler stops that
+        // zone after maxRuntime, mon->active stays latched true (hysteresis keeps
+        // it active until the deactivation threshold is reached). Without this,
+        // e.g. a cistern-refill MIN monitor would fill exactly once and then
+        // never refill again in the background, even though the condition is
+        // still met (ticket #331). Restart the zone whenever it is no longer
+        // running so the output keeps being enforced until deactivation. Limited
+        // to a pure zone monitor (no program) so we can check station_qid
+        // reliably and avoid stacking repeated program starts.
+        uint sid = mon->zone - 1;
+        if (sid < os.nstations && pd.station_qid[sid] == 0xFF) {
+          DEBUG_PRINTF(F("[MON%u] re-assert zone %u (not running)\n"), mon->nr, mon->zone);
+          start_monitor_action(mon);
+        }
       }
     }
 

@@ -58,10 +58,10 @@ void sensor_mqtt_unsubscribe(uint nr, uint type, const char *urlstr);
  */
 class MqttSensor : public SensorBase {
 public:
-// MQTT-specific fields
-    char url[200] = {0};            // URL for HTTP sensors or Host for MQTT
-    char topic[200] = {0};          // MQTT topic
-    char filter[200] = {0};         // JSON filter for MQTT
+// MQTT-specific fields — dynamically sized (from JSON), not fixed 200 B buffers.
+    char* url = nullptr;            // URL/host (unused by MQTT, kept for round-trip)
+    char* topic = nullptr;          // MQTT topic
+    char* filter = nullptr;         // JSON filter for MQTT
 
     // runtime-only fields (MQTT sensor specific)
     bool mqtt_init = false;
@@ -72,7 +72,7 @@ public:
      * @param type Sensor type identifier
      */
     explicit MqttSensor(uint type) : SensorBase(type) {}
-    virtual ~MqttSensor() {}
+    virtual ~MqttSensor() { free(url); free(topic); free(filter); }
     
     /**
      * @brief Read sensor value from MQTT topic

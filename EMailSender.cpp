@@ -52,7 +52,6 @@ const char PROGMEM b64_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                                     "0123456789+/";
 
 #define encode64(arr) encode64_f(arr,strlen(arr))
-
 inline void a3_to_a4(unsigned char * a4, unsigned char * a3) {
   a4[0] = (a3[0] & 0xfc) >> 2;
   a4[1] = ((a3[0] & 0x03) << 4) + ((a3[1] & 0xf0) >> 4);
@@ -103,19 +102,24 @@ int base64_enc_length(int plainLen) {
   return (n + 2 - ((n + 2) % 3)) / 3 * 4;
 }
 
-const char* encode64_f(char* input, uint8_t len) {
+// Returns base64(input) as a transient String — no permanent static buffer.
+String encode64_f(char* input, uint8_t len) {
   // encoding
 
 	EMAIL_DEBUG_PRINTLN(F("Encoding"));
 	EMAIL_DEBUG_PRINTLN(input);
 	EMAIL_DEBUG_PRINTLN(len);
 
-  //int encodedLen =
- base64_enc_length(len);
-  static char encoded[256];
-  // note input is consumed in this step: it will be empty afterwards
-  base64_encode(encoded, input, len);
-  return encoded;
+  int outLen = base64_enc_length(len);
+  String result;
+  // Sized heap scratch (freed here): base64 of a uint8_t-length input is <= 340 B.
+  char *enc = (char*)malloc(outLen + 1);
+  if (enc) {
+    base64_encode(enc, input, len);
+    result = enc;
+    free(enc);
+  }
+  return result;
 }
 
 // END BASE64 ---------------------------------------------------------
@@ -597,7 +601,7 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 		// Stop as soon as the final greeting line arrives (see EHLO handling
 		// below): "220 text" ends the reply, "220-text" continues it. Keeps
 		// non-Gmail servers with a different greeting line count from hanging.
-		if (_serverResponce.length() < 4 || _serverResponce.charAt(3) != '-') {
+		if (_serverResponce.length() < 4 || _serverResponce[3] != '-') {
 			break;
 		}
 		response = awaitSMTPResponse(client, "220", "Connection response error ", 2500);
@@ -645,7 +649,7 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 		// "250 text" (space). Servers such as GMX and Zoho return fewer EHLO
 		// lines than Gmail; without this check the loop would block on the
 		// missing lines until a 2500ms timeout and abort before sending.
-		if (_serverResponce.length() < 4 || _serverResponce.charAt(3) != '-') {
+		if (_serverResponce.length() < 4 || _serverResponce[3] != '-') {
 			break;
 		}
 		response = awaitSMTPResponse(client, "250", "EHLO error", 2500);
@@ -872,6 +876,12 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
 
   client.println(F("MIME-Version: 1.0"));
   client.println(F("Content-Type: Multipart/mixed; boundary=frontier"));
+  // A blank line MUST separate the message headers from the MIME body. Without
+  // it, strict clients (Thunderbird) parse the following "--frontier" line as a
+  // malformed header, absorb the part headers, and end up with a multipart body
+  // that has no opening boundary → the message renders EMPTY. Lenient clients
+  // (Aquamail/Gmail) show it anyway.
+  client.println();
 
   client.println(F("--frontier"));
 
@@ -879,7 +889,7 @@ EMailSender::Response EMailSender::send(const char* to[], byte sizeOfTo,  byte s
     client.print(email.mime);
     client.println(F("; charset=\"UTF-8\""));
 //  client.println(F("Content-Type: text/html; charset=\"UTF-8\""));
-  client.println(F("Content-Transfer-Encoding: 7bit"));
+  client.println(F("Content-Transfer-Encoding: 8bit"));
   client.println();
   if (email.mime==F("text/html")){
 //	  String body = "<!DOCTYPE html><html lang=\"en\">" + String(email.message) + "</html>";

@@ -35,33 +35,28 @@ void sensor_mqtt_init() {
 
 void MqttSensor::fromJson(ArduinoJson::JsonVariantConst obj) {
 	SensorBase::fromJson(obj);
-	    // MQTT-specific fields
+	    // MQTT-specific fields (dynamically sized from JSON)
     if (obj.containsKey(F("url"))) {
-      const char *u = obj[F("url")].as<const char*>();
-      if (u) strncpy(url, u, sizeof(url)-1);
+      set_dyn_str(url, obj[F("url")].as<const char*>());
     }
     if (obj.containsKey(F("topic"))) {
-      const char *t = obj[F("topic")].as<const char*>();
-      if (t) {
-        strncpy(topic, t, sizeof(topic)-1);
-        // Subscribe to MQTT topic when it's set
-        if (topic[0]) {
-          sensor_mqtt_subscribe(nr, SENSORURL_TYPE_TOPIC, topic);
-        }
+      set_dyn_str(topic, obj[F("topic")].as<const char*>());
+      // Subscribe to MQTT topic when it's set
+      if (topic && topic[0]) {
+        sensor_mqtt_subscribe(nr, SENSORURL_TYPE_TOPIC, topic);
       }
     }
     if (obj.containsKey(F("filter"))) {
-      const char *f = obj[F("filter")].as<const char*>();
-      if (f) strncpy(filter, f, sizeof(filter)-1);
+      set_dyn_str(filter, obj[F("filter")].as<const char*>());
     }
 }
 
 void MqttSensor::toJson(ArduinoJson::JsonObject obj) const {
 	SensorBase::toJson(obj);
 		// MQTT-specific fields
-	if (url[0]) obj[F("url")] = url;
-	if (topic[0]) obj[F("topic")] = topic;
-	if (filter[0]) obj[F("filter")] = filter;
+	if (url && url[0]) obj[F("url")] = url;
+	if (topic && topic[0]) obj[F("topic")] = topic;
+	if (filter && filter[0]) obj[F("filter")] = filter;
 }
 /**
  * @brief 
@@ -121,20 +116,16 @@ void MqttSensor::callback(struct mosquitto *mosq, void *obj, const struct mosqui
 	while (sensor) {
 		if (sensor->type == SENSOR_MQTT && sensor->last_read != now) {
 			MqttSensor* mqtt = static_cast<MqttSensor*>(sensor);
-			// Use toJson to get MQTT-specific fields (allocate doc on heap to avoid stack overflow)
-			// NOTE: Heap allocation is not supported in this ArduinoJson version. Use stack allocation (default size).
-			ArduinoJson::JsonDocument doc;
-			ArduinoJson::JsonObject obj = doc.to<ArduinoJson::JsonObject>();
-			sensor->toJson(obj);
-			const char* topic = obj["topic"] | "";
-			const char* filter = obj["filter"] | "";
+			// Direct member access avoids allocating a JsonDocument per MQTT message.
+			const char* topic = mqtt->topic ? mqtt->topic : "";
+			const char* filter = (mqtt->filter && mqtt->filter[0]) ? mqtt->filter : NULL;
 
 			DEBUG_PRINT("mtopic: "); DEBUG_PRINTLN(mtopic);
 			DEBUG_PRINT("topic:  "); DEBUG_PRINTLN(topic);
 
 			if (topic[0] && MqttSensor::filterMatches(mtopic, topic)) {
 				double value = 0;
-				int ok = findValue((char*)payload, length, filter[0] ? filter : NULL, value);
+				int ok = findValue((char*)payload, length, filter, value);
 				if (ok && value >= -10000 && value <= 10000 && (value != sensor->last_data || !sensor->flags.data_ok || now-sensor->last_read > 6000)) {
 					sensor->last_data = value;
 					sensor->flags.data_ok = true;
@@ -165,7 +156,7 @@ int MqttSensor::read(unsigned long time) {
 		last_read = time;
         // DEBUG_PRINT("read_sensor_mqtt1: ");
 		// DEBUG_PRINTLN(name);
-		if (topic[0]) {
+		if (topic && topic[0]) {
             // DEBUG_PRINT("subscribe: ");
             // DEBUG_PRINTLN(topic);
 			os.mqtt.subscribe(topic);
@@ -180,7 +171,7 @@ void sensor_mqtt_subscribe(uint nr, uint type, const char *urlstr) {
     if (urlstr && urlstr[0] && type == SENSORURL_TYPE_TOPIC && sensor && sensor->type == SENSOR_MQTT) {
 		MqttSensor* mqtt = static_cast<MqttSensor*>(sensor);
 	    DEBUG_PRINT("sensor_mqtt_subscribe1: ");
-		DEBUG_PRINTLN(sensor->name);
+		DEBUG_PRINTLN(sensor->getName());
         DEBUG_PRINT("subscribe: ");
         DEBUG_PRINTLN(urlstr);
 		if (!os.mqtt.subscribe(urlstr))
@@ -198,7 +189,7 @@ void sensor_mqtt_unsubscribe(uint nr, uint type, const char *urlstr) {
     if (urlstr && urlstr[0] && type == SENSORURL_TYPE_TOPIC && sensor && sensor->type == SENSOR_MQTT) {
 		MqttSensor* mqtt = static_cast<MqttSensor*>(sensor);
 	    DEBUG_PRINT("sensor_mqtt_unsubscribe1: ");
-		DEBUG_PRINTLN(sensor->name);
+		DEBUG_PRINTLN(sensor->getName());
         DEBUG_PRINT("unsubscribe: ");
         DEBUG_PRINTLN(urlstr);
 		if (!os.mqtt.unsubscribe(urlstr))

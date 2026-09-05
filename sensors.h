@@ -23,6 +23,9 @@
 #ifndef _SENSORS_H
 #define _SENSORS_H
 
+#include <string.h>
+#include <stdlib.h>
+
 #if defined(ARDUINO)
 #include <Arduino.h>
 #include <sys/stat.h>
@@ -267,7 +270,6 @@ public:
   uint8_t stale_policy;   // PROG_STALE_*
   double stale_fallback;  // adjustment factor, 1.0 = 100%
   uint order;             // display order (0=unset -> sort by nr)
-  char name[30];
   
   /**
    * @brief Constructor
@@ -276,7 +278,19 @@ public:
                        factor1(0.0), factor2(0.0), min(0.0), max(0.0),
                        stale_timeout(0), stale_policy(PROG_STALE_LAST_VALUE),
                        stale_fallback(1.0) {
-    name[0] = 0;
+    setName("");
+  }
+
+  ~ProgSensorAdjust() { free(_name); }
+
+  // name accessors (getName() never returns nullptr) — dynamic to save RAM
+  const char* getName() const { return _name ? _name : ""; }
+  void setName(const char* s) {
+    free(_name);
+    const char* v = (s && s[0]) ? s : "";
+    size_t n = strlen(v);
+    _name = (char*)malloc(n + 1);
+    if (_name) memcpy(_name, v, n + 1);
   }
   
   /**
@@ -290,6 +304,9 @@ public:
    * @param obj JSON object to read from
    */
   void fromJson(ArduinoJson::JsonVariantConst obj);
+
+private:
+  char* _name = nullptr;    // adjustment name — dynamic; access via getName()/setName()
 };
 
 
@@ -381,7 +398,6 @@ public:
   Monitor_Union_t m;
   boolean active;
   ulong time;
-  char name[30];
   ulong maxRuntime;
   uint8_t prio;
   ulong reset_seconds;
@@ -393,10 +409,9 @@ public:
   unsigned char undef[9];   // for later
   ulong reset_time; // time to reset
 
-  // Transient evaluation scratch (not persisted / not serialized).
-  // Used by check_monitors() for order-independent two-phase evaluation.
-  boolean eval_active;
-  double eval_value;
+  // Transient evaluation scratch lives in a function-local table inside
+  // check_monitors() (not on the object). Only last_ok_time must survive across
+  // calls for the stale-data failsafe.
   ulong last_ok_time;       // last time the referenced sensor delivered valid data (transient)
 
   /**
@@ -406,12 +421,24 @@ public:
               active(false), time(0), maxRuntime(0), prio(0), 
               reset_seconds(0), output_mode(0), stale_timeout(0),
               failsafe_active(0), reset_time(0),
-              eval_active(false), eval_value(0), last_ok_time(0) {
+              last_ok_time(0) {
     memset(&m, 0, sizeof(Monitor_Union_t));
     memset(undef, 0, sizeof(undef));
     order = 0;
     show = 1;
-    name[0] = 0;
+    setName("");
+  }
+
+  ~Monitor() { free(_name); }
+
+  // name accessors (getName() never returns nullptr) — dynamic to save RAM
+  const char* getName() const { return _name ? _name : ""; }
+  void setName(const char* s) {
+    free(_name);
+    const char* v = (s && s[0]) ? s : "";
+    size_t n = strlen(v);
+    _name = (char*)malloc(n + 1);
+    if (_name) memcpy(_name, v, n + 1);
   }
   
   /**
@@ -425,6 +452,9 @@ public:
    * @param obj JSON object to read from
    */
   void fromJson(ArduinoJson::JsonVariantConst obj);
+
+private:
+  char* _name = nullptr;    // monitor name — dynamic; access via getName()/setName()
 };
 
 typedef Monitor Monitor_t;
@@ -490,7 +520,7 @@ extern const char *user_agent_string;
 uint16_t CRC16(unsigned char buf[], int len);
 
 // Sensor API functions:
-int sensor_delete(uint nr);
+int sensor_delete(uint nr, bool save_now = true);
 int sensor_define(ArduinoJson::JsonVariantConst json, bool save = false);
 int sensor_define_userdef(uint nr, int16_t factor, int16_t divider,
                           const char *userdef_unit, int16_t offset_mv,
@@ -560,7 +590,7 @@ int set_sensor_address(SensorBase *sensor, uint8_t new_address);
 int prog_adjust_define(ArduinoJson::JsonVariantConst json, bool save = true);
 int prog_adjust_define(uint nr, uint type, uint sensor, uint prog,
                        double factor1, double factor2, double min, double max, char * name);
-int prog_adjust_delete(uint nr);
+int prog_adjust_delete(uint nr, bool save_now = true);
 void prog_adjust_save();
 void prog_adjust_load();
 uint prog_adjust_count();
@@ -574,6 +604,7 @@ bool prog_adjust_uses_fallback(ProgSensorAdjust *p);
 
 void GetSensorWeather();
 void GetSensorWeatherEto();
+bool weather_sensor_should_refresh_now(uint type, ulong sensor_last_read);
 // PUSH Message to MQTT and others:
 void push_message(SensorBase *sensor);
 
@@ -583,7 +614,7 @@ void detect_asb_board();
 void monitor_load();
 void monitor_save();
 int monitor_count();
-int monitor_delete(uint nr);
+int monitor_delete(uint nr, bool save_now = true);
 int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0, uint order = 0, uint8_t show = 1);
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);

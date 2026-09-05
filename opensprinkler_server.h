@@ -213,6 +213,14 @@ bool free_tmp_memory(size_t needed);
 // Restore resources freed by free_tmp_memory(). No-op if nothing was freed.
 void restore_tmp_memory(size_t needed);
 
+// Lightweight memory relief for read-only endpoints (e.g. /sl). Suspends only the
+// MQTT client heap on ESP8266 under low-memory conditions; does NOT tear down the
+// sensor subsystem (no flash I/O / re-init). Returns true if MQTT was suspended.
+bool free_tmp_memory_light();
+
+// Restore MQTT suspended by free_tmp_memory_light(). Pass its return value.
+void restore_tmp_memory_light(bool was_suspended);
+
 // _main() data-building helpers — callable from mcp_server.cpp
 // (declared with explicit OTF types to avoid requiring OTF_PARAMS_DEF macro here)
 #if defined(USE_OTF)

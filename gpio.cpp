@@ -244,7 +244,7 @@ static unsigned char GPIOExport(int pin) {
 
 	fd = open("/sys/class/gpio/export", O_WRONLY);
 	if (fd < 0) {
-		DEBUG_PRINTLN("failed to open export for writing");
+		DEBUG_PRINTLN(F("failed to open export for writing"));
 		return 0;
 	}
 
@@ -262,7 +262,7 @@ static unsigned char GPIOUnexport(int pin) {
 
 	fd = open("/sys/class/gpio/unexport", O_WRONLY);
 	if (fd < 0) {
-		DEBUG_PRINTLN("failed to open unexport for writing");
+		DEBUG_PRINTLN(F("failed to open unexport for writing"));
 		return 0;
 	}
 
@@ -282,7 +282,7 @@ static unsigned char GPIOSetEdge(int pin, const char *edge) {
 
 	fd = open(path, O_WRONLY);
 	if (fd < 0) {
-		DEBUG_PRINTLN("failed to open gpio edge for writing");
+		DEBUG_PRINTLN(F("failed to open gpio edge for writing"));
 		return 0;
 	}
 	write(fd, edge, strlen(edge)+1);
@@ -306,12 +306,12 @@ void pinMode(int pin, unsigned char mode) {
 
 	fd = open(path, O_WRONLY);
 	if (fd < 0) {
-		DEBUG_PRINTLN("failed to open gpio direction for writing");
+		DEBUG_PRINTLN(F("failed to open gpio direction for writing"));
 		return;
 	}
 
 	if (-1 == write(fd, &dir_str[(INPUT==mode)||(INPUT_PULLUP==mode)?0:3], (INPUT==mode)||(INPUT_PULLUP==mode)?2:3)) {
-		DEBUG_PRINTLN("failed to set direction");
+		DEBUG_PRINTLN(F("failed to set direction"));
 		return;
 	}
 
@@ -335,7 +335,7 @@ int gpio_fd_open(int pin, int mode) {
 	snprintf(path, BUFFER_MAX, "/sys/class/gpio/gpio%d/value", pin);
 	fd = open(path, mode);
 	if (fd < 0) {
-		DEBUG_PRINTLN("failed to open gpio");
+		DEBUG_PRINTLN(F("failed to open gpio"));
 		return -1;
 	}
 	return fd;
@@ -356,7 +356,7 @@ unsigned char digitalRead(int pin) {
 	}
 
 	if (read(fd, value_str, 3) < 0) {
-		DEBUG_PRINTLN("failed to read value");
+		DEBUG_PRINTLN(F("failed to read value"));
 		return 0;
 	}
 
@@ -438,7 +438,7 @@ static void *interruptHandler (void *arg) {
 /** Attach an interrupt function to pin */
 void attachInterrupt(int pin, const char* mode, void (*isr)(void)) {
 	if((pin<0)||(pin>GPIO_MAX)) {
-		DEBUG_PRINTLN("pin out of range");
+		DEBUG_PRINTLN(F("pin out of range"));
 		return;
 	}
 
@@ -452,7 +452,7 @@ void attachInterrupt(int pin, const char* mode, void (*isr)(void)) {
 	// open gpio file
 	if(sysFds[pin]==-1) {
 		if((sysFds[pin]=open(path, O_RDWR))<0) {
-			DEBUG_PRINTLN("failed to open gpio value for reading");
+			DEBUG_PRINTLN(F("failed to open gpio value for reading"));
 			return;
 		}
 	}
@@ -507,18 +507,18 @@ static int init_lgpio() {
 	if (lgpio_handle < 0) {
 		// If we tried the non-default chip and failed, try the default one as a fallback.
 		if (chip_id != 0) {
-			DEBUG_PRINTLN("Could not open gpiochip4, falling back to gpiochip0...");
+			DEBUG_PRINTLN(F("Could not open gpiochip4, falling back to gpiochip0..."));
 			chip_id = 0;
 			lgpio_handle = lgGpiochipOpen(chip_id);
 		}
 	}
 
 	if (lgpio_handle < 0) {
-		DEBUG_PRINTLN("Could not open a valid GPIO chip.");
+		DEBUG_PRINTLN(F("Could not open a valid GPIO chip."));
 		return -1;
 	}
 
-	DEBUG_PRINT("Successfully opened gpiochip");
+	DEBUG_PRINT(F("Successfully opened gpiochip"));
 	DEBUG_PRINTLN(chip_id);
 	return 0;
 }
@@ -547,7 +547,7 @@ void pinMode(int pin, unsigned char mode) {
 /** Read digital value */
 unsigned char digitalRead(int pin) {
 	if (lgpio_handle < 0) {
-		DEBUG_PRINT("tried to read from uninitialized lgpio handle for pin ");
+		DEBUG_PRINT(F("tried to read from uninitialized lgpio handle for pin "));
 		DEBUG_PRINTLN(pin);
 		return 0;
 	}
@@ -563,7 +563,7 @@ unsigned char digitalRead(int pin) {
 /** Write digital value */
 void digitalWrite(int pin, unsigned char value) {
 	if (lgpio_handle < 0) {
-		DEBUG_PRINT("tried to write to uninitialized lgpio handle for pin ");
+		DEBUG_PRINT(F("tried to write to uninitialized lgpio handle for pin "));
 		DEBUG_PRINTLN(pin);
 		return;
 	}
@@ -672,11 +672,11 @@ int assert_gpiod_line(int pin) {
 		if( assert_gpiod_chip() ) { return -1; }
 		gpio_lines[pin] = gpiod_chip_get_line(chip, pin);
 		if( !gpio_lines[pin] ) {
-			DEBUG_PRINT("failed to open gpio line ");
+			DEBUG_PRINT(F("failed to open gpio line "));
 			DEBUG_PRINTLN(pin);
 			return -1;
 		} else {
-			DEBUG_PRINT("opened gpio line ");
+			DEBUG_PRINT(F("opened gpio line "));
 			DEBUG_PRINT(pin);
 			return 0;
 		}
@@ -708,7 +708,7 @@ void pinMode(int pin, unsigned char mode) {
 /** Read digital value */
 unsigned char digitalRead(int pin) {
 	if( !gpio_lines[pin] ) {
-		DEBUG_PRINT("tried to read uninitialized pin ");
+		DEBUG_PRINT(F("tried to read uninitialized pin "));
 		DEBUG_PRINTLN(pin);
 		return 0;
 	}
@@ -724,7 +724,7 @@ unsigned char digitalRead(int pin) {
 /** Write digital value */
 void digitalWrite(int pin, unsigned char value) {
 	if( !gpio_lines[pin] ) {
-		DEBUG_PRINT("tried to write uninitialized pin ");
+		DEBUG_PRINT(F("tried to write uninitialized pin "));
 		DEBUG_PRINTLN(pin);
 		return;
 	}

@@ -73,6 +73,16 @@ bool sensor_zigbee_gw_wifi_off_join_active();
 bool sensor_zigbee_gw_rejoin_device(uint64_t device_ieee);
 
 /**
+ * @brief Clear a device's cached identity (manufacturer/model/vendor, is_tuya,
+ *        logical devices) so it is re-identified from scratch — WITHOUT forcing
+ *        a physical leave/rejoin. Preserves the user's custom friendly name.
+ *        Used to fix cross-contaminated manufacturer strings.
+ * @param device_ieee Device IEEE address
+ * @return true if the device was found and cleared
+ */
+bool sensor_zigbee_gw_clear_device_identity(uint64_t device_ieee);
+
+/**
  * @brief Reset Tuya sequence counter to 0 (for device removal or manual resync)
  */
 void sensor_zigbee_gw_reset_tuya_seq();

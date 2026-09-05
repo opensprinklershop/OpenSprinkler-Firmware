@@ -70,13 +70,6 @@
             otf_include=""
         fi
         
-        if [ -d "external/influxdb-cpp" ]; then
-            ifx=$(ls external/influxdb-cpp/*.hpp 2>/dev/null || echo "")
-            ifx_include="-Iexternal/influxdb-cpp/"
-        else
-            ifx=""
-            ifx_include=""
-        fi
         
         g++ -o OpenSprinkler -DOSPI $USEGPIO $ADS1115 $PCF8591 -DSMTP_OPENSSL -DHAVE_TINY_WEBSOCKETS $DEBUG -std=c++17 -include string.h -include cstdint main.cpp \
                 OpenSprinkler.cpp program.cpp opensprinkler_server.cpp mcp_server.cpp utils.cpp weather.cpp gpio.cpp mqtt.cpp sunrise.cpp \
@@ -86,7 +79,7 @@
                 $ws \
                 $otf_include \
                 $otf \
-                $ifx osinfluxdb.cpp $ifx_include \
+                osinfluxdb.cpp \
                 -lpthread -lmosquitto -lssl -lcrypto -lcurl -li2c -lmodbus -lbluetooth $GPIOLIB
 
 

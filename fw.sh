@@ -3,11 +3,12 @@
 # fw.sh – OpenSprinkler Firmware Manager
 #
 # Actions:
-#   build   [matter|zigbee|esp8266|all]  – Build firmware
-#   upload  [matter|zigbee|esp8266|all]  – Upload firmware (IP/REST if reachable, USB fallback)
-#   deploy  [matter|zigbee|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
+#   build   [matter|zigbee|esp32|esp8266|all]  – Build firmware
+#   upload  [matter|zigbee|esp32|esp8266|all]  – Upload firmware (IP/REST if reachable, USB fallback)
+#   deploy  [matter|zigbee|esp32|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
+#   release beta [rebuild]              – Build/publish beta firmware into beta files
 #   release sync-tags                    – Create missing GitHub releases for existing tags
 #   libs    [rebuild|deploy|rebuild-copy|deploy-copy]
 #                                        – Rebuild/deploy custom ESP32 Arduino libs
@@ -40,6 +41,8 @@
 #   ./fw.sh deploy matter monitor   -> Build + Upload + Show live serial monitor + save logs to /tmp/zigbee_monitor_matter.log
 #                                      (View logs via MCP: get_monitor_log variant=zigbee)
 #   ./fw.sh release
+#   ./fw.sh release beta
+#   ./fw.sh release beta rebuild
 #   ./fw.sh release rebuild
 #   ./fw.sh libs rebuild
 #   ./fw.sh libs deploy
@@ -60,7 +63,7 @@
 #
 # Environment variables (optional):
 #   OS_IP           Device IP  (default: 192.168.0.151)
-#   OS_IP_ESP8266   ESP8266 device IP (default: 192.168.0.244); esp8266 upload/
+#   OS_IP_ESP8266   ESP8266 device IP (default: 192.168.0.174); esp8266 upload/
 #                   deploy always goes over IP (no USB) unless FW_UPLOAD_METHOD=usb
 #   OS_PASSWORD     Admin password in plain text (will be MD5 hashed)
 #   OS_HASH         Admin password already as MD5 hash
@@ -106,7 +109,7 @@ fi
 DEVICE_IP="${OS_IP:-192.168.0.151}"
 # ESP8266 device has no USB connection here -> upload/deploy goes over the
 # network (REST/OTA). Override with OS_IP_ESP8266 if its address changes.
-ESP8266_IP="${OS_IP_ESP8266:-192.168.0.244}"
+ESP8266_IP="${OS_IP_ESP8266:-192.168.0.174}"
 PIO_BIN="platformio"
 SILENT="${SILENT:-true}"
 
@@ -124,11 +127,15 @@ if [[ "${OS_UPGRADE_DIR:-}" == "/srv/www/htdocs/upgrade" ]]; then
     OS_UPGRADE_DIR="/data/upgrade"
 fi
 UPGRADE_DIR="${OS_UPGRADE_DIR:-/data/upgrade}"
+BETA_UPGRADE_DIR="${OS_BETA_UPGRADE_DIR:-/data/upgrade-beta}"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
 VERSIONS_JSON="${UPGRADE_DIR}/versions.json"
+BETA_MANIFEST="${BETA_UPGRADE_DIR}/manifest.json"
+BETA_VERSIONS_JSON="${BETA_UPGRADE_DIR}/versions.json"
 CHANGELOG="${SCRIPT_DIR}/CHANGELOG.md"
 PLATFORMIO_INI="${SCRIPT_DIR}/platformio.ini"
 GITHUB_REPO="opensprinklershop/OpenSprinkler-Firmware"
+IONOS_BETA_UPGRADE_TARGET="${IONOS_BETA_UPGRADE_TARGET:-/home/www/public/upgrade-beta}"
 
 # Path to the UI fw.sh script that handles the IONOS online deploy.
 # Credentials (IONOS_SSH_*) live in ui/.env, so we delegate to that script.
@@ -170,6 +177,12 @@ FW_UPLOAD_METHOD_EXPLICIT=0
 FW_UPLOAD_METHOD="${FW_UPLOAD_METHOD:-usb}"
 DEFAULT_C5_IP="192.168.0.151"
 
+# Tracks whether we just toggled release debug flags in platformio.ini.
+# PlatformIO can otherwise race on the first build after the edit and fail to
+# create per-library depfile directories. When this flag is set, build_env()
+# does a targeted clean before the first run.
+RELEASE_DEBUG_TOGGLED=0
+
 # Tracks the actual path used by the most recent upload (`ip` or `usb`).
 LAST_UPLOAD_PATH=""
 
@@ -180,7 +193,7 @@ _get_hash() {
     elif [[ -n "${OS_PASSWORD:-}" ]]; then
         echo -n "$OS_PASSWORD" | md5sum | awk '{print $1}'
     else
-        echo ""   # no password → empty hash (public endpoints)
+        echo "a6d82bced638de3def1e9bbb4983225c"
     fi
 }
 
@@ -306,8 +319,15 @@ install_ip() {
     host="${host%%:*}"
     host="${host%%/*}"
     local url="http://${host}:8080/update"
+    local query_parts=()
     if [[ -n "$slot" ]]; then
-        url+="?slot=${slot}"
+        query_parts+=("slot=${slot}")
+    fi
+    if [[ -n "$hash" ]]; then
+        query_parts+=("pw=${hash}")
+    fi
+    if [[ ${#query_parts[@]} -gt 0 ]]; then
+        url+="?$(IFS='&'; echo "${query_parts[*]}")"
     fi
 
     info "Uploading firmware (multipart/form-data) to ${url} ..."
@@ -817,6 +837,10 @@ build_env() {
     local env="$1"
     header "Building firmware: ${env}"
     ensure_c5_framework_libs "$env"
+    if [[ "$RELEASE_DEBUG_TOGGLED" == "1" ]]; then
+        info "Cleaning stale build dir before first post-flag build …"
+        rm -rf "${SCRIPT_DIR}/.pio/build/${env}"
+    fi
     if ! "$PIO_BIN" run --environment "$env"; then
         # PlatformIO/SCons can sporadically fail on the first run with missing
         # intermediate build directories; retry once before failing hard.
@@ -1698,6 +1722,7 @@ disable_release_debug() {
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-DENABLE_DEBUG\s*\$/\1;-DENABLE_DEBUG/}" "$PLATFORMIO_INI"
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\)-DENABLE_MEMORY_DEBUG\s*\$/\1;-DENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
     done
+    RELEASE_DEBUG_TOGGLED=1
     ok "Debug flags disabled in all release environments."
 }
 
@@ -1710,6 +1735,7 @@ restore_release_debug() {
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-DENABLE_DEBUG\s*\$/\1-DENABLE_DEBUG/}" "$PLATFORMIO_INI"
         sed -i "/^\[env:${env_name}\]/,/^\[env:/{s/^\(\s*\);-DENABLE_MEMORY_DEBUG\s*\$/\1-DENABLE_MEMORY_DEBUG/}" "$PLATFORMIO_INI"
     done
+    RELEASE_DEBUG_TOGGLED=0
     ok "Debug flags restored in all environments."
 }
 
@@ -1741,6 +1767,16 @@ build_release_env() {
     copy_to_dist "$env"
 }
 
+# Safety net: the OTA distribution dir (upgrade/) must only ever hold clean
+# release builds. ENABLE_DEBUG compiles distinctive serial-log string literals
+# into the image (e.g. "server_sensor_config"); a release build (debug flags
+# disabled) contains none of them. Returns 0 if the binary looks debug-enabled.
+_binary_has_debug() {
+    local bin="$1"
+    [[ -f "$bin" ]] || return 1
+    strings -n 6 "$bin" 2>/dev/null | grep -q "server_sensor_config"
+}
+
 # Copy firmware binaries to upgrade directory
 copy_to_upgrade() {
     mkdir -p "$UPGRADE_DIR"
@@ -1754,6 +1790,11 @@ copy_to_upgrade() {
     for f in "$zigbee_bin" "$matter_bin" "$esp8266_bin"; do
         if [[ ! -f "$f" ]]; then
             error "Binary not found: ${f}"
+            return 1
+        fi
+        if _binary_has_debug "$f"; then
+            error "Refusing to publish ${f##*/}: binary contains ENABLE_DEBUG output — OTA ${UPGRADE_DIR}/ must stay release-only."
+            error "Rebuild without debug flags before syncing OTA (e.g. ./fw.sh deploy / ./fw.sh release)."
             return 1
         fi
     done
@@ -1790,6 +1831,11 @@ copy_one_to_upgrade() {
     if [[ ! -f "$src" ]]; then
         error "Binary not found: ${src}"
         return 1
+    fi
+    if _binary_has_debug "$src"; then
+        warn "Skipping upgrade/${dest_name}: binary contains ENABLE_DEBUG output — OTA ${UPGRADE_DIR}/ must stay release-only."
+        warn "Debug/monitor builds are not published to OTA; rebuild without debug to sync (./fw.sh deploy ${env##*-})."
+        return 0
     fi
     cp "$src" "${UPGRADE_DIR}/${dest_name}"
     ok "upgrade/${dest_name} synced with current build"
@@ -2329,6 +2375,49 @@ online_deploy() {
     ok "Online deploy complete."
 }
 
+online_deploy_beta() {
+    header "Online deploy → IONOS (beta)"
+
+    local remote_target="${IONOS_BETA_UPGRADE_TARGET%/}"
+    local remote="${IONOS_SSH_USER:-}@${IONOS_SSH_HOST:-}"
+    local ssh_port="${IONOS_SSH_PORT:-22}"
+    local ssh_opts=(-o StrictHostKeyChecking=accept-new -p "$ssh_port")
+    local source_dir="${UPGRADE_DIR%/}/"
+
+    if [[ -z "${IONOS_SSH_HOST:-}" || -z "${IONOS_SSH_USER:-}" ]]; then
+        warn "Beta online deploy skipped — IONOS_SSH_HOST / IONOS_SSH_USER are missing in .env."
+        return 0
+    fi
+
+    if [[ -n "${IONOS_SSH_PASS:-}" ]]; then
+        if ! command -v sshpass &>/dev/null; then
+            warn "Beta online deploy skipped — sshpass not found."
+            warn "Install: sudo apt install sshpass"
+            return 0
+        fi
+        export SSHPASS="$IONOS_SSH_PASS"
+        info "Ensuring ${remote_target} exists on ${IONOS_SSH_HOST} …"
+        sshpass -e ssh "${ssh_opts[@]}" "$remote" "mkdir -p '$remote_target'"
+        info "Syncing ${source_dir} → ${remote}:${remote_target}/ …"
+        sshpass -e rsync -az --info=stats2 \
+            -e "ssh -o StrictHostKeyChecking=accept-new -p ${ssh_port}" \
+            "$source_dir" \
+            "$remote:$remote_target/" \
+        || { error "Beta online deploy failed."; exit 1; }
+    else
+        info "Ensuring ${remote_target} exists on ${IONOS_SSH_HOST} …"
+        ssh "${ssh_opts[@]}" "$remote" "mkdir -p '$remote_target'"
+        info "Syncing ${source_dir} → ${remote}:${remote_target}/ …"
+        rsync -az --info=stats2 \
+            -e "ssh -o StrictHostKeyChecking=accept-new -p ${ssh_port}" \
+            "$source_dir" \
+            "$remote:$remote_target/" \
+        || { error "Beta online deploy failed."; exit 1; }
+    fi
+
+    ok "Beta online deploy complete."
+}
+
 # Promote local staged UI from ui-test/dev to ui-live/<release_version>.
 # This must run only in the actual release flow (not buildweb.sh), so dev stays
 # mutable during development and becomes immutable only on release.
@@ -2464,34 +2553,38 @@ ${changelog_section}"
     archive_current_version
     update_versions_catalog "$release_notes"
 
-    # For firmware releases we freeze the current UI dev build into a
-    # versioned ui-live folder. buildweb.sh always remains dev-only.
-    if ! $is_rebuild; then
-        local ui_release_ver="${version_str}.${OS_FW_MINOR}"
-        promote_ui_release "$ui_release_ver"
-    fi
+    if [[ "${RELEASE_VARIANT_LABEL:-stable}" == "beta" ]]; then
+        online_deploy_beta
+    else
+        # For firmware releases we freeze the current UI dev build into a
+        # versioned ui-live folder. buildweb.sh always remains dev-only.
+        if ! $is_rebuild; then
+            local ui_release_ver="${version_str}.${OS_FW_MINOR}"
+            promote_ui_release "$ui_release_ver"
+        fi
 
-    if ! $is_rebuild; then
-        # 7. Update CHANGELOG.md
-        update_changelog "$version_str"
+        if ! $is_rebuild; then
+            # 7. Update CHANGELOG.md
+            update_changelog "$version_str"
 
-        # 8. Git commit, tag, push
-        git_tag_and_push "$tag" "$version_str"
+            # 8. Git commit, tag, push
+            git_tag_and_push "$tag" "$version_str"
 
-        # 9. GitHub release (optional, requires gh CLI authenticated)
-        github_create_release "$tag" "$version_str" "$release_notes"
-    fi
+            # 9. GitHub release (optional, requires gh CLI authenticated)
+            github_create_release "$tag" "$version_str" "$release_notes"
+        fi
 
-    # 10. Online deploy to IONOS (upgrade/ → remote server)
-    online_deploy
+        # 10. Online deploy to IONOS (upgrade/ → remote server)
+        online_deploy
 
-    # 11. Increase minor version number for the next development cycle
-    if ! $is_rebuild; then
-        bump_minor_version
-        git add "$DEFINES_H"
-        git commit -m "Bump version to build $OS_FW_MINOR for next development cycle"
-        git push origin HEAD
-        ok "defines.h updated and pushed for next dev cycle: build ${OS_FW_MINOR}"
+        # 11. Increase minor version number for the next development cycle
+        if ! $is_rebuild; then
+            bump_minor_version
+            git add "$DEFINES_H"
+            git commit -m "Bump version to build $OS_FW_MINOR for next development cycle"
+            git push origin HEAD
+            ok "defines.h updated and pushed for next dev cycle: build ${OS_FW_MINOR}"
+        fi
     fi
 
     # 12. Summary
@@ -2511,6 +2604,17 @@ ${changelog_section}"
     ok "  ${UPGRADE_DIR}/firmware_esp8266.bin"
     echo ""
     info "Firmware v${version_str} build ${OS_FW_MINOR} is now available for OTA upgrade."
+}
+
+do_release_beta() {
+    local mode="${1:-full}"
+    local UPGRADE_DIR="${BETA_UPGRADE_DIR}"
+    local MANIFEST="${BETA_MANIFEST}"
+    local VERSIONS_JSON="${BETA_VERSIONS_JSON}"
+    local UPGRADE_MATTER_KVS_BIN="${UPGRADE_DIR}/matter_kvs.bin"
+    local RELEASE_VARIANT_LABEL="beta"
+
+    do_release "$mode"
 }
 
 usage() {
@@ -2545,9 +2649,12 @@ ${BOLD}Actions:${NC}
   release                                   Bump version, build all firmwares,
                                             copy to upgrade dir, git tag & push,
                                             create GitHub release, deploy to IONOS
+    release beta                              Build all firmwares into beta upgrade files,
+                                                                                        update beta manifest/catalog, deploy beta
   release rebuild                           Rebuild all firmwares without version
                                             bump, no git tag/release — build only,
                                             then deploy to IONOS
+    release beta rebuild                      Rebuild all firmwares for beta files only
     release sync-tags                         Create missing GitHub releases for
                                                                                         existing v* tags
     libs [rebuild|deploy|rebuild-copy|deploy-copy]
@@ -2705,6 +2812,13 @@ case "$ACTION" in
                 case "$VARIANT" in
                 matter)   build_env "$ENV_C5_MATTER" ;;
                 zigbee)   build_env "$ENV_C5_ZIGBEE" ;;
+                esp32)
+                    build_env "$ENV_C5_MATTER"
+                    build_env "$ENV_C5_ZIGBEE"
+                    header "ESP32 builds successful"
+                    ok "Matter:   .pio/build/${ENV_C5_MATTER}/firmware.bin"
+                    ok "ZigBee:   .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
+                    ;;
                 esp8266)  build_env "$ENV_ESP8266" ;;
                 all|"")
                     build_env "$ENV_C5_MATTER"
@@ -2715,7 +2829,7 @@ case "$ACTION" in
                     ok "ZigBee:   .pio/build/${ENV_C5_ZIGBEE}/firmware.bin"
                     ok "ESP8266:  .pio/build/${ENV_ESP8266}/firmware.bin"
                     ;;
-                *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|ospi|all)"; exit 1 ;;
+                *) error "Unknown variant: $VARIANT (matter|zigbee|esp32|esp8266|ospi|all)"; exit 1 ;;
                 esac
                 ;;
         esac
@@ -2726,6 +2840,13 @@ case "$ACTION" in
         case "$VARIANT" in
             matter)   upload_env_auto "$ENV_C5_MATTER" ;;
             zigbee)   upload_env_auto "$ENV_C5_ZIGBEE" ;;
+            esp32)
+                upload_env_auto "$ENV_C5_MATTER"
+                upload_env_auto "$ENV_C5_ZIGBEE"
+                if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
+                    ensure_zigbee_boot_partition
+                fi
+                ;;
             esp8266)  upload_env_auto "$ENV_ESP8266" ;;
             all|"")
                 warn "Uploading all firmwares can reboot the same device multiple times; single-variant upload is recommended."
@@ -2733,7 +2854,7 @@ case "$ACTION" in
                 upload_env_auto "$ENV_C5_ZIGBEE"
                 upload_env_auto "$ENV_ESP8266"
                 ;;
-            *) error "Unknown variant: $VARIANT (matter|zigbee|esp8266|all)"; exit 1 ;;
+            *) error "Unknown variant: $VARIANT (matter|zigbee|esp32|esp8266|all)"; exit 1 ;;
         esac
         ;;
 
@@ -2755,7 +2876,7 @@ case "$ACTION" in
                     case "$token" in
                     ""|all)
                         ;;
-                    matter|zigbee|esp8266|ospi)
+                    matter|zigbee|esp32|esp8266|ospi)
                         deploy_variant="$token"
                         ;;
                     debug)
@@ -2767,7 +2888,7 @@ case "$ACTION" in
                         ;;
                     *)
                         error "Unknown deploy argument: $token"
-                        error "Allowed: matter|zigbee|esp8266|ospi|all|debug|monitor"
+                        error "Allowed: matter|zigbee|esp32|esp8266|ospi|all|debug|monitor"
                         exit 1
                         ;;
                     esac
@@ -2801,12 +2922,12 @@ case "$ACTION" in
 
                     case "$deploy_variant" in
                     matter)
-                        build_env "$ENV_C5_MATTER"
+                        build_release_env "$ENV_C5_MATTER"
                         copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
                         upload_env_auto "$ENV_C5_MATTER"
                         ;;
                     zigbee)
-                        build_env "$ENV_C5_ZIGBEE"
+                        build_release_env "$ENV_C5_ZIGBEE"
                         copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
                         if $deploy_debug; then
                             upload_env_fast_debug "$ENV_C5_ZIGBEE"
@@ -2817,8 +2938,23 @@ case "$ACTION" in
                             ensure_zigbee_boot_partition
                         fi
                         ;;
+                    esp32)
+                        build_release_env "$ENV_C5_MATTER"
+                        build_release_env "$ENV_C5_ZIGBEE"
+                        copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
+                        copy_one_to_upgrade "$ENV_C5_ZIGBEE" "firmware_zigbee.bin"
+                        upload_env_auto "$ENV_C5_MATTER"
+                        upload_env_auto "$ENV_C5_ZIGBEE"
+                        if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
+                            ensure_zigbee_boot_partition
+                        fi
+                        header "ESP32 deploy complete"
+                        ok "Matter:   flashed to ota_1 (0x3A0000)"
+                        ok "ZigBee:   flashed to ota_0 (0x10000)"
+                        ok "upgrade/  updated with matter + zigbee bins"
+                        ;;
                     esp8266)
-                        build_env "$ENV_ESP8266"
+                        build_release_env "$ENV_ESP8266"
                         copy_one_to_upgrade "$ENV_ESP8266" "firmware_esp8266.bin"
                         upload_env_auto "$ENV_ESP8266"
                         ;;
@@ -2829,9 +2965,9 @@ case "$ACTION" in
                         build_ospi
                         ;;
                     all|"")
-                        build_env "$ENV_C5_MATTER"
-                        build_env "$ENV_C5_ZIGBEE"
-                        build_env "$ENV_ESP8266"
+                        build_release_env "$ENV_C5_MATTER"
+                        build_release_env "$ENV_C5_ZIGBEE"
+                        build_release_env "$ENV_ESP8266"
                         if [[ "$deploy_variant" == "all" ]]; then
                             build_ospi
                         fi
@@ -2848,7 +2984,7 @@ case "$ACTION" in
                         ok "ESP8266:  flashed"
                         ok "upgrade/  synced with current build"
                         ;;
-                    *) error "Unknown variant: $deploy_variant (matter|zigbee|esp8266|ospi|all|debug|monitor)"; exit 1 ;;
+                    *) error "Unknown variant: $deploy_variant (matter|zigbee|esp32|esp8266|ospi|all|debug|monitor)"; exit 1 ;;
                     esac
 
                     if ! $deploy_debug; then
@@ -2873,10 +3009,18 @@ case "$ACTION" in
 
     release)
         case "$VARIANT" in
+            beta)
+                case "$MODE_ARG" in
+                    rebuild) do_release_beta rebuild ;;
+                    "")      do_release_beta full ;;
+                    *) error "Unknown beta release mode: $MODE_ARG (rebuild)"; exit 1 ;;
+                esac
+                ;;
+            beta-rebuild) do_release_beta rebuild ;;
             rebuild)  do_release rebuild ;;
             sync-tags) github_sync_tag_releases ;;
             all|"")   do_release full ;;
-            *) error "Unknown release mode: $VARIANT (rebuild|sync-tags)"; exit 1 ;;
+            *) error "Unknown release mode: $VARIANT (beta|beta-rebuild|rebuild|sync-tags)"; exit 1 ;;
         esac
         ;;
 
