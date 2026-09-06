@@ -29,6 +29,16 @@
 typedef unsigned long ulong;
 
 // ============================================================================
+// MGM210P co-processor build: native ESP32-C5 Matter is offloaded to the
+// external Silicon Labs MGM210P (probed via AT commands). Force-disable the
+// native Matter stack so it can never be linked into an OS_MGM210P firmware,
+// regardless of build flags.
+// ============================================================================
+#if defined(OS_MGM210P) && defined(ENABLE_MATTER)
+#undef ENABLE_MATTER
+#endif
+
+// ============================================================================
 // PSRAM (SPIRAM) Memory Allocation Attributes
 // ============================================================================
 // For ESP32 with external PSRAM, these macros place static variables in PSRAM

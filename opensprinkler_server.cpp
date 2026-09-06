@@ -78,6 +78,10 @@ static void emit_monthly_water_backup_json(T &bfill) {
 #include "sensor_zigbee_gw.h"
 #endif
 
+#if defined(ESP32C5) && defined(OS_MGM210P)
+#include "mgm210p_transport.h"
+#endif
+
 #include "ieee802154_config.h"
 #include "online_update.h"
 
@@ -6465,6 +6469,192 @@ void server_ieee802154_get(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
+#if defined(ESP32C5) && defined(OS_MGM210P)
+/**
+ * mg
+ * @brief MGM210P AT-command / bootloader test/exploration endpoint.
+ *
+ * Query params (all optional):
+ *   baud=<n>      reconfigure the UART baud before sending
+ *   reset=1       pulse the MGM210P RESETn line (if a reset GPIO is wired)
+ *   swd=1         bit-bang SWD and read the EFR32 debug-port IDCODE (DPIDR)
+ *   boot=1        (re-)run the Gecko bootloader probe (menu detect + ebl info)
+ *   xmodem=1      (re-)run the active XMODEM handshake probe (detect 'C'/NAK poll)
+ *   key=<c>       send a single bootloader menu key ('1'=upload,'2'=run,'3'=info)
+ *   probe=1       (re-)run the AT auto-probe (baud sweep + identity + Matter test)
+ *   matter=1      run only the Matter AT command battery at the current baud
+ *   cmd=<AT>      URL-encoded AT command to send verbatim
+ *   to=<ms>       response timeout for cmd/key (50..10000, default 800)
+ *
+ * Response: last bootloader + AT probe status plus the reply to `cmd`/`key`.
+ */
+void server_mgm210p_at(OTF_PARAMS_DEF) {
+#if defined(USE_OTF)
+	if(!process_password(OTF_PARAMS)) return;
+	rewind_ether_buffer();
+	print_header(OTF_PARAMS);
+#else
+	print_header();
+#endif
+
+	// Flash-programming session: flash=begin | data | end. The chunk payload for
+	// "data" is the raw POST body; addr/verify/run come from the URL query.
+#if defined(USE_OTF)
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("flash"), true) && tmp_buffer[0]) {
+		char op = tmp_buffer[0];
+		if (op == 'b') {                       // begin
+			bool ok = mgm210p_swd_flash_begin();
+			bfill.emit_p(PSTR("{\"flash\":\"begin\",\"ok\":$D}"), ok ? 1 : 0);
+		} else if (op == 'd') {                // data (chunk in POST body)
+			uint32_t addr = 0;
+			char abuf[16];
+			if (findKeyVal(FKV_SOURCE, abuf, sizeof(abuf), PSTR("addr"), true)) addr = (uint32_t)strtoul(abuf, NULL, 0);
+			bool verify = findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("verify"), true) && atoi(tmp_buffer);
+			const uint8_t *body = (const uint8_t*)req.getBody();
+			uint32_t blen = req.getBodyLength();
+			bool ok = (body && blen) ? mgm210p_swd_flash_write(addr, body, blen, verify) : false;
+			bfill.emit_p(PSTR("{\"flash\":\"data\",\"ok\":$D,\"addr\":$L,\"len\":$L}"),
+			             ok ? 1 : 0, (uint32_t)addr, (uint32_t)blen);
+		} else {                               // end
+			bool run = findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("run"), true) && atoi(tmp_buffer);
+			mgm210p_swd_flash_end(run);
+			bfill.emit_p(PSTR("{\"flash\":\"end\",\"ok\":1}"));
+		}
+		send_packet(OTF_PARAMS);
+		handle_return(HTML_OK);
+	}
+#endif
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("baud"), true)) {
+		uint32_t baud = (uint32_t)atol(tmp_buffer);
+		if (baud >= 1200 && baud <= 2000000) mgm210p_set_baud(baud);
+	}
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("reset"), true) && atoi(tmp_buffer)) {
+		mgm210p_reset_pulse();
+	}
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("swd"), true) && atoi(tmp_buffer)) {
+		Mgm210pSwdInfo swd = {};
+		mgm210p_swd_probe(&swd);
+	}
+
+	// Optional generic SWD memory read: swd_read=<addr>&swd_n=<count>
+	uint32_t swd_words[16];
+	uint32_t swd_addr = 0;
+	int swd_nread = 0;
+	bool swd_read_ok = false;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("swd_read"), true) && tmp_buffer[0]) {
+		swd_addr = (uint32_t)strtoul(tmp_buffer, NULL, 0);
+		int n = 1;
+		char nbuf[8];
+		if (findKeyVal(FKV_SOURCE, nbuf, sizeof(nbuf), PSTR("swd_n"), true)) {
+			n = atoi(nbuf);
+			if (n < 1) n = 1;
+			if (n > 16) n = 16;
+		}
+		swd_nread = n;
+		swd_read_ok = mgm210p_swd_read_mem(swd_addr, swd_words, n);
+	}
+
+	// Optional MSC flash-write self-test: flash_test=1 [&addr=<8KB-aligned>]
+	Mgm210pFlashTest ft = {};
+	bool did_flash_test = false;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("flash_test"), true) && atoi(tmp_buffer)) {
+		uint32_t faddr = 0x000FE000u; // last 8 KB page of 1 MB flash (unused/scratch)
+		char abuf[16];
+		if (findKeyVal(FKV_SOURCE, abuf, sizeof(abuf), PSTR("addr"), true) && abuf[0])
+			faddr = (uint32_t)strtoul(abuf, NULL, 0);
+		did_flash_test = true;
+		mgm210p_swd_flash_test(faddr, &ft);
+	}
+
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("boot"), true) && atoi(tmp_buffer)) {
+		Mgm210pBootloaderInfo btl = {};
+		mgm210p_bootloader_probe(&btl);
+	} else if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("xmodem"), true) && atoi(tmp_buffer)) {
+		Mgm210pXmodemInfo xm = {};
+		mgm210p_xmodem_probe(&xm);
+	} else if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("probe"), true) && atoi(tmp_buffer)) {
+		Mgm210pAtInfo at = {};
+		mgm210p_at_autoprobe(&at);
+	} else if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("matter"), true) && atoi(tmp_buffer)) {
+		Mgm210pAtInfo at = *mgm210p_at_last();
+		mgm210p_at_matter_test(&at);
+	}
+
+	// Optional single bootloader menu key, or arbitrary AT command.
+	char cmd[128];
+	char resp[MGM210P_AT_RESP_MAX];
+	bool have_cmd = false;
+	cmd[0] = 0; resp[0] = 0;
+	uint32_t timeout = 800;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("to"), true)) {
+		uint32_t t = (uint32_t)atol(tmp_buffer);
+		if (t >= 50 && t <= 10000) timeout = t;
+	}
+	if (findKeyVal(FKV_SOURCE, cmd, sizeof(cmd), PSTR("key"), true) && cmd[0]) {
+		have_cmd = true;
+		mgm210p_bootloader_menu_key(cmd[0], resp, sizeof(resp), timeout);
+	} else if (findKeyVal(FKV_SOURCE, cmd, sizeof(cmd), PSTR("cmd"), true) && cmd[0]) {
+		urlDecode(cmd);
+		have_cmd = true;
+		mgm210p_at_command(cmd, resp, sizeof(resp), timeout);
+	}
+
+	const Mgm210pBootloaderInfo *btl = mgm210p_bootloader_last();
+	const Mgm210pXmodemInfo *xm = mgm210p_xmodem_last();
+	const Mgm210pSwdInfo *swd = mgm210p_swd_last();
+	const Mgm210pAtInfo *last = mgm210p_at_last();
+	bfill.emit_p(PSTR("{\"swd_ok\":$D,\"swd_idcode\":$L,\"swd_ack\":$D,\"swd_swclk\":$D,\"swd_swdio\":$D,"),
+	             swd->ok ? 1 : 0, (uint32_t)swd->idcode, swd->ack, swd->swclk, swd->swdio);
+	bfill.emit_p(PSTR("\"swd_mem_ok\":$D,\"swd_ap_idr\":$L,\"swd_cpuid\":$L,\"swd_devinfo\":$L,"),
+	             swd->mem_ok ? 1 : 0, (uint32_t)swd->ap_idr, (uint32_t)swd->cpuid, (uint32_t)swd->devinfo);
+	bfill.emit_p(PSTR("\"bootloader\":$D,\"boot_baud\":$L,\"banner\":\""),
+	             btl->detected ? 1 : 0, (uint32_t)btl->baud);
+	bfill_emit_json_escaped(btl->banner);
+	bfill.emit_p(PSTR("\",\"ebl_info\":\""));
+	bfill_emit_json_escaped(btl->info);
+	bfill.emit_p(PSTR("\",\"xmodem_ready\":$D,\"xmodem_baud\":$L,\"xmodem_mode\":\"$S\",\"xmodem_poll\":$D"),
+	             xm->ready ? 1 : 0, (uint32_t)xm->baud, xm->mode, xm->poll_bytes);
+	bfill.emit_p(PSTR(",\"reset_pin\":$D"), mgm210p_has_reset_pin() ? 1 : 0);
+	bfill.emit_p(PSTR(",\"at_ok\":$D,\"at_baud\":$L,\"at_banner\":$D,\"matter_at\":$D,\"identity\":\""),
+	             last->at_ok ? 1 : 0, (uint32_t)last->baud,
+	             last->banner_seen ? 1 : 0, last->matter_at ? 1 : 0);
+	bfill_emit_json_escaped(last->identity);
+	bfill.emit_p(PSTR("\",\"matter_resp\":\""));
+	bfill_emit_json_escaped(last->matter_resp);
+	bfill.emit_p(PSTR("\""));
+	if (have_cmd) {
+		bfill.emit_p(PSTR(",\"cmd\":\""));
+		bfill_emit_json_escaped(cmd);
+		bfill.emit_p(PSTR("\",\"response\":\""));
+		bfill_emit_json_escaped(resp);
+		bfill.emit_p(PSTR("\""));
+	}
+	if (swd_nread > 0) {
+		bfill.emit_p(PSTR(",\"swd_read_ok\":$D,\"swd_addr\":$L,\"swd_mem\":["),
+		             swd_read_ok ? 1 : 0, (uint32_t)swd_addr);
+		for (int i = 0; i < swd_nread; i++) {
+			if (i) bfill.emit_p(PSTR(","));
+			bfill.emit_p(PSTR("$L"), (uint32_t)swd_words[i]);
+		}
+		bfill.emit_p(PSTR("]"));
+	}
+	if (did_flash_test) {
+		bfill.emit_p(PSTR(",\"flash_test\":{\"ok\":$D,\"link\":$D,\"halted\":$D,\"erased\":$D,"
+		                   "\"ipversion\":$L,\"addr\":$L,\"rd\":[$L,$L,$L,$L]}"),
+		             ft.ok ? 1 : 0, ft.link ? 1 : 0, ft.halted ? 1 : 0, ft.erased ? 1 : 0,
+		             (uint32_t)ft.ipversion, (uint32_t)ft.addr,
+		             (uint32_t)ft.rd[0], (uint32_t)ft.rd[1], (uint32_t)ft.rd[2], (uint32_t)ft.rd[3]);
+	}
+	bfill.emit_p(PSTR("}"));
+
+	send_packet(OTF_PARAMS);
+	handle_return(HTML_OK);
+}
+#endif // ESP32C5 && OS_MGM210P
+
 /**
  * iw
  * @brief Set IEEE 802.15.4 radio mode and reboot
@@ -7739,6 +7929,9 @@ const char _url_keys[] PROGMEM =
 	"ir"  // IEEE 802.15.4: get radio config
 	"iw"  // IEEE 802.15.4: set radio mode (+ reboot)
 #endif
+#if defined(ESP32C5) && defined(OS_MGM210P)
+	"mg"  // MGM210P: AT-command test/exploration console
+#endif
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	"zj"  // Zigbee Client: join/search network
 	"zs"  // Zigbee: get connection status
@@ -7847,6 +8040,9 @@ URLHandler urls[] = {
 #if defined(ESP32C5)
 	server_ieee802154_get, // ir
 	server_ieee802154_set, // iw
+#endif
+#if defined(ESP32C5) && defined(OS_MGM210P)
+	server_mgm210p_at, // mg
 #endif
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
 	server_zigbee_join_network, // zj

@@ -824,14 +824,97 @@ void do_setup() {
 	#endif
 
 	#if defined(ESP32C5) && defined(OS_MGM210P)
-	// Phase 1 bring-up: probe the external MGM210P co-processor over UART.
+	// Bring-up: probe the external MGM210P co-processor over UART.
 	if (!online_update_in_progress()) {
+		// Phase 5: the wired MGM pins PA01/PA02 are the EFR32 SWD debug port
+		// (SWCLK/SWDIO), not a UART - probe SWD first to prove the link and
+		// identify the core (enables flashing over SWD).
+		Mgm210pSwdInfo swd = {};
+		bool swd_ok = mgm210p_swd_probe(&swd);
+		if (swd_ok) {
+			DEBUG_PRINTF("[MGM210P-SWD] LINK UP: DPIDR=0x%08X (SWCLK=IO%d SWDIO=IO%d)\n",
+			             (unsigned)swd.idcode, swd.swclk, swd.swdio);
+			// Dump the EFR32 DEVINFO block (part/flash/RAM/EUI) to decode the chip.
+			uint32_t di[16];
+			if (mgm210p_swd_read_mem(0x0FE08000, di, 16)) {
+				for (int i = 0; i < 16; i += 4)
+					DEBUG_PRINTF("[MGM210P-SWD] DEVINFO+0x%02X: %08X %08X %08X %08X\n",
+					             i * 4, (unsigned)di[i], (unsigned)di[i+1],
+					             (unsigned)di[i+2], (unsigned)di[i+3]);
+			}
+			#if defined(MGM210P_FLASH_SELFTEST)
+			// One-shot flash-write path validation (scratch page, blank device).
+			Mgm210pFlashTest ft = {};
+			mgm210p_swd_flash_test(0x000FE000, &ft);
+			DEBUG_PRINTF("[MGM210P-SWD] FLASH SELFTEST @0x%08X: %s halt=%d erased=%d ipver=0x%08X\n",
+			             (unsigned)ft.addr, ft.ok ? "PASS" : "FAIL", ft.halted ? 1 : 0,
+			             ft.erased ? 1 : 0, (unsigned)ft.ipversion);
+			#endif
+			#if defined(MGM210P_FLASH_SESSION_TEST)
+			// Multi-page flash session validation (mimics the chunked upload path).
+			if (mgm210p_swd_flash_begin()) {
+				bool sok = true;
+				uint32_t sbase = 0x000E0000u;
+				uint8_t sbuf[256];
+				for (uint32_t soff = 0; soff < 24u * 1024u && sok; soff += sizeof(sbuf)) {
+					for (uint32_t i = 0; i < sizeof(sbuf); i++)
+						sbuf[i] = (uint8_t)(soff + i + 0x11);
+					sok = mgm210p_swd_flash_write(sbase + soff, sbuf, sizeof(sbuf), true);
+				}
+				mgm210p_swd_flash_end(false);
+				DEBUG_PRINTF("[MGM210P-SWD] SESSION FLASH TEST 24KB @0x%08X: %s\n",
+				             (unsigned)sbase, sok ? "PASS" : "FAIL");
+			} else {
+				DEBUG_PRINTLN(F("[MGM210P-SWD] SESSION FLASH TEST: begin FAILED"));
+			}
+			#endif
+		}
+
+		// Phase 3: a factory MGM210P has only the Gecko UART bootloader (no app),
+		// so check for the bootloader menu first - that confirms the chip is
+		// alive and ready to be flashed with an EZSP/RCP/Matter image.
+		Mgm210pBootloaderInfo btl = {};
+		bool btl_seen = mgm210p_bootloader_probe(&btl);
+		if (btl.detected) {
+			DEBUG_PRINTF("[MGM210P-BTL] Gecko bootloader @%lu baud; banner: %s\n",
+			             (unsigned long)btl.baud, btl.banner);
+			if (btl.info[0])
+				DEBUG_PRINTF("[MGM210P-BTL] ebl info: %s\n", btl.info);
+		}
+
+		// Phase 4: many Gecko bootloaders are non-interactive - detect the
+		// XMODEM poll byte ('C'/NAK) that a receive-ready bootloader emits.
+		Mgm210pXmodemInfo xm = {};
+		bool xm_seen = mgm210p_xmodem_probe(&xm);
+		if (xm.ready)
+			DEBUG_PRINTF("[MGM210P-XM] XMODEM %s ready @%lu baud (%d poll bytes)\n",
+			             xm.mode, (unsigned long)xm.baud, xm.poll_bytes);
+
+		// Phase 2: if an application is flashed, look for an AT-command console
+		// and a possible "Matter over AT" interface.
+		Mgm210pAtInfo at = {};
+		bool at_seen = mgm210p_at_autoprobe(&at);
+		if (at.at_ok) {
+			DEBUG_PRINTF("[MGM210P-AT] AT firmware @%lu baud; identity: %s\n",
+			             (unsigned long)at.baud, at.identity[0] ? at.identity : "(none)");
+			DEBUG_PRINTF("[MGM210P-AT] Matter-over-AT: %s\n",
+			             at.matter_at ? at.matter_resp : "no Matter AT response");
+		} else if (at.banner_seen) {
+			DEBUG_PRINTF("[MGM210P-AT] non-AT banner @%lu baud: %s\n",
+			             (unsigned long)at.baud, at.identity);
+		}
+
+		// Phase 1: legacy ASH/EZSP (Zigbee NCP) handshake probe.
 		Mgm210pInfo mgm = {};
 		bool ok = mgm210p_probe(&mgm);
 		char line[96];
 		mgm210p_status_line(line, sizeof(line));
-		DEBUG_PRINTF("[MGM210P] probe %s: %s\n", ok ? "OK" : "FAILED", line);
-		if (!ok) mgm210p_diagnose();
+		DEBUG_PRINTF("[MGM210P] EZSP probe %s: %s\n", ok ? "OK" : "FAILED", line);
+
+		if (!swd_ok && !btl_seen && !xm_seen && !at_seen && !ok) {
+			DEBUG_PRINTLN(F("[MGM210P] no SWD/bootloader/XMODEM/AT/EZSP response - running UART diagnose"));
+			mgm210p_diagnose();
+		}
 	}
 	#endif
 }

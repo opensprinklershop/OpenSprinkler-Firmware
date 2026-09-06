@@ -856,6 +856,52 @@ export function registerTools(
     },
   );
 
+  // ─── MGM210P co-processor AT-command console (ESP32-C5 + OS_MGM210P) ──
+
+  server.tool(
+    "mgm210p_at_command",
+    "Test/explore the external Silicon Labs MGM210P co-processor over its UART. " +
+      "ESP32-C5 builds with OS_MGM210P only. Equivalent to /mg. " +
+      "A factory MGM210P ships with ONLY the Gecko UART XMODEM bootloader (no app), so use boot=1 " +
+      "to detect the bootloader menu; AT/cmd only work once an application (AT/NCP/Matter) is flashed. " +
+      "Returns the last bootloader + AT probe status plus the reply to `cmd`/`key`.",
+    {
+      boot: z.boolean().optional().describe("Run the Gecko UART bootloader probe (baud sweep, detect menu 'BL >' / '1. upload gbl', query 'ebl info')."),
+      swd: z.boolean().optional().describe("Bit-bang SWD on the wired PA01/PA02 (SWCLK/SWDIO) pins and read the EFR32 debug-port IDCODE (DPIDR). Proves the debug link and identifies the core."),
+      swd_read: z.string().optional().describe("Read MGM210P memory over SWD at this address (hex like '0x0FE08000' or decimal). Returns swd_mem[] words. Use for DEVINFO/flash inspection."),
+      swd_n: z.number().min(1).max(16).optional().describe("Number of 32-bit words to read for swd_read (1..16, default 1)."),
+      flash_test: z.boolean().optional().describe("Run the MSC flash-write self-test: halt core, erase a scratch flash page, write+verify a test pattern over SWD. Proves the flash-write path. Safe on a blank device."),
+      addr: z.string().optional().describe("8KB-aligned flash page address for flash_test (hex/decimal, default 0x000FE000)."),
+      reset: z.boolean().optional().describe("Pulse the MGM210P RESETn line (only effective if a C5 reset GPIO is wired to module PIN27)."),
+      xmodem: z.boolean().optional().describe("Run the active XMODEM handshake probe: detect the receiver poll byte 'C' (0x43, CRC) or NAK (0x15) that a receive-ready Gecko bootloader emits."),
+      key: z.string().max(1).optional().describe("Send a single Gecko bootloader menu key: '1'=upload gbl, '2'=run, '3'=ebl info."),
+      cmd: z.string().optional().describe("Raw AT command to send verbatim, e.g. 'AT', 'ATI'. Only works if an AT application is flashed. CR/LF appended automatically."),
+      probe: z.boolean().optional().describe("Run the AT auto-probe: baud sweep + 'AT' + identity queries + Matter test."),
+      matter: z.boolean().optional().describe("Run only the Matter-over-AT command battery at the current baud."),
+      baud: z.number().min(1200).max(2000000).optional().describe("Reconfigure the MGM210P UART baud before sending (e.g. 115200)."),
+      to: z.number().min(50).max(10000).optional().describe("Response timeout in ms for `cmd`/`key` (default 800)."),
+    },
+    async (args) => {
+      const params: Record<string, string | number | undefined> = {};
+      if (args.boot) params.boot = 1;
+      if (args.swd) params.swd = 1;
+      if (args.swd_read !== undefined) params.swd_read = args.swd_read;
+      if (args.swd_n !== undefined) params.swd_n = args.swd_n;
+      if (args.flash_test) params.flash_test = 1;
+      if (args.addr !== undefined) params.addr = args.addr;
+      if (args.reset) params.reset = 1;
+      if (args.xmodem) params.xmodem = 1;
+      if (args.key !== undefined) params.key = args.key;
+      if (args.cmd !== undefined) params.cmd = args.cmd;
+      if (args.probe) params.probe = 1;
+      if (args.matter) params.matter = 1;
+      if (args.baud !== undefined) params.baud = args.baud;
+      if (args.to !== undefined) params.to = args.to;
+      const data = await getClient().get("/mg", params);
+      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
   server.tool(
     "get_zigbee_devices",
     "Get ZigBee gateway device list with logical devices, manufacturer/model, battery, LQI and online status. ESP32-C5 gateway mode only. Equivalent to /zg (action=list).",
