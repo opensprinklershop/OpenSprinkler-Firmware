@@ -606,6 +606,7 @@ export function registerTools(server, getClient) {
         "Returns the last bootloader + AT probe status plus the reply to `cmd`/`key`.", {
         boot: z.boolean().optional().describe("Run the Gecko UART bootloader probe (baud sweep, detect menu 'BL >' / '1. upload gbl', query 'ebl info')."),
         swd: z.boolean().optional().describe("Bit-bang SWD on the wired PA01/PA02 (SWCLK/SWDIO) pins and read the EFR32 debug-port IDCODE (DPIDR). Proves the debug link and identifies the core."),
+        chip: z.string().optional().describe("Select the target chip profile: 'mg21' (MGM210P/EFR32MG21) or 'mg26' (MGM260P/EFR32MG26). Sets MSC base/flash geometry."),
         swd_read: z.string().optional().describe("Read MGM210P memory over SWD at this address (hex like '0x0FE08000' or decimal). Returns swd_mem[] words. Use for DEVINFO/flash inspection."),
         swd_n: z.number().min(1).max(16).optional().describe("Number of 32-bit words to read for swd_read (1..16, default 1)."),
         flash_test: z.boolean().optional().describe("Run the MSC flash-write self-test: halt core, erase a scratch flash page, write+verify a test pattern over SWD. Proves the flash-write path. Safe on a blank device."),
@@ -624,6 +625,8 @@ export function registerTools(server, getClient) {
             params.boot = 1;
         if (args.swd)
             params.swd = 1;
+        if (args.chip !== undefined)
+            params.chip = args.chip;
         if (args.swd_read !== undefined)
             params.swd_read = args.swd_read;
         if (args.swd_n !== undefined)

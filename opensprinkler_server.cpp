@@ -6525,6 +6525,10 @@ void server_mgm210p_at(OTF_PARAMS_DEF) {
 	}
 #endif
 
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("chip"), true) && tmp_buffer[0]) {
+		mgm210p_swd_set_chip(tmp_buffer);
+	}
+
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("baud"), true)) {
 		uint32_t baud = (uint32_t)atol(tmp_buffer);
 		if (baud >= 1200 && baud <= 2000000) mgm210p_set_baud(baud);
@@ -6606,7 +6610,8 @@ void server_mgm210p_at(OTF_PARAMS_DEF) {
 	const Mgm210pXmodemInfo *xm = mgm210p_xmodem_last();
 	const Mgm210pSwdInfo *swd = mgm210p_swd_last();
 	const Mgm210pAtInfo *last = mgm210p_at_last();
-	bfill.emit_p(PSTR("{\"swd_ok\":$D,\"swd_idcode\":$L,\"swd_ack\":$D,\"swd_swclk\":$D,\"swd_swdio\":$D,"),
+	bfill.emit_p(PSTR("{\"chip\":\"$S\",\"swd_ok\":$D,\"swd_idcode\":$L,\"swd_ack\":$D,\"swd_swclk\":$D,\"swd_swdio\":$D,"),
+	             mgm210p_swd_chip_name(),
 	             swd->ok ? 1 : 0, (uint32_t)swd->idcode, swd->ack, swd->swclk, swd->swdio);
 	bfill.emit_p(PSTR("\"swd_mem_ok\":$D,\"swd_ap_idr\":$L,\"swd_cpuid\":$L,\"swd_devinfo\":$L,"),
 	             swd->mem_ok ? 1 : 0, (uint32_t)swd->ap_idr, (uint32_t)swd->cpuid, (uint32_t)swd->devinfo);

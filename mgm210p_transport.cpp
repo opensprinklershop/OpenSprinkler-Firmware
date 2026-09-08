@@ -689,6 +689,29 @@ const Mgm210pXmodemInfo *mgm210p_xmodem_last() {
 // ---------------------------------------------------------------------------
 // Phase 5: SWD (Serial Wire Debug) bit-bang probe
 // ---------------------------------------------------------------------------
+// Chip profile: per-part flash/MSC/DEVINFO parameters, selectable at RUNTIME so
+// a single binary supports both MGM210P (EFR32MG21) and MGM260P (EFR32MG26).
+struct MgmChipProfile {
+    const char *name;
+    uint32_t    msc_base;      // MSC peripheral base
+    uint32_t    devinfo_addr;  // DEVINFO base
+    uint32_t    flash_base;    // main flash base
+    uint32_t    flash_page;    // flash page size (bytes)
+};
+// EFR32MG21 (MGM210P) - verified on hardware.
+static const MgmChipProfile MGM_PROFILE_MG21 = {
+    "EFR32MG21", 0x40030000u, 0x0FE08000u, 0x00000000u, 8192u
+};
+// EFR32MG26 (MGM260PD32VNA2) - 3200 KB flash, 8 KB page; TrustZone: MSC_NS base
+// 0x50030000 (secure alias 0x40030000). swd_pick_msc_base() auto-selects the
+// reachable alias at runtime. DEVINFO base to confirm on HW.
+static const MgmChipProfile MGM_PROFILE_MG26 = {
+    "EFR32MG26", 0x50030000u, 0x0FE08000u, 0x00000000u, 8192u
+};
+static const MgmChipProfile *g_chip = &MGM_PROFILE_MG21;
+// Effective MSC base actually used (may be the sibling TrustZone alias).
+static uint32_t g_msc_base = 0x40030000u;
+
 static Mgm210pSwdInfo g_swd_last = {};
 static int g_swclk = MGM210P_SWCLK_PIN;
 static int g_swdio = MGM210P_SWDIO_PIN;
@@ -836,6 +859,7 @@ bool mgm210p_swd_probe(Mgm210pSwdInfo *info) {
     g_begun = false;
 
     Mgm210pSwdInfo r = {};
+    r.chip = g_chip->name;
     DEBUG_PRINTLN(F("[MGM210P-SWD] === SWD IDCODE probe ==="));
     mgm210p_reset_pulse(); // bring the target up cleanly (DAP stays alive)
 
@@ -853,7 +877,7 @@ bool mgm210p_swd_probe(Mgm210pSwdInfo *info) {
             if (swd_dp_powerup()) {
                 swd_ap_idr(&r.ap_idr);
                 r.mem_ok = swd_mem_read32(0xE000ED00, &r.cpuid); // SCB CPUID
-                swd_mem_read32(0x0FE08000, &r.devinfo);          // EFR32 DEVINFO base
+                swd_mem_read32(g_chip->devinfo_addr, &r.devinfo);// EFR32 DEVINFO base
                 DEBUG_PRINTF("[MGM210P-SWD] AP_IDR=0x%08X CPUID=0x%08X DEVINFO=0x%08X mem=%s\n",
                              (unsigned)r.ap_idr, (unsigned)r.cpuid, (unsigned)r.devinfo,
                              r.mem_ok ? "OK" : "FAIL");
@@ -879,6 +903,20 @@ bool mgm210p_swd_probe(Mgm210pSwdInfo *info) {
 
 const Mgm210pSwdInfo *mgm210p_swd_last() {
     return &g_swd_last;
+}
+
+void mgm210p_swd_set_chip(const char *which) {
+    if (which && (strstr(which, "26") || strstr(which, "MG26") || strstr(which, "mg26")))
+        g_chip = &MGM_PROFILE_MG26;
+    else
+        g_chip = &MGM_PROFILE_MG21;
+    g_msc_base = g_chip->msc_base;
+    DEBUG_PRINTF("[MGM210P-SWD] chip profile = %s (msc_base=0x%08X)\n",
+                 g_chip->name, (unsigned)g_chip->msc_base);
+}
+
+const char *mgm210p_swd_chip_name() {
+    return g_chip->name;
 }
 
 // Establish the SWD link on the correct orientation and power up the debug
@@ -913,16 +951,17 @@ bool mgm210p_swd_read_mem(uint32_t addr, uint32_t *out, int n) {
 }
 
 // ---------------------------------------------------------------------------
-// MSC flash programming (EFR32MG21 Series-2 register map, base 0x40030000)
+// MSC flash programming (Series-2 register map). Register base = g_msc_base, the
+// runtime-selected alias (see swd_pick_msc_base) so MG21 (0x40030000) and MG26
+// (0x50030000 NS / 0x40030000 S) both work.
 // ---------------------------------------------------------------------------
-#define MSC_BASE_ADDR      0x40030000u
-#define MSC_IPVERSION_REG  (MSC_BASE_ADDR + 0x000u)
-#define MSC_WRITECTRL_REG  (MSC_BASE_ADDR + 0x00Cu)
-#define MSC_WRITECMD_REG   (MSC_BASE_ADDR + 0x010u)
-#define MSC_ADDRB_REG      (MSC_BASE_ADDR + 0x014u)
-#define MSC_WDATA_REG      (MSC_BASE_ADDR + 0x018u)
-#define MSC_STATUS_REG     (MSC_BASE_ADDR + 0x01Cu)
-#define MSC_LOCK_REG       (MSC_BASE_ADDR + 0x03Cu)
+#define MSC_IPVERSION_REG  (g_msc_base + 0x000u)
+#define MSC_WRITECTRL_REG  (g_msc_base + 0x00Cu)
+#define MSC_WRITECMD_REG   (g_msc_base + 0x010u)
+#define MSC_ADDRB_REG      (g_msc_base + 0x014u)
+#define MSC_WDATA_REG      (g_msc_base + 0x018u)
+#define MSC_STATUS_REG     (g_msc_base + 0x01Cu)
+#define MSC_LOCK_REG       (g_msc_base + 0x03Cu)
 #define MSC_WREN_BIT       0x1u
 #define MSC_ERASEPAGE_BIT  0x2u
 #define MSC_WRITEEND_BIT   0x4u
@@ -960,6 +999,24 @@ static bool msc_wait_notbusy(uint32_t timeout_ms) {
     return false;
 }
 
+// Select the reachable MSC alias for the active chip. MG26 (TrustZone) exposes
+// MSC at 0x50030000 (NS) / 0x40030000 (S); MG21 only at 0x40030000. Try the
+// profile base and its bit-28 sibling; keep whichever STATUS reads plausibly.
+static void swd_pick_msc_base() {
+    uint32_t cands[2] = { g_chip->msc_base, g_chip->msc_base ^ 0x10000000u };
+    for (int i = 0; i < 2; i++) {
+        swd_write_reg(false, 0x0, 0x0000001Eu); // clear sticky errors (ABORT)
+        uint32_t s = 0;
+        if (swd_mem_read32(cands[i] + 0x01Cu, &s) && s != 0xFFFFFFFFu) {
+            g_msc_base = cands[i];
+            DEBUG_PRINTF("[MGM210P-SWD] MSC base 0x%08X (STATUS=0x%08X)\n",
+                         (unsigned)g_msc_base, (unsigned)s);
+            return;
+        }
+    }
+    g_msc_base = g_chip->msc_base;
+}
+
 bool mgm210p_swd_flash_test(uint32_t addr, Mgm210pFlashTest *out) {
     static const uint32_t pat[4] = { 0xDEADBEEF, 0x12345678, 0xCAFEBABE, 0xA5A5A5A5 };
     Mgm210pFlashTest r = {};
@@ -972,6 +1029,7 @@ bool mgm210p_swd_flash_test(uint32_t addr, Mgm210pFlashTest *out) {
     if (swd_connect()) {
         r.link = true;
         r.halted = swd_halt_core();
+        swd_pick_msc_base();                             // handle MG26 TZ alias
         swd_mem_read32(MSC_IPVERSION_REG, &r.ipversion); // confirm MSC base
         if (r.halted) {
             swd_mem_write32(MSC_LOCK_REG, MSC_UNLOCK_KEY);
@@ -1038,6 +1096,7 @@ bool mgm210p_swd_flash_begin() {
         DEBUG_PRINTLN(F("[MGM210P-SWD] flash begin FAILED (connect/halt)"));
         return false;
     }
+    swd_pick_msc_base();                        // handle MG26 TrustZone alias
     swd_mem_write32(MSC_LOCK_REG, MSC_UNLOCK_KEY);
     swd_mem_write32(MSC_WRITECTRL_REG, MSC_WREN_BIT);
     g_flash_active = true;
@@ -1050,7 +1109,7 @@ bool mgm210p_swd_flash_write(uint32_t addr, const uint8_t *data, uint32_t len, b
     uint32_t off = 0;
     while (off < len) {
         uint32_t cur = addr + off;
-        uint32_t page = cur & ~(MGM210P_FLASH_PAGE - 1u);
+        uint32_t page = cur & ~(g_chip->flash_page - 1u);
         if (page != g_flash_last_page) {
             if (!msc_erase_page(page)) {
                 DEBUG_PRINTF("[MGM210P-SWD] erase FAILED @0x%08X\n", (unsigned)page);
@@ -1059,7 +1118,7 @@ bool mgm210p_swd_flash_write(uint32_t addr, const uint8_t *data, uint32_t len, b
             g_flash_last_page = page;
         }
         // Bytes until the next page boundary.
-        uint32_t seg = (page + MGM210P_FLASH_PAGE) - cur;
+        uint32_t seg = (page + g_chip->flash_page) - cur;
         if (seg > len - off) seg = len - off;
 
         swd_mem_write32(MSC_ADDRB_REG, cur);

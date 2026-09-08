@@ -207,6 +207,7 @@ struct Mgm210pSwdInfo {
     uint32_t ap_idr;    // AHB-AP IDR
     uint32_t cpuid;     // SCB CPUID @0xE000ED00 (identifies the core)
     uint32_t devinfo;   // EFR32 DEVINFO word (part/rev), 0 if not read
+    const char *chip;   // active chip profile name (EFR32MG21 / EFR32MG26)
 };
 
 // Bit-bang an SWD line reset + JTAG-to-SWD switch and read the DP IDCODE.
@@ -218,6 +219,13 @@ bool mgm210p_swd_probe(Mgm210pSwdInfo *info);
 
 // Access the most recent SWD probe result (never nullptr).
 const Mgm210pSwdInfo *mgm210p_swd_last();
+
+// Select the target chip profile at runtime ("mg21"/"mg210" or "mg26"/"mg260").
+// One binary supports both MGM210P (EFR32MG21) and MGM260P (EFR32MG26).
+void mgm210p_swd_set_chip(const char *which);
+
+// Name of the active chip profile.
+const char *mgm210p_swd_chip_name();
 
 // Read `n` 32-bit words from MGM210P memory over SWD into `out` (n>=1).
 // Re-establishes the SWD link (releases + restores the UART). Returns true on
@@ -248,7 +256,9 @@ bool mgm210p_swd_flash_test(uint32_t addr, Mgm210pFlashTest *out);
 //   begin() -> write(addr,chunk,len)* (ascending, page auto-erased) -> end(run)
 // The SWD link + MSC unlock are held across write() calls; the UART is only
 // released on begin() and restored on end().
+#ifndef MGM210P_FLASH_PAGE
 #define MGM210P_FLASH_PAGE 8192u
+#endif
 
 // Start a flash session: release UART, connect SWD, halt core, unlock MSC,
 // enable write/erase. Returns true on success.
