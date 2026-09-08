@@ -6573,6 +6573,15 @@ void server_mgm210p_at(OTF_PARAMS_DEF) {
 		mgm210p_swd_flash_test(faddr, &ft);
 	}
 
+	// Optional SWD RAM-mailbox self-test (mbtest=1): RAM round-trip over SWD.
+	char mbtest[80];
+	bool did_mbtest = false;
+	mbtest[0] = 0;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("mbtest"), true) && atoi(tmp_buffer)) {
+		did_mbtest = true;
+		mgm_mailbox_selftest(mbtest, sizeof(mbtest));
+	}
+
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("boot"), true) && atoi(tmp_buffer)) {
 		Mgm210pBootloaderInfo btl = {};
 		mgm210p_bootloader_probe(&btl);
@@ -6652,6 +6661,11 @@ void server_mgm210p_at(OTF_PARAMS_DEF) {
 		             ft.ok ? 1 : 0, ft.link ? 1 : 0, ft.halted ? 1 : 0, ft.erased ? 1 : 0,
 		             (uint32_t)ft.ipversion, (uint32_t)ft.addr,
 		             (uint32_t)ft.rd[0], (uint32_t)ft.rd[1], (uint32_t)ft.rd[2], (uint32_t)ft.rd[3]);
+	}
+	if (did_mbtest) {
+		bfill.emit_p(PSTR(",\"mbtest\":\""));
+		bfill_emit_json_escaped(mbtest);
+		bfill.emit_p(PSTR("\""));
 	}
 	bfill.emit_p(PSTR("}"));
 

@@ -277,5 +277,33 @@ void mgm210p_swd_flash_end(bool run);
 // True while a flash session is active.
 bool mgm210p_swd_flash_active();
 
+// ---------------------------------------------------------------------------
+// SWD RAM-mailbox host (C5 side of osmb_t) - Zigbee EZSP transport over SWD
+// ---------------------------------------------------------------------------
+// Talks to the NCP's RAM mailbox (osmb_t @ 0x20000000) over a PERSISTENT SWD
+// session (no core halt, no per-op reconnect). Word-aligned framing:
+//   [u32 len][ceil(len/4) payload words]  in each SPSC ring.
+// Use: attach() -> send()/recv()* -> detach().
+
+// Connect the SWD session (no reset/halt) and verify the mailbox magic. Returns
+// true if the NCP mailbox is present and ready. Leaves the session open.
+bool mgm_mailbox_attach();
+
+// Close the SWD session and restore the UART link.
+void mgm_mailbox_detach();
+
+// Host -> NCP: enqueue one frame into the h2n ring. Returns 1 on success, 0 if
+// full. Requires an open session.
+int  mgm_mailbox_send(const uint8_t *frame, uint16_t len);
+
+// NCP -> host: dequeue one frame from the n2h ring into `buf`. Returns 1 and
+// sets *len on success, 0 if empty. Requires an open session.
+int  mgm_mailbox_recv(uint8_t *buf, uint16_t cap, uint16_t *len);
+
+// Hardware self-test (no NCP needed): writes a mailbox header + a frame into the
+// target RAM over SWD and reads it back, exercising the ring math + SWD r/w.
+// Fills `out` with a one-line status. Returns true if the round-trip matches.
+bool mgm_mailbox_selftest(char *out, size_t out_len);
+
 #endif // ESP32C5 && OS_MGM210P
 #endif // _MGM210P_TRANSPORT_H

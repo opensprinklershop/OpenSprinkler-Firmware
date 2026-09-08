@@ -610,6 +610,7 @@ export function registerTools(server, getClient) {
         swd_read: z.string().optional().describe("Read MGM210P memory over SWD at this address (hex like '0x0FE08000' or decimal). Returns swd_mem[] words. Use for DEVINFO/flash inspection."),
         swd_n: z.number().min(1).max(16).optional().describe("Number of 32-bit words to read for swd_read (1..16, default 1)."),
         flash_test: z.boolean().optional().describe("Run the MSC flash-write self-test: halt core, erase a scratch flash page, write+verify a test pattern over SWD. Proves the flash-write path. Safe on a blank device."),
+        mbtest: z.boolean().optional().describe("Run the SWD RAM-mailbox self-test: write an osmb mailbox header + frame into target RAM over SWD and read it back (ring math + SWD r/w). No NCP firmware needed."),
         addr: z.string().optional().describe("8KB-aligned flash page address for flash_test (hex/decimal, default 0x000FE000)."),
         reset: z.boolean().optional().describe("Pulse the MGM210P RESETn line (only effective if a C5 reset GPIO is wired to module PIN27)."),
         xmodem: z.boolean().optional().describe("Run the active XMODEM handshake probe: detect the receiver poll byte 'C' (0x43, CRC) or NAK (0x15) that a receive-ready Gecko bootloader emits."),
@@ -633,6 +634,8 @@ export function registerTools(server, getClient) {
             params.swd_n = args.swd_n;
         if (args.flash_test)
             params.flash_test = 1;
+        if (args.mbtest)
+            params.mbtest = 1;
         if (args.addr !== undefined)
             params.addr = args.addr;
         if (args.reset)

@@ -1174,4 +1174,168 @@ bool mgm210p_swd_flash_active() {
     return g_flash_active;
 }
 
+// ---------------------------------------------------------------------------
+// SWD RAM-mailbox host (C5 side of osmb_t). See osmb.h for the shared contract.
+// Word-aligned framing: [u32 len][ceil(len/4) payload words]. Rings are SPSC,
+// power-of-two byte sizes; head/tail are byte indices kept multiples of 4 so
+// every access is a single 32-bit AHB-AP transfer (no read-modify-write).
+// ---------------------------------------------------------------------------
+#define OSMB_ADDR       0x20000000u
+#define OSMB_MAGIC      0x424D534Fu   // 'O','S','M','B' little-endian
+#define OSMB_H2N_SIZE   2048u
+#define OSMB_N2H_SIZE   2048u
+#define OSMB_O_MAGIC    0x00u
+#define OSMB_O_VERSION  0x04u
+#define OSMB_O_H2NSZ    0x08u
+#define OSMB_O_N2HSZ    0x0Cu
+#define OSMB_O_H2NHEAD  0x10u
+#define OSMB_O_H2NTAIL  0x14u
+#define OSMB_O_N2HHEAD  0x18u
+#define OSMB_O_N2HTAIL  0x1Cu
+#define OSMB_O_N2HIRQ   0x20u
+#define OSMB_O_FLAGS    0x24u
+#define OSMB_HDR_LEN    0x40u
+
+static uint32_t g_mb_h2n_size = OSMB_H2N_SIZE;
+static uint32_t g_mb_n2h_size = OSMB_N2H_SIZE;
+
+static inline uint32_t osmb_h2n_base() { return OSMB_ADDR + OSMB_HDR_LEN; }
+static inline uint32_t osmb_n2h_base() { return OSMB_ADDR + OSMB_HDR_LEN + g_mb_h2n_size; }
+static inline uint32_t osmb_slot(uint16_t len) { return 4u + ((len + 3u) & ~3u); }
+
+// Push a word-framed message into a ring (producer side). `hd_off`/`tl_off` are
+// the head/tail header offsets; `base`/`size` describe the buffer. No wrap
+// straddle: size is a power of two multiple of 4 so every word stays aligned.
+static int osmb_ring_put(uint32_t base, uint32_t size, uint32_t hd_off, uint32_t tl_off,
+                         const uint8_t *frame, uint16_t len) {
+    uint32_t head = 0, tail = 0;
+    swd_mem_read32(OSMB_ADDR + hd_off, &head);
+    swd_mem_read32(OSMB_ADDR + tl_off, &tail);
+    uint32_t used = (head - tail) & (size - 1u);
+    uint32_t slot = osmb_slot(len);
+    if ((size - 1u - used) < slot) return 0;             // full
+    uint32_t pos = head;
+    swd_mem_write32(base + (pos & (size - 1u)), len);    // length word
+    pos += 4u;
+    for (uint32_t i = 0; i < len; i += 4u) {
+        uint32_t w = 0xFFFFFFFFu;
+        for (int b = 0; b < 4 && (i + (uint32_t)b) < len; b++)
+            w = (w & ~(0xFFu << (8 * b))) | ((uint32_t)frame[i + b] << (8 * b));
+        swd_mem_write32(base + (pos & (size - 1u)), w);
+        pos += 4u;
+    }
+    swd_mem_write32(OSMB_ADDR + hd_off, (head + slot) & (size - 1u)); // publish
+    return 1;
+}
+
+// Pop a word-framed message from a ring (consumer side).
+static int osmb_ring_get(uint32_t base, uint32_t size, uint32_t hd_off, uint32_t tl_off,
+                         uint8_t *buf, uint16_t cap, uint16_t *out_len) {
+    uint32_t head = 0, tail = 0;
+    swd_mem_read32(OSMB_ADDR + hd_off, &head);
+    swd_mem_read32(OSMB_ADDR + tl_off, &tail);
+    uint32_t used = (head - tail) & (size - 1u);
+    if (used < 4u) return 0;                              // no length word yet
+    uint32_t pos = tail, lenw = 0;
+    swd_mem_read32(base + (pos & (size - 1u)), &lenw);
+    uint16_t len = (uint16_t)(lenw & 0xFFFFu);
+    uint32_t slot = osmb_slot(len);
+    if (len == 0 || len > cap) {                          // bad frame: drop len word
+        swd_mem_write32(OSMB_ADDR + tl_off, (tail + 4u) & (size - 1u));
+        return 0;
+    }
+    if (used < slot) return 0;                            // frame not fully arrived
+    pos += 4u;
+    for (uint32_t i = 0; i < len; i += 4u) {
+        uint32_t w = 0;
+        swd_mem_read32(base + (pos & (size - 1u)), &w);
+        pos += 4u;
+        for (int b = 0; b < 4 && (i + (uint32_t)b) < len; b++)
+            buf[i + b] = (uint8_t)(w >> (8 * b));
+    }
+    swd_mem_write32(OSMB_ADDR + tl_off, (tail + slot) & (size - 1u)); // consume
+    if (out_len) *out_len = len;
+    return 1;
+}
+
+bool mgm_mailbox_attach() {
+    g_uart.end();
+    delay(10);
+    g_begun = false;
+    if (!swd_connect()) {
+        mgm210p_set_baud(MGM210P_UART_BAUD);
+        return false;
+    }
+    uint32_t magic = 0;
+    swd_mem_read32(OSMB_ADDR + OSMB_O_MAGIC, &magic);
+    if (magic != OSMB_MAGIC) {
+        DEBUG_PRINTF("[MGM-MB] no mailbox (magic=0x%08X, want 0x%08X)\n",
+                     (unsigned)magic, (unsigned)OSMB_MAGIC);
+        mgm210p_set_baud(MGM210P_UART_BAUD);
+        return false;
+    }
+    swd_mem_read32(OSMB_ADDR + OSMB_O_H2NSZ, &g_mb_h2n_size);
+    swd_mem_read32(OSMB_ADDR + OSMB_O_N2HSZ, &g_mb_n2h_size);
+    if (!g_mb_h2n_size) g_mb_h2n_size = OSMB_H2N_SIZE;
+    if (!g_mb_n2h_size) g_mb_n2h_size = OSMB_N2H_SIZE;
+    DEBUG_PRINTF("[MGM-MB] attached: h2n=%u n2h=%u\n",
+                 (unsigned)g_mb_h2n_size, (unsigned)g_mb_n2h_size);
+    return true;
+}
+
+void mgm_mailbox_detach() {
+    mgm210p_set_baud(MGM210P_UART_BAUD);
+}
+
+int mgm_mailbox_send(const uint8_t *frame, uint16_t len) {
+    return osmb_ring_put(osmb_h2n_base(), g_mb_h2n_size,
+                         OSMB_O_H2NHEAD, OSMB_O_H2NTAIL, frame, len);
+}
+
+int mgm_mailbox_recv(uint8_t *buf, uint16_t cap, uint16_t *len) {
+    return osmb_ring_get(osmb_n2h_base(), g_mb_n2h_size,
+                         OSMB_O_N2HHEAD, OSMB_O_N2HTAIL, buf, cap, len);
+}
+
+bool mgm_mailbox_selftest(char *out, size_t out_len) {
+    g_uart.end();
+    delay(10);
+    g_begun = false;
+    if (!swd_connect()) {
+        if (out) snprintf(out, out_len, "SWD connect failed");
+        mgm210p_set_baud(MGM210P_UART_BAUD);
+        return false;
+    }
+    // Initialise a mailbox header in target RAM (as the NCP's osmb_init would).
+    g_mb_h2n_size = OSMB_H2N_SIZE;
+    g_mb_n2h_size = OSMB_N2H_SIZE;
+    swd_mem_write32(OSMB_ADDR + OSMB_O_H2NSZ, OSMB_H2N_SIZE);
+    swd_mem_write32(OSMB_ADDR + OSMB_O_N2HSZ, OSMB_N2H_SIZE);
+    swd_mem_write32(OSMB_ADDR + OSMB_O_H2NHEAD, 0);
+    swd_mem_write32(OSMB_ADDR + OSMB_O_H2NTAIL, 0);
+    swd_mem_write32(OSMB_ADDR + OSMB_O_N2HHEAD, 0);
+    swd_mem_write32(OSMB_ADDR + OSMB_O_N2HTAIL, 0);
+    swd_mem_write32(OSMB_ADDR + OSMB_O_VERSION, 1);
+    swd_mem_write32(OSMB_ADDR + OSMB_O_MAGIC, OSMB_MAGIC);
+
+    uint32_t rb_magic = 0;
+    swd_mem_read32(OSMB_ADDR + OSMB_O_MAGIC, &rb_magic);
+
+    // Produce a test frame into the n2h ring (simulating the NCP), then recv it.
+    const uint8_t test[8] = { 0x11, 0x22, 0x33, 0x44, 0xAA, 0xBB, 0xCC, 0xDD };
+    int put = osmb_ring_put(osmb_n2h_base(), g_mb_n2h_size,
+                            OSMB_O_N2HHEAD, OSMB_O_N2HTAIL, test, sizeof(test));
+    uint8_t rx[16];
+    uint16_t rl = 0;
+    int got = mgm_mailbox_recv(rx, sizeof(rx), &rl);
+    bool match = (got == 1) && (rl == sizeof(test)) && (memcmp(rx, test, sizeof(test)) == 0);
+    bool ok = (rb_magic == OSMB_MAGIC) && (put == 1) && match;
+    if (out)
+        snprintf(out, out_len, "magic=%s put=%d recv=%d len=%u match=%d",
+                 rb_magic == OSMB_MAGIC ? "OK" : "BAD", put, got, (unsigned)rl, match ? 1 : 0);
+    DEBUG_PRINTF("[MGM-MB] selftest: %s\n", out ? out : "");
+    mgm210p_set_baud(MGM210P_UART_BAUD);
+    return ok;
+}
+
 #endif // ESP32C5 && OS_MGM210P
