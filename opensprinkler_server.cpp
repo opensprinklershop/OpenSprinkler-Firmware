@@ -6503,7 +6503,8 @@ void server_mgm210p_at(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("flash"), true) && tmp_buffer[0]) {
 		char op = tmp_buffer[0];
 		if (op == 'b') {                       // begin
-			bool ok = mgm210p_swd_flash_begin();
+			bool reset_halt = findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("rhalt"), true) && atoi(tmp_buffer);
+			bool ok = mgm210p_swd_flash_begin(reset_halt);
 			bfill.emit_p(PSTR("{\"flash\":\"begin\",\"ok\":$D}"), ok ? 1 : 0);
 		} else if (op == 'd') {                // data (chunk in POST body)
 			uint32_t addr = 0;

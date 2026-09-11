@@ -261,8 +261,10 @@ bool mgm210p_swd_flash_test(uint32_t addr, Mgm210pFlashTest *out);
 #endif
 
 // Start a flash session: release UART, connect SWD, halt core, unlock MSC,
-// enable write/erase. Returns true on success.
-bool mgm210p_swd_flash_begin();
+// enable write/erase. Returns true on success. If `reset_halt` is set, the core
+// is reset and halted at its reset vector (vector catch) so volatile page locks
+// applied by the bootloader are not yet in effect — required to write page 0.
+bool mgm210p_swd_flash_begin(bool reset_halt = false);
 
 // Write `len` bytes to flash at `addr` (word-granular; a trailing partial word
 // is padded with 0xFF). Pages are erased automatically the first time they are

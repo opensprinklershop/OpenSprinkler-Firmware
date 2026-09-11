@@ -991,6 +991,27 @@ static bool swd_halt_core() {
     return false;
 }
 
+// Reset the target and halt it at the reset vector (before its firmware runs) so
+// volatile page locks applied by the bootloader are not yet in effect. Uses
+// DEMCR.VC_CORERESET + AIRCR.SYSRESETREQ over SWD (no reset pin required).
+static bool swd_halt_on_reset() {
+    swd_mem_write32(CM_DHCSR, CM_DHCSR_HALT);        // C_DEBUGEN + halt
+    swd_mem_write32(0xE000EDFCu, 0x01000001u);       // DEMCR: TRCENA | VC_CORERESET
+    uint32_t d = 0; swd_mem_read32(0xE000EDFCu, &d);
+    swd_mem_write32(0xE000ED0Cu, 0x05FA0004u);       // AIRCR: SYSRESETREQ
+    delay(4);
+    swd_write_reg(false, 0x0, 0x0000001Eu);          // clear sticky errors (ABORT)
+    swd_dp_powerup();                                // re-assert debug power
+    bool halted = false;
+    for (int i = 0; i < 60; i++) {
+        uint32_t v = 0;
+        if (swd_mem_read32(CM_DHCSR, &v) && (v & CM_DHCSR_S_HALT)) { halted = true; break; }
+        delay(2);
+    }
+    swd_mem_write32(0xE000EDFCu, 0x01000000u);        // DEMCR: clear VC_CORERESET
+    return halted;
+}
+
 static bool msc_wait_notbusy(uint32_t timeout_ms) {
     uint32_t t0 = millis();
     while ((millis() - t0) < timeout_ms) {
@@ -1085,14 +1106,17 @@ static bool msc_erase_page(uint32_t page_addr) {
     return msc_wait_notbusy(1000);
 }
 
-bool mgm210p_swd_flash_begin() {
+bool mgm210p_swd_flash_begin(bool reset_halt) {
     g_uart.end();
     delay(10);
     g_begun = false;
     g_flash_active = false;
     g_flash_last_page = 0xFFFFFFFFu;
 
-    if (!swd_connect() || !swd_halt_core()) {
+    bool halted = false;
+    if (swd_connect())
+        halted = reset_halt ? swd_halt_on_reset() : swd_halt_core();
+    if (!halted) {
         mgm210p_set_baud(MGM210P_UART_BAUD);
         DEBUG_PRINTLN(F("[MGM210P-SWD] flash begin FAILED (connect/halt)"));
         return false;
@@ -1101,7 +1125,7 @@ bool mgm210p_swd_flash_begin() {
     swd_mem_write32(MSC_LOCK_REG, MSC_UNLOCK_KEY);
     swd_mem_write32(MSC_WRITECTRL_REG, MSC_WREN_BIT);
     g_flash_active = true;
-    DEBUG_PRINTLN(F("[MGM210P-SWD] flash session begin"));
+    DEBUG_PRINTF("[MGM210P-SWD] flash session begin (reset_halt=%d)\n", reset_halt ? 1 : 0);
     return true;
 }
 
