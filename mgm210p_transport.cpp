@@ -758,10 +758,11 @@ static uint8_t swd_read_reg(bool APnDP, uint8_t a23, uint32_t *data) {
         uint8_t ack = 0;
         for (int i = 0; i < 3; i++) ack |= (uint8_t)(swd_rd_bit() << i);
         if (ack == 0x1) {          // OK: read 32 data bits + parity
-            uint32_t val = 0;
-            for (int i = 0; i < 32; i++) val |= ((uint32_t)swd_rd_bit() << i);
-            swd_rd_bit();          // data parity
+            uint32_t val = 0; uint8_t p = 0;
+            for (int i = 0; i < 32; i++) { int b = swd_rd_bit(); val |= ((uint32_t)b << i); p ^= (uint8_t)b; }
+            uint8_t par_rx = (uint8_t)swd_rd_bit();  // data parity
             swd_dio_mode(1); swd_wr_bit(0); // turnaround back to host
+            if ((p & 1) != (par_rx & 1)) continue;   // parity error -> retry read
             if (data) *data = val;
             return ack;
         }
@@ -1306,6 +1307,9 @@ bool mgm_mailbox_selftest(char *out, size_t out_len) {
         mgm210p_set_baud(MGM210P_UART_BAUD);
         return false;
     }
+    // Halt the target core so its running firmware cannot clobber the scratch RAM
+    // used for this loopback test (a real NCP reserves the mailbox region instead).
+    swd_halt_core();
     // Initialise a mailbox header in target RAM (as the NCP's osmb_init would).
     g_mb_h2n_size = OSMB_H2N_SIZE;
     g_mb_n2h_size = OSMB_N2H_SIZE;
