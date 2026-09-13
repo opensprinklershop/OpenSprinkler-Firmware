@@ -452,7 +452,15 @@ bool rename_file(const char *fn_old, const char *fn_new) {
 	SdFile file(fn_old, O_READ);
 	return file.rename(fn_new);
 #else
-	return rename(fn_old, fn_new) == 0;
+	char old_path[PATH_MAX];
+	char new_path[PATH_MAX];
+
+	strncpy(old_path, get_filename_fullpath(fn_old), sizeof(old_path) - 1);
+	old_path[sizeof(old_path) - 1] = 0;
+	strncpy(new_path, get_filename_fullpath(fn_new), sizeof(new_path) - 1);
+	new_path[sizeof(new_path) - 1] = 0;
+
+	return rename(old_path, new_path) == 0;
 #endif
 }
 
