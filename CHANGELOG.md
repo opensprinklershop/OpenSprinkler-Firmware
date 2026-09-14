@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(228)] — unveröffentlicht
+## [2.4.0(228)] — veröffentlicht 2026-09-14
 
 ### Added
 - **Sensor-API (kompatibel zur offiziellen Firmware 2.2.1(5))**: Die "Expanded Sensor"-Endpunkte `/jsn`, `/csn`, `/dsn`, `/jsd`, `/jsl`, `/dsl` und `/jpa` sowie `snadj` in `/cp`/`/jp` und `usa` in `/mp` werden als Fassade über den vorhandenen Sensorspeicher bereitgestellt (`sensor_compat.cpp`). Die offizielle OpenSprinkler-App und Drittanbieter-Clients arbeiten damit unverändert; `/ja` liefert zusätzlich `sensors`.
