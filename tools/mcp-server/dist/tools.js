@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, statSync } from "fs";
 const NAME_ALIASES = {
     rosen: ["rose"],
     rasenzone: ["rasen zone", "rasen-zone", "lawn", "lawn zone"],
@@ -772,7 +772,7 @@ export function registerTools(server, getClient) {
                 const logPath = `/tmp/zigbee_monitor_${v}.log`;
                 available[v] = {
                     exists: existsSync(logPath),
-                    size: existsSync(logPath) ? require("fs").statSync(logPath).size : 0,
+                    size: existsSync(logPath) ? statSync(logPath).size : 0,
                 };
             }
             return {

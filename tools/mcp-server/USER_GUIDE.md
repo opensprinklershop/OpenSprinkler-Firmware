@@ -6,7 +6,7 @@ Dieses Handbuch zeigt, wie du den MCP Server verwendest, um deinen OpenSprinkler
 
 ### 1. MCP Server kompilieren
 
-Das MCP Server-Programm läuft auf deinem Entwicklungs-PC und verbindet sich mit der OpenSprinkler-Firmware auf dem ESP32:
+Das MCP Server-Programm läuft auf deinem Entwicklungs-PC und verbindet sich mit der OpenSprinkler-Firmware auf dem ESP32, ESP8266 (OpenSprinkler 3.x) oder OSPi:
 
 ```bash
 cd tools/mcp-server
@@ -146,7 +146,7 @@ Der Assistant nutzt `get_debug` und `get_system_resources`.
 - **get_log** — Bewässerungsprotokoll
 - **get_debug** — System-Informationen (RAM, Signal, etc.)
 - **get_sensors** — Sensorliste und aktuelle Werte
-- **get_zigbee_devices** — Zigbee-Geräte (nur ESP32-C5)
+- **get_zigbee_devices** — Zigbee-Geräte (nur ESP32-C5; auf ESP8266/OSPi antwortet das Tool mit einem Hinweis, dass der Endpunkt fehlt)
 - **get_ble_devices** — Bluetooth-Geräte
 
 ### ⚙️ Steuerung (Schreiben)

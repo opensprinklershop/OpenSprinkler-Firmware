@@ -6,7 +6,7 @@ Ein [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) Server, der
 
 ### 1. Eingebetteter MCP-Server (Firmware, neu)
 
-Ab der aktuellen Firmware-Version enthält der ESP32-Controller einen **eingebauten MCP-HTTP-Server** direkt auf dem Gerät. Der Endpunkt ist:
+Ab der aktuellen Firmware-Version enthält der ESP32-Controller einen **eingebauten MCP-HTTP-Server** direkt auf dem Gerät. Der ESP8266 (OpenSprinkler 3.x) hat dafür keinen Platz (`-D DISABLE_MCP`, `/mcp` antwortet mit 404); dort ist der externe Node.js-Server aus diesem Verzeichnis der einzige Weg. Der Endpunkt ist:
 
 ```
 POST http://<controller-ip>/mcp
@@ -22,11 +22,11 @@ Content-Type: application/json
 
 **Verfügbare Tools:** `get_all`, `get_controller_variables`, `get_options`, `get_stations`, `get_station_status`, `get_programs`, `get_debug`, `manual_station_run`, `change_controller_variables`, `pause_queue`
 
-Detaillierte Dokumentation: [`docs/mcp_firmware_api.md`](../../docs/mcp_firmware_api.md)
+Detaillierte Dokumentation: [`docs/as_api_docs/mcp_firmware_api.md`](../../docs/as_api_docs/mcp_firmware_api.md)
 
 ### 2. Externer Node.js MCP-Server (dieser Server, stdio-Transport)
 
-Der Node.js-Server in diesem Verzeichnis bietet mehr Tools (alle REST-API-Endpunkte), ist aber erfordert eine Node.js-Installation und wird als separater Prozess gestartet. Er eignet sich für Umgebungen, in denen der HTTP-Transport nicht direkt verfügbar ist.
+Der Node.js-Server in diesem Verzeichnis bietet mehr Tools (alle REST-API-Endpunkte), erfordert aber eine Node.js-Installation und wird als separater Prozess gestartet. Er eignet sich für Umgebungen, in denen der HTTP-Transport nicht direkt verfügbar ist, und ist für ESP8266- und OSPi-Controller die einzige MCP-Anbindung. Tools, deren Endpunkt auf dem Controller fehlt (Zigbee, BLE, RainMaker, IEEE 802.15.4 auf ESP8266/OSPi), melden das als klar benannten Fehler statt eines nackten `HTTP 404`.
 
 ## Voraussetzungen
 

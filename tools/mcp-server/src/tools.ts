@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { OpenSprinklerClient } from "./client.js";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, statSync } from "fs";
 import { join } from "path";
 
 type NamedItem = { id: number; name: string };
@@ -1154,7 +1154,7 @@ export function registerTools(
           const logPath = `/tmp/zigbee_monitor_${v}.log`;
           available[v] = {
             exists: existsSync(logPath),
-            size: existsSync(logPath) ? require("fs").statSync(logPath).size : 0,
+            size: existsSync(logPath) ? statSync(logPath).size : 0,
           };
         }
         return {

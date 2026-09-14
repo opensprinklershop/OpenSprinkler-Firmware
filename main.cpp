@@ -80,6 +80,8 @@ extern "C" void mbedtls_spiram_allow_internal_reroute(bool enable);
 	#if defined(ESP8266)
 		#include <Pinger.h>
 		#include <lwip/icmp.h>
+		#include <lwip/netif.h>
+		#include <lwip/etharp.h>
 		//extern "C" struct netif* eagle_lwip_getif (int netif_index);
 		Pinger *pinger = NULL;
 		ESP8266WebServer *update_server = NULL;
@@ -992,13 +994,19 @@ void overcurrent_monitor() {
 // Gratuitous ARP task for ESP8266 lwIP
 #if defined(ESP8266)
 void gratuitousARPTask() {
-		if (!useEth && os.get_wifi_mode()!=WIFI_MODE_STA) return;
-		//DEBUG_PRINTLN(F("gratuiousARPTask"));
-        netif *n = netif_list;
-        while (n) {
-                etharp_gratuitous(n);
-                n = n->next;
-        }
+	if (!useEth && os.get_wifi_mode()!=WIFI_MODE_STA) return;
+	// netif_list holds every lwIP interface the SDK ever registered: the WiFi
+	// STA/AP netifs (still listed with 0.0.0.0 after WiFi.mode(WIFI_OFF) in
+	// Ethernet mode) and the W5500/ENC28J60 netif (present before DHCP has
+	// finished). etharp_gratuitous() on such an interface emits an ARP request
+	// for 0.0.0.0 or hands a frame to a dead link output, so only announce on
+	// interfaces that are ARP-capable, administratively up and hold an IPv4.
+	for (netif *n = netif_list; n; n = n->next) {
+		if (!(n->flags & NETIF_FLAG_ETHARP)) continue;
+		if (!netif_is_up(n)) continue;
+		if (ip4_addr_isany_val(*netif_ip4_addr(n))) continue;
+		etharp_gratuitous(n);
+	}
 }
 #endif
 

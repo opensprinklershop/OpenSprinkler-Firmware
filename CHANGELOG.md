@@ -6,6 +6,37 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(228)] — unveröffentlicht
+
+### Added
+- **Sensor-API (kompatibel zur offiziellen Firmware 2.2.1(5))**: Die "Expanded Sensor"-Endpunkte `/jsn`, `/csn`, `/dsn`, `/jsd`, `/jsl`, `/dsl` und `/jpa` sowie `snadj` in `/cp`/`/jp` und `usa` in `/mp` werden als Fassade über den vorhandenen Sensorspeicher bereitgestellt (`sensor_compat.cpp`). Die offizielle OpenSprinkler-App und Drittanbieter-Clients arbeiten damit unverändert; `/ja` liefert zusätzlich `sensors`.
+- **Neue Sensortypen**: Analog stückweise-linear (Typ 12), Onboard-Digitaleingang SN1/SN2 (Typ 56), Gruppen MEDIAN (1004) und RANGE (1005) sowie der Programm-Anpassungstyp PIECEWISE (5). Alle Sensoren unterstützen jetzt lineare Skalierung/Offset und Min/Max-Clamping.
+- **Zigbee-Batteriemeldung**: Standard-ZCL-Schlafgeräte (Third Reality, Sonoff, Aqara, ...) werden nach dem Beitritt an den Power-Configuration-Cluster gebunden, Reporting wird konfiguriert und der Ladestand initial gelesen (zweiter Leseversuch nach 45 s).
+- **Zigbee-Binding**: Der Koordinator bindet Sensor-Cluster gestaffelt und setzt für Schlafgeräte ein Standard-Reporting-Intervall von 15 Minuten.
+- **Beta-Kanal**: `fw.sh release beta` baut alle Varianten in ein getrenntes Beta-Verzeichnis inkl. eigenem Manifest/Katalog und deployt es nach IONOS.
+- **MCP**: Der eingebettete `/mcp`-Server streamt große Antworten (`get_weather_data`, `get_sensor_values`, `get_sensor_chart_data`) mit vorab berechneter Content-Length statt sie dreifach im RAM zu halten. Der externe Node.js-MCP-Server (`tools/mcp-server`) benennt fehlende plattformspezifische Endpunkte (Zigbee/BLE/RainMaker/IEEE 802.15.4 auf ESP8266/OSPi) jetzt im Fehlertext.
+- **`/db`** meldet auf dem ESP8266 zusätzlich `iram_free` und `arp_size`.
+
+### Changed
+- **Zigbee-Stationssteuerung**: Pro Station ist nur noch ein Befehl unterwegs; ein Retry oder ein Richtungswechsel (EIN→AUS) ersetzt den noch nicht gesendeten Befehl statt sich dahinter einzureihen. Globaler Mindestabstand zwischen Tuya-Sendungen, sofortiger Versand, sobald ein Schlafgerät wach ist (eigener Frame empfangen), und Discovery-Verkehr konkurriert nicht mehr mit Stationsbefehlen um den Poll-Slot. Behebt "EIN klappt, AUS springt zurück, dann nichts mehr" bei GIEX/Tuya-Batterieventilen.
+- **Zigbee-Laufzeit-Rolle**: Logische Geräte kennen aus der Gerätedatenbank, welcher Tuya-DP die EIN-Dauer entgegennimmt; das Ventil schließt dann selbst, auch wenn der AUS-Befehl verloren geht.
+- **Zigbee-Koordinator**: MAC-Transaktionspersistenz bleibt beim 802.15.4-Standard (7,68 s); längere Werte erschöpften den ZBOSS-Pufferpool. Keepalive-Methode und Standard-End-Device-Timeout sind konfigurierbar.
+- **ESP8266-Speicher**: Statischer DRAM-Bedarf von 51,6 KB auf 43,3 KB gesenkt (PROGMEM-Migration von Strings/Tabellen, MQTT- und Debug-Puffer im IRAM-Heap, `std::map` statt `unordered_map`, keine Switch-Lookup-Tabellen). Freier Heap im Leerlauf steigt von ~13 KB auf ~25 KB. Der eingebettete `/mcp`-Server ist auf dem ESP8266 deaktiviert (`DISABLE_MCP`, antwortet 404); der externe Node.js-MCP-Server bleibt nutzbar.
+- **ESP8266 ARP**: Gratuitous ARP wird nur noch auf aktiven Schnittstellen mit IPv4-Adresse gesendet (bisher auch auf abgeschalteten WiFi-netifs mit 0.0.0.0 bzw. vor DHCP-Abschluss auf dem W5500).
+- **E-Mail-Versand**: Puffer werden transient auf dem Heap angelegt und früh freigegeben (ESP8266: ~965 B dauerhaftes DRAM gespart); ESP32 blockiert den Versand bei knappem internem Heap nicht mehr hart.
+- **InfluxDB**: Client ohne externes Submodul neu implementiert; Fehler beim Schreiben behoben.
+- **RS485/I2C (SC16IS752)**: Sensorlogik refaktoriert; FYTA- und Gardena-Anbindung angepasst.
+- **Backup**: `/ja`-ähnliche Konfigurationssicherung als Blob für die App; String-Optionen werden gestreamt, damit der kleine ESP8266-Ether-Puffer nicht überläuft.
+- **Bibliotheken**: ArduinoJson auf 7.4.3; `OSPinger.h`, `EMailSender` und AES-Software-Fallback entfernt, ESP8266 nutzt `esp8266-ping`.
+- **OTA**: OTA-Passwort wird nur während eines Uploads auf dem Heap gehalten; im AP-Modus ist nur die einfache API-Tabelle (ohne MCP/Zigbee-Handler) erreichbar.
+
+### Fixed
+- **Sensoren**: Nullzeiger-Prüfungen in der Sensorverarbeitung ergänzt.
+- **OSPi**: Kompilierfehler und RS485-USB-Initialisierung behoben.
+- **BLE**: Name/Hersteller/Modell aus Advertisements werden vor der JSON-Ausgabe escaped.
+- **Externer MCP-Server**: `get_monitor_log` brach mit "require is not defined" ab (ESM-Build).
+- **Build**: Versehentlich gelöschte Python-Build-Skripte (`fix_linker.py`, `pre_build_sdkconfig.py`, ...) wiederhergestellt.
+
 ## [2.4.0(227)] — veröffentlicht 2026-08-22
 
 ### Added
