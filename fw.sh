@@ -128,6 +128,9 @@ if [[ "${OS_UPGRADE_DIR:-}" == "/srv/www/htdocs/upgrade" ]]; then
 fi
 UPGRADE_DIR="${OS_UPGRADE_DIR:-/data/upgrade}"
 BETA_UPGRADE_DIR="${OS_BETA_UPGRADE_DIR:-/data/upgrade-beta}"
+# Public base URLs written into manifest.json / versions.json (stable vs. beta channel)
+UPGRADE_URL_BASE="${OS_UPGRADE_URL_BASE:-https://opensprinklershop.de/upgrade}"
+BETA_UPGRADE_URL_BASE="${OS_BETA_UPGRADE_URL_BASE:-https://opensprinklershop.de/upgrade-beta}"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
 VERSIONS_JSON="${UPGRADE_DIR}/versions.json"
 BETA_MANIFEST="${BETA_UPGRADE_DIR}/manifest.json"
@@ -1980,9 +1983,9 @@ entry = {
     'fw_version': int(sys.argv[1]),
     'fw_minor': int(sys.argv[2]),
     'date': sys.argv[3],
-    'zigbee_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
-    'matter_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
-    'esp8266_url': 'https://opensprinklershop.de/upgrade/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
+    'zigbee_url': '${UPGRADE_URL_BASE}/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_zigbee.bin',
+    'matter_url': '${UPGRADE_URL_BASE}/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_matter.bin',
+    'esp8266_url': '${UPGRADE_URL_BASE}/archive/v' + sys.argv[1] + '_' + sys.argv[2] + '/firmware_esp8266.bin',
     'zigbee_sha256': sys.argv[5],
     'matter_sha256': sys.argv[6],
     'esp8266_sha256': sys.argv[7],
@@ -2036,13 +2039,13 @@ update_manifest() {
 {
 	"fw_version": ${OS_FW_VERSION},
 	"fw_minor": ${OS_FW_MINOR},
-	"zigbee_url": "https://opensprinklershop.de/upgrade/firmware_zigbee.bin",
-	"matter_url": "https://opensprinklershop.de/upgrade/firmware_matter.bin",
-	"esp8266_url": "https://opensprinklershop.de/upgrade/firmware_esp8266.bin",
+	"zigbee_url": "${UPGRADE_URL_BASE}/firmware_zigbee.bin",
+	"matter_url": "${UPGRADE_URL_BASE}/firmware_matter.bin",
+	"esp8266_url": "${UPGRADE_URL_BASE}/firmware_esp8266.bin",
 	"zigbee_sha256": "${zigbee_sha256}",
 	"matter_sha256": "${matter_sha256}",
 	"esp8266_sha256": "${esp8266_sha256}",
-	"versions_url": "https://opensprinklershop.de/upgrade/versions.json",
+	"versions_url": "${UPGRADE_URL_BASE}/versions.json",
 	"releases_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$releases_url"),
 	"prev_release_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$prev_release_url"),
 	"changelog": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$changelog_text")
@@ -2066,11 +2069,13 @@ sync_versions_from_manifest() {
 
     mkdir -p "$(dirname "$VERSIONS_JSON")"
 
-    python3 - "$MANIFEST" "$VERSIONS_JSON" <<'PYEOF'
+    UPGRADE_URL_BASE="$UPGRADE_URL_BASE" python3 - "$MANIFEST" "$VERSIONS_JSON" <<'PYEOF'
 import json
 import os
 import sys
 from datetime import date
+
+url_base = os.environ.get("UPGRADE_URL_BASE", "https://opensprinklershop.de/upgrade")
 
 manifest_path = sys.argv[1]
 versions_path = sys.argv[2]
@@ -2105,9 +2110,9 @@ entry = {
     "fw_version": fw_version,
     "fw_minor": fw_minor,
     "date": entry_date,
-    "zigbee_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_zigbee.bin",
-    "matter_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_matter.bin",
-    "esp8266_url": f"https://opensprinklershop.de/upgrade/archive/v{fw_version}_{fw_minor}/firmware_esp8266.bin",
+    "zigbee_url": f"{url_base}/archive/v{fw_version}_{fw_minor}/firmware_zigbee.bin",
+    "matter_url": f"{url_base}/archive/v{fw_version}_{fw_minor}/firmware_matter.bin",
+    "esp8266_url": f"{url_base}/archive/v{fw_version}_{fw_minor}/firmware_esp8266.bin",
     "zigbee_sha256": manifest.get("zigbee_sha256", ""),
     "matter_sha256": manifest.get("matter_sha256", ""),
     "esp8266_sha256": manifest.get("esp8266_sha256", ""),
@@ -2460,6 +2465,11 @@ do_release() {
 
     # Run automated API and logical Monitors verification tests before any deployment/release.
     # Abort deployment if those tests fail.
+    info "Building native test binary (env linux) for the pre-release tests..."
+    if ! pio run -e linux 2>&1 | tail -3; then
+        error "Native (linux) build failed! Aborting release."
+        exit 1
+    fi
     info "Running pre-release logical Monitor & API verification tests..."
     if ! python3 /data/Workspace/OpenSprinkler-Test/test_api.py; then
         error "API test verification failed! Aborting release."
@@ -2612,6 +2622,7 @@ do_release_beta() {
     local MANIFEST="${BETA_MANIFEST}"
     local VERSIONS_JSON="${BETA_VERSIONS_JSON}"
     local UPGRADE_MATTER_KVS_BIN="${UPGRADE_DIR}/matter_kvs.bin"
+    local UPGRADE_URL_BASE="${BETA_UPGRADE_URL_BASE}"
     local RELEASE_VARIANT_LABEL="beta"
 
     do_release "$mode"
