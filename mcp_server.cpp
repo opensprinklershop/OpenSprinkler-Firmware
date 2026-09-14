@@ -9,7 +9,7 @@
 // is defined by the time the preprocessor evaluates the #if below.
 #include "defines.h"
 
-#if defined(USE_OTF)
+#if defined(USE_OTF) && !defined(DISABLE_MCP)
 
 #include "mcp_server.h"
 #include "OpenSprinkler.h"

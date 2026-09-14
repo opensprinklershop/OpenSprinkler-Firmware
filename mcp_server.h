@@ -34,7 +34,7 @@
 
 #pragma once
 
-#if defined(USE_OTF)
+#if defined(USE_OTF) && !defined(DISABLE_MCP)
 
 namespace OTF {
   class Request;

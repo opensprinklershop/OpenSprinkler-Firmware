@@ -35,7 +35,7 @@
 #include "osinfluxdb.h"
 
 // STL includes for ZigBee Logical Device management
-#include <unordered_map>
+#include <map>
 #include <string>
 #include <memory>
 #include <functional>
@@ -536,15 +536,17 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static uint16_t zigbee_logical_count_ieee(const char *ieee);
 
 	// ZigBee Logical Device storage (RAM cache backed by LittleFS persistence)
-	// Uses unordered_map with PSRAM allocation for dynamic, scalable storage
+	// Uses std::map with PSRAM allocation for dynamic, scalable storage
 	// Key format: "IEEE#LogicalDeviceName" (e.g., "00124B001F8E5678#temperature")
 	typedef struct {
 		ZigBeeLogicalDevice device;
 		std::string key;  // IEEE#LogicalDeviceName for fast lookup
 	} LogicalDeviceEntry;
-	typedef std::unordered_map<std::string, LogicalDeviceEntry, std::hash<std::string>,
-	                            std::equal_to<std::string>,
-	                            PSRAM_Allocator<std::pair<const std::string, LogicalDeviceEntry>>> LogicalDeviceMap;
+	// std::map (not unordered_map): the libstdc++ hashtable pulls floorl() and with
+	// it the long-double math stubs, which drag the double sin/cos/tan/acos
+	// variants into the ESP8266 image (~800 B DRAM tables + several KB flash).
+	typedef std::map<std::string, LogicalDeviceEntry, std::less<std::string>,
+	                 PSRAM_Allocator<std::pair<const std::string, LogicalDeviceEntry>>> LogicalDeviceMap;
 	static LogicalDeviceMap* zigbee_logical_devices_map;
 
 	// -- options and data storeage

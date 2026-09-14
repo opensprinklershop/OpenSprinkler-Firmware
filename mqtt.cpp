@@ -25,6 +25,9 @@
 	#include <Arduino.h>
 	#if defined(ESP8266) 
 		#include <ESP8266WiFi.h>
+		#if defined(MMU_IRAM_HEAP)
+			#include <umm_malloc/umm_heap_select.h>
+		#endif
 	#elif defined(ESP32)
 		#include <WiFi.h>
 		#include <WiFiClientSecure.h>
@@ -700,10 +703,20 @@ int OSMqtt::_connect(void) {
 		mqtt_client->setKeepAlive(OS_MQTT_KEEPALIVE);
 		// Try preferred size first, fall back to smaller sizes if heap is tight.
 		// ChirpStack payloads can easily exceed 1024 bytes – keep the minimum at 2048.
-		if (!mqtt_client->setBufferSize(MQTT_BUFFER_SIZE)) {
-			DEBUG_LOGF("MQTT: setBufferSize(%d) failed, trying %d\r\n", MQTT_BUFFER_SIZE, MQTT_BUFFER_SIZE/2);
-			if (!mqtt_client->setBufferSize(MQTT_BUFFER_SIZE/2)) {
-				DEBUG_LOGF("MQTT: setBufferSize(%d) failed, large packets (>%d bytes) may be dropped\r\n", MQTT_BUFFER_SIZE/2, (int)mqtt_client->getBufferSize());
+		{
+#if defined(ESP8266) && defined(MMU_IRAM_HEAP)
+			// ESP8266: place the 4 KB packet buffer in the otherwise unused IRAM
+			// heap (~17 KB free with the CACHE16_IRAM48_SECHEAP_SHARED MMU layout)
+			// instead of DRAM. PubSubClient accesses it byte-wise; the core's
+			// non32xfer exception handler makes that work, slower but harmless
+			// for MQTT packet rates. Frees ~4 KB DRAM heap.
+			HeapSelectIram ephemeral;
+#endif
+			if (!mqtt_client->setBufferSize(MQTT_BUFFER_SIZE)) {
+				DEBUG_LOGF("MQTT: setBufferSize(%d) failed, trying %d\r\n", MQTT_BUFFER_SIZE, MQTT_BUFFER_SIZE/2);
+				if (!mqtt_client->setBufferSize(MQTT_BUFFER_SIZE/2)) {
+					DEBUG_LOGF("MQTT: setBufferSize(%d) failed, large packets (>%d bytes) may be dropped\r\n", MQTT_BUFFER_SIZE/2, (int)mqtt_client->getBufferSize());
+				}
 			}
 		}
 		DEBUG_LOGF("MQTT: rx buffer = %d bytes\r\n", (int)mqtt_client->getBufferSize());

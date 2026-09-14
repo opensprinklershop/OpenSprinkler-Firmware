@@ -175,9 +175,9 @@ void OSInfluxDB::write_influx_line(const char* measurement, const char* tagset, 
     if (!measurement || !fieldset || !fieldset[0]) return;
     char line[384];
     if (tagset && tagset[0])
-        snprintf(line, sizeof(line), "%s,%s %s", measurement, tagset, fieldset);
+        snprintf_P(line, sizeof(line), PSTR("%s,%s %s"), measurement, tagset, fieldset);
     else
-        snprintf(line, sizeof(line), "%s %s", measurement, fieldset);
+        snprintf_P(line, sizeof(line), PSTR("%s %s"), measurement, fieldset);
     influx_post_line(line);
 }
 
@@ -228,14 +228,13 @@ void OSInfluxDB::influx_post_line(const char* line) {
         while (pl > 0 && pathprefix[pl - 1] == '/') pathprefix[--pl] = 0; // drop trailing '/'
     }
 
-    int n = snprintf(ether_buffer, ETHER_BUFFER_SIZE,
-        "POST %s/api/v2/write?org=%s&bucket=%s HTTP/1.1\r\n"
+    int n = snprintf_P(ether_buffer, ETHER_BUFFER_SIZE, PSTR("POST %s/api/v2/write?org=%s&bucket=%s HTTP/1.1\r\n"
         "Host: %s\r\n"
         "Authorization: Token %s\r\n"
         "User-Agent: OpenSprinkler\r\n"
         "Content-Type: text/plain; charset=utf-8\r\n"
         "Content-Length: %d\r\n"
-        "Connection: close\r\n\r\n%s",
+        "Connection: close\r\n\r\n%s"),
         pathprefix, org, bucket, host, token, (int)strlen(line), line);
     if (n <= 0 || n >= (int)ETHER_BUFFER_SIZE) {
         DEBUG_PRINTLN(F("influxdb: request exceeds buffer"));
@@ -264,8 +263,8 @@ void OSInfluxDB::influxdb_send_state(const char *name, int state) {
     influx_devicename_tag(tags, sizeof(tags));
     influx_escape(nameesc, sizeof(nameesc), name);
     size_t tl = strlen(tags);
-    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
-    snprintf(fields, sizeof(fields), "state=%di", state);
+    snprintf_P(tags + tl, sizeof(tags) - tl, PSTR(",name=%s"), nameesc);
+    snprintf_P(fields, sizeof(fields), PSTR("state=%di"), state);
     write_influx_line("opensprinkler", tags, fields);
 }
 
@@ -274,8 +273,8 @@ void OSInfluxDB::influxdb_send_station(const char *name, uint32_t station, int s
     influx_devicename_tag(tags, sizeof(tags));
     influx_escape(nameesc, sizeof(nameesc), name);
     size_t tl = strlen(tags);
-    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
-    snprintf(fields, sizeof(fields), "station=%lui,state=%di", (unsigned long)station, state);
+    snprintf_P(tags + tl, sizeof(tags) - tl, PSTR(",name=%s"), nameesc);
+    snprintf_P(fields, sizeof(fields), PSTR("station=%lui,state=%di"), (unsigned long)station, state);
     write_influx_line("opensprinkler", tags, fields);
 }
 
@@ -284,8 +283,8 @@ void OSInfluxDB::influxdb_send_program(const char *name, uint32_t nr, float leve
     influx_devicename_tag(tags, sizeof(tags));
     influx_escape(nameesc, sizeof(nameesc), name);
     size_t tl = strlen(tags);
-    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
-    snprintf(fields, sizeof(fields), "program=%lui,level=%.2f", (unsigned long)nr, level);
+    snprintf_P(tags + tl, sizeof(tags) - tl, PSTR(",name=%s"), nameesc);
+    snprintf_P(fields, sizeof(fields), PSTR("program=%lui,level=%.2f"), (unsigned long)nr, level);
     write_influx_line("opensprinkler", tags, fields);
 }
 
@@ -294,8 +293,8 @@ void OSInfluxDB::influxdb_send_flowsensor(const char *name, uint32_t count, floa
     influx_devicename_tag(tags, sizeof(tags));
     influx_escape(nameesc, sizeof(nameesc), name);
     size_t tl = strlen(tags);
-    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
-    snprintf(fields, sizeof(fields), "count=%lui,volume=%.2f", (unsigned long)count, volume);
+    snprintf_P(tags + tl, sizeof(tags) - tl, PSTR(",name=%s"), nameesc);
+    snprintf_P(fields, sizeof(fields), PSTR("count=%lui,volume=%.2f"), (unsigned long)count, volume);
     write_influx_line("opensprinkler", tags, fields);
 }
 
@@ -304,8 +303,8 @@ void OSInfluxDB::influxdb_send_flowalert(const char *name, uint32_t station, int
     influx_devicename_tag(tags, sizeof(tags));
     influx_escape(nameesc, sizeof(nameesc), name);
     size_t tl = strlen(tags);
-    snprintf(tags + tl, sizeof(tags) - tl, ",name=%s", nameesc);
-    snprintf(fields, sizeof(fields), "station=%lui,flowrate=%.2f,duration=%di,alert_setpoint=%.2f",
+    snprintf_P(tags + tl, sizeof(tags) - tl, PSTR(",name=%s"), nameesc);
+    snprintf_P(fields, sizeof(fields), PSTR("station=%lui,flowrate=%.2f,duration=%di,alert_setpoint=%.2f"),
         (unsigned long)station, (double)f1 + (double)f2 / 100.0, f3, (double)f4 + (double)f5 / 100.0);
     write_influx_line("opensprinkler", tags, fields);
 }
@@ -315,8 +314,8 @@ void OSInfluxDB::influxdb_send_warning(const char *name, uint32_t level, float v
     influx_devicename_tag(tags, sizeof(tags));
     influx_escape(nameesc, sizeof(nameesc), name);
     size_t tl = strlen(tags);
-    snprintf(tags + tl, sizeof(tags) - tl, ",warning=%s", nameesc);
-    snprintf(fields, sizeof(fields), "level=%di,currentvalue=%.2f", (int)level, value);
+    snprintf_P(tags + tl, sizeof(tags) - tl, PSTR(",warning=%s"), nameesc);
+    snprintf_P(fields, sizeof(fields), PSTR("level=%di,currentvalue=%.2f"), (int)level, value);
     write_influx_line("opensprinkler", tags, fields);
 }
 

@@ -1263,7 +1263,7 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 			DEBUG_PRINTF("[OTA-ESP8266] HTTP error body: %s\n", body.substring(0, 180).c_str());
 		}
 		char msg[96];
-		snprintf(msg, sizeof(msg), "HTTP GET returned %d", http_code);
+		snprintf_P(msg, sizeof(msg), PSTR("HTTP GET returned %d"), http_code);
 		setState(OTA_STATUS_ERROR_NETWORK, 0, msg);
 		http.end();
 		return false;
@@ -1273,13 +1273,13 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 	DEBUG_PRINTF("[OTA-ESP8266] Content-Length: %d\n", content_length);
 	DEBUG_PRINTF("[OTA-ESP8266] Max sketch space: %u\n", (unsigned)max_sketch_space);
 	if (content_length <= 0) {
-		setState(OTA_STATUS_ERROR_NETWORK, 0, "Missing or invalid Content-Length");
+		setState(OTA_STATUS_ERROR_NETWORK, 0, PSTR("Missing or invalid Content-Length"));
 		http.end();
 		return false;
 	}
 	if ((uint32_t)content_length > max_sketch_space) {
 		char msg[96];
-		snprintf(msg, sizeof(msg), "Binary too large (%d > %u)", content_length, (unsigned)max_sketch_space);
+		snprintf_P(msg, sizeof(msg), PSTR("Binary too large (%d > %u)"), content_length, (unsigned)max_sketch_space);
 		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, msg);
 		http.end();
 		return false;
@@ -1287,7 +1287,7 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 
 	WiFiClient *stream = http.getStreamPtr();
 	if (!stream) {
-		setState(OTA_STATUS_ERROR_NETWORK, 0, "HTTP stream unavailable");
+		setState(OTA_STATUS_ERROR_NETWORK, 0, PSTR("HTTP stream unavailable"));
 		http.end();
 		return false;
 	}
@@ -1318,14 +1318,14 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 		String md5 = http.header("x-MD5");
 		if (md5.length() && !Update.setMD5(md5.c_str())) {
 			DEBUG_PRINTF("[OTA-ESP8266] Update.setMD5 failed for %s\n", md5.c_str());
-			setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Update.setMD5 failed");
+			setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, PSTR("Update.setMD5 failed"));
 			Update.end(false);
 			http.end();
 			return false;
 		}
 	}
 
-	setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 10, "Downloading firmware...");
+	setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 10, PSTR("Downloading firmware..."));
 	Update.runAsync(false);
 	DEBUG_PRINTF("[OTA-ESP8266] Streaming start: heap=%u connected=%d\n",
 		(unsigned)ESP.getFreeHeap(), stream->connected() ? 1 : 0);
@@ -1393,7 +1393,7 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 			DEBUG_PRINTF("[OTA-ESP8266] Stream timeout: written=%u/%d heap=%u connected=%d\n",
 				(unsigned)written, content_length, (unsigned)ESP.getFreeHeap(),
 				stream->connected() ? 1 : 0);
-			setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, "Stream Read Timeout");
+			setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, PSTR("Stream Read Timeout"));
 			Update.end(false);
 			http.end();
 			return false;
@@ -1427,7 +1427,8 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 void ESP8266OTAUpdater::setState(OnlineUpdateStatus status, uint8_t progress, const char* msg) {
 	_state.status = status;
 	_state.progress = progress;
-	strncpy(_state.message, msg ? msg : "", sizeof(_state.message) - 1);
+	// msg may live in PROGMEM (PSTR) or RAM; strncpy_P handles both on ESP8266.
+	strncpy_P(_state.message, msg ? msg : PSTR(""), sizeof(_state.message) - 1);
 	_state.message[sizeof(_state.message) - 1] = '\0';
 	DEBUG_PRINT(F("[OTA-ESP8266] "));
 	DEBUG_PRINTLN(_state.message);
@@ -1436,7 +1437,7 @@ void ESP8266OTAUpdater::setState(OnlineUpdateStatus status, uint8_t progress, co
 bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 	memset(&manifest, 0, sizeof(manifest));
 	manifest.valid = false;
-	setState(OTA_STATUS_CHECKING, 0, "Checking for updates...");
+	setState(OTA_STATUS_CHECKING, 0, PSTR("Checking for updates..."));
 
 	// ESP8266 uses plain HTTP — BearSSL cannot negotiate TLS with Ionos
 	// (server ignores max_fragment_length; returned record overflows the 512-byte buffer).
@@ -1456,12 +1457,12 @@ bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 			http_ok = true;
 		} else {
 			char buf[64];
-			snprintf(buf, sizeof(buf), "HTTP error: %d", http_code);
+			snprintf_P(buf, sizeof(buf), PSTR("HTTP error: %d"), http_code);
 			setState(OTA_STATUS_ERROR_NETWORK, 0, buf);
 		}
 		http.end();
 	} else {
-		setState(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
+		setState(OTA_STATUS_ERROR_NETWORK, 0, PSTR("HTTP begin failed"));
 	}
 
 	if (!http_ok) return false;
@@ -1469,7 +1470,7 @@ bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 	ArduinoJson::JsonDocument doc;
 	ArduinoJson::DeserializationError err = ArduinoJson::deserializeJson(doc, payload);
 	if (err) {
-		setState(OTA_STATUS_ERROR_PARSE, 0, "JSON parse error");
+		setState(OTA_STATUS_ERROR_PARSE, 0, PSTR("JSON parse error"));
 		return false;
 	}
 
@@ -1482,7 +1483,7 @@ bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 		const char* fw_url = doc["esp8266_url"] | OTA_ESP8266_FW_URL;
 		char fw_url_http[sizeof(manifest.zigbee_url)];
 		if (strncmp(fw_url, "https://", 8) == 0) {
-			snprintf(fw_url_http, sizeof(fw_url_http), "http://%s", fw_url + 8);
+			snprintf_P(fw_url_http, sizeof(fw_url_http), PSTR("http://%s"), fw_url + 8);
 			fw_url = fw_url_http;
 		}
 		strncpy(manifest.zigbee_url, fw_url, sizeof(manifest.zigbee_url) - 1);
@@ -1495,16 +1496,16 @@ bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 	manifest.valid = (manifest.fw_version > 0 && manifest.zigbee_url[0]);
 
 	if (!manifest.valid) {
-		setState(OTA_STATUS_ERROR_PARSE, 0, "Invalid manifest data");
+		setState(OTA_STATUS_ERROR_PARSE, 0, PSTR("Invalid manifest data"));
 		return false;
 	}
 
 	bool newer = (manifest.fw_version > OS_FW_VERSION) ||
 	             (manifest.fw_version == OS_FW_VERSION && manifest.fw_minor > OS_FW_MINOR);
 	if (newer) {
-		setState(OTA_STATUS_AVAILABLE, 0, "Update available");
+		setState(OTA_STATUS_AVAILABLE, 0, PSTR("Update available"));
 	} else {
-		setState(OTA_STATUS_UP_TO_DATE, 0, "Firmware is up to date");
+		setState(OTA_STATUS_UP_TO_DATE, 0, PSTR("Firmware is up to date"));
 	}
 	return newer;
 }
@@ -1530,10 +1531,10 @@ void ESP8266OTAUpdater::start() {
 	// (rst cause:4) before the {"result":1} response is even sent.
 	if (_manifest && _manifest->valid) {
 		_updatePending = true;
-		setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, "ESP8266 update scheduled...");
+		setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, PSTR("ESP8266 update scheduled..."));
 	} else {
 		_checkPending = true;
-		setState(OTA_STATUS_CHECKING, 1, "Checking for updates...");
+		setState(OTA_STATUS_CHECKING, 1, PSTR("Checking for updates..."));
 	}
 }
 
@@ -1552,7 +1553,7 @@ void ESP8266OTAUpdater::loop() {
 			return;
 		}
 		_updatePending = true;
-		setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, "ESP8266 update scheduled...");
+		setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 1, PSTR("ESP8266 update scheduled..."));
 	}
 
 	if (!_updatePending || _updateInProgress) {
@@ -1567,7 +1568,7 @@ void ESP8266OTAUpdater::loop() {
 	_manifest = NULL;
 	if (!manifest) {
 		_updateInProgress = false;
-		setState(OTA_STATUS_ERROR_PARSE, 0, "Manifest cache missing");
+		setState(OTA_STATUS_ERROR_PARSE, 0, PSTR("Manifest cache missing"));
 		return;
 	}
 	uint32_t max_sketch_space = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
@@ -1578,7 +1579,7 @@ void ESP8266OTAUpdater::loop() {
 		(unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxFreeBlockSize(),
 		(int)WiFi.status(), os.network_connected() ? 1 : 0);
 
-	setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 5, "Starting ESP8266 update...");
+	setState(OTA_STATUS_DOWNLOADING_ZIGBEE, 5, PSTR("Starting ESP8266 update..."));
 
 	// Free RAM before the download. On the memory-tight ESP8266 the heap can be
 	// as low as ~5 KB with MQTT + sensors + the OTC cloud websocket running,
@@ -1614,13 +1615,13 @@ void ESP8266OTAUpdater::loop() {
 		uint16_t port = 80;
 		bool is_https = false;
 		if (!parseHttpUrl(ota_urls[i], host, port, uri, is_https)) {
-			setState(OTA_STATUS_ERROR_NETWORK, 0, "Invalid OTA URL");
+			setState(OTA_STATUS_ERROR_NETWORK, 0, PSTR("Invalid OTA URL"));
 			continue;
 		}
 		if (is_https) {
 			secureClient.reset(new (std::nothrow) BearSSL::WiFiClientSecure());
 			if (!secureClient) {
-				setState(OTA_STATUS_ERROR_NETWORK, 0, "TLS client alloc failed");
+				setState(OTA_STATUS_ERROR_NETWORK, 0, PSTR("TLS client alloc failed"));
 				continue;
 			}
 			secureClient->setInsecure();
@@ -1631,7 +1632,7 @@ void ESP8266OTAUpdater::loop() {
 			? http.begin(*secureClient, ota_urls[i])
 			: http.begin(plainClient, ota_urls[i]);
 		if (!began) {
-			setState(OTA_STATUS_ERROR_NETWORK, 0, "HTTP begin failed");
+			setState(OTA_STATUS_ERROR_NETWORK, 0, PSTR("HTTP begin failed"));
 			continue;
 		}
 		last_http_code = 0;
@@ -1644,7 +1645,7 @@ void ESP8266OTAUpdater::loop() {
 
 	if (ok) {
 		saveRestoreState();
-		setState(OTA_STATUS_DONE, 100, "Update complete. Rebooting...");
+		setState(OTA_STATUS_DONE, 100, PSTR("Update complete. Rebooting..."));
 		delay(500);
 		_updateInProgress = false;
 		os.reboot_dev(REBOOT_CAUSE_FWUPDATE);
@@ -1712,7 +1713,7 @@ void ESP8266OTAUpdater::resume() {
 	for (size_t i = 0; i < sizeof(sensor_files) / sizeof(sensor_files[0]); i++) {
 		const char* path = sensor_files[i];
 		char backup_path[48];
-		snprintf(backup_path, sizeof(backup_path), "/backup%s", path);
+		snprintf_P(backup_path, sizeof(backup_path), PSTR("/backup%s"), path);
 		if (!LittleFS.exists(path) && LittleFS.exists(backup_path)) {
 			DEBUG_PRINTF("[OTA-ESP8266] Restoring %s from backup\n", path);
 			File srcFile = LittleFS.open(backup_path, "r");

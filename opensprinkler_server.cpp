@@ -58,6 +58,9 @@ static void emit_monthly_water_backup_json(T &bfill) {
 #include "sensor_gardena.h"
 #endif
 #include "mcp_server.h"
+#if defined(ESP8266) && defined(MMU_IRAM_HEAP)
+#include <umm_malloc/umm_heap_select.h>
+#endif
 #include "sensor_mqtt.h"
 #include "sensor_remote_json.h"
 #include "LinkedMap.h"
@@ -2982,7 +2985,15 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	LittleFS.info(fs_info);
 	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,\"devip\":\"$S\","), fs_info.totalBytes, fs_info.usedBytes, (useEth?eth.localIP():WiFi.localIP()).toString().c_str());
 	if(useEth) {
-		bfill.emit_p(PSTR("\"isW5500\":$D,\"spi_clock\":$L,\"arp_size\":$D}"), eth.isW5500, ETHER_SPI_CLOCK, ARP_TABLE_SIZE);
+		bfill.emit_p(PSTR("\"isW5500\":$D,\"spi_clock\":$L,\"arp_size\":$D"), eth.isW5500, ETHER_SPI_CLOCK, ARP_TABLE_SIZE);
+#if defined(MMU_IRAM_HEAP)
+		{
+			// Free bytes in the secondary IRAM heap (MQTT/debug buffers live there).
+			HeapSelectIram ephemeral;
+			bfill.emit_p(PSTR(",\"iram_free\":$L"), (unsigned long)ESP.getFreeHeap());
+		}
+#endif
+		bfill.emit_p(PSTR("}"));
 	} else {
 		bfill.emit_p(PSTR("\"rssi\":$D,\"bssid\":\"$S\",\"bssidchl\":\"$O\"}"),
 		WiFi.RSSI(), WiFi.BSSIDstr().c_str(), SOPT_STA_BSSID_CHL);
@@ -5444,7 +5455,7 @@ void server_sensorprog_list(OTF_PARAMS_DEF) {
 	handle_return(HTML_OK);
 }
 
-static const int sensor_types[] = {
+static const int sensor_types[] PROGMEM = {
 	SENSOR_SMT100_MOIS,
 	SENSOR_SMT100_TEMP,
 	SENSOR_SMT100_PMTY,
@@ -5514,80 +5525,93 @@ static const int sensor_types[] = {
 #endif
 };
 
-static const char* sensor_names[] = {
-	"Truebner SMT100 RS485 Modbus, moisture mode",
-	"Truebner SMT100 RS485 Modbus, temperature mode",
-	"Truebner SMT100 RS485 Modbus, permittivity mode",
-	"Truebner TH100 RS485 Modbus, humidity mode",
-	"Truebner TH100 RS485 Modbus, temperature mode",
-	"RS485/MODBUS RTU generic sensor / water meter",
+// Sensor names as one PROGMEM blob ('\0'-separated, same order and #if guards
+// as sensor_types[]). Keeps ~1.3 KB of literals plus the pointer table out of
+// DRAM on ESP8266. Read with sensor_name_at().
+static const char sensor_names_p[] PROGMEM =
+	"Truebner SMT100 RS485 Modbus, moisture mode\0"
+	"Truebner SMT100 RS485 Modbus, temperature mode\0"
+	"Truebner SMT100 RS485 Modbus, permittivity mode\0"
+	"Truebner TH100 RS485 Modbus, humidity mode\0"
+	"Truebner TH100 RS485 Modbus, temperature mode\0"
+	"RS485/MODBUS RTU generic sensor / water meter\0"
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
-	"Zigbee sensor",
+	"Zigbee sensor\0"
 #endif
 #if defined(ESP32)
-	"BLE sensor",
+	"BLE sensor\0"
 #endif
-	"Integrated pulse water meter",
+	"Integrated pulse water meter\0"
  #if defined(ESP8266) || defined(ESP32)
-	"ASB - voltage mode 0..5V",
-	"ASB - 0..3.3V to 0..100%",
-	"ASB - SMT50 moisture mode",
-	"ASB - SMT50 temperature mode",
-	"ASB - SMT100-analog moisture mode",
-	"ASB - SMT100-analog temperature mode",
-
-	"ASB - Vegetronix VH400",
-	"ASB - Vegetronix THERM200",
-	"ASB - Vegetronix AquaPlumb",
-
-	"ASB - user defined sensor",
-	"ASB - piecewise linear curve",
+	"ASB - voltage mode 0..5V\0"
+	"ASB - 0..3.3V to 0..100%\0"
+	"ASB - SMT50 moisture mode\0"
+	"ASB - SMT50 temperature mode\0"
+	"ASB - SMT100-analog moisture mode\0"
+	"ASB - SMT100-analog temperature mode\0"
+	"ASB - Vegetronix VH400\0"
+	"ASB - Vegetronix THERM200\0"
+	"ASB - Vegetronix AquaPlumb\0"
+	"ASB - user defined sensor\0"
+	"ASB - piecewise linear curve\0"
 #endif
 #if defined ADS1115||PCF8591
-	"OSPi analog input - voltage mode 0..3.3V",
-	"OSPi analog input - 0.3.3V to 0..100%",
-	"OSPi analog input - SMT50 moisture mode",
-	"OSPi analog input - SMT50 temperature mode",
+	"OSPi analog input - voltage mode 0..3.3V\0"
+	"OSPi analog input - 0.3.3V to 0..100%\0"
+	"OSPi analog input - SMT50 moisture mode\0"
+	"OSPi analog input - SMT50 temperature mode\0"
 #endif
 #if defined(OSPI)
-    "Internal Raspbery Pi temperature",
+	"Internal Raspbery Pi temperature\0"
 #endif
 #if defined(ESP32)
-	"Internal ESP32 temperature",
+	"Internal ESP32 temperature\0"
 #endif
-	"Onboard digital input SN1/SN2",
+	"Onboard digital input SN1/SN2\0"
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
-	"FYTA moisture sensor",
-	"FYTA temperature sensor",
+	"FYTA moisture sensor\0"
+	"FYTA temperature sensor\0"
 #endif
 #if defined(ESP32) || defined(OSPI)
-	"Gardena moisture sensor",
-	"Gardena temperature sensor",
+	"Gardena moisture sensor\0"
+	"Gardena temperature sensor\0"
 #endif
-
-	"MQTT subscription",
-	"Remote JSON Data",
-	"Remote opensprinkler sensor",
-	"Weather data - temperature (°F)",
-	"Weather data - temperature (°C)",
-	"Weather data - humidity (%)",
-	"Weather data - precip (inch)",
-	"Weather data - precip (mm)",
-	"Weather data - wind (mph)",
-	"Weather data - wind (kmh)",
-	"Weather data - ETO",
-	"Weather data - radiation",
-	"Sensor group with min value",
-	"Sensor group with max value",
-	"Sensor group with avg value",
-	"Sensor group with sum value",
-	"Sensor group with median value",
-	"Sensor group with range (max-min) value",
+	"MQTT subscription\0"
+	"Remote JSON Data\0"
+	"Remote opensprinkler sensor\0"
+	"Weather data - temperature (°F)\0"
+	"Weather data - temperature (°C)\0"
+	"Weather data - humidity (%)\0"
+	"Weather data - precip (inch)\0"
+	"Weather data - precip (mm)\0"
+	"Weather data - wind (mph)\0"
+	"Weather data - wind (kmh)\0"
+	"Weather data - ETO\0"
+	"Weather data - radiation\0"
+	"Sensor group with min value\0"
+	"Sensor group with max value\0"
+	"Sensor group with avg value\0"
+	"Sensor group with sum value\0"
+	"Sensor group with median value\0"
+	"Sensor group with range (max-min) value\0"
 #if defined(ESP8266) || defined(ESP32)
-	"Free Memory",
-	"Free Storage",
+	"Free Memory\0"
+	"Free Storage\0"
 #endif
-};
+	;
+
+/** Copy the i-th sensor name (index into sensor_types[]) from PROGMEM into buf. */
+static const char* sensor_name_at(uint idx, char *buf, size_t len) {
+	PGM_P p = sensor_names_p;
+	for (uint i = 0; i < idx; i++) {
+		size_t l = strlen_P(p);
+		if (l == 0) break;
+		p += l + 1;
+	}
+	strncpy_P(buf, p, len - 1);
+	buf[len - 1] = 0;
+	return buf;
+}
 
 // Tracks whether free_tmp_memory() actually released resources
 static bool _memory_freed_for_op = false;
@@ -5710,23 +5734,24 @@ void server_sensor_types(OTF_PARAMS_DEF) {
 	int count = 0;
 	for (uint i = 0; i < sizeof(sensor_types)/sizeof(int); i++)
 	{
-		int type = sensor_types[i];
+		int type = pgm_read_dword(&sensor_types[i]);
 		if (sensor_type_supported(type))
 			count++;
 	}
 
 	bfill.emit_p(PSTR("{\"count\":$D,\"detected\":$D,\"sensorTypes\":["), count, get_asb_detected_boards());
 
+	char namebuf[64];
 	for (uint i = 0; i < sizeof(sensor_types)/sizeof(int); i++)
 	{
-		int type = sensor_types[i];
+		int type = pgm_read_dword(&sensor_types[i]);
 		if (!sensor_type_supported(type))
 			continue;
 		if (i > 0)
 			bfill.emit_p(PSTR(","));
 		unsigned char unitid = getSensorUnitId(type);
 		bfill.emit_p(PSTR("{\"type\":$D,\"name\":\"$S\",\"unit\":\"$S\",\"unitid\":$D}"),
-			type, sensor_names[i], getSensorUnit(unitid), unitid);
+			type, sensor_name_at(i, namebuf, sizeof(namebuf)), getSensorUnit(unitid), unitid);
 		send_packet(OTF_PARAMS);
 	}
 	bfill.emit_p(PSTR("]}"));
@@ -7602,7 +7627,8 @@ const char _url_keys[] PROGMEM =
 	;
 
 // Server function handlers
-URLHandler urls[] = {
+// PROGMEM: keeps the 216-byte handler table out of DRAM on ESP8266.
+const URLHandler urls[] PROGMEM = {
 	server_change_values,   // cv
 	server_json_controller, // jc
 	server_delete_program,  // dp
@@ -7724,11 +7750,13 @@ static int find_url_handler_index(char k0, char k1) {
  *  Shared by start_server_client(), start_server_ap() and initialize_otf(). */
 static void register_api_handlers(bool with_platform_handlers) {
 	if (with_platform_handlers) {
+#if !defined(DISABLE_MCP)
 		// MCP (Model Context Protocol) JSON-RPC endpoint
 		otf->on("/mcp", server_mcp_handler, OTF::OTF_HTTP_POST);
 		otf->on("/mcp", server_mcp_get_handler, OTF::OTF_HTTP_GET);
 		otf->on("/mcp", server_mcp_options_handler, OTF::OTF_HTTP_OPTIONS);
 		otf->on("/mcp", server_mcp_delete_handler, OTF::OTF_HTTP_DELETE);
+#endif
 #if defined(ESP32C5)
 		otf->on("/ir", server_ieee802154_get);
 		otf->on("/iw", server_ieee802154_set);
@@ -7776,7 +7804,7 @@ void server_api_dispatch(OTF_PARAMS_DEF) {
 		return;
 	}
 
-	(urls[idx])(OTF_PARAMS);
+	((URLHandler)pgm_read_ptr(&urls[idx]))(OTF_PARAMS);
 }
 
 // handle Ethernet request
@@ -7914,21 +7942,21 @@ void on_firmware_upload_fin() {
 }
 
 void on_update_options() {
-	update_server->sendHeader("Access-Control-Allow-Origin", "*");
-	update_server->sendHeader("Access-Control-Max-Age", "10000");
-	update_server->sendHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
-	update_server->sendHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-	update_server->send(200, "text/plain", "");
+	update_server->sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+	update_server->sendHeader(F("Access-Control-Max-Age"), F("10000"));
+	update_server->sendHeader(F("Access-Control-Allow-Methods"), F("POST,GET,OPTIONS"));
+	update_server->sendHeader(F("Access-Control-Allow-Headers"), F("Origin, X-Requested-With, Content-Type, Accept"));
+	update_server->send_P(200, PSTR("text/plain"), PSTR(""));
 }
 
 void on_update_capabilities() {
-	update_server->sendHeader("Access-Control-Allow-Origin", "*");
+	update_server->sendHeader(F("Access-Control-Allow-Origin"), F("*"));
 #if defined(ESP32C5)
-	update_server->send(200, "application/json", "{\"dualOta\":1,\"uploadPort\":8080,\"platform\":\"esp32c5\"}");
+	update_server->send_P(200, PSTR("application/json"), PSTR("{\"dualOta\":1,\"uploadPort\":8080,\"platform\":\"esp32c5\"}"));
 #elif defined(ESP32)
-	update_server->send(200, "application/json", "{\"dualOta\":0,\"uploadPort\":8080,\"platform\":\"esp32\"}");
+	update_server->send_P(200, PSTR("application/json"), PSTR("{\"dualOta\":0,\"uploadPort\":8080,\"platform\":\"esp32\"}"));
 #else
-	update_server->send(200, "application/json", "{\"dualOta\":0,\"uploadPort\":8080,\"platform\":\"esp8266\"}");
+	update_server->send_P(200, PSTR("application/json"), PSTR("{\"dualOta\":0,\"uploadPort\":8080,\"platform\":\"esp8266\"}"));
 #endif
 }
 

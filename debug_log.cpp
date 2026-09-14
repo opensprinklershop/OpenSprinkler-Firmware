@@ -1,6 +1,9 @@
 #include "debug_log.h"
 #include <string.h>
 #include <stdlib.h>
+#if defined(ESP8266) && defined(MMU_IRAM_HEAP)
+#include <umm_malloc/umm_heap_select.h>
+#endif
 
 DebugBufferClass debug_buffer;
 
@@ -22,6 +25,11 @@ void DebugBufferClass::begin(size_t sz) {
     head = 0;
     wrapped = false;
     if (size > 0) {
+#if defined(ESP8266) && defined(MMU_IRAM_HEAP)
+        // ESP8266: keep the 2 KB ring buffer out of DRAM (IRAM heap, byte
+        // access via the core's non32xfer handler; debug builds only).
+        HeapSelectIram ephemeral;
+#endif
         buffer = (char*)malloc(size);
         if (buffer) {
             memset(buffer, 0, size);

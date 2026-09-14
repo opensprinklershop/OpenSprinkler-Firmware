@@ -752,7 +752,12 @@ inline  void DEBUG_PRINT(const std::string& s) {fprintf(stdout, "%s", s.c_str())
 	#define strncat_P    strncat
 	#define strcpy_P     strcpy
 	#define memcpy_P     memcpy
+	#define strncpy_P    strncpy
+	#define strlen_P     strlen
 	#define snprintf_P    snprintf
+	#define pgm_read_word(x)  (*(x))
+	#define pgm_read_dword(x) (*(x))
+	#define pgm_read_ptr(x)   (*(x))
 	#include<string>
 	#define String       string
 	using namespace std;

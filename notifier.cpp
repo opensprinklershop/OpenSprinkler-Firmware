@@ -1224,19 +1224,18 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						html += F("<div style=\"max-width:600px;margin:0 auto;\">");
 						html += F("<h2 style=\"color:#2c7be5;border-bottom:2px solid #2c7be5;padding-bottom:8px;\">");
 						html += F("Monthly Water Report</h2>");
-						snprintf(buf, sizeof(buf), "<p><b>Device:</b> %s</p>", dname);
+						snprintf_P(buf, sizeof(buf), PSTR("<p><b>Device:</b> %s</p>"), dname);
 						html += buf;
 						if(rpt_month >= 1 && rpt_month <= 12) {
-							snprintf(buf, sizeof(buf), "<p><b>Report for:</b> %s %d</p>", mon_names[rpt_month-1], rpt_year);
+							snprintf_P(buf, sizeof(buf), PSTR("<p><b>Report for:</b> %s %d</p>"), mon_names[rpt_month-1], rpt_year);
 						} else {
-							snprintf(buf, sizeof(buf), "<p><b>Report for:</b> %d/%02d</p>", rpt_year, rpt_month);
+							snprintf_P(buf, sizeof(buf), PSTR("<p><b>Report for:</b> %d/%02d</p>"), rpt_year, rpt_month);
 						}
 						html += buf;
 
 						// Summary of last month
-						snprintf(buf, sizeof(buf),
-							"<div style=\"background:#e8f4fd;padding:12px;border-radius:6px;margin:12px 0;\">"
-							"<b>Last month total:</b> Flow pulses: %lu &mdash; Volume: %.2f L</div>",
+						snprintf_P(buf, sizeof(buf), PSTR("<div style=\"background:#e8f4fd;padding:12px;border-radius:6px;margin:12px 0;\">"
+							"<b>Last month total:</b> Flow pulses: %lu &mdash; Volume: %.2f L</div>"),
 							(unsigned long)lval, fval);
 						html += buf;
 
@@ -1254,11 +1253,10 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 							float vol = os.mwdata.records[i].flow_count * volume_per_pulse;
 							bool is_last = (i == os.mwdata.nrecords - 1);
 							const char *bg = is_last ? "#e8f4fd" : (i % 2 ? "#f9f9f9" : "#fff");
-							snprintf(buf, sizeof(buf),
-								"<tr style=\"background:%s;\">"
+							snprintf_P(buf, sizeof(buf), PSTR("<tr style=\"background:%s;\">"
 								"<td style=\"padding:6px 12px;border:1px solid #ddd;\">%s %d</td>"
 								"<td style=\"padding:6px 12px;border:1px solid #ddd;text-align:right;\">%lu</td>"
-								"<td style=\"padding:6px 12px;border:1px solid #ddd;text-align:right;\">%.2f</td></tr>",
+								"<td style=\"padding:6px 12px;border:1px solid #ddd;text-align:right;\">%.2f</td></tr>"),
 								bg, (m < 12 ? mon_names[m] : "?"), y,
 								(unsigned long)os.mwdata.records[i].flow_count, vol);
 							html += buf;
@@ -1269,9 +1267,8 @@ void push_message(uint32_t type, uint32_t lval, float fval, uint8_t bval) {
 						float curr_vol = os.mwdata.curr_flow * volume_per_pulse;
 						uint16_t cy = os.mwdata.curr_ym / 12;
 						uint8_t cm = os.mwdata.curr_ym % 12;
-						snprintf(buf, sizeof(buf),
-							"<p style=\"margin-top:16px;padding:10px;background:#f0f0f0;border-radius:4px;\">"
-							"<b>Current month (%s %d):</b> %lu pulses &mdash; %.2f L so far</p>",
+						snprintf_P(buf, sizeof(buf), PSTR("<p style=\"margin-top:16px;padding:10px;background:#f0f0f0;border-radius:4px;\">"
+							"<b>Current month (%s %d):</b> %lu pulses &mdash; %.2f L so far</p>"),
 							(cm < 12 ? mon_names[cm] : "?"), cy,
 							(unsigned long)os.mwdata.curr_flow, curr_vol);
 						html += buf;
