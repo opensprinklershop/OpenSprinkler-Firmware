@@ -3374,11 +3374,26 @@ int monitor_count() {
   return monitorsMap.size();
 }
 
+// Poll pacing for MONITOR_REMOTE (RAM only, keyed by monitor nr). check_monitors()
+// runs once per second and send_http_request() blocks the main loop, for the full
+// connect timeout when the remote controller is gone (e.g. its IP changed). Polling
+// an unreachable target every second starved the web server, OTC and weather calls.
+#define REMOTE_MONITOR_POLL_MS        10000UL   // interval while the remote answers
+#define REMOTE_MONITOR_BACKOFF_MIN_MS 30000UL   // first retry after a failure
+#define REMOTE_MONITOR_BACKOFF_MAX_MS 600000UL  // retry ceiling
+struct RemoteMonitorPoll { ulong next_ms; ulong backoff_ms; };
+static std::map<uint, RemoteMonitorPoll> remoteMonitorPolls;
+
+static void remote_monitor_poll_reset(uint nr) {
+  remoteMonitorPolls.erase(nr);
+}
+
 int monitor_delete(uint nr, bool save_now) {
   auto it = monitorsMap.find(nr);
   if (it != monitorsMap.end()) {
     delete it->second;
     monitorsMap.erase(it);
+    remote_monitor_poll_reset(nr);
     if (save_now) monitor_save();
     return HTTP_RQT_SUCCESS;
   }
@@ -3488,6 +3503,7 @@ int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const 
     monitorsMap[nr] = p;
   }
 
+  remote_monitor_poll_reset(nr);  // new target/config: poll right away
   monitor_save();
   check_monitors();
   return HTTP_RQT_SUCCESS;
@@ -3621,6 +3637,12 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
     return defaultBool;
   }
 
+  // Keep the last known state between polls.
+  auto poll = remoteMonitorPolls.find(mon->nr);
+  if (poll != remoteMonitorPolls.end() && (long)(millis() - poll->second.next_ms) < 0) {
+    return defaultBool;
+  }
+
   // DEBUG_PRINTLN(F("read_monitor_http"));
 
   char *p = tmp_buffer;
@@ -3635,6 +3657,22 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
 
   int res = os.send_http_request(server, mon->m.remote.port, p, NULL, false, 500);
+
+  RemoteMonitorPoll &pacing = remoteMonitorPolls[mon->nr];
+  if (res == HTTP_RQT_SUCCESS) {
+    pacing.backoff_ms = 0;
+    pacing.next_ms = millis() + REMOTE_MONITOR_POLL_MS;
+  } else {
+    if (pacing.backoff_ms < REMOTE_MONITOR_BACKOFF_MIN_MS) {
+      pacing.backoff_ms = REMOTE_MONITOR_BACKOFF_MIN_MS;
+    } else if (pacing.backoff_ms < REMOTE_MONITOR_BACKOFF_MAX_MS) {
+      pacing.backoff_ms *= 2;
+      if (pacing.backoff_ms > REMOTE_MONITOR_BACKOFF_MAX_MS) pacing.backoff_ms = REMOTE_MONITOR_BACKOFF_MAX_MS;
+    }
+    pacing.next_ms = millis() + pacing.backoff_ms;
+    DEBUG_PRINTF("remote monitor %u unreachable, retry in %lu s\n", (unsigned)mon->nr, (unsigned long)(pacing.backoff_ms / 1000));
+  }
+
   if (res == HTTP_RQT_SUCCESS) {
     DEBUG_PRINTLN(F("Send Ok"));
     p = ether_buffer;
