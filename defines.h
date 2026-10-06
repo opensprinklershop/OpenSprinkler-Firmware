@@ -206,6 +206,7 @@ enum {
 #define REBOOT_CAUSE_NETWORK_FAIL 9
 #define REBOOT_CAUSE_NTP          10
 #define REBOOT_CAUSE_PROGRAM      11
+#define REBOOT_CAUSE_LOOP_STALL   12  // main loop stopped advancing (loop_guard.cpp)
 #define REBOOT_CAUSE_POWERON      99
 
 

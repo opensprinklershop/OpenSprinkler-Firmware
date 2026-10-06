@@ -44,6 +44,7 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <lwip/netdb.h>
+#include <lwip/dns.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <driver/gpio.h>
@@ -2902,6 +2903,11 @@ static SemaphoreHandle_t s_http_request_mutex = nullptr;
 static WiFiClientSecure* s_http_tls_client = nullptr;
 
 static constexpr uint32_t HTTP_DNS_CACHE_TTL_MS = 5UL * 60UL * 1000UL;
+// Negative cache: a failed lookup blocks the caller for the full lwIP retry
+// sequence (DNS_MAX_RETRIES with growing timer, per configured server: roughly
+// 7 s per server, up to ~20 s). Remember the failure briefly so that a dead DNS
+// server does not stall every subsequent HTTP request again.
+static constexpr uint32_t HTTP_DNS_NEG_CACHE_TTL_MS = 60UL * 1000UL;
 
 struct HttpDnsCacheEntry {
 	char host[64];
@@ -2911,6 +2917,7 @@ struct HttpDnsCacheEntry {
 };
 
 static HttpDnsCacheEntry s_http_dns_cache = {{0}, IPAddress(), 0, false};
+static HttpDnsCacheEntry s_http_dns_neg_cache = {{0}, IPAddress(), 0, false};
 
 struct AsyncHttpRequestParams {
 	char server[64];
@@ -2949,6 +2956,14 @@ static bool resolve_host_with_cache(const char* host, IPAddress& out_ip) {
 		out_ip = s_http_dns_cache.ip;
 		return true;
 	}
+	if (s_http_dns_neg_cache.valid &&
+		strncmp(s_http_dns_neg_cache.host, host, sizeof(s_http_dns_neg_cache.host)) == 0 &&
+		(int32_t)(s_http_dns_neg_cache.expires_at - now) > 0) {
+		DEBUG_PRINTF("DNS: %s recently failed, skipping lookup\n", host);
+		return false;
+	}
+
+	os_ensure_ipv4_dns_server();
 
 	// NOTE (ESP32-C5 / IDF 5.4): WiFi.hostByName() may call dns_clear_cache()
 	// from a non-TCPIP-core context when interface state changes, which can
@@ -2964,8 +2979,14 @@ static bool resolve_host_with_cache(const char* host, IPAddress& out_ip) {
 		if (res) {
 			lwip_freeaddrinfo(res);
 		}
+		DEBUG_PRINTF("DNS: lookup failed for %s (err=%d, %lu ms)\n", host, err, (unsigned long)(millis() - now));
+		strncpy(s_http_dns_neg_cache.host, host, sizeof(s_http_dns_neg_cache.host) - 1);
+		s_http_dns_neg_cache.host[sizeof(s_http_dns_neg_cache.host) - 1] = 0;
+		s_http_dns_neg_cache.expires_at = millis() + HTTP_DNS_NEG_CACHE_TTL_MS;
+		s_http_dns_neg_cache.valid = true;
 		return false;
 	}
+	s_http_dns_neg_cache.valid = false;
 	struct sockaddr_in* ipv4 = (struct sockaddr_in*)res->ai_addr;
 	out_ip = IPAddress(ipv4->sin_addr.s_addr);
 	lwip_freeaddrinfo(res);
@@ -2987,6 +3008,57 @@ static bool lock_http_request() {
 static void unlock_http_request() {
 	if (s_http_request_mutex) xSemaphoreGive(s_http_request_mutex);
 }
+
+} // namespace
+
+// lwIP installs RDNSS addresses from IPv6 Router Advertisements into DNS slot 0
+// (nd6.c, LWIP_ND6_RDNSS_MAX_DNS_SERVERS=2 in the Arduino libs) and thereby replaces
+// the IPv4 server DHCP handed out. Without a routable IPv6 address every lookup then
+// runs through the full lwIP retry sequence and fails ("DNS lookup failed" although
+// the configured DNS works; seen with radvd/dnsmasq RDNSS on WiFi devices, W5500
+// Ethernet drops the multicast RAs). Put the IPv4 DNS from the options back into
+// slot 0 and keep the IPv6 entry as backup. Cheap when slot 0 is already IPv4.
+void os_ensure_ipv4_dns_server() {
+	const ip_addr_t* d0 = dns_getserver(0);
+	if (d0 && IP_IS_V4(d0) && !ip_addr_isany(d0)) return;
+
+	IPAddress want(os.iopts + IOPT_DNS_IP1);
+	if (!want || want == IPAddress(255, 255, 255, 255)) want = IPAddress(os.iopts + IOPT_GATEWAY_IP1);
+	if (!want || want == IPAddress(255, 255, 255, 255)) return;
+
+	// esp_netif_set_dns_info() runs the update in the TCP/IP task context.
+	esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+	if (!netif) netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+
+	esp_netif_dns_info_t info;
+	if (d0 && !ip_addr_isany(d0)) {
+		memset(&info, 0, sizeof(info));
+		memcpy(&info.ip, d0, sizeof(ip_addr_t)); // esp_ip_addr_t mirrors ip_addr_t
+		if (netif) esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &info);
+		else dns_setserver(1, d0);
+	}
+	memset(&info, 0, sizeof(info));
+	info.ip.type = ESP_IPADDR_TYPE_V4;
+	info.ip.u_addr.ip4.addr = (uint32_t)want;
+	if (netif) {
+		esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &info);
+	} else {
+		ip_addr_t v4;
+		want.to_ip_addr_t(&v4);
+		dns_setserver(0, &v4);
+	}
+	DEBUG_PRINTF("DNS: slot 0 was not IPv4 (RDNSS?), restored %s\n", want.toString().c_str());
+}
+
+// Name of the task currently holding the shared HTTP request mutex, for the
+// main-loop stall dump (loop_guard.cpp). "-" when free, "n/a" before first use.
+const char* os_http_mutex_holder_name() {
+	if (!s_http_request_mutex) return "n/a";
+	TaskHandle_t holder = xSemaphoreGetMutexHolder(s_http_request_mutex);
+	return holder ? pcTaskGetName(holder) : "-";
+}
+
+namespace {
 
 static void send_http_request_async_task(void* arg) {
 	AsyncHttpRequestParams* req = (AsyncHttpRequestParams*)arg;
@@ -3111,17 +3183,24 @@ int8_t OpenSprinkler::send_http_request(const char* server, uint16_t port, char*
 		DEBUG_PRINT(tries);
 		DEBUG_PRINTLN(F(")"));
 		#if defined(ESP32)
-		if (!usessl) {
-			// Use cached DNS for command/control HTTP calls.
+		{
+			// Resolve through our own (positive + negative) cache. If the name
+			// does not resolve, fail right here: letting client->connect(server)
+			// retry the lookup would block the caller a second time for the
+			// full lwIP DNS timeout sequence.
 			IPAddress resolved_ip;
-			if (resolve_host_with_cache(server, resolved_ip)) {
+			if (!resolve_host_with_cache(server, resolved_ip)) {
+				conn_result = 0;
+				tries = HTTP_CONNECT_NTRIES;
+				break;
+			}
+			if (!usessl) {
 				conn_result = client->connect(resolved_ip, port);
 			} else {
+				// Keep hostname for TLS/SNI (lwIP answers the repeated lookup from its
+				// own cache). Reused TLS object enables session resumption opportunities.
 				conn_result = client->connect(server, port);
 			}
-		} else {
-			// Keep hostname for TLS/SNI. Reused TLS object enables session resumption opportunities.
-			conn_result = client->connect(server, port);
 		}
 		if(conn_result == 1) break;
 		#elif defined(ESP8266)

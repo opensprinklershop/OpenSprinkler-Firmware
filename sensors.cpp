@@ -3388,6 +3388,77 @@ static void remote_monitor_poll_reset(uint nr) {
   remoteMonitorPolls.erase(nr);
 }
 
+// Schedule the next poll of a remote monitor after an attempt: fixed interval while
+// the remote answers, exponential backoff while it does not.
+static void remote_monitor_poll_done(uint nr, bool ok) {
+  RemoteMonitorPoll &pacing = remoteMonitorPolls[nr];
+  if (ok) {
+    pacing.backoff_ms = 0;
+    pacing.next_ms = millis() + REMOTE_MONITOR_POLL_MS;
+    return;
+  }
+  if (pacing.backoff_ms < REMOTE_MONITOR_BACKOFF_MIN_MS) {
+    pacing.backoff_ms = REMOTE_MONITOR_BACKOFF_MIN_MS;
+  } else if (pacing.backoff_ms < REMOTE_MONITOR_BACKOFF_MAX_MS) {
+    pacing.backoff_ms *= 2;
+    if (pacing.backoff_ms > REMOTE_MONITOR_BACKOFF_MAX_MS) pacing.backoff_ms = REMOTE_MONITOR_BACKOFF_MAX_MS;
+  }
+  pacing.next_ms = millis() + pacing.backoff_ms;
+  DEBUG_PRINTF("remote monitor %u unreachable, retry in %lu s\n", (unsigned)nr, (unsigned long)(pacing.backoff_ms / 1000));
+}
+
+// Parsed /ml reply of the remote controller. has_time/time follow the remote's
+// "time" field (0 or unchanged = no new state), active is -1 when the reply
+// carries no "active" field.
+struct RemoteMonitorReply { bool has_time; ulong time; int active; };
+
+static void remote_monitor_parse_reply(char *buffer, RemoteMonitorReply &r) {
+  char buf[20];
+  r.has_time = false;
+  r.time = 0;
+  r.active = -1;
+  char *s = strstr(buffer, "\"time\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    r.has_time = true;
+    r.time = strtoul(buf, NULL, 0);
+  }
+  s = strstr(buffer, "\"active\":");
+  if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
+    r.active = (int)strtoul(buf, NULL, 0);
+  }
+}
+
+static bool remote_monitor_apply_reply(Monitor_t *mon, const RemoteMonitorReply &r, bool defaultBool) {
+  if (r.has_time) {
+    if (r.time == 0 || r.time == mon->time) return defaultBool;
+    mon->time = r.time;
+  }
+  if (r.active >= 0) return r.active != 0;
+  return false;
+}
+
+#if defined(ESP32)
+// ESP32: the poll runs on the http_async task so that a slow or dead remote (TCP
+// connect to a host without ARP reply) never blocks the main loop. One poll is in
+// flight at a time; the response callback runs on that task and only writes into
+// this slot, check_monitors() (main loop) applies it on its next pass.
+#define REMOTE_MONITOR_PENDING_MAX_MS 5000UL  // no callback within this time = failed
+struct RemoteMonitorAsync {
+  volatile bool busy;      // request launched, result not yet consumed
+  volatile bool done;      // callback has filled reply
+  uint nr;                 // monitor the request belongs to
+  ulong started_ms;
+  RemoteMonitorReply reply;
+};
+static RemoteMonitorAsync remoteMonitorAsync = {false, false, 0, 0, {false, 0, -1}};
+
+static void remote_monitor_async_callback(char *buffer) {
+  remote_monitor_parse_reply(buffer, remoteMonitorAsync.reply);
+  __sync_synchronize();  // publish reply before done (read by the main loop)
+  remoteMonitorAsync.done = true;
+}
+#endif
+
 int monitor_delete(uint nr, bool save_now) {
   auto it = monitorsMap.find(nr);
   if (it != monitorsMap.end()) {
@@ -3637,6 +3708,29 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
     return defaultBool;
   }
 
+#if defined(ESP32)
+  RemoteMonitorAsync &a = remoteMonitorAsync;
+  if (a.busy) {
+    bool expired = (long)(millis() - a.started_ms) > (long)REMOTE_MONITOR_PENDING_MAX_MS;
+    if (a.nr == mon->nr) {
+      if (a.done) {
+        __sync_synchronize();
+        a.busy = false;
+        remote_monitor_poll_done(mon->nr, true);
+        return remote_monitor_apply_reply(mon, a.reply, defaultBool);
+      }
+      if (expired) {
+        a.busy = false;
+        remote_monitor_poll_done(mon->nr, false);
+      }
+      return defaultBool;
+    }
+    // Another monitor's poll is in flight (or was orphaned by a deleted monitor).
+    if (!expired) return defaultBool;
+    a.busy = false;
+  }
+#endif
+
   // Keep the last known state between polls.
   auto poll = remoteMonitorPolls.find(mon->nr);
   if (poll != remoteMonitorPolls.end() && (long)(millis() - poll->second.next_ms) < 0) {
@@ -3656,47 +3750,36 @@ bool get_remote_monitor(Monitor_t *mon, bool defaultBool) {
   char server[20];
   sprintf(server, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
 
-  int res = os.send_http_request(server, mon->m.remote.port, p, NULL, false, 500);
-
-  RemoteMonitorPoll &pacing = remoteMonitorPolls[mon->nr];
-  if (res == HTTP_RQT_SUCCESS) {
-    pacing.backoff_ms = 0;
-    pacing.next_ms = millis() + REMOTE_MONITOR_POLL_MS;
-  } else {
-    if (pacing.backoff_ms < REMOTE_MONITOR_BACKOFF_MIN_MS) {
-      pacing.backoff_ms = REMOTE_MONITOR_BACKOFF_MIN_MS;
-    } else if (pacing.backoff_ms < REMOTE_MONITOR_BACKOFF_MAX_MS) {
-      pacing.backoff_ms *= 2;
-      if (pacing.backoff_ms > REMOTE_MONITOR_BACKOFF_MAX_MS) pacing.backoff_ms = REMOTE_MONITOR_BACKOFF_MAX_MS;
-    }
-    pacing.next_ms = millis() + pacing.backoff_ms;
-    DEBUG_PRINTF("remote monitor %u unreachable, retry in %lu s\n", (unsigned)mon->nr, (unsigned long)(pacing.backoff_ms / 1000));
+#if defined(ESP32)
+  a.nr = mon->nr;
+  a.done = false;
+  a.reply.has_time = false;
+  a.reply.time = 0;
+  a.reply.active = -1;
+  a.started_ms = millis();
+  a.busy = true;
+  if (os.send_http_request_async(server, mon->m.remote.port, p, remote_monitor_async_callback, false, 500) != HTTP_RQT_SUCCESS) {
+    a.busy = false;
+    remote_monitor_poll_done(mon->nr, false);
   }
-
-  if (res == HTTP_RQT_SUCCESS) {
-    DEBUG_PRINTLN(F("Send Ok"));
-    p = ether_buffer;
-    DEBUG_PRINTLN(p);
-
-    char buf[20];
-    char *s = strstr(p, "\"time\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      ulong time = strtoul(buf, NULL, 0);
-      if (time == 0 || time == mon->time) {
-        return defaultBool;
-      } else {
-        mon->time = time;
-      }
-    }
-
-    s = strstr(p, "\"active\":");
-    if (s && RemoteSensor::extract(s, buf, sizeof(buf))) {
-      return strtoul(buf, NULL, 0);
-    }
-
-    return HTTP_RQT_SUCCESS;
-  }
+  // Result is applied on a later check_monitors() pass; keep the current state.
   return defaultBool;
+#else
+  // Synchronous poll. The reply is handed over by the callback: on OSPi the
+  // response lives in a transient buffer, not in ether_buffer.
+  static RemoteMonitorReply reply;
+  reply.has_time = false;
+  reply.time = 0;
+  reply.active = -1;
+  int res = os.send_http_request(server, mon->m.remote.port, p, [](char *buffer) {
+    remote_monitor_parse_reply(buffer, reply);
+  }, false, 500);
+
+  remote_monitor_poll_done(mon->nr, res == HTTP_RQT_SUCCESS);
+  if (res != HTTP_RQT_SUCCESS) return defaultBool;
+  DEBUG_PRINTLN(F("Send Ok"));
+  return remote_monitor_apply_reply(mon, reply, defaultBool);
+#endif
 }
 
 // Transient per-monitor evaluation state. It used to live on the Monitor

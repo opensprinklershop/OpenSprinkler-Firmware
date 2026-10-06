@@ -49,6 +49,7 @@
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
 #include "online_update.h"
+#include "loop_guard.h"
 #if defined(ESP32C5)
 #include "esp_chip_info.h"
 #endif
@@ -747,6 +748,7 @@ void do_setup() {
 	log_heap_snapshot("after os.begin");
 	os.options_setup();  // Setup options
 	log_heap_snapshot("after options_setup");
+	loop_guard_init();   // after options_setup: may override last_reboot_cause
 	os.mwdata_load();    // Load monthly water usage data
 
 	#if defined(ESP8266)
@@ -1013,6 +1015,8 @@ void gratuitousARPTask() {
 /** Main Loop */
 void do_loop()
 {
+	loop_guard_beat();
+
 	#if defined(ARDUINOOTA)
 	handle_arduino_ota();
 	#endif
@@ -1569,6 +1573,10 @@ void do_loop()
 
 		last_time = curr_time;
 		if (os.button_timeout) os.button_timeout--;
+		#if defined(ESP32)
+		// IPv6 RAs with RDNSS arrive every 30-100 s and replace the IPv4 DNS in lwIP slot 0.
+		if (os.network_connected() && (curr_time % 5) == 0) os_ensure_ipv4_dns_server();
+		#endif
 
 #if defined(USE_DISPLAY)
 		if (!ui_state)

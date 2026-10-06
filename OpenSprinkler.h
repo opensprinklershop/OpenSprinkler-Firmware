@@ -717,4 +717,9 @@ private:
 
 void calc_sunrise_sunset(); // calculate sunrise and sunset time
 
+#if defined(ESP32)
+// Restore the IPv4 DNS server in lwIP slot 0 after an IPv6 RDNSS overwrite (OpenSprinkler.cpp).
+void os_ensure_ipv4_dns_server();
+#endif
+
 #endif  // _OPENSPRINKLER_H
