@@ -1477,6 +1477,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 
 #if defined(ESP8266) || defined(ESP32)
 	bfill.emit_p(PSTR("\"RSSI\":$D,"), (int16_t)WiFi.RSSI());
+	// Active network interface: 1 = wired Ethernet, 0 = WiFi. The UI uses it to
+	// label the connection and to hide the (stale) WiFi strength on Ethernet.
+	bfill.emit_p(PSTR("\"eth\":$D,"), useEth ? 1 : 0);
 	bfill.emit_p(PSTR("\"apdv\":$D,"), os.actual_pd_voltage);
 #endif
 

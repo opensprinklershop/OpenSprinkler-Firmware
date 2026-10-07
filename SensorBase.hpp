@@ -60,8 +60,14 @@ public:
   uint8_t clamp_en = 0;           // 1 = clamp output to [clamp_min, clamp_max]
   SensorPoint_t *pw_points = nullptr;  // piecewise linear curve (SENSOR_ANALOG_PIECEWISE), heap allocated
   uint8_t pw_n = 0;               // number of points in pw_points
+  // Fault tolerance: a read that fails while the sensor holds valid data does
+  // not invalidate it immediately. The read is retried after ~60 s and the
+  // sensor is only flagged invalid after fail_tolerance consecutive failures
+  // (0 = old behaviour: first failure invalidates). See read_all_sensors().
+  uint8_t fail_tolerance = 3;     // consecutive failed reads before data_ok drops
   
   /* runtime-only fields not persisted */
+  uint8_t fail_count = 0;         // consecutive failed reads so far (0 = last read ok)
   unsigned char unitid = 0;
   uint32_t repeat_read = 0;
   double repeat_data = 0.0;
@@ -287,6 +293,7 @@ public:
     obj[F("log")] = (uint)flags.log;
     obj[F("stdlog")] = (uint)stdlog;
     obj[F("show")] = (uint)flags.show;
+    obj[F("ftol")] = fail_tolerance;
     if (lin_set) {
       obj[F("lset")] = 1;
       obj[F("lscale")] = lin_scale;
@@ -308,6 +315,7 @@ public:
 
     // runtime fields
     obj[F("data_ok")] = (uint)flags.data_ok;
+    obj[F("fails")] = fail_count;
     obj[F("last")] = last;
     obj[F("nativedata")] = last_native_data;
     obj[F("data")] = last_data;
@@ -348,6 +356,10 @@ public:
     if (obj.containsKey(F("log"))) flags.log = obj[F("log")];
     if (obj.containsKey(F("stdlog"))) stdlog = obj[F("stdlog")];
     if (obj.containsKey(F("show"))) flags.show = obj[F("show")];
+    if (obj.containsKey(F("ftol"))) {
+      int t = obj[F("ftol")].as<int>();
+      fail_tolerance = (t < 0) ? 0 : (t > 20 ? 20 : t);
+    }
     if (obj.containsKey(F("lset"))) lin_set = obj[F("lset")].as<int>() ? 1 : 0;
     if (obj.containsKey(F("lscale"))) lin_scale = obj[F("lscale")].as<float>();
     if (obj.containsKey(F("loffset"))) lin_offset = obj[F("loffset")].as<float>();

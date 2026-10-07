@@ -218,11 +218,18 @@ public:
   virtual int read(unsigned long time) override {
     (void)time;
     uint32_t current_count = (uint32_t)flow_count;
-    if (last_read == 0 || current_count < last_native_data) {
+    if (last == 0 && last_read == 0) {
+      // Brand-new sensor: start counting from now.
       last_native_data = current_count;
       last_data = 0;
       flags.data_ok = 1;
       return HTTP_RQT_SUCCESS;
+    }
+    if (current_count < last_native_data) {
+      // flow_count restarted at 0 (reboot): the pulses since boot are the
+      // delta. Pulses between the previous read and the reboot are lost, but
+      // the interval no longer reports 0 (ticket 8V1-8LT-M81W).
+      last_native_data = 0;
     }
 
     uint32_t delta = current_count - last_native_data;
@@ -1111,6 +1118,10 @@ static bool sensor_parse_file(const char *fn) {
 
     sensorsMap[sensor->nr] = sensor;
     sensor->flags.data_ok = false;
+    if (sensor->type == SENSOR_FLOW_PULSE && sensor->last > 0) {
+      // Continue the sampling grid instead of reading right after boot.
+      sensor->last_read = sensor->last;
+    }
   }
   return true;
 }
@@ -1996,6 +2007,7 @@ void read_all_sensors(boolean online) {
                      current_sensor->nr, current_sensor->type, current_sensor->getName(), current_sensor->repeat_read);
         
         unsigned long read_start_ms = millis();
+        bool had_ok = current_sensor->flags.data_ok;
         int result = read_sensor(current_sensor, time);
         unsigned long read_ms = millis() - read_start_ms;
         if (!current_sensor) {
@@ -2007,6 +2019,7 @@ void read_all_sensors(boolean online) {
                      current_sensor->nr, result, read_ms);
         if (result == HTTP_RQT_SUCCESS) {
           current_sensor->last_read = time;
+          current_sensor->fail_count = 0;
           sensor_apply_post(current_sensor);
 #if !defined(ESP8266)
           current_sensor->trend_add_sample(current_sensor->last_data, time);
@@ -2046,6 +2059,24 @@ void read_all_sensors(boolean online) {
             if (current_sensor->last_read < time) {
               current_sensor->last_read = time;
             }
+          }
+        }
+        // Fault tolerance: the read failed and invalidated data that was valid
+        // before. Keep the last value and timestamp, retry in ~60 s, and only
+        // give up after fail_tolerance consecutive failures (0 = immediately).
+        // ZigBee sensors run their own read timing on last_read and are excluded.
+        if (result != HTTP_RQT_SUCCESS && had_ok && !current_sensor->flags.data_ok &&
+            current_sensor->repeat_read == 0 && current_sensor->type != SENSOR_ZIGBEE) {
+          if (current_sensor->fail_count < 255) current_sensor->fail_count++;
+          if (current_sensor->fail_count < current_sensor->fail_tolerance) {
+            current_sensor->flags.data_ok = 1;
+            current_sensor->last_read = (current_sensor->read_interval > 60)
+                ? (time + 60 - current_sensor->read_interval) : time;
+            DEBUG_PRINTF(F("[SENSOR] #%d read failed (%d/%d), keeping last value, retry in 60s\n"),
+                         current_sensor->nr, current_sensor->fail_count, current_sensor->fail_tolerance);
+          } else {
+            DEBUG_PRINTF(F("[SENSOR] #%d read failed %d times, data invalid\n"),
+                         current_sensor->nr, current_sensor->fail_count);
           }
         }
         ulong passed = os.now_tz() - time;

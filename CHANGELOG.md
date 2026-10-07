@@ -6,6 +6,23 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(229)] — unveröffentlicht
+
+### Added
+- **Fehlertoleranz für Sensorabrufe (`ftol`)**: Ein fehlgeschlagener Abruf macht einen Sensor nicht mehr sofort ungültig. Hält der Sensor gültige Daten, bleiben Wert und Zeitstempel erhalten, der Abruf wird nach etwa 60 s wiederholt, und erst nach `ftol` aufeinanderfolgenden Fehlversuchen (Standard 3, 0 = sofort wie bisher, max. 20) gilt der Sensor als ungültig. Das Feld wird mit der Sensorkonfiguration gespeichert (`/sc`), die Sensorliste liefert zusätzlich `fails` (laufende Fehlversuche). Monitore bleiben davon unberührt, sie werten weiterhin nur gültige Daten aus (Tickets UMN-VJU-EVE4, QRH-T17-TBNL).
+- **`/jc`-Feld `eth`** (ESP8266/ESP32): 1 bei aktiver Ethernet-Verbindung, sonst 0. Die App zeigt damit die Verbindungsart in der Systemdiagnose und blendet die bei LAN veraltete WLAN-Signalstärke aus (Ticket QRH-T17-TBNL).
+- **Loop-Stall-Guard (ESP32)**: Ein Timer überwacht einen Heartbeat der Hauptschleife (`loop_guard.cpp`). Steht die Schleife 60 s, wird eine Diagnose (Task-Zustand, PC/RA, Stack-Adressen für `addr2line`, Halter des HTTP-Mutex) auch im Release-Build über die serielle Schnittstelle ausgegeben; nach 5 Minuten startet der Controller mit neuer Neustart-Ursache `REBOOT_CAUSE_LOOP_STALL` (12) neu, statt mit möglicherweise offenen Ventilen stehen zu bleiben.
+- **DNS-Negativcache (ESP32)**: Ein fehlgeschlagener Hostname-Lookup wird 60 s gemerkt, damit ein toter DNS-Server nicht jede weitere HTTP-Anfrage erneut für die komplette lwIP-Retry-Sequenz (bis ~20 s) blockiert. `send_http_request()` wiederholt die Auflösung nicht mehr im `connect()`.
+
+### Changed
+- **Remote-Monitore (`MONITOR_REMOTE`)**: Abfrage nur noch alle 10 s statt jede Sekunde; bei Fehlern exponentieller Backoff 30 s → 10 min, Reset beim Anlegen/Ändern/Löschen des Monitors. Auf dem ESP32 läuft die Abfrage zusätzlich asynchron im HTTP-Task, das Ergebnis wird im nächsten Durchlauf von `check_monitors()` übernommen. Bisher blockierte ein Remote-Monitor auf eine nicht mehr erreichbare IP die Hauptschleife für den vollen Connect-Timeout (~2,5 s pro Poll) und legte Web-UI, OTC-Verbindung, Wetterabruf und OTA-Download lahm ("30 s nach dem Neustart geht nichts mehr").
+- **Wetter-Sensoren (ESP32)**: `sensor_weather.cpp` holt die Wetterdaten über `send_http_request_async()`; der Zustand wird im Callback aktualisiert. Fehlgeschlagene Abrufe werden nach 5 Minuten wiederholt, ohne die zuletzt gültigen Werte zu verwerfen; eine Antwort, die nach 40 s nicht eingetroffen ist, zählt als Fehlschlag.
+- **IPv6-RDNSS (ESP32)**: lwIP ersetzt DNS-Slot 0 (den per DHCP erhaltenen IPv4-Server) durch die RDNSS-Adresse aus IPv6 Router Advertisements; WLAN-Geräte ohne routbare IPv6-Adresse scheiterten dann bei jedem Lookup (`wtreason=11`). `os_ensure_ipv4_dns_server()` setzt den IPv4-Server alle 5 s und vor jedem Lookup zurück und behält den IPv6-Eintrag als Backup.
+
+### Fixed
+- **Wasserzähler (Impuls, Typ 97) liefert nach Neustart 0**: Der Impulszähler beginnt nach jedem Neustart bei 0, der Sensor behandelte das wie "keine Daten" und meldete im ersten Intervall danach 0 L; bei 24-h-Abfrage war damit jeder Tag mit einem Neustart verloren. Jetzt zählt er nach einem Neustart ab 0 weiter, nur die Impulse zwischen letzter Abfrage und Neustart fehlen. Außerdem wird das Abfrageraster über den Neustart hinweg beibehalten (bisher wurde Sekunden nach dem Start gelesen und das Raster verschoben) (Ticket 8V1-8LT-M81W).
+- **Remote-Monitore auf OSPi**: Die Antwort wird über den Callback aus dem transienten Puffer gelesen statt aus `ether_buffer`.
+
 ## [2.4.0(228)] — veröffentlicht 2026-09-14
 
 ### Added
