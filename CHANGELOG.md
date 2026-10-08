@@ -6,7 +6,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
-## [2.4.0(229)] — unveröffentlicht
+## [2.4.0(229)] — veröffentlicht 2026-10-08
 
 ### Added
 - **Fehlertoleranz für Sensorabrufe (`ftol`)**: Ein fehlgeschlagener Abruf macht einen Sensor nicht mehr sofort ungültig. Hält der Sensor gültige Daten, bleiben Wert und Zeitstempel erhalten, der Abruf wird nach etwa 60 s wiederholt, und erst nach `ftol` aufeinanderfolgenden Fehlversuchen (Standard 3, 0 = sofort wie bisher, max. 20) gilt der Sensor als ungültig. Das Feld wird mit der Sensorkonfiguration gespeichert (`/sc`), die Sensorliste liefert zusätzlich `fails` (laufende Fehlversuche). Monitore bleiben davon unberührt, sie werten weiterhin nur gültige Daten aus (Tickets UMN-VJU-EVE4, QRH-T17-TBNL).
