@@ -20,6 +20,7 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 - **IPv6-RDNSS (ESP32)**: lwIP ersetzt DNS-Slot 0 (den per DHCP erhaltenen IPv4-Server) durch die RDNSS-Adresse aus IPv6 Router Advertisements; WLAN-Geräte ohne routbare IPv6-Adresse scheiterten dann bei jedem Lookup (`wtreason=11`). `os_ensure_ipv4_dns_server()` setzt den IPv4-Server alle 5 s und vor jedem Lookup zurück und behält den IPv6-Eintrag als Backup.
 
 ### Fixed
+- **Gerätegehostete Seite ohne Zeichensatz**: Der HTML-Header der Startseite (`/`) trägt jetzt `charset=utf-8`. Die von ui.opensprinklershop.de nachgeladenen Skripte übernehmen die Kodierung des Dokuments; ohne Angabe wurden Nicht-ASCII-Zeichen in Texten der Oberfläche (z. B. „…“ in „Loading program adjustments…“) als „â€¦“ dargestellt (Ticket GAP-EMX-DMY3).
 - **Wasserzähler (Impuls, Typ 97) liefert nach Neustart 0**: Der Impulszähler beginnt nach jedem Neustart bei 0, der Sensor behandelte das wie "keine Daten" und meldete im ersten Intervall danach 0 L; bei 24-h-Abfrage war damit jeder Tag mit einem Neustart verloren. Jetzt zählt er nach einem Neustart ab 0 weiter, nur die Impulse zwischen letzter Abfrage und Neustart fehlen. Außerdem wird das Abfrageraster über den Neustart hinweg beibehalten (bisher wurde Sekunden nach dem Start gelesen und das Raster verschoben) (Ticket 8V1-8LT-M81W).
 - **Remote-Monitore auf OSPi**: Die Antwort wird über den Callback aus dem transienten Puffer gelesen statt aus `ether_buffer`.
 

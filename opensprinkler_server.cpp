@@ -381,7 +381,9 @@ void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 	if (g_mcp_capture_active) return;
 	 // Signal radio coex: WiFi is serving a request
 	res.writeStatus(200, F("OK"));
-	res.writeHeader(F("Content-Type"), isJson?F("application/json"):F("text/html"));
+	// charset on the HTML page: scripts the page loads from the UI host inherit the
+	// document encoding, non-ASCII literals in them were shown as mojibake otherwise.
+	res.writeHeader(F("Content-Type"), isJson?F("application/json"):F("text/html; charset=utf-8"));
 	if(len>0)
 		res.writeHeader(F("Content-Length"), len);
 	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
