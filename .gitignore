@@ -29,3 +29,8 @@ docs
 .rainmaker-env/
 .env
 !.env.example
+
+# Never commit: session cookies, device certificate partitions, build/test logs
+cookies.txt
+esp_secure_cert_data/
+*.log
