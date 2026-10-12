@@ -6,6 +6,15 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(230)] — unveröffentlicht
+
+### Security
+- **ESP8266 Online-Update: signierte Firmware**: Das Online-Update auf dem ESP8266 lädt Manifest und Binary über Klartext-HTTP (BearSSL kann die Serverkette auf dem RAM-knappen ESP8266 nicht prüfen); bisher wurde dabei nur die vom selben Server gelieferte `x-MD5`-Prüfsumme verglichen, die SHA-256 aus dem Manifest wurde gar nicht ausgewertet. Release-Binaries für den ESP8266 tragen jetzt eine RSA-2048/SHA-256-Signatur im Format des ESP8266-Arduino-Cores (`fw.sh` signiert beim Kopieren ins Upgrade-Verzeichnis, Schlüssel `ESP8266_SIGNING_KEY` in `.env`). Der Updater installiert den öffentlichen Schlüssel (`online_update_pubkey.h`) als `BearSSL::SigningVerifier`, prüft zusätzlich die SHA-256 aus dem Manifest über den gesamten Download und verwirft Images, die nicht beide Prüfungen bestehen. Manuelle Uploads über `/update` und serielles Flashen bleiben unverändert möglich. `fw.sh` verweigert die Veröffentlichung unsignierter ESP8266-Binaries (Ticket YXH-BU6-G5P6).
+- **Login-Sperre auf allen Plattformen**: Die Brute-Force-Sperre (5 Fehlversuche in 5 Minuten sperren die API für 30 s) gilt jetzt auch auf ESP8266 und OSPi, nicht nur in EN18031-Builds, und schützt neben den HTTP-Endpunkten auch `/update` und die MCP-Authentifizierung (`pw`, `X-OS-Password`, Bearer). Die Option „Passwort ignorieren“ bleibt außerhalb von EN18031-Builds wählbar (Ticket YXH-BU6-G5P6).
+- **Repository-Bereinigung**: `cookies.txt` (HESK-Sitzungscookie), die RainMaker-Zertifikatspartition `esp_secure_cert_data/` mit privatem EC-Schlüssel und drei Build-/Test-Logs aus dem Repository entfernt und per `.gitignore` gesperrt. Der bis Build 185 eingebaute, gemeinsame HTTPS-Serverschlüssel wurde aus der OpenThings-Framework-Library und dem App-Repository entfernt; die App führt das zugehörige Zertifikat nicht mehr als Trust-Anchor. Neue `SECURITY.md` mit Meldeweg für Sicherheitslücken (Ticket YXH-BU6-G5P6).
+
+---
+
 ## [2.4.0(229)] — veröffentlicht 2026-10-08
 
 ### Added

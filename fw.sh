@@ -131,6 +131,11 @@ BETA_UPGRADE_DIR="${OS_BETA_UPGRADE_DIR:-/data/upgrade-beta}"
 # Public base URLs written into manifest.json / versions.json (stable vs. beta channel)
 UPGRADE_URL_BASE="${OS_UPGRADE_URL_BASE:-https://opensprinklershop.de/upgrade}"
 BETA_UPGRADE_URL_BASE="${OS_BETA_UPGRADE_URL_BASE:-https://opensprinklershop.de/upgrade-beta}"
+# RSA private key that signs firmware_esp8266.bin for the ESP8266 online updater
+# (public key compiled in via online_update_pubkey.h). Required whenever an
+# ESP8266 binary is published to an upgrade directory; unsigned images are
+# rejected by firmware >= 2.4.0(230).
+ESP8266_SIGNING_KEY="${ESP8266_SIGNING_KEY:-/data/Workspace/App-Keys/esp8266-fw-signing.pem}"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
 VERSIONS_JSON="${UPGRADE_DIR}/versions.json"
 BETA_MANIFEST="${BETA_UPGRADE_DIR}/manifest.json"
@@ -1804,7 +1809,7 @@ copy_to_upgrade() {
 
     cp "$zigbee_bin" "${UPGRADE_DIR}/firmware_zigbee.bin"
     cp "$matter_bin" "${UPGRADE_DIR}/firmware_matter.bin"
-    cp "$esp8266_bin" "${UPGRADE_DIR}/firmware_esp8266.bin"
+    sign_esp8266_bin "$esp8266_bin" "${UPGRADE_DIR}/firmware_esp8266.bin" || return 1
 
     # Sync Matter manufacturing partition binary if present.
     if [[ -f "$MATTER_KVS_BIN" ]]; then
@@ -1825,6 +1830,42 @@ copy_to_upgrade() {
     sync_manifest_sha256
 }
 
+# Sign an ESP8266 firmware image for the online updater. Appends the RSA-2048 /
+# SHA-256 signature and its little-endian u32 length, the format of the ESP8266
+# Arduino core signing tool (tools/signing.py) that BearSSL::SigningVerifier
+# expects. The unsigned source stays untouched. $1 = unsigned source, $2 = output.
+sign_esp8266_bin() {
+    local src="$1" dst="$2"
+    if [[ ! -f "$ESP8266_SIGNING_KEY" ]]; then
+        error "ESP8266 signing key not found: ${ESP8266_SIGNING_KEY} (set ESP8266_SIGNING_KEY in .env)."
+        error "Firmware >= 2.4.0(230) rejects unsigned ESP8266 images — refusing to publish ${dst##*/}."
+        return 1
+    fi
+    local sig pub
+    sig=$(mktemp) || return 1
+    pub=$(mktemp) || { rm -f "$sig"; return 1; }
+    if ! openssl dgst -sha256 -sign "$ESP8266_SIGNING_KEY" -binary -out "$sig" "$src" 2>/dev/null; then
+        rm -f "$sig" "$pub"
+        error "Signing ${src##*/} failed (openssl dgst)."
+        return 1
+    fi
+    # Verify with the public key derived from the private key before publishing.
+    if ! openssl pkey -in "$ESP8266_SIGNING_KEY" -pubout -out "$pub" 2>/dev/null || \
+       ! openssl dgst -sha256 -verify "$pub" -signature "$sig" "$src" >/dev/null 2>&1; then
+        rm -f "$sig" "$pub"
+        error "Signature self-check for ${src##*/} failed."
+        return 1
+    fi
+    local siglen
+    siglen=$(stat -c %s "$sig")
+    {
+        cat "$src" "$sig"
+        python3 -c 'import struct,sys; sys.stdout.buffer.write(struct.pack("<L", int(sys.argv[1])))' "$siglen"
+    } > "$dst" || { rm -f "$sig" "$pub"; error "Writing ${dst} failed."; return 1; }
+    rm -f "$sig" "$pub"
+    ok "Signed ${dst##*/} (RSA signature, ${siglen} bytes, appended)"
+}
+
 # Copy a single variant's firmware to upgrade directory (used by single-variant deploy)
 copy_one_to_upgrade() {
     local env="$1"
@@ -1840,7 +1881,11 @@ copy_one_to_upgrade() {
         warn "Debug/monitor builds are not published to OTA; rebuild without debug to sync (./fw.sh deploy ${env##*-})."
         return 0
     fi
-    cp "$src" "${UPGRADE_DIR}/${dest_name}"
+    if [[ "$env" == "$ENV_ESP8266" ]]; then
+        sign_esp8266_bin "$src" "${UPGRADE_DIR}/${dest_name}" || return 1
+    else
+        cp "$src" "${UPGRADE_DIR}/${dest_name}"
+    fi
     ok "upgrade/${dest_name} synced with current build"
     sync_manifest_sha256
 }

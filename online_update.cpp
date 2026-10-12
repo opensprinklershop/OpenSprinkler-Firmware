@@ -1094,6 +1094,8 @@ void online_update_loop() {
 #include <WiFiClientSecureBearSSL.h>
 #include <Updater.h>
 #include <LittleFS.h>
+#include <bearssl/bearssl_hash.h>
+#include "online_update_pubkey.h"
 #include <memory>
 #include "ArduinoJson.hpp"
 
@@ -1128,7 +1130,9 @@ public:
 private:
 	void setState(OnlineUpdateStatus status, uint8_t progress, const char* msg);
 	void saveRestoreState();
-	bool flashViaHttpClient(HTTPClient &http, size_t max_sketch_space, int *last_http_code = NULL);
+	// sha256_hex: expected SHA-256 of the complete download (64 hex chars from the
+	// manifest) or NULL/"" to skip the digest check (the image signature is still verified).
+	bool flashViaHttpClient(HTTPClient &http, size_t max_sketch_space, const char* sha256_hex, int *last_http_code = NULL);
 	static bool parseHttpUrl(const char* url, String &host, uint16_t &port, String &uri, bool &is_https);
 
 	OnlineUpdateState _state = { OTA_STATUS_IDLE, 0, "" };
@@ -1231,7 +1235,7 @@ bool ESP8266OTAUpdater::parseHttpUrl(const char* url, String &host, uint16_t &po
 	return host.length() > 0;
 }
 
-bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_space, int *last_http_code) {
+bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_space, const char* sha256_hex, int *last_http_code) {
 	const char* headerkeys[] = { "Content-Length", "Content-Type", "Location", "x-MD5" };
 	http.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(headerkeys[0]));
 	http.setTimeout(30000);
@@ -1308,6 +1312,27 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 		_state.progress = progress;
 	});
 
+#if !defined(OTA_ESP8266_NO_SIGNATURE_CHECK)
+	// Image signature (RSA-2048 / SHA-256 appended by fw.sh, see online_update_pubkey.h).
+	// The Updater verifies it in Update.end() before the new image is activated, so a
+	// tampered or foreign binary is discarded. Manifest and download travel over plain
+	// HTTP on the ESP8266 (no CA store for the server chain), this is the integrity check.
+	// The verifier objects live on this stack frame; the guard detaches them from the
+	// global Update instance on every exit path so /update uploads stay unaffected.
+	struct SignatureGuard { ~SignatureGuard() { Update.installSignature(nullptr, nullptr); } } sig_guard;
+	char pubkey_pem[sizeof(OTA_ESP8266_SIGNING_PUBKEY_PEM)];
+	strcpy_P(pubkey_pem, PSTR(OTA_ESP8266_SIGNING_PUBKEY_PEM));
+	BearSSL::PublicKey signing_key(pubkey_pem);
+	BearSSL::HashSHA256 signing_hash;
+	BearSSL::SigningVerifier signing_verifier(&signing_key);
+	if (signing_verifier.length() == 0) {
+		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, PSTR("Signing key unusable"));
+		http.end();
+		return false;
+	}
+	Update.installSignature(&signing_hash, &signing_verifier);
+#endif
+
 	if (!Update.begin((size_t)content_length)) {
 		DEBUG_PRINTF("[OTA-ESP8266] Update.begin failed: %s\n", Update.getErrorString().c_str());
 		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
@@ -1329,6 +1354,14 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 	Update.runAsync(false);
 	DEBUG_PRINTF("[OTA-ESP8266] Streaming start: heap=%u connected=%d\n",
 		(unsigned)ESP.getFreeHeap(), stream->connected() ? 1 : 0);
+
+	// SHA-256 over the complete download, compared with the manifest digest below.
+	br_sha256_context sha_ctx;
+	br_sha256_init(&sha_ctx);
+	const bool check_sha256 = (sha256_hex && strlen(sha256_hex) == 64);
+	if (!check_sha256) {
+		DEBUG_PRINTLN(F("[OTA-ESP8266] No SHA-256 digest in manifest - relying on image signature only"));
+	}
 
 	size_t written = 0;
 	uint32_t last_data_ms = millis();
@@ -1354,6 +1387,7 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 					http.end();
 					return false;
 				}
+				if (check_sha256) br_sha256_update(&sha_ctx, _streamBuf, n);
 				written += n;
 				last_data_ms = millis();
 				uint8_t progress = 10 + (uint8_t)((written * 90ULL) / (size_t)content_length);
@@ -1406,6 +1440,24 @@ bool ESP8266OTAUpdater::flashViaHttpClient(HTTPClient &http, size_t max_sketch_s
 		(unsigned)written, content_length, (unsigned long)(millis() - loop_start_ms),
 		(unsigned)ESP.getFreeHeap());
 
+	if (check_sha256) {
+		unsigned char digest[32];
+		char computed[65];
+		br_sha256_out(&sha_ctx, digest);
+		for (uint8_t i = 0; i < 32; i++) {
+			snprintf_P(computed + i * 2, 3, PSTR("%02x"), digest[i]);
+		}
+		DEBUG_PRINTF("[OTA-ESP8266] SHA-256 expected : %s\n", sha256_hex);
+		DEBUG_PRINTF("[OTA-ESP8266] SHA-256 computed : %s\n", computed);
+		if (strncasecmp(computed, sha256_hex, 64) != 0) {
+			setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, PSTR("SHA-256 mismatch - download rejected"));
+			Update.end(false);
+			http.end();
+			return false;
+		}
+	}
+
+	// Update.end() also verifies the appended image signature (see above).
 	if (!Update.end()) {
 		DEBUG_PRINTF("[OTA-ESP8266] Update.end failed: %s\n", Update.getErrorString().c_str());
 		setState(OTA_STATUS_ERROR_FLASH_ZIGBEE, 0, Update.getErrorString().c_str());
@@ -1439,8 +1491,11 @@ bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 	manifest.valid = false;
 	setState(OTA_STATUS_CHECKING, 0, PSTR("Checking for updates..."));
 
-	// ESP8266 uses plain HTTP — BearSSL cannot negotiate TLS with Ionos
-	// (server ignores max_fragment_length; returned record overflows the 512-byte buffer).
+	// ESP8266 uses plain HTTP for the manifest. TLS would only add value with a
+	// validated server chain, which needs a CA store and time on the RAM-tight
+	// ESP8266 (the server honours max_fragment_length since 2026-10, so the
+	// 512-byte BearSSL buffers would work). Integrity of the update comes from
+	// the RSA image signature and the SHA-256 digest checked in flashViaHttpClient().
 	WiFiClient client;
 
 	HTTPClient http;
@@ -1477,9 +1532,9 @@ bool ESP8266OTAUpdater::check(OnlineUpdateManifest &manifest) {
 	manifest.fw_version = doc["fw_version"] | 0;
 	manifest.fw_minor = doc["fw_minor"] | 0;
 	{
-		// Downgrade https:// → http:// for the firmware URL.  The server ignores the
-		// TLS max_fragment_length extension, so BearSSL cannot connect.  The SHA-256
-		// field still provides integrity verification over the plain-HTTP download.
+		// Downgrade https:// → http:// for the firmware URL (no server chain
+		// validation possible on the ESP8266, see check()). The download is
+		// protected by the appended image signature and the SHA-256 digest.
 		const char* fw_url = doc["esp8266_url"] | OTA_ESP8266_FW_URL;
 		char fw_url_http[sizeof(manifest.zigbee_url)];
 		if (strncmp(fw_url, "https://", 8) == 0) {
@@ -1636,7 +1691,7 @@ void ESP8266OTAUpdater::loop() {
 			continue;
 		}
 		last_http_code = 0;
-		ok = flashViaHttpClient(http, max_sketch_space, &last_http_code);
+		ok = flashViaHttpClient(http, max_sketch_space, manifest->esp8266_sha256, &last_http_code);
 		if (!ok && last_http_code != HTTP_CODE_NOT_FOUND) {
 			break;
 		}
