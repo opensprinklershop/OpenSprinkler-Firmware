@@ -694,6 +694,11 @@ void dtostrf(double value, int min_width, int precision, char *txt);
 #endif
 
 void replace_pid(uint old_pid, uint new_pid);
+// Keep monitor and program-adjustment references (1-based program numbers) in
+// sync with ProgramData: called from del(), moveup() and eraseall().
+void sensors_program_deleted(unsigned char pid);          // 0-based index being removed
+void sensors_program_swapped(unsigned char a, unsigned char b); // 0-based indices
+void sensors_programs_erased();
 const char* findSegment(const char* payload, const char* p, size_t length, const char* segment, size_t seg_len);
 int findValue(const char *payload, unsigned int length, const char *jsonFilter, double& value);
 int findString(const char *payload, unsigned int length, const char *jsonFilter, String& value);

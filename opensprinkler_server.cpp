@@ -43,6 +43,7 @@ static void emit_monthly_water_backup_json(T &bfill) {
 }
 
 #include "opensprinkler_server.h"
+#include "eth_w5500.h"
 #include "weather.h"
 #include "mqtt.h"
 #include "main.h"
@@ -575,6 +576,36 @@ void on_ap_try_connect(OTF_PARAMS_DEF) {
 #endif
 
 
+/** Brute-force protection (EN 18031-1 ACM/AUM, active on all platforms). After
+ *  EN18031_LOGIN_MAX_FAILS failed password checks within EN18031_LOGIN_FAIL_WINDOW_MS
+ *  every request is rejected for EN18031_LOGIN_LOCK_MS. Global (not per client) on
+ *  purpose: no per-IP state on the device. Shared with /update and the MCP server
+ *  (declared in opensprinkler_server.h). */
+static uint8_t en18031_login_fails = 0;
+static ulong   en18031_login_fail_time = 0;
+static ulong   en18031_login_lock_until = 0;
+static bool    en18031_login_lock_active = false;
+
+bool en18031_login_locked() {
+	if(!en18031_login_lock_active) return false;
+	if((long)(millis()-en18031_login_lock_until) < 0) return true;
+	en18031_login_lock_active = false;
+	return false;
+}
+void en18031_login_fail() {
+	ulong now = millis();
+	if(en18031_login_fails && (long)(now-en18031_login_fail_time) > (long)EN18031_LOGIN_FAIL_WINDOW_MS) en18031_login_fails = 0;
+	en18031_login_fails++;
+	en18031_login_fail_time = now;
+	if(en18031_login_fails >= EN18031_LOGIN_MAX_FAILS) {
+		en18031_login_fails = 0;
+		en18031_login_lock_until = now + EN18031_LOGIN_LOCK_MS;
+		en18031_login_lock_active = true;
+		DEBUG_PRINTLN(F("[PW] too many failed logins, API locked"));
+	}
+}
+void en18031_login_ok() { en18031_login_fails = 0; }
+
 /** Check and verify password */
 boolean process_password(OTF_PARAMS_DEF, boolean fwv_on_fail=false)
 {
@@ -583,7 +614,15 @@ boolean process_password(OTF_PARAMS_DEF, boolean fwv_on_fail=false)
 #endif
 	// MCP capture mode: auth already verified by the MCP handler
 	if (g_mcp_capture_active) return true;
+	// Locked out after repeated failures (all platforms)
+	if (en18031_login_locked()) {
+		otf_send_result(OTF_PARAMS, HTML_UNAUTHORIZED);
+		return false;
+	}
+#if !EN18031_COMPLIANCE
 	if (os.iopts[IOPT_IGNORE_PASSWORD])  return true;
+#endif
+	// EN 18031-1 builds: IOPT_IGNORE_PASSWORD is not honoured
 
 	/*if(req.isCloudRequest()){ // password is not required if this is coming from cloud connection
 		return true;
@@ -593,8 +632,10 @@ boolean process_password(OTF_PARAMS_DEF, boolean fwv_on_fail=false)
 	const char *pw = req.getQueryParameter("pw");
 	bool pw_valid = (pw != NULL && os.password_verify(pw));
 	if(pw_valid) {
+		en18031_login_ok();
 		return true;
 	}
+	if(pw != NULL) en18031_login_fail(); // missing pw (UI probing fwv) is not an attempt
 
 	/* if fwv_on_fail is true, output fwv if password check has failed */
 	if(fwv_on_fail) {
@@ -1356,6 +1397,10 @@ void server_json_options_main() {
 	bfill.emit_p(PSTR("\""));
 
 	bfill.emit_p(PSTR(",\"dexp\":$D,\"mexp\":$D,\"hwt\":$D,"), os.detect_exp(), MAX_EXT_BOARDS, os.hw_type);
+	#if EN18031_COMPLIANCE
+	// EN 18031-1: 1 while the factory default password ('opendoor') is still active (UI should ask for a new one)
+	bfill.emit_p(PSTR("\"pwdef\":$D,"), os.password_is_default() ? 1 : 0);
+	#endif
 
 	// print master array
 	unsigned char masid, optidx;
@@ -1482,6 +1527,8 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	// Active network interface: 1 = wired Ethernet, 0 = WiFi. The UI uses it to
 	// label the connection and to hide the (stale) WiFi strength on Ethernet.
 	bfill.emit_p(PSTR("\"eth\":$D,"), useEth ? 1 : 0);
+	// W5500 Ethernet recoveries since boot (eth_w5500.cpp); 0 on WiFi or ENC28J60.
+	bfill.emit_p(PSTR("\"ethrst\":$D,"), eth_w5500_recover_count());
 	bfill.emit_p(PSTR("\"apdv\":$D,"), os.actual_pd_voltage);
 #endif
 
@@ -1684,6 +1731,35 @@ void server_change_values(OTF_PARAMS_DEF)
 			reboot_timer = os.now_tz() + 1;
 			handle_return(HTML_SUCCESS);
 	}
+
+#if defined(ESP8266) || defined(ESP32)
+	// ethrst=1: run the W5500 Ethernet recovery now (support/diagnostics; the
+	// network check triggers the same routine automatically). Result is "item":
+	// the link state before the reset, 0 = no W5500 in use.
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ethrst"), true) && atoi(tmp_buffer) > 0) {
+			// Reply first: the recovery drops the link for a moment and blocks
+			// until it is back, so the response must leave the chip before that.
+			rewind_ether_buffer();
+			bfill.emit_p(PSTR("{\"result\":$D,\"item\":$D}"), HTML_SUCCESS, eth_w5500_link_up() ? 1 : 0);
+			print_header(OTF_PARAMS, true, strlen(ether_buffer));
+			res.writeBodyData(ether_buffer, strlen(ether_buffer));
+			eth_w5500_recover();
+			return;
+	}
+#if defined(ENABLE_DEBUG) && defined(ESP8266)
+	// ethpd=<ms>: ESP8266 debug builds only, see eth_w5500_test_linkdown()
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ethpd"), true) && atoi(tmp_buffer) > 0) {
+			uint32_t ms = (uint32_t)atoi(tmp_buffer);
+			if (ms > 20000) ms = 20000;
+			rewind_ether_buffer();
+			bfill.emit_p(PSTR("{\"result\":$D,\"item\":$D}"), HTML_SUCCESS, (int)ms);
+			print_header(OTF_PARAMS, true, strlen(ether_buffer));
+			res.writeBodyData(ether_buffer, strlen(ether_buffer));
+			eth_w5500_test_linkdown(ms);
+			return;
+	}
+#endif
+#endif
 
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("en"), true)) {
 		if (tmp_buffer[0]=='1' && !os.status.enabled)  os.enable();
@@ -1949,11 +2025,45 @@ void server_change_options(OTF_PARAMS_DEF)
 
     if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("gardena"), true, &keyfound)) {
 	#if defined(ESP32) || defined(OSPI)
-		DEBUG_PRINTLN(tmp_buffer);
-		os.sopt_save(SOPT_GARDENA_OPTS, tmp_buffer);
+		// Merge into the stored object: keys that are present are replaced,
+		// missing keys are kept (the app never sends the secret back, it only
+		// sends a new one). "reset":1 clears everything. The access token is
+		// never persisted (RAM only, see GardenaClient).
+		JsonDocument incoming;
+		if (!deserializeJson(incoming, tmp_buffer) && incoming.is<JsonObject>()) {
+			JsonDocument stored;
+			if (incoming["reset"] | 0) {
+				stored.to<JsonObject>();
+			} else if (deserializeJson(stored, os.sopt_load(SOPT_GARDENA_OPTS)) || !stored.is<JsonObject>()) {
+				stored.clear();
+				stored.to<JsonObject>();
+			}
+			static const char *const gardena_keys[] = {"api_key", "client_id", "client_secret", "refresh_token", "location_id", "poll"};
+			for (unsigned k = 0; k < sizeof(gardena_keys) / sizeof(gardena_keys[0]); k++) {
+				const char *key = gardena_keys[k];
+				if (!incoming.containsKey(key)) continue;
+				JsonVariantConst v = incoming[key];
+				if (strcmp(key, "poll") == 0) {
+					unsigned long poll = v.as<unsigned long>();
+					if (poll == 0) stored.remove(key); else stored[key] = poll;
+				} else {
+					const char *str = v | "";
+					if (strcmp(key, "client_secret") == 0 && str[0] == 0) continue; // keep the stored secret
+					if (str[0] == 0) stored.remove(key); else stored[key] = str;
+				}
+			}
+			stored.remove("access_token");
+			stored.remove("locationId");
+			size_t n = serializeJson(stored, tmp_buffer, TMP_BUFFER_SIZE);
+			if (n < (size_t)MAX_SOPTS_SIZE - 1) {
+				os.sopt_save(SOPT_GARDENA_OPTS, tmp_buffer);
+				GardenaClient::instance().reloadConfig();
+			}
+		}
 	} else if (keyfound) {
-		tmp_buffer[0]=0;
+		strcpy(tmp_buffer, "{}");
 		os.sopt_save(SOPT_GARDENA_OPTS, tmp_buffer);
+		GardenaClient::instance().reloadConfig();
 	#endif
 	}
 
@@ -2022,6 +2132,9 @@ void server_change_password(OTF_PARAMS_DEF) {
 		if (findKeyVal(FKV_SOURCE, tbuf2, pwBufferSize, PSTR("cpw"), true) && strncmp(tmp_buffer, tbuf2, pwBufferSize) == 0) {
 			DEBUG_PRINTF("[PW] /sp writing password slot: npw='%.*s' cpw='%.*s'\n", 16, tmp_buffer, 16, tbuf2);
 			os.sopt_save(SOPT_PASSWORD, tmp_buffer);
+			#if EN18031_COMPLIANCE
+			os.genpw_clear(); // user-defined password replaces the generated one
+			#endif
 			handle_return(HTML_SUCCESS);
 		} else {
 			handle_return(HTML_MISMATCH);
@@ -2320,6 +2433,16 @@ void server_delete_log(OTF_PARAMS_DEF) {
 
 	if (!findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("day"), true))
 		handle_return(HTML_DATA_MISSING);
+
+	// Accept only "all" or a day number: make_logfile_name() builds the file
+	// name inside tmp_buffer and an overlong value overran it (device reset).
+	if (strcmp(tmp_buffer, "all") != 0) {
+		size_t len = strlen(tmp_buffer);
+		if (len == 0 || len > 8) handle_return(HTML_DATA_OUTOFBOUND);
+		for (size_t i = 0; i < len; i++) {
+			if (tmp_buffer[i] < '0' || tmp_buffer[i] > '9') handle_return(HTML_DATA_OUTOFBOUND);
+		}
+	}
 
 	delete_log(tmp_buffer);
 
@@ -4726,6 +4849,36 @@ void server_fyta_query_plants(OTF_PARAMS_DEF) {
 }
 
 #if defined(ESP32) || defined(OSPI)
+// Serialize a JsonDocument into the response, chunked through the ether buffer.
+static void gardena_emit_json(OTF_PARAMS_DEF, JsonDocument &doc) {
+	const size_t json_len = measureJson(doc);
+	if (json_len <= bfill.avail()) {
+		const size_t written = serializeJson(doc, bfill.cursor(), bfill.avail() + 1);
+		bfill.advance(written);
+		return;
+	}
+	char *json_buf = (char*)malloc(json_len + 1);
+	if (!json_buf) {
+		bfill.emit_p(PSTR("{\"error\":\"out of memory\"}"));
+		return;
+	}
+	const size_t written = serializeJson(doc, json_buf, json_len + 1);
+	const char *src = json_buf;
+	size_t remaining = written;
+	while (remaining) {
+		if (bfill.avail() == 0) send_packet(OTF_PARAMS);
+		const size_t chunk = (remaining < bfill.avail()) ? remaining : bfill.avail();
+		bfill.append(src, chunk);
+		src += chunk;
+		remaining -= chunk;
+	}
+	free(json_buf);
+}
+
+/**
+ * ga: Gardena configuration for the setup dialog. The application secret is
+ * never returned, only whether one is stored ("has_secret").
+ */
 void server_gardena_get_credentials(OTF_PARAMS_DEF) {
 	if(!process_password(OTF_PARAMS)) return;
 
@@ -4735,71 +4888,78 @@ void server_gardena_get_credentials(OTF_PARAMS_DEF) {
 	JsonDocument doc;
 	DeserializationError error = deserializeJson(doc, os.sopt_load(SOPT_GARDENA_OPTS));
 	if (error || !doc.is<JsonObject>()) {
-		strcpy(tmp_buffer, "{\"api_key\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"refresh_token\":\"\",\"access_token\":\"\",\"location_id\":\"\"}");
-		os.sopt_save(SOPT_GARDENA_OPTS, tmp_buffer);
+		doc.clear();
+		doc.to<JsonObject>();
 	}
-
-	bfill.emit_p(PSTR("{"));
-	bfill.emit_p(PSTR("\"gardena\":$O"), SOPT_GARDENA_OPTS);
-	bfill.emit_p(PSTR("}"));
+	JsonDocument out;
+	JsonObject g = out["gardena"].to<JsonObject>();
+	const char *api_key = doc["api_key"] | "";
+	const char *client_id = doc["client_id"] | "";
+	if (api_key[0] == 0) api_key = client_id;
+	g["api_key"] = api_key;
+	g["client_id"] = client_id[0] ? client_id : api_key;
+	g["has_secret"] = (strlen(doc["client_secret"] | "") > 0) ? 1 : 0;
+	g["refresh_token"] = doc["refresh_token"] | "";
+	g["location_id"] = doc["location_id"] | "";
+	g["poll"] = doc["poll"] | (unsigned long)GARDENA_DEFAULT_POLL_S;
+	gardena_emit_json(OTF_PARAMS, out);
 	handle_return(HTML_OK);
 }
 
+/**
+ * gl: discovered Gardena sensors and valves plus client diagnostics.
+ * Parameters: refresh=1 forces a fresh location fetch (otherwise the cache is
+ * used when younger than the poll interval), locations=1 also lists the
+ * locations of the account (one extra API request).
+ */
 void server_gardena_query_locations(OTF_PARAMS_DEF) {
 	if(!process_password(OTF_PARAMS)) return;
 
 	rewind_ether_buffer();
 	print_header(OTF_PARAMS);
 
-	GardenaApi gardenaapi(os.sopt_load(SOPT_GARDENA_OPTS));
-	JsonDocument locations;
+	GardenaClient &gardena = GardenaClient::instance();
+	bool force = findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("refresh"), true) && atoi(tmp_buffer) > 0;
+	bool listLocations = findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("locations"), true) && atoi(tmp_buffer) > 0;
+
 	JsonDocument out;
-	if (!gardenaapi.getLocationList(locations)) {
-		bfill.emit_p(PSTR("{\"error\":\"location list unavailable\",\"locations\":[],\"sensors\":[],\"valves\":[]}"));
-		handle_return(HTML_OK);
-		return;
-	}
-
 	JsonArray result = out["locations"].to<JsonArray>();
-	JsonArrayConst data = locations["data"].as<JsonArrayConst>();
-	if (!data.isNull()) {
-		for (JsonVariantConst variant : data) {
-			JsonObjectConst item = variant.as<JsonObjectConst>();
-			JsonObject entry = result.add<JsonObject>();
-			entry["id"] = item["id"] | "";
-			entry["name"] = item["attributes"]["name"] | "";
-		}
-	}
-
-	// Also retrieve list of sensors and valves either from query parameter or stored settings
-	String locationId = "";
-	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("location_id"), true)) {
-		locationId = tmp_buffer;
-	} else {
-		JsonDocument settings;
-		DeserializationError error = deserializeJson(settings, os.sopt_load(SOPT_GARDENA_OPTS));
-		if (!error && settings.is<JsonObject>()) {
-			if (settings.containsKey("location_id")) {
-				locationId = settings["location_id"].as<String>();
-			} else if (settings.containsKey("locationId")) {
-				locationId = settings["locationId"].as<String>();
+	out["configured"] = gardena.configured() ? 1 : 0;
+	bool ok = false;
+	if (gardena.configured()) {
+		ok = gardena.refreshLocation(force);
+		if (listLocations) {
+			JsonDocument locations;
+			if (gardena.getLocationList(locations)) {
+				JsonArrayConst data = locations["data"].as<JsonArrayConst>();
+				for (JsonVariantConst variant : data) {
+					JsonObjectConst item = variant.as<JsonObjectConst>();
+					JsonObject entry = result.add<JsonObject>();
+					entry["id"] = item["id"] | "";
+					entry["name"] = item["attributes"]["name"] | "";
+				}
 			}
 		}
+	} else {
+		out["error"] = "not configured";
 	}
-
-	if (locationId.length() == 0 && !result.isNull() && result.size() > 0) {
-		locationId = result[0]["id"].as<String>();
+	if (ok) {
+		out["sensors"] = gardena.sensors();
+		out["valves"] = gardena.valves();
+	} else {
+		out["sensors"].to<JsonArray>();
+		out["valves"].to<JsonArray>();
 	}
+	out["location_id"] = gardena.locationIdStr().c_str();
+	out["token"] = gardena.tokenValid() ? 1 : 0;
+	out["requests"] = (unsigned long)gardena.requestCount;
+	out["http"] = gardena.lastHttpStatus;
+	out["cache_age"] = (unsigned long)gardena.cacheAge();
+	out["poll"] = (unsigned long)gardena.pollSeconds;
+	out["fails"] = gardena.failCount;
+	if (gardena.lastError && gardena.lastError[0]) out["error"] = gardena.lastError;
 
-	if (locationId.length() > 0) {
-		JsonDocument locData;
-		if (gardenaapi.getLocationData(locationId, locData)) {
-			out["sensors"] = locData["sensors"];
-			out["valves"] = locData["valves"];
-		}
-	}
-
-	bfill.emit_p(PSTR("$O"), out);
+	gardena_emit_json(OTF_PARAMS, out);
 	handle_return(HTML_OK);
 }
 #endif
@@ -7883,9 +8043,13 @@ void on_firmware_upload_fin() {
 		}
 	}
 
-	if (os.iopts[IOPT_IGNORE_PASSWORD]) {
-		// don't check password
-	} else if(!(submitted_pw.length() > 0 && os.password_verify(submitted_pw.c_str()))) {
+	bool upd_locked = en18031_login_locked();
+	bool upd_pw_ok = !upd_locked && submitted_pw.length() > 0 && os.password_verify(submitted_pw.c_str());
+	if(upd_pw_ok) en18031_login_ok(); else if(!upd_locked && submitted_pw.length() > 0) en18031_login_fail();
+#if !EN18031_COMPLIANCE
+	if (!upd_locked && os.iopts[IOPT_IGNORE_PASSWORD]) upd_pw_ok = true; // password check disabled by the user
+#endif
+	if (!upd_pw_ok) {
 		update_server_send_result(HTML_UNAUTHORIZED);
 #if defined(ESP32C5)
 		if (s_esp_ota_running) {
@@ -8142,6 +8306,21 @@ void start_server_ap() {
 	String ap_ssid = get_ap_ssid();
 	start_network_ap(ap_ssid.c_str(), NULL);
 	delay(500);
+	#if EN18031_COMPLIANCE
+	// EN 18031-1 ACM: entering setup (AP) mode issues a random device password unless one
+	// generated earlier is still pending. It is shown on the display and the setup page
+	// (the setup AP itself stays open, it only exists for first-time configuration).
+	if(!os.genpw_load()) os.genpw_generate();
+	{
+		int brace = scanned_ssids.lastIndexOf('}');
+		if(brace > 0) {
+			String gpw = F(",\"gpw\":\"");
+			gpw += os.genpw;
+			gpw += F("\"");
+			scanned_ssids = scanned_ssids.substring(0, brace) + gpw + scanned_ssids.substring(brace);
+		}
+	}
+	#endif
 	otf->on("/", on_ap_home);
 	otf->on("/jsap", on_ap_scan);
 	otf->on("/ccap", on_ap_change_config);
@@ -8170,6 +8349,11 @@ void start_server_ap() {
 	os.lcd.setCursor(0, -1);
 	os.lcd.print(F("OSAP:"));
 	os.lcd.print(ap_ssid);
+	#if EN18031_COMPLIANCE
+	os.lcd.setCursor(0, 1);
+	os.lcd.print(F("PW:"));
+	os.lcd.print(os.genpw);
+	#endif
 	os.lcd.setCursor(0, 2);
 	os.lcd.print(WiFi.softAPIP());
 }
@@ -8343,6 +8527,19 @@ ulong getNtpTime() {
 	unsigned char tries=0;
 	ulong gt = 0;
 	ulong startt = millis();
+	// A custom NTP IP that does not answer (old LAN after a WiFi reset, router
+	// still booting after a power cut) used to be the only server tried, three
+	// times 2 s per call, every 5 s, forever: "NTP Syncing..." with the web
+	// server starved (ticket VPX-842-T3XP). Now the custom IP gets one try per
+	// call, the remaining tries go to the public pool. After three calls in a
+	// row without an answer from the custom IP it is skipped and retried once
+	// every 10 minutes.
+	static uint8_t custom_fail_calls = 0;
+	static ulong custom_retry_ms = 0;
+	bool custom_valid = ntp_is_valid_ipv4(ntpip);
+	bool custom_allowed = custom_valid &&
+		(custom_fail_calls < 3 || (long)(millis() - custom_retry_ms) >= 0);
+	bool custom_tried = false;
 	while(tries<NTP_NTRIES) {
 		// sendNtpPacket
 		udp.begin(port);
@@ -8362,7 +8559,9 @@ ulong getNtpTime() {
 
 		DEBUG_PRINT(F("ntp: "));
 		int ret;
-		if (ntp_is_valid_ipv4(ntpip)) {
+		bool use_custom = custom_allowed && !custom_tried;
+		if (use_custom) {
+			custom_tried = true;
 			DEBUG_PRINTLN(IPAddress(ntpip[0],ntpip[1],ntpip[2],ntpip[3]));
 			ret = udp.beginPacket(ntpip, NTP_PORT);
 		} else {
@@ -8396,6 +8595,7 @@ ulong getNtpTime() {
 				ulong gt = secsSince1900 - seventyYears;
 				// check validity: has to be larger than 1/1/2020 12:00:00
 				if(gt>1577836800UL) {
+					if (use_custom) custom_fail_calls = 0;
 					udp.stop();
 					DEBUG_PRINT(F("took "));
 					DEBUG_PRINT(millis()-startt);
@@ -8409,6 +8609,11 @@ ulong getNtpTime() {
 		sidx=(sidx+1)%N_PUBLIC_SERVERS;
 	}
 	if(tries==NTP_NTRIES) {DEBUG_PRINTLN(F("NTP failed!!"));}
+	if (custom_tried) {
+		// The custom server did not answer in this call (otherwise we returned above).
+		if (custom_fail_calls < 255) custom_fail_calls++;
+		if (custom_fail_calls >= 3) custom_retry_ms = millis() + 600000UL;
+	}
 	udp.stop();
 	return 0;
 }

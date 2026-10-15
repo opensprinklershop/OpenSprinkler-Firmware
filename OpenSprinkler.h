@@ -673,6 +673,14 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static String EXT_RAM_BSS_ATTR wifi_pass;
 	static unsigned char wifi_bssid[6], wifi_channel;
 	static void config_ip();
+#if EN18031_COMPLIANCE
+	// EN 18031-1: generated device password (plaintext) while the user has not set an own one
+	static char genpw[GENPW_LENGTH+1];
+	static bool genpw_load();      // load pending generated password from GENPW_FILENAME
+	static void genpw_generate();  // generate, store md5 as SOPT_PASSWORD, persist plaintext
+	static void genpw_clear();     // user set an own password: forget the generated one
+	static bool password_is_default();
+#endif
 	static void save_wifi_ip();
 	static void reset_to_ap();
 	static unsigned char state;

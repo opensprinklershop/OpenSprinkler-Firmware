@@ -113,6 +113,7 @@ typedef unsigned long ulong;
 #define MWATER_FILENAME       "mwater.dat"   // monthly water usage data file
 #define ZIGBEE_LOGICAL_FILENAME "zigbee_logical_devices.json" // persisted ZigBee logical device registry
 #define APP_CONFIG_FILENAME   "appcfg.json"  // universal app/UI key-value config store (JSON object)
+#define FLOWCNT_FILENAME      "flowcnt.dat"  // flow pulse counter saved across a software reboot
 #else
 #define IOPTS_FILENAME        "/iopts.dat"   // integer options data file
 #define SOPTS_FILENAME        "/sopts.dat"   // string options data file
@@ -125,6 +126,56 @@ typedef unsigned long ulong;
 #define MWATER_FILENAME       "/mwater.dat"   // monthly water usage data file
 #define ZIGBEE_LOGICAL_FILENAME "/zigbee_logical_devices.json" // persisted ZigBee logical device registry
 #define APP_CONFIG_FILENAME   "/appcfg.json"  // universal app/UI key-value config store (JSON object)
+#define FLOWCNT_FILENAME      "/flowcnt.dat"  // flow pulse counter saved across a software reboot
+#endif
+
+/** EN 18031-1 (RED 2014/53/EU Art. 3.3 d) compliance measures.
+ *  Default ON for ESP32 builds, OFF elsewhere. Build with -D EN18031_COMPLIANCE=0 to disable.
+ *  When enabled:
+ *   - IOPT_IGNORE_PASSWORD is forced to 0 (no unauthenticated API access)
+ *   - entering WiFi AP (setup) mode generates a random device password, shown on the
+ *     display and on the AP setup page until the user changes it via /sp
+ *   - login failures are rate limited (EN18031_LOGIN_MAX_FAILS within the window locks
+ *     the API for EN18031_LOGIN_LOCK_MS)
+ *   - /jo reports "pwdef":1 while the factory default password is still in use */
+#ifndef EN18031_COMPLIANCE
+	#if defined(ESP32)
+		#define EN18031_COMPLIANCE 1
+	#else
+		#define EN18031_COMPLIANCE 0
+	#endif
+#endif
+#if EN18031_COMPLIANCE
+	#if !defined(ESP32)
+		#define GENPW_FILENAME      "genpw.dat"   // generated device password (plaintext) until changed by the user
+	#else
+		#define GENPW_FILENAME      "/genpw.dat"
+	#endif
+	#define GENPW_LENGTH                 12
+#endif
+/** Login brute-force lockout (all platforms, independent of EN18031_COMPLIANCE):
+ *  EN18031_LOGIN_MAX_FAILS failed password checks within EN18031_LOGIN_FAIL_WINDOW_MS
+ *  reject every authenticated request for EN18031_LOGIN_LOCK_MS. Covers the HTTP API,
+ *  /update and the MCP authentication. */
+#define EN18031_LOGIN_MAX_FAILS      5
+#define EN18031_LOGIN_LOCK_MS        30000UL
+#define EN18031_LOGIN_FAIL_WINDOW_MS 300000UL
+
+/** WiFi regulatory domain (RED 2014/53/EU Art. 3.2, see CE/OpenSprinklerPro).
+ *  Without a country code ESP-IDF runs in world-safe mode "01" (2.4 GHz ch 1-11,
+ *  5 GHz ch 36-64 passive only). "EU" enables ch 1-13 and the ETSI 5 GHz rules.
+ *  The policy is manual: a country IE from the AP never overrides it.
+ *  OS_WIFI_5G_CHANNEL_MASK (wifi_5g_channel_bit_t) limits 5 GHz to the RLAN bands of
+ *  the declaration of conformity, 5150-5350 MHz (ch 36-64) and 5470-5725 MHz
+ *  (ch 100-140); 5725-5875 MHz (ch 144+, SRD per EN 300 440) stays off.
+ *  Override with -D OS_WIFI_COUNTRY_CODE=\"XX\" for builds outside the EU. */
+#if defined(ESP32)
+	#ifndef OS_WIFI_COUNTRY_CODE
+		#define OS_WIFI_COUNTRY_CODE "EU"
+	#endif
+	#ifndef OS_WIFI_5G_CHANNEL_MASK
+		#define OS_WIFI_5G_CHANNEL_MASK 0x000FFFFEUL // bit 1 (ch 36) .. bit 19 (ch 140)
+	#endif
 #endif
 
 /** Station macro defines */
@@ -246,6 +297,8 @@ enum {
 #define DEFAULT_WEATHER_URL       "weather.opensprinkler.com"
 #define DEFAULT_IFTTT_URL         "maker.ifttt.com"
 #define DEFAULT_PUSH_URL          "https://io.opensprinklershop.de/wp-json/ospf/v1/event"
+/** WiFi regulatory country code (ESP32): EU regulatory domain, 2.4 GHz channels 1-13, 5 GHz EU channels */
+#define OS_WIFI_COUNTRY_CODE      "DE"
 #define DEFAULT_OTC_SERVER_DEV     "ws.cloud.openthings.io"
 #define DEFAULT_OTC_PORT_DEV       80
 #define DEFAULT_OTC_SERVER_APP    "cloud.openthings.io"

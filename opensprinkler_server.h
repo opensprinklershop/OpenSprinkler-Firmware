@@ -235,6 +235,12 @@ void server_json_programs_main(const OTF::Request& req, OTF::Response& res);
 // MCP capture-mode globals (all platforms with USE_OTF)
 #if defined(USE_OTF)
 extern bool   g_mcp_capture_active;
+
+/** Login brute-force lockout shared by the HTTP API, /update and the MCP server
+ *  (implemented in opensprinkler_server.cpp, constants EN18031_LOGIN_* in defines.h). */
+bool en18031_login_locked();
+void en18031_login_fail();
+void en18031_login_ok();
 extern String g_mcp_capture_buf;
 #endif
 

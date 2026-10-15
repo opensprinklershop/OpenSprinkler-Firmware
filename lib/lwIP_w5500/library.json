@@ -1,0 +1,11 @@
+{
+  "name": "lwIP_w5500",
+  "version": "1.0.0-osshop1",
+  "description": "Wiznet W5500 MACRAW driver for lwIP from the ESP8266 Arduino core, with bounded busy loops (OpenSprinklerShop patch, see README.md)",
+  "license": "LGPL-2.1-or-later",
+  "frameworks": "arduino",
+  "platforms": "espressif8266",
+  "build": {
+    "libArchive": true
+  }
+}

@@ -54,6 +54,24 @@
 		WiFi.setSleep(modem_sleep);
 	#endif
 	}
+
+	#if defined(ESP32)
+	// Fixed regulatory domain, see OS_WIFI_COUNTRY_CODE in defines.h. Call after WiFi.mode().
+	static void apply_wifi_country() {
+	#if defined(OS_WIFI_COUNTRY_CODE)
+		esp_err_t err = esp_wifi_set_country_code(OS_WIFI_COUNTRY_CODE, false);
+		#if CONFIG_SOC_WIFI_SUPPORT_5G && defined(OS_WIFI_5G_CHANNEL_MASK)
+		wifi_country_t country;
+		if (err == ESP_OK && esp_wifi_get_country(&country) == ESP_OK) {
+			country.policy = WIFI_COUNTRY_POLICY_MANUAL;
+			country.wifi_5g_channel_mask = OS_WIFI_5G_CHANNEL_MASK;
+			err = esp_wifi_set_country(&country);
+		}
+		#endif
+		if (err != ESP_OK) DEBUG_PRINTF(F("WiFi country %s failed: %d\n"), OS_WIFI_COUNTRY_CODE, (int)err);
+	#endif
+	}
+	#endif
 #endif
 
 String scan_network() {
@@ -162,6 +180,11 @@ void start_network_ap(const char *ssid, const char *pass) {
 	#endif
 	#if defined(ESP32)
 	WiFi.mode(WIFI_MODE_AP);
+	apply_wifi_country();
+	#if defined(ESP32C5)
+	// RED Art. 3.2: the setup AP only ever runs on 2.4 GHz (no 5 GHz master / DFS obligations)
+	WiFi.setBandMode(WIFI_BAND_MODE_2G_ONLY);
+	#endif
 	#endif
 	// Ensure the AP interface has the expected default IP.
 	// Some code paths display localIP() which can be 0.0.0.0 in AP-only mode;
@@ -171,7 +194,11 @@ void start_network_ap(const char *ssid, const char *pass) {
 	IPAddress ap_sn(255, 255, 255, 0);
 	WiFi.softAPConfig(ap_ip, ap_gw, ap_sn);
 
+	#if defined(ESP32)
+	WiFi.softAP(ssid, pass, 1); // channel 1 = 2.4 GHz
+	#else
 	WiFi.softAP(ssid, pass);
+	#endif
 
 	#if defined(ARDUINOOTA)
 	start_arduino_ota(NULL);
@@ -206,6 +233,7 @@ void start_network_sta_with_ap(const char *ssid, const char *pass, int32_t chann
 	apply_wifi_sleep_mode();
 	// Enable auto-reconnect for ESP32 to handle connection drops
 	WiFi.setAutoReconnect(true);
+	apply_wifi_country();
 	#endif
 	WiFi.begin(ssid, pass, channel, bssid);
 
@@ -234,6 +262,11 @@ void start_network_sta(const char *ssid, const char *pass, int32_t channel, cons
 	apply_wifi_sleep_mode();
 	// Enable auto-reconnect for ESP32 to handle connection drops
 	WiFi.setAutoReconnect(true);
+	apply_wifi_country();
+	#if defined(ESP32C5)
+	// Station may use 2.4 GHz and 5 GHz (5 GHz as slave device only, see CE/OpenSprinklerPro)
+	WiFi.setBandMode(WIFI_BAND_MODE_AUTO);
+	#endif
 	#endif
 
 	//WiFi.setBandMode(WIFI_BAND_MODE_5G_ONLY);

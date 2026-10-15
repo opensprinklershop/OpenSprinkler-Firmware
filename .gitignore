@@ -22,6 +22,7 @@ build
 node_modules
 *.json
 !package.json
+!lib/**/library.json
 .DS_Store
 matter_mfg/
 docs

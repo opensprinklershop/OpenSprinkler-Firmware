@@ -175,6 +175,11 @@
         </div>
     </div>
 
+    <div id='gpwbox' class="form-group" style="display:none;border:1px solid var(--border);border-radius:6px;padding:10px">
+        <label>Device password</label>
+        <div style="font-family:monospace;font-size:1.4em;letter-spacing:2px" id='gpw'></div>
+        <div style="color:var(--muted);font-size:0.9em">Write it down: you need it to log in after the controller has joined your WiFi. It can be changed later under Settings. It is also shown on the controller display.</div>
+    </div>
     <p id='msg'></p>
     <button type='button' id='butt' onclick='sf()'><b>Submit</b></button>
 </main>
@@ -238,6 +243,7 @@ function loadSSIDs() {
                 if(scanTries < 20) { setTimeout(loadSSIDs, 1000); }
                 return;
             }
+            if(jd.gpw){id('gpw').innerText=jd.gpw;id('gpwbox').style.display='block';}
             ssids = jd.scanned;
             if (!ssids || ssids.length === 0) {
                 // Scan may still be running (async). Keep scanning UI and retry for ~20s.

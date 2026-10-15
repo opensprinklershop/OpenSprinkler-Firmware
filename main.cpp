@@ -50,6 +50,7 @@
 #include "matter_ble_optimize.h"
 #include "online_update.h"
 #include "loop_guard.h"
+#include "eth_w5500.h"
 #if defined(ESP32C5)
 #include "esp_chip_info.h"
 #endif
@@ -199,6 +200,31 @@ NotifQueue notif; // NotifQueue object
  * flow_last_gpm - last flow rate measured (averaged over flow_gallons) from last valve stopped (used to write to log file). */
 ulong flow_begin, flow_start, flow_stop, flow_gallons, flow_rt_reset, last_flow_rt;
 volatile ulong flow_count = 0;
+
+/** Flow pulse counter persistence across a software reboot (":>reboot" program,
+ *  /cv?rbt=1, OTA, loop-stall restart). flow_count lives in RAM, so every reboot
+ *  restarted it at 0 and the pulse water meter sensor (type 97) lost the pulses
+ *  since its previous read; with a 24 h interval and a daily reboot program that
+ *  was most of the day (ticket 8V1-8LT-M81W). reboot_dev() writes the counter to
+ *  FLOWCNT_FILENAME, do_setup() reads it back once and removes the file. A power
+ *  cut leaves no file, the sensor then falls back to counting from 0 as before. */
+struct FlowCountRecord { uint32_t magic; uint32_t count; };
+#define FLOWCNT_MAGIC 0x464C4F57UL  // "FLOW"
+
+void flow_count_persist() {
+	FlowCountRecord rec = { FLOWCNT_MAGIC, (uint32_t)flow_count };
+	file_write_block(FLOWCNT_FILENAME, &rec, 0, sizeof(rec));
+}
+
+static void flow_count_restore() {
+	if (!file_exists(FLOWCNT_FILENAME)) return;
+	FlowCountRecord rec = { 0, 0 };
+	file_read_block(FLOWCNT_FILENAME, &rec, 0, sizeof(rec));
+	remove_file(FLOWCNT_FILENAME);
+	if (rec.magic != FLOWCNT_MAGIC) return;
+	flow_count = rec.count;
+	DEBUG_PRINTF("[FLOW] pulse counter restored after reboot: %lu\n", (ulong)flow_count);
+}
 unsigned char prev_flow_state = HIGH;
 float flow_last_gpm=0;
 int32_t flow_rt_period = -1;
@@ -749,6 +775,7 @@ void do_setup() {
 	os.options_setup();  // Setup options
 	log_heap_snapshot("after options_setup");
 	loop_guard_init();   // after options_setup: may override last_reboot_cause
+	flow_count_restore(); // pulse water meter: continue counting after a software reboot
 	os.mwdata_load();    // Load monthly water usage data
 
 	#if defined(ESP8266)
@@ -850,6 +877,7 @@ void do_setup() {
 	initialiseEpoch();   // initialize time reference for millis() and micros()
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
+	flow_count_restore(); // pulse water meter: continue counting after a software reboot
 	os.mwdata_load();    // Load monthly water usage data
 
 	pd.init();           // ProgramData init
@@ -1016,6 +1044,7 @@ void gratuitousARPTask() {
 void do_loop()
 {
 	loop_guard_beat();
+	eth_w5500_loop(); // ESP32: executes a pending Ethernet recovery
 
 	#if defined(ARDUINOOTA)
 	handle_arduino_ota();
@@ -3107,12 +3136,19 @@ void make_logfile_name(char *name) {
 	sd.chdir("/");
 	#endif
 #endif
-	strcpy(tmp_buffer+TMP_BUFFER_SIZE-10, name); // hack: we do this because name is from tmp_buffer too
+	// hack: name usually points into tmp_buffer itself, so park a copy at the
+	// end of the buffer first. The parking space holds 9 characters; a longer
+	// name (only possible through a malformed request) is cut instead of
+	// running past the buffer.
+	char *park = tmp_buffer + TMP_BUFFER_SIZE - 10;
+	size_t name_len = strnlen(name, 9);
+	memmove(park, name, name_len);
+	park[name_len] = 0;
 	strcpy(tmp_buffer, LOG_PREFIX);
 #if defined(ESP8266) || defined(ESP32)
 	LittleFS.mkdir(tmp_buffer);
 #endif
-	strcat(tmp_buffer, tmp_buffer+TMP_BUFFER_SIZE-10);
+	strcat(tmp_buffer, park);
 	strcat_P(tmp_buffer, PSTR(".txt"));
 }
 
@@ -3503,7 +3539,10 @@ static void check_network() {
 	}
 #endif
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI) || defined(OSBO)
-	if (os.status.program_busy) {return;}
+	// A running program used to suppress the whole check. On wired Ethernet the
+	// check must keep running (a permanently scheduled zone would otherwise hide
+	// a dead W5500 for days); safe_reboot still waits for the controller to be idle.
+	if (os.status.program_busy && !useEth) {return;}
 
 	if (os.status.req_network) {
 		os.status.req_network = 0;
@@ -3628,6 +3667,12 @@ static void check_network() {
 
 				if (failed)  {
 					if(os.status.network_fails<3)  os.status.network_fails++;
+#if defined(ESP8266) || defined(ESP32)
+					// Link up but the gateway does not answer: typical W5500 PHY hang
+					// (link LED on, no traffic, no ARP replies). Recover the chip right
+					// away; the reboot below stays as the last resort.
+					if (useEth && eth.isW5500 && eth_w5500_link_up()) eth_w5500_recover();
+#endif
 				}
 				else os.status.network_fails=0;
 				// if failed more than 3 times, restart
@@ -3645,11 +3690,17 @@ static void check_network() {
 		// ESP8266 / ESP32: Check WiFi or Ethernet connectivity		
 		if (useEth && (!eth.connected() || !eth.gatewayIP() || !(bool)eth.gatewayIP())) {
 			os.status.network_fails++;
+			DEBUG_PRINTLN(F("[NET_CHECK] Ethernet connectivity lost"));
+			// No address although the W5500 still reports link-up: reset the chip
+			// before the reboot fallback (ESP8266: PHY/MAC over SPI, the module
+			// has no reset line and a reboot alone does not reset the PHY;
+			// ESP32: esp_eth stop/start). With the link really down (cable)
+			// there is nothing to recover.
+			if (eth.isW5500 && eth_w5500_link_up()) eth_w5500_recover();
 			if (os.status.network_fails >= 3) {
 				os.nvdata.reboot_cause = REBOOT_CAUSE_NETWORK_FAIL;
 				os.status.safe_reboot = 1;
 			}
-			DEBUG_PRINTLN(F("[NET_CHECK] Ethernet connectivity lost"));
 			return;
 		}
 		if (!useEth && (!WiFi.isConnected() || !WiFi.gatewayIP() || !(bool)WiFi.gatewayIP() || os.get_wifi_mode()==WIFI_MODE_AP)) {
@@ -3735,7 +3786,17 @@ static void perform_ntp_sync() {
 		}
 		if (t>0) {
 			os.status.req_ntpsync = 0;
+			// The boot timestamp was taken from the RTC (or 1970) before this
+			// sync. On OS 3.x the RTC stops during a power cut, so the clock
+			// resumes at the power-off time and powerup_lasttime showed that
+			// instead of the real power-on time (ticket 8V1-8LT-M81W). Shift it
+			// by the correction so uptime and "last restart" stay right.
+			time_os_t before_sync = now();
 			setTime(t);
+			if (os.powerup_lasttime && before_sync > 0) {
+				long delta = (long)((time_os_t)t - before_sync);
+				if (delta > 30 || delta < -30) os.powerup_lasttime += delta;
+			}
 			RTC.set(t);
 			calc_sunrise_sunset();
 			DEBUG_PRINTLN(RTC.get());

@@ -24,6 +24,7 @@
 #include <limits.h>
 #include "program.h"
 #include "main.h"
+#include "sensors.h"
 
 #if !defined(SECS_PER_DAY)
 #define SECS_PER_MIN  (60UL)
@@ -97,6 +98,7 @@ void ProgramData::save_count() {
 /** Erase all program data */
 void ProgramData::eraseall() {
 	time_os_t curr_time = os.now_tz();
+	sensors_programs_erased();
 	for (int i = (int)nqueue - 1; i >= 0; i--) {
 		RuntimeQueueStruct *q = queue + i;
 		if (q->pid != 99 && q->pid != 254) {
@@ -129,6 +131,7 @@ unsigned char ProgramData::add(ProgramStruct *buf) {
 /** Move a program up (i.e. swap a program with the one above it) */
 void ProgramData::moveup(unsigned char pid) {
 	if(pid >= nprograms || pid == 0) return;
+	sensors_program_swapped(pid - 1, pid);
 	// swap program pid-1 and pid
 	ulong pos = 1+(ulong)(pid-1)*PROGRAMSTRUCT_SIZE;
 	ulong next = pos+PROGRAMSTRUCT_SIZE;
@@ -205,6 +208,10 @@ unsigned char ProgramData::modify(unsigned char pid, ProgramStruct *buf) {
 unsigned char ProgramData::del(unsigned char pid) {
 	if (pid >= nprograms)  return 0;
 	if (nprograms == 0) return 0;
+
+	// Monitors and sensor program adjustments reference programs by index;
+	// keep them pointing at the same program after the shift.
+	sensors_program_deleted(pid);
 
 	// Clean up and adjust the runtime queue
 	time_os_t curr_time = os.now_tz();

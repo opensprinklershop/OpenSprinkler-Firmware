@@ -8,7 +8,7 @@
 #include "sensor_zigbee_gw.h"
 #endif
 
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
 #include "sensor_gardena.h"
 #endif
 
@@ -227,39 +227,19 @@ static bool infer_tuya_from_sensor_rows(uint64_t ieee, uint8_t* inferred_dp) {
 
 } // namespace
 
-#if defined(ESP32)
+#if defined(ESP32) || defined(OSPI)
+// Gardena smart system valve (Water Control / Irrigation Control). The special
+// data holds the service index shown in the Gardena setup dialog. The shared
+// GardenaClient resolves it against its cached service list, so switching a
+// station costs one API request (the command), not a location fetch.
 void switch_gardena_station_handler(StationData *pdata, unsigned char value, uint16_t dur) {
-	GardenaApi gardenaapi(os.sopt_load(SOPT_GARDENA_OPTS));
-	JsonDocument doc;
-	JsonDocument settings;
-	DeserializationError error = deserializeJson(settings, os.sopt_load(SOPT_GARDENA_OPTS));
-	String locationId = "";
-	if (!error && settings.is<JsonObject>()) {
-		if (settings.containsKey("location_id")) {
-			locationId = settings["location_id"].as<String>();
-		} else if (settings.containsKey("locationId")) {
-			locationId = settings["locationId"].as<String>();
-		}
-	}
-	if (locationId.isEmpty()) {
-		return;
-	}
-	if (!gardenaapi.getLocationData(locationId, doc)) {
-		return;
-	}
-	JsonArrayConst valves = doc["valves"].as<JsonArrayConst>();
-	if (valves.isNull()) {
+	GardenaClient &gardena = GardenaClient::instance();
+	if (!gardena.configured()) {
+		DEBUG_PRINTLN(F("[GARDENA] station switch ignored: not configured"));
 		return;
 	}
 	unsigned long index = strtoul((const char *)pdata->sped, NULL, 0);
-	for (JsonVariantConst variant : valves) {
-		JsonObjectConst valve = variant.as<JsonObjectConst>();
-		if (!valve.isNull() && valve["id"].as<unsigned long>() == index) {
-			String serviceId = valve["serviceId"].as<String>();
-			gardenaapi.sendValveCommand(serviceId, value, dur > 0 ? dur : 60);
-			break;
-		}
-	}
+	gardena.sendValveCommand(index, value != 0, dur > 0 ? dur : 60);
 }
 #else
 void switch_gardena_station_handler(StationData *, unsigned char, uint16_t) {}

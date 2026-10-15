@@ -225,10 +225,14 @@ public:
       flags.data_ok = 1;
       return HTTP_RQT_SUCCESS;
     }
-    if (current_count < last_native_data) {
-      // flow_count restarted at 0 (reboot): the pulses since boot are the
-      // delta. Pulses between the previous read and the reboot are lost, but
-      // the interval no longer reports 0 (ticket 8V1-8LT-M81W).
+    // flow_count restarts at 0 on every boot. Detect the reboot from the
+    // timestamps instead of comparing counters: after a daily power cycle the
+    // new count can exceed the old baseline (a day with more water than the
+    // day before), and "current < baseline" alone would then subtract a
+    // stale baseline. Pulses between the previous read and the reboot are
+    // lost, but the interval no longer reports 0 or a truncated value
+    // (ticket 8V1-8LT-M81W).
+    if (current_count < last_native_data || (last > 0 && os.powerup_lasttime > last)) {
       last_native_data = 0;
     }
 
@@ -885,7 +889,16 @@ int sensor_define(ArduinoJson::JsonVariantConst json, bool save) {
     } else {
       // Same type, update from JSON
       old_sensor->fromJson(json);
-      
+      // Saving with a read interval re-anchors the sampling grid at "now": the
+      // next read happens on the next pass and all following reads keep this
+      // phase (also across reboots, see sensor_load). Lets a 24 h water meter be
+      // read at a chosen time of day, e.g. before a nightly power timer
+      // (ticket 8V1-8LT-M81W). ZigBee sensors run their own timing on last_read.
+      if (json.containsKey("ri") && old_sensor->type != SENSOR_ZIGBEE &&
+          old_sensor->repeat_read == 0) {
+        old_sensor->last_read = 0;
+      }
+
       if (save) sensor_save();
       sensor_notify_zigbee(old_sensor);
       return HTTP_RQT_SUCCESS;
@@ -1117,7 +1130,12 @@ static bool sensor_parse_file(const char *fn) {
     }
 
     sensorsMap[sensor->nr] = sensor;
-    sensor->flags.data_ok = false;
+    // Keep the persisted value usable after a reboot. Flagging every sensor
+    // invalid on load left a 24 h sensor (daily water meter) "invalid" for up
+    // to a whole day after each restart (ticket 8V1-8LT-M81W); the fault
+    // tolerance already keeps the last value across failed reads, a reboot
+    // must not be stricter. Sensors without any stored reading stay invalid.
+    sensor->flags.data_ok = (sensor->last > 0 && sensor->type != SENSOR_TYPE_NONE && sensor->flags.enable);
     if (sensor->type == SENSOR_FLOW_PULSE && sensor->last > 0) {
       // Continue the sampling grid instead of reading right after boot.
       sensor->last_read = sensor->last;
@@ -2021,6 +2039,19 @@ void read_all_sensors(boolean online) {
           current_sensor->last_read = time;
           current_sensor->fail_count = 0;
           sensor_apply_post(current_sensor);
+          if (current_sensor->type == SENSOR_FLOW_PULSE) {
+            // Persist the read timestamp and baseline right away: the sampling
+            // grid is restored from them after a reboot (sensor_load), and the
+            // hourly save alone could miss a power cut (ticket 8V1-8LT-M81W).
+            // sensor_save() ends with current_sensor = NULL (it doubles as the
+            // iterator reset for callers that add/delete sensors). It does not
+            // touch sensorsMap, so current_sensor_it stays valid and we just
+            // restore our position - otherwise everything below this point
+            // dereferences a null pointer.
+            SensorBase *reading = current_sensor;
+            sensor_save();
+            current_sensor = reading;
+          }
 #if !defined(ESP8266)
           current_sensor->trend_add_sample(current_sensor->last_data, time);
 #endif
@@ -4146,6 +4177,51 @@ void replace_pid(uint old_pid, uint new_pid) {
     }
   }
   sensor_save_all();
+}
+
+// Program index bookkeeping (ticket DE1-PA5-PDDV): monitors (Monitor::prog) and
+// program adjustments (ProgSensorAdjust::prog) store the 1-based program
+// number. Deleting or moving a program shifted the indices in ProgramData but
+// not here, so a monitor suddenly started or stopped a different program.
+static bool sensors_remap_programs(bool (*map)(uint &prog, void *ctx), void *ctx) {
+  bool changed = false;
+  for (auto &kv : monitorsMap) {
+    Monitor_t *mon = kv.second;
+    if (mon && mon->prog && map(mon->prog, ctx)) changed = true;
+  }
+  for (auto &kv : progSensorAdjustsMap) {
+    ProgSensorAdjust *psa = kv.second;
+    if (psa && psa->prog && map(psa->prog, ctx)) changed = true;
+  }
+  if (changed) sensor_save_all();
+  return changed;
+}
+
+void sensors_program_deleted(unsigned char pid) {
+  uint removed = (uint)pid + 1;
+  sensors_remap_programs([](uint &prog, void *ctx) -> bool {
+    uint removed = *(uint *)ctx;
+    if (prog == removed) { prog = 0; return true; }   // reference gone
+    if (prog > removed) { prog--; return true; }      // shifted down
+    return false;
+  }, &removed);
+}
+
+void sensors_program_swapped(unsigned char a, unsigned char b) {
+  uint pair[2] = { (uint)a + 1, (uint)b + 1 };
+  sensors_remap_programs([](uint &prog, void *ctx) -> bool {
+    uint *p = (uint *)ctx;
+    if (prog == p[0]) { prog = p[1]; return true; }
+    if (prog == p[1]) { prog = p[0]; return true; }
+    return false;
+  }, pair);
+}
+
+void sensors_programs_erased() {
+  sensors_remap_programs([](uint &prog, void *) -> bool {
+    if (prog) { prog = 0; return true; }
+    return false;
+  }, nullptr);
 }
 
 bool is_program_blocked_by_monitor(unsigned char pid) {

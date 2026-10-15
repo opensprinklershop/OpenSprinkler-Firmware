@@ -28,6 +28,7 @@
 #include "testmode.h"
 #include "program.h"
 #include "ArduinoJson.hpp"
+#include "eth_w5500.h"
 #include "psram_utils.h"
 #include "sunrise.h"
 #include "ieee802154_config.h"
@@ -1090,6 +1091,13 @@ byte OpenSprinkler::start_ether() {
 	}
 	eth.setDefault();
 
+	if (eth.isW5500) {
+		// begin() only issues the MR software reset, which leaves the PHY alone.
+		// A PHY that hung (link up, no frames) therefore survives a reboot and
+		// DHCP ends in 169.254.x.x. Power-cycle the PHY once before the netif
+		// exists, so nothing can transmit while the link is down (see eth_w5500.cpp).
+		eth_w5500_phy_reset(true);
+	}
 	if(!eth.begin((uint8_t*)tmp_buffer)) {
 		return 0;
 	}
@@ -1212,6 +1220,8 @@ bool OpenSprinkler::network_connected(void) {
 #endif
 }
 
+extern void flow_count_persist(); // main.cpp
+
 /** Reboot controller */
 void OpenSprinkler::reboot_dev(uint8_t cause) {
 	lcd_print_line_clear_pgm(PSTR("Rebooting..."), 0);
@@ -1219,6 +1229,7 @@ void OpenSprinkler::reboot_dev(uint8_t cause) {
 		nvdata.reboot_cause = cause;
 		nvdata_save();
 	}
+	flow_count_persist(); // keep the pulse water meter counting across the reboot
 #if defined(ESP8266) || defined(ESP32)
 	ESP.restart();
 #else
@@ -1298,10 +1309,13 @@ bool OpenSprinkler::load_hardware_mac(unsigned char* mac, bool wired) {
 	return true;
 }
 
+extern void flow_count_persist(); // main.cpp
+
 /** Reboot controller */
 void OpenSprinkler::reboot_dev(uint8_t cause) {
 	nvdata.reboot_cause = cause;
 	nvdata_save();
+	flow_count_persist(); // keep the pulse water meter counting across the reboot
 #if defined(DEMO)
 	// do nothing
 #else
@@ -2708,6 +2722,72 @@ void OpenSprinkler::attribs_load() {
 	}
 }
 
+#if EN18031_COMPLIANCE
+#if defined(ESP32)
+#include <mbedtls/md5.h>
+#include <esp_random.h>
+#endif
+char OpenSprinkler::genpw[GENPW_LENGTH+1] = {0};
+
+/** true if the stored password hash is still the factory default (md5 of 'opendoor') */
+bool OpenSprinkler::password_is_default() {
+	return file_cmp_block(SOPTS_FILENAME, DEFAULT_PASSWORD, SOPT_PASSWORD*MAX_SOPTS_SIZE)==0;
+}
+
+/** Load a pending generated password (plaintext) from flash. Returns true if one exists. */
+bool OpenSprinkler::genpw_load() {
+	genpw[0] = 0;
+	if(!file_exists(GENPW_FILENAME)) return false;
+	file_read_block(GENPW_FILENAME, genpw, 0, GENPW_LENGTH);
+	genpw[GENPW_LENGTH] = 0;
+	for(unsigned char i=0;i<GENPW_LENGTH;i++) {
+		if(genpw[i] < '!' || genpw[i] > '~') { genpw[i]=0; break; } // tolerate shorter/garbage files
+	}
+	return genpw[0]!=0;
+}
+
+/** EN 18031-1 ACM: generate a random device password, store its md5 as the
+ *  password option and keep the plaintext in GENPW_FILENAME so it can be shown on
+ *  the display / AP setup page until the user replaces it (genpw_clear). */
+void OpenSprinkler::genpw_generate() {
+	// unambiguous alphabet (no 0/O, 1/l/I)
+	static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+	const uint32_t n = sizeof(alphabet)-1;
+	for(unsigned char i=0;i<GENPW_LENGTH;i++) {
+		#if defined(ESP32)
+		uint32_t r = esp_random();
+		#else
+		uint32_t r = (uint32_t)rand();
+		#endif
+		genpw[i] = alphabet[r % n];
+	}
+	genpw[GENPW_LENGTH] = 0;
+	// password option holds md5(plaintext) as 32 lowercase hex chars (same as the UI sends to /sp)
+	unsigned char digest[16];
+	char hex[33];
+	#if defined(ESP32)
+	mbedtls_md5((const unsigned char*)genpw, GENPW_LENGTH, digest);
+	#else
+	memset(digest, 0, sizeof(digest)); // no md5 available: should not happen (EN18031 default off)
+	#endif
+	for(unsigned char i=0;i<16;i++) {
+		static const char hx[] = "0123456789abcdef";
+		hex[i*2]   = hx[digest[i]>>4];
+		hex[i*2+1] = hx[digest[i]&0x0F];
+	}
+	hex[32] = 0;
+	sopt_save(SOPT_PASSWORD, hex);
+	file_write_block(GENPW_FILENAME, genpw, 0, GENPW_LENGTH+1);
+	DEBUG_PRINTLN(F("[PW] EN18031: generated new device password"));
+}
+
+/** Forget the generated password (user has set an own one or factory reset). */
+void OpenSprinkler::genpw_clear() {
+	genpw[0] = 0;
+	if(file_exists(GENPW_FILENAME)) remove_file(GENPW_FILENAME);
+}
+#endif
+
 /** verify if a string matches password */
 unsigned char OpenSprinkler::password_verify(const char *pw) {
 	unsigned char ok = (file_cmp_block(SOPTS_FILENAME, pw, SOPT_PASSWORD*MAX_SOPTS_SIZE)==0) ? 1 : 0;
@@ -3678,6 +3758,9 @@ void OpenSprinkler::factory_reset() {
 		sopt_save(i, sopts[i]);
 	}
 	DEBUG_PRINTF("[CFG] factory_reset wrote password slot default='%.*s'\n", 16, sopts[SOPT_PASSWORD]);
+#if EN18031_COMPLIANCE
+	genpw_clear(); // a new password is generated when AP (setup) mode starts
+#endif
 
 	zigbee_logical_clear_all();
 	remove_file(ZIGBEE_LOGICAL_FILENAME);
@@ -3796,6 +3879,9 @@ void OpenSprinkler::options_setup() {
 		#if defined(ESP8266) || defined(ESP32)
 		wifi_ssid = sopt_load(SOPT_STA_SSID);
 		wifi_pass = sopt_load(SOPT_STA_PASS);
+		#if EN18031_COMPLIANCE
+		genpw_load();
+		#endif
 		sopt_load(SOPT_STA_BSSID_CHL, tmp_buffer);
 		if(tmp_buffer[0]!=0) {
 			char *mac = strchr(tmp_buffer, '@');
@@ -4149,6 +4235,9 @@ bool parse_wto(char* wto);
 /** Load integer options from file */
 void OpenSprinkler::iopts_load() {
 	file_read_block(IOPTS_FILENAME, iopts, 0, NUM_IOPTS);
+#if EN18031_COMPLIANCE
+	iopts[IOPT_IGNORE_PASSWORD] = 0; // EN 18031-1 ACM: unauthenticated access cannot be enabled
+#endif
 	nboards = iopts[IOPT_EXT_BOARDS]+1;
 	nstations = nboards * 8;
 	status.enabled = iopts[IOPT_DEVICE_ENABLE];
@@ -4206,6 +4295,9 @@ void OpenSprinkler::populate_master() {
 
 /** Save integer options to file */
 void OpenSprinkler::iopts_save() {
+#if EN18031_COMPLIANCE
+	iopts[IOPT_IGNORE_PASSWORD] = 0; // EN 18031-1 ACM: unauthenticated access cannot be enabled
+#endif
 	file_write_block(IOPTS_FILENAME, iopts, 0, NUM_IOPTS);
 	nboards = iopts[IOPT_EXT_BOARDS]+1;
 	nstations = nboards * 8;
@@ -4528,6 +4620,9 @@ void OpenSprinkler::lcd_print_screen(char c) {
 		} else if(status.program_busy) {
 			lcd.print(F("<Running Zones> "));
 		} else {
+			#if EN18031_COMPLIANCE
+			if(genpw[0]) { lcd.print(F("PW:")); lcd.print(genpw); lcd.print(F(" ")); } else
+			#endif
 			lcd.print(F(" (System Idle)  "));
 		}
 
@@ -4984,6 +5079,14 @@ void OpenSprinkler::lcd_print_ota_progress(int percent, const char *msg) {
 
 void OpenSprinkler::reset_to_ap() {
 	iopts[IOPT_WIFI_MODE] = WIFI_MODE_AP;
+	// A WiFi reset usually means a new network. A custom NTP server from the old
+	// LAN (e.g. the router IP) is unreachable there and keeps the controller in
+	// "NTP Syncing..." with no web access (ticket VPX-842-T3XP). Back to the
+	// public pool; the user can set a new server once the device is online.
+	iopts[IOPT_NTP_IP1] = 0;
+	iopts[IOPT_NTP_IP2] = 0;
+	iopts[IOPT_NTP_IP3] = 0;
+	iopts[IOPT_NTP_IP4] = 0;
 	iopts_save();
 	reboot_dev(REBOOT_CAUSE_RSTAP);
 }

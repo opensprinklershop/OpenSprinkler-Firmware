@@ -85,6 +85,7 @@
 		inline wl_status_t status() { return connected() ? WL_CONNECTED : WL_DISCONNECTED; }
 		inline bool setHostname(const char* name) { return backend.setHostname(name); }
 		inline bool setAutoNegotiation(bool on) { return backend.setAutoNegotiation(on); }
+		inline esp_eth_handle_t handle() { return backend.handle(); } // ESP-IDF driver handle (eth_w5500.cpp recovery)
 		inline bool setLinkSpeed(uint16_t speed) { return backend.setLinkSpeed(speed); }
 		inline bool setFullDuplex(bool on) { return backend.setFullDuplex(on); }
 
