@@ -378,6 +378,133 @@ char dec2hexchar(unsigned char dec) {
 	else return 'A'+(dec-10);
 }
 
+/** CORS: Access-Control-Allow-Origin used to be "*" on every reply, which let
+ *  any web page the owner visits read API responses (ticket YXH-BU6-G5P6,
+ *  finding 3). The header is now echoed only for the official UI hosts, local
+ *  development origins and the host configured as UI source (jsp), so a
+ *  self-hosted UI keeps working. Same-origin use (page served by the device)
+ *  needs no CORS header at all. */
+static char cors_jsp_host[64] = {0};
+static bool cors_jsp_host_loaded = false;
+
+static size_t cors_origin_host(const char* origin, const char** host) {
+	const char* p = strstr(origin, "://");
+	if(!p) return 0;
+	p += 3;
+	size_t n = 0;
+	while(p[n] && p[n] != ':' && p[n] != '/') n++;
+	*host = p;
+	return n;
+}
+
+void cors_refresh_jsp_host() {
+	cors_jsp_host[0] = 0;
+	cors_jsp_host_loaded = true;
+	char* buf = (char*)malloc(MAX_SOPTS_SIZE + 1);
+	if(!buf) return;
+	os.sopt_load(SOPT_JAVASCRIPTURL, buf, MAX_SOPTS_SIZE);
+	buf[MAX_SOPTS_SIZE] = 0;
+	const char* host; size_t n = cors_origin_host(buf, &host);
+	if(n > 0 && n < sizeof(cors_jsp_host)) { memcpy(cors_jsp_host, host, n); cors_jsp_host[n] = 0; }
+	free(buf);
+}
+
+static bool cors_host_suffix(const char* host, size_t n, const char* suffix) {
+	size_t sl = strlen(suffix);
+	if(n == sl) return strncasecmp(host, suffix, n) == 0;
+	return n > sl && host[n - sl - 1] == '.' && strncasecmp(host + n - sl, suffix, sl) == 0;
+}
+
+static const char* cors_allowed_origin(const OTF::Request &req) {
+	const char* origin = req.getHeader("origin");
+	if(!origin || !origin[0] || strcmp(origin, "null") == 0) return NULL;
+	const char* host; size_t n = cors_origin_host(origin, &host);
+	if(n == 0 || n > 128) return NULL;
+	if(!cors_jsp_host_loaded) cors_refresh_jsp_host();
+	if(cors_host_suffix(host, n, "localhost") || cors_host_suffix(host, n, "127.0.0.1") ||
+	   cors_host_suffix(host, n, "opensprinklershop.de") || cors_host_suffix(host, n, "opensprinkler.com") ||
+	   (cors_jsp_host[0] && n == strlen(cors_jsp_host) && strncasecmp(host, cors_jsp_host, n) == 0)) {
+		return origin;
+	}
+	return NULL;
+}
+
+static void print_cors_header(OTF_PARAMS_DEF) {
+	const char* origin = cors_allowed_origin(req);
+	if(origin) {
+		res.writeHeader(F("Access-Control-Allow-Origin"), origin);
+		res.writeHeader(F("Vary"), F("Origin"));
+	}
+}
+
+/** Stored secrets (MQTT/e-mail passwords, IFTTT key, InfluxDB token) are no
+ *  longer returned by the API (finding 5): the JSON string field is replaced by
+ *  SECRET_MASK. A client that sends the mask back keeps the stored value, a new
+ *  value replaces it. */
+#define SECRET_MASK "********"
+
+static bool json_find_string_value(char* json, const char* key, char** vstart, char** vend) {
+	char pat[24];
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	char* p = strstr(json, pat);
+	if(!p) return false;
+	p += strlen(pat);
+	while(*p == ' ') p++;
+	if(*p != ':') return false;
+	p++;
+	while(*p == ' ') p++;
+	if(*p != '"') return false;
+	p++;
+	char* e = p;
+	while(*e && !(*e == '"' && e[-1] != '\\')) e++;
+	if(*e != '"') return false;
+	*vstart = p; *vend = e;
+	return true;
+}
+
+static void mask_json_string_field(char* json, size_t size, const char* key) {
+	char *vs, *ve;
+	if(!json_find_string_value(json, key, &vs, &ve) || ve == vs) return;
+	size_t len = strlen(json), vlen = (size_t)(ve - vs), mlen = strlen(SECRET_MASK);
+	if(len - vlen + mlen >= size) mlen = size - 1 - (len - vlen);
+	if(mlen == 0) return;
+	memmove(vs + mlen, ve, len - (size_t)(ve - json) + 1);
+	memcpy(vs, SECRET_MASK, mlen);
+}
+
+static bool json_field_is_mask(char* json, const char* key) {
+	char *vs, *ve;
+	if(!json_find_string_value(json, key, &vs, &ve)) return false;
+	return (size_t)(ve - vs) == strlen(SECRET_MASK) && strncmp(vs, SECRET_MASK, ve - vs) == 0;
+}
+
+static void restore_masked_json_field_from(char* json, size_t size, const char* key, const char* stored) {
+	char *vs, *ve;
+	if(!json_field_is_mask(json, key) || !json_find_string_value(json, key, &vs, &ve)) return;
+	char *ss, *se;
+	if(!json_find_string_value((char*)stored, key, &ss, &se)) return;
+	size_t len = strlen(json), mlen = (size_t)(ve - vs), vlen = (size_t)(se - ss);
+	if(len - mlen + vlen >= size) return;
+	memmove(vs + vlen, ve, len - (size_t)(ve - json) + 1);
+	memcpy(vs, ss, vlen);
+}
+
+static void restore_masked_json_field(char* json, size_t size, const char* key, unsigned char sopt) {
+	if(!json_field_is_mask(json, key)) return;
+	char* stored = (char*)malloc(MAX_SOPTS_SIZE + 1);
+	if(!stored) return;
+	os.sopt_load(sopt, stored, MAX_SOPTS_SIZE);
+	stored[MAX_SOPTS_SIZE] = 0;
+	restore_masked_json_field_from(json, size, key, stored);
+	free(stored);
+}
+
+static bool sopt_is_set(unsigned char sopt) {
+	char c = 0;
+	file_read_block(SOPTS_FILENAME, &c, (ulong)sopt * MAX_SOPTS_SIZE, 1);
+	return c != 0;
+}
+
 void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 	if (g_mcp_capture_active) return;
 	 // Signal radio coex: WiFi is serving a request
@@ -387,7 +514,7 @@ void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 	res.writeHeader(F("Content-Type"), isJson?F("application/json"):F("text/html; charset=utf-8"));
 	if(len>0)
 		res.writeHeader(F("Content-Length"), len);
-	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+	print_cors_header(OTF_PARAMS);
 	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
 	res.writeHeader(F("Connection"), F("close"));
 }
@@ -395,7 +522,7 @@ void print_header(OTF_PARAMS_DEF, bool isJson=true, int len=0) {
 void print_header_compressed_html(OTF_PARAMS_DEF, int len) {
 	res.writeStatus(200, F("OK"));
 	res.writeHeader(F("Content-Type"), F("text/html; charset=utf-8"));
-	res.writeHeader(F("Access-Control-Allow-Origin"), F("*")); // from esp8266 2.4 this has to be sent explicitly
+	print_cors_header(OTF_PARAMS);
 	res.writeHeader(F("Content-Length"), len);
 	res.writeHeader(F("Vary"), F("Accept-Encoding"));
 	res.writeHeader(F("Content-Encoding"), F("gzip"));
@@ -409,7 +536,7 @@ void print_header_download(OTF_PARAMS_DEF, int len=0) {
 	if(
 	len>0)
 		res.writeHeader(F("Content-Length"), len);
-	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+	print_cors_header(OTF_PARAMS);
 	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
 	res.writeHeader(F("Connection"), F("close"));
 }
@@ -501,7 +628,7 @@ void on_serve_cert(OTF_PARAMS_DEF) {
 	res.writeHeader(F("Content-Type"), F("application/x-x509-ca-cert"));
 	res.writeHeader(F("Content-Length"), (int)cert_len);
 	res.writeHeader(F("Content-Disposition"), F("attachment; filename=\"opensprinkler.cer\""));
-	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+	print_cors_header(OTF_PARAMS);
 	res.writeHeader(F("Cache-Control"), F("max-age=86400"));
 	res.writeBodyData((const char*)cert_data, cert_len);
 }
@@ -578,33 +705,61 @@ void on_ap_try_connect(OTF_PARAMS_DEF) {
 
 /** Brute-force protection (EN 18031-1 ACM/AUM, active on all platforms). After
  *  EN18031_LOGIN_MAX_FAILS failed password checks within EN18031_LOGIN_FAIL_WINDOW_MS
- *  every request is rejected for EN18031_LOGIN_LOCK_MS. Global (not per client) on
- *  purpose: no per-IP state on the device. Shared with /update and the MCP server
- *  (declared in opensprinkler_server.h). */
-static uint8_t en18031_login_fails = 0;
-static ulong   en18031_login_fail_time = 0;
-static ulong   en18031_login_lock_until = 0;
-static bool    en18031_login_lock_active = false;
+ *  the client is rejected for EN18031_LOGIN_LOCK_MS. The state is kept per client
+ *  address in a small table (slot 0 = unknown address: cloud relay, OSPi without
+ *  peer info, /update, MCP), so a host on the LAN sending wrong passwords every
+ *  30 s cannot keep the owner locked out (ticket YXH-BU6-G5P6). */
+#define EN18031_LOGIN_SLOTS 8
+struct LoginSlot {
+	uint32_t ip;
+	uint8_t  fails;
+	bool     locked;
+	ulong    fail_time;
+	ulong    lock_until;
+};
+static LoginSlot login_slots[EN18031_LOGIN_SLOTS];
 
-bool en18031_login_locked() {
-	if(!en18031_login_lock_active) return false;
-	if((long)(millis()-en18031_login_lock_until) < 0) return true;
-	en18031_login_lock_active = false;
+static LoginSlot* login_slot(uint32_t ip, bool create) {
+	if(ip == 0) return &login_slots[0];
+	LoginSlot* free_slot = NULL;
+	LoginSlot* oldest = NULL;
+	for(uint8_t i = 1; i < EN18031_LOGIN_SLOTS; i++) {
+		LoginSlot* sl = &login_slots[i];
+		if(sl->ip == ip) return sl;
+		if(!sl->ip || (!sl->fails && !sl->locked)) { if(!free_slot) free_slot = sl; }
+		else if(!sl->locked && (!oldest || (long)(sl->fail_time - oldest->fail_time) < 0)) oldest = sl;
+	}
+	if(!create) return NULL;
+	LoginSlot* sl = free_slot ? free_slot : (oldest ? oldest : &login_slots[1]);
+	sl->ip = ip; sl->fails = 0; sl->locked = false; sl->fail_time = 0; sl->lock_until = 0;
+	return sl;
+}
+
+bool en18031_login_locked(uint32_t ip) {
+	LoginSlot* sl = login_slot(ip, false);
+	if(!sl || !sl->locked) return false;
+	if((long)(millis() - sl->lock_until) < 0) return true;
+	sl->locked = false;
 	return false;
 }
-void en18031_login_fail() {
+void en18031_login_fail(uint32_t ip) {
+	LoginSlot* sl = login_slot(ip, true);
 	ulong now = millis();
-	if(en18031_login_fails && (long)(now-en18031_login_fail_time) > (long)EN18031_LOGIN_FAIL_WINDOW_MS) en18031_login_fails = 0;
-	en18031_login_fails++;
-	en18031_login_fail_time = now;
-	if(en18031_login_fails >= EN18031_LOGIN_MAX_FAILS) {
-		en18031_login_fails = 0;
-		en18031_login_lock_until = now + EN18031_LOGIN_LOCK_MS;
-		en18031_login_lock_active = true;
-		DEBUG_PRINTLN(F("[PW] too many failed logins, API locked"));
+	if(sl->fails && (long)(now - sl->fail_time) > (long)EN18031_LOGIN_FAIL_WINDOW_MS) sl->fails = 0;
+	sl->fails++;
+	sl->fail_time = now;
+	if(sl->fails >= EN18031_LOGIN_MAX_FAILS) {
+		sl->fails = 0;
+		sl->lock_until = now + EN18031_LOGIN_LOCK_MS;
+		sl->locked = true;
+		DEBUG_PRINTF("[PW] too many failed logins from %u.%u.%u.%u, client locked\n",
+			(unsigned)(ip & 0xFF), (unsigned)((ip >> 8) & 0xFF), (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 24) & 0xFF));
 	}
 }
-void en18031_login_ok() { en18031_login_fails = 0; }
+void en18031_login_ok(uint32_t ip) {
+	LoginSlot* sl = login_slot(ip, false);
+	if(sl) sl->fails = 0;
+}
 
 /** Check and verify password */
 boolean process_password(OTF_PARAMS_DEF, boolean fwv_on_fail=false)
@@ -614,8 +769,9 @@ boolean process_password(OTF_PARAMS_DEF, boolean fwv_on_fail=false)
 #endif
 	// MCP capture mode: auth already verified by the MCP handler
 	if (g_mcp_capture_active) return true;
-	// Locked out after repeated failures (all platforms)
-	if (en18031_login_locked()) {
+	// Locked out after repeated failures (all platforms, per client address)
+	const uint32_t client_ip = req.getRemoteIP();
+	if (en18031_login_locked(client_ip)) {
 		otf_send_result(OTF_PARAMS, HTML_UNAUTHORIZED);
 		return false;
 	}
@@ -632,10 +788,10 @@ boolean process_password(OTF_PARAMS_DEF, boolean fwv_on_fail=false)
 	const char *pw = req.getQueryParameter("pw");
 	bool pw_valid = (pw != NULL && os.password_verify(pw));
 	if(pw_valid) {
-		en18031_login_ok();
+		en18031_login_ok(client_ip);
 		return true;
 	}
-	if(pw != NULL) en18031_login_fail(); // missing pw (UI probing fwv) is not an attempt
+	if(pw != NULL) en18031_login_fail(client_ip); // missing pw (UI probing fwv) is not an attempt
 
 	/* if fwv_on_fail is true, output fwv if password check has failed */
 	if(fwv_on_fail) {
@@ -1550,15 +1706,18 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 		char opt_buf[MAX_SOPTS_SIZE + 1];
 		os.sopt_load(SOPT_WEATHER_OPTS, opt_buf, MAX_SOPTS_SIZE);
 		normalize_json_object_fragment(opt_buf, sizeof(opt_buf));
-		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$O\",\"mqtt\":"),
+		// Secrets are masked (finding 5): the IFTTT key is reported as set/unset,
+		// the MQTT and e-mail passwords as SECRET_MASK; sending the mask back keeps them.
+		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$S\",\"mqtt\":"),
 					 SOPT_LOCATION,
 					 SOPT_JAVASCRIPTURL,
 					 SOPT_WEATHERURL,
 					 opt_buf,
-					 SOPT_IFTTT_KEY);
+					 sopt_is_set(SOPT_IFTTT_KEY) ? SECRET_MASK : "");
 
 		os.sopt_load(SOPT_MQTT_OPTS, opt_buf, MAX_SOPTS_SIZE);
 		normalize_json_object_fragment(opt_buf, sizeof(opt_buf));
+		mask_json_string_field(opt_buf, sizeof(opt_buf), "pass");
 		bfill.emit_p(PSTR("{$S},\"wtdata\":"), opt_buf);
 
 		emit_json_object_value_or_empty(wt_rawData, TMP_BUFFER_SIZE);
@@ -1573,6 +1732,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	{
 		char email_buf[MAX_SOPTS_SIZE + 1];
 		os.sopt_load(SOPT_EMAIL_OPTS, email_buf, MAX_SOPTS_SIZE);
+		mask_json_string_field(email_buf, sizeof(email_buf), "pass");
 		bfill.emit_p(PSTR("\"email\":"));
 		emit_json_object_value_or_empty(email_buf, sizeof(email_buf));
 		bfill.emit_p(PSTR(","));
@@ -1814,6 +1974,21 @@ void string_remove_space(char *src) {
  * pw:	password
  * jsp: Javascript path
  */
+/** jsp/wsp end up unescaped in the <script src> of the device page (finding 6):
+ *  accept only plain http(s) URLs without quotes, angle brackets, whitespace or
+ *  control characters. */
+static bool valid_script_url(const char* url) {
+	size_t n = strlen(url);
+	if (n < 8 || n >= MAX_SOPTS_SIZE) return false;
+	if (strncasecmp(url, "http://", 7) != 0 && strncasecmp(url, "https://", 8) != 0) return false;
+	for (size_t i = 0; i < n; i++) {
+		unsigned char c = (unsigned char)url[i];
+		if (c <= ' ' || c >= 127) return false;
+		if (c == '"' || c == '\'' || c == '<' || c == '>' || c == '`' || c == '\\') return false;
+	}
+	return true;
+}
+
 void server_change_scripturl(OTF_PARAMS_DEF) {
 	if(!process_password(OTF_PARAMS)) return;
 
@@ -1824,11 +1999,14 @@ void server_change_scripturl(OTF_PARAMS_DEF) {
 		tmp_buffer[TMP_BUFFER_SIZE-1]=0;	// make sure we don't exceed the maximum size
 		// trim unwanted space characters
 		string_remove_space(tmp_buffer);
+		if (!valid_script_url(tmp_buffer)) handle_return(HTML_DATA_OUTOFBOUND);
 		os.sopt_save(SOPT_JAVASCRIPTURL, tmp_buffer);
+		cors_refresh_jsp_host();
 	}
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wsp"), true)) {
 		tmp_buffer[TMP_BUFFER_SIZE-1]=0;
 		string_remove_space(tmp_buffer);
+		if (!valid_script_url(tmp_buffer)) handle_return(HTML_DATA_OUTOFBOUND);
 		os.sopt_save(SOPT_WEATHERURL, tmp_buffer);
 	}
 	rewind_ether_buffer();
@@ -1937,7 +2115,7 @@ void server_change_options(OTF_PARAMS_DEF)
 	keyfound = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ifkey"), true, &keyfound)) {
 		strReplaceQuoteBackslash(tmp_buffer);
-		os.sopt_save(SOPT_IFTTT_KEY, tmp_buffer);
+		if (strcmp(tmp_buffer, SECRET_MASK) != 0) os.sopt_save(SOPT_IFTTT_KEY, tmp_buffer); // mask = keep
 	} else if (keyfound) {
 		tmp_buffer[0]=0;
 		os.sopt_save(SOPT_IFTTT_KEY, tmp_buffer);
@@ -1959,6 +2137,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		if (!normalize_json_object_fragment(tmp_buffer, TMP_BUFFER_SIZE)) {
 			tmp_buffer[0] = 0;
 		}
+		restore_masked_json_field(tmp_buffer, TMP_BUFFER_SIZE, "pass", SOPT_MQTT_OPTS);
 		os.sopt_save(SOPT_MQTT_OPTS, tmp_buffer);
 		os.status.req_mqtt_restart = true;
 	} else if (keyfound) {
@@ -1970,6 +2149,14 @@ void server_change_options(OTF_PARAMS_DEF)
 	//influxdb set
 	keyfound = 0;
 	if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("influxdb"), true, &keyfound)) {
+		if (json_field_is_mask(tmp_buffer, "token")) {
+			char* stored = (char*)malloc(TMP_BUFFER_SIZE_L);
+			if (stored) {
+				os.influxdb.get_influx_config(stored);
+				restore_masked_json_field_from(tmp_buffer, TMP_BUFFER_SIZE, "token", stored);
+				free(stored);
+			}
+		}
 		os.influxdb.set_influx_config(tmp_buffer);
 	} else if (keyfound) {
 		tmp_buffer[0]=0;
@@ -1993,6 +2180,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		if (!normalize_json_object_fragment(tmp_buffer, TMP_BUFFER_SIZE)) {
 			tmp_buffer[0] = 0;
 		}
+		restore_masked_json_field(tmp_buffer, TMP_BUFFER_SIZE, "pass", SOPT_EMAIL_OPTS);
 		os.sopt_save(SOPT_EMAIL_OPTS, tmp_buffer);
 	} else if (keyfound) {
 		tmp_buffer[0]=0;
@@ -2925,7 +3113,7 @@ void server_json_sensor_log(OTF_PARAMS_DEF) {
 	res.writeStatus(200, F("OK"));
 	res.writeHeader(F("Content-Type"), logfmt == FMT_BINARY ? F("application/octet-stream") :
 	                                   logfmt == FMT_CSV ? F("text/csv") : F("application/json"));
-	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+	print_cors_header(OTF_PARAMS);
 	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
 	res.writeHeader(F("Connection"), F("close"));
 	if (page_mode) {
@@ -3097,6 +3285,8 @@ static unsigned long freeHeap() {
 #endif
 
 void server_json_debug(OTF_PARAMS_DEF) {
+	// Build, heap and network details are only for the owner (finding 9).
+	if(!process_password(OTF_PARAMS)) return;
 	rewind_ether_buffer();
 	print_header(OTF_PARAMS);
 	bfill.emit_p(PSTR("{\"date\":\"$S\",\"time\":\"$S\",\"heap\":$L,\"debug_build\":$D"), __DATE__, __TIME__,
@@ -4008,6 +4198,10 @@ void server_backup_get(OTF_PARAMS_DEF) {
 		for (int i = 0; i < NUM_SOPTS; i++) {
 			file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
 			buf[MAX_SOPTS_SIZE] = 0;
+			// The password hash and the WiFi password are not part of the
+			// backup (finding 5): neither can be restored through the API
+			// anyway (a reset device needs the AP setup, the hash is the login).
+			if (i == SOPT_PASSWORD || i == SOPT_STA_PASS) continue;
 			if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {
 				if (!first) bfill.emit_p(PSTR(","));
 				bfill.emit_p(PSTR("\"$D\":"), i);
@@ -6457,6 +6651,7 @@ void server_influx_get(OTF_PARAMS_DEF) {
 
 void server_influx_get_main() {
 	os.influxdb.get_influx_config(tmp_buffer);
+	mask_json_string_field(tmp_buffer, TMP_BUFFER_SIZE, "token");
 	bfill.emit_p(tmp_buffer);
 }
 

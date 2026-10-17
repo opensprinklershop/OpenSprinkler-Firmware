@@ -133,27 +133,28 @@ static const char* mcp_get_session_id() {
 
 static bool mcp_check_auth(const OTF::Request& req) {
   // Shares the brute-force lockout with the HTTP API (opensprinkler_server.cpp)
-  if (en18031_login_locked()) return false;
+  const uint32_t client_ip = req.getRemoteIP();
+  if (en18031_login_locked(client_ip)) return false;
 #if !EN18031_COMPLIANCE
   if (os.iopts[IOPT_IGNORE_PASSWORD]) return true;
 #endif
 
   // 1. Legacy query param  ?pw=<md5>
   const char* pw = req.getQueryParameter("pw");
-  if (pw && os.password_verify(pw)) { en18031_login_ok(); return true; }
+  if (pw && os.password_verify(pw)) { en18031_login_ok(client_ip); return true; }
 
   // 2. Custom header  X-OS-Password: <md5>
   // NOTE: OTF lowercases header names during parsing, so we must use lowercase here.
   const char* h_pw = req.getHeader("x-os-password");
-  if (h_pw && os.password_verify(h_pw)) { en18031_login_ok(); return true; }
+  if (h_pw && os.password_verify(h_pw)) { en18031_login_ok(client_ip); return true; }
 
   // 3. Bearer token  Authorization: Bearer <md5>
   const char* auth = req.getHeader("authorization");
   bool bearer = (auth && strncmp(auth, "Bearer ", 7) == 0);
-  if (bearer && os.password_verify(auth + 7)) { en18031_login_ok(); return true; }
+  if (bearer && os.password_verify(auth + 7)) { en18031_login_ok(client_ip); return true; }
 
   // Only count requests that actually presented a credential
-  if (pw || h_pw || bearer) en18031_login_fail();
+  if (pw || h_pw || bearer) en18031_login_fail(client_ip);
   return false;
 }
 

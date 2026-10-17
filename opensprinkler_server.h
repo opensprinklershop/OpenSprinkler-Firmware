@@ -238,9 +238,11 @@ extern bool   g_mcp_capture_active;
 
 /** Login brute-force lockout shared by the HTTP API, /update and the MCP server
  *  (implemented in opensprinkler_server.cpp, constants EN18031_LOGIN_* in defines.h). */
-bool en18031_login_locked();
-void en18031_login_fail();
-void en18031_login_ok();
+// Login lockout is kept per client address (ip = IPv4 as uint32, 0 = unknown/
+// cloud/global slot) so one misbehaving host cannot lock the owner out.
+bool en18031_login_locked(uint32_t ip = 0);
+void en18031_login_fail(uint32_t ip = 0);
+void en18031_login_ok(uint32_t ip = 0);
 extern String g_mcp_capture_buf;
 #endif
 

@@ -8,7 +8,7 @@
 #   deploy  [matter|zigbee|esp32|esp8266|all] [debug|monitor]  – Build + Upload + (optionally) Show live serial monitor
 #   release [rebuild]                    – Bump version, release build, tag & publish
 #                                          rebuild: build only, no version bump/git
-#   release beta [rebuild]              – Build/publish beta firmware into beta files
+#   release beta [rebuild|page]         – Build/publish beta firmware into beta files + /betafirmware/ page
 #   release sync-tags                    – Create missing GitHub releases for existing tags
 #   libs    [rebuild|deploy|rebuild-copy|deploy-copy]
 #                                        – Rebuild/deploy custom ESP32 Arduino libs
@@ -43,6 +43,7 @@
 #   ./fw.sh release
 #   ./fw.sh release beta
 #   ./fw.sh release beta rebuild
+#   ./fw.sh release beta page             (only refresh /betafirmware/ incl. debug builds)
 #   ./fw.sh release rebuild
 #   ./fw.sh libs rebuild
 #   ./fw.sh libs deploy
@@ -144,6 +145,10 @@ CHANGELOG="${SCRIPT_DIR}/CHANGELOG.md"
 PLATFORMIO_INI="${SCRIPT_DIR}/platformio.ini"
 GITHUB_REPO="opensprinklershop/OpenSprinkler-Firmware"
 IONOS_BETA_UPGRADE_TARGET="${IONOS_BETA_UPGRADE_TARGET:-/home/www/public/upgrade-beta}"
+# Public beta download page https://opensprinklershop.de/betafirmware/ (release +
+# debug images, checksums). Local mirror and IONOS target; refreshed by `release beta`.
+BETAFW_DIR="${OS_BETAFW_DIR:-/data/betafirmware}"
+IONOS_BETAFW_TARGET="${IONOS_BETAFW_TARGET:-/home/www/public/betafirmware}"
 
 # Path to the UI fw.sh script that handles the IONOS online deploy.
 # Credentials (IONOS_SSH_*) live in ui/.env, so we delegate to that script.
@@ -1782,7 +1787,9 @@ build_release_env() {
 _binary_has_debug() {
     local bin="$1"
     [[ -f "$bin" ]] || return 1
-    strings -n 6 "$bin" 2>/dev/null | grep -q "server_sensor_config"
+    # No `grep -q`: it exits on the first match, strings dies of SIGPIPE and
+    # pipefail turns the hit into a failure (debug images passed as release).
+    strings -n 6 "$bin" 2>/dev/null | grep -c "server_sensor_config" >/dev/null
 }
 
 # Copy firmware binaries to upgrade directory
@@ -2468,6 +2475,90 @@ online_deploy_beta() {
     ok "Beta online deploy complete."
 }
 
+# Refresh the beta download page (BETAFW_DIR → IONOS_BETAFW_TARGET):
+#   beta/        release images from the beta upgrade dir (ESP8266 signed)
+#   beta-debug/  ENABLE_DEBUG builds of all three variants
+#   checksums.sha256, version.txt, version line in index.html
+# Must run after the release builds and restore_release_debug (platformio.ini
+# carries the debug flags again). Overwrites .pio/dist with the debug images.
+publish_betafirmware_page() {
+    header "Beta download page → ${IONOS_BETAFW_TARGET}"
+
+    local beta_dir="${BETAFW_DIR}/beta"
+    local debug_dir="${BETAFW_DIR}/beta-debug"
+    local dist="${SCRIPT_DIR}/.pio/dist"
+    mkdir -p "$beta_dir" "$debug_dir"
+
+    local v
+    for v in zigbee matter esp8266; do
+        if [[ ! -f "${UPGRADE_DIR}/firmware_${v}.bin" ]]; then
+            error "Beta release image missing: ${UPGRADE_DIR}/firmware_${v}.bin"
+            exit 1
+        fi
+        cp "${UPGRADE_DIR}/firmware_${v}.bin" "${beta_dir}/firmware_${v}.bin"
+    done
+    ok "Release images copied to ${beta_dir}/"
+
+    local env name
+    for env in "$ENV_ESP8266" "$ENV_C5_ZIGBEE" "$ENV_C5_MATTER"; do
+        build_release_env "$env" || exit 1
+        if ! _binary_has_debug "${dist}/firmware_${env}.bin"; then
+            error "Debug build of ${env} carries no ENABLE_DEBUG output — check platformio.ini."
+            exit 1
+        fi
+        name="$(_env_to_variant "$env")"
+        if [[ "$env" == "$ENV_ESP8266" ]]; then
+            sign_esp8266_bin "${dist}/firmware_${env}.bin" "${debug_dir}/firmware_${name}_debug.bin" || exit 1
+        else
+            cp "${dist}/firmware_${env}.bin" "${debug_dir}/firmware_${name}_debug.bin"
+        fi
+    done
+    ok "Debug images copied to ${debug_dir}/"
+
+    local label
+    label="$(format_version "$OS_FW_VERSION") (build ${OS_FW_MINOR})"
+    ( cd "$BETAFW_DIR" && sha256sum beta/firmware_zigbee.bin beta/firmware_matter.bin \
+        beta/firmware_esp8266.bin beta-debug/firmware_zigbee_debug.bin \
+        beta-debug/firmware_matter_debug.bin beta-debug/firmware_esp8266_debug.bin \
+        > checksums.sha256 )
+    cat > "${BETAFW_DIR}/version.txt" <<EOF
+fw_version=${OS_FW_VERSION}
+fw_minor=${OS_FW_MINOR}
+label=${label}
+generated_at=$(date '+%Y-%m-%d %H:%M:%S %Z')
+EOF
+    if [[ -f "${BETAFW_DIR}/index.html" ]]; then
+        sed -i -E "s|(Version: <code>)[^<]*(</code>)[^<]*|\1${label}\2 · $(date '+%Y-%m-%d')|" \
+            "${BETAFW_DIR}/index.html"
+        grep -q "<code>${label}</code>" "${BETAFW_DIR}/index.html" \
+            || warn "Version line not found in ${BETAFW_DIR}/index.html — page shows the old version."
+    else
+        warn "${BETAFW_DIR}/index.html missing — uploading binaries without a page."
+    fi
+    ok "checksums.sha256, version.txt, index.html updated (${label})"
+
+    if [[ -z "${IONOS_SSH_HOST:-}" || -z "${IONOS_SSH_USER:-}" ]]; then
+        warn "Beta page deploy skipped — IONOS_SSH_HOST / IONOS_SSH_USER are missing in .env."
+        return 0
+    fi
+    local remote="${IONOS_SSH_USER}@${IONOS_SSH_HOST}"
+    local ssh_port="${IONOS_SSH_PORT:-22}"
+    local target="${IONOS_BETAFW_TARGET%/}"
+    local -a pre=()
+    if [[ -n "${IONOS_SSH_PASS:-}" ]]; then
+        command -v sshpass &>/dev/null || { warn "Beta page deploy skipped — sshpass not found."; return 0; }
+        export SSHPASS="$IONOS_SSH_PASS"
+        pre=(sshpass -e)
+    fi
+    info "Syncing ${BETAFW_DIR}/ → ${remote}:${target}/ …"
+    "${pre[@]}" ssh -o StrictHostKeyChecking=accept-new -p "$ssh_port" "$remote" "mkdir -p '$target'" \
+    && "${pre[@]}" rsync -az --info=stats2 \
+        -e "ssh -o StrictHostKeyChecking=accept-new -p ${ssh_port}" \
+        "${BETAFW_DIR%/}/" "$remote:$target/" \
+    || { error "Beta page deploy failed."; exit 1; }
+    ok "Beta download page updated: https://opensprinklershop.de/betafirmware/"
+}
+
 # Promote local staged UI from ui-test/dev to ui-live/<release_version>.
 # This must run only in the actual release flow (not buildweb.sh), so dev stays
 # mutable during development and becomes immutable only on release.
@@ -2610,6 +2701,7 @@ ${changelog_section}"
 
     if [[ "${RELEASE_VARIANT_LABEL:-stable}" == "beta" ]]; then
         online_deploy_beta
+        publish_betafirmware_page
     else
         # For firmware releases we freeze the current UI dev build into a
         # versioned ui-live folder. buildweb.sh always remains dev-only.
@@ -2670,6 +2762,13 @@ do_release_beta() {
     local UPGRADE_URL_BASE="${BETA_UPGRADE_URL_BASE}"
     local RELEASE_VARIANT_LABEL="beta"
 
+    if [[ "$mode" == "page" ]]; then
+        # Only refresh the beta download page from the current beta images.
+        check_pio
+        read_version
+        publish_betafirmware_page
+        return
+    fi
     do_release "$mode"
 }
 
@@ -2711,6 +2810,8 @@ ${BOLD}Actions:${NC}
                                             bump, no git tag/release — build only,
                                             then deploy to IONOS
     release beta rebuild                      Rebuild all firmwares for beta files only
+    release beta page                         Refresh opensprinklershop.de/betafirmware/ only
+                                            (beta images + debug builds, checksums)
     release sync-tags                         Create missing GitHub releases for
                                                                                         existing v* tags
     libs [rebuild|deploy|rebuild-copy|deploy-copy]
@@ -3068,8 +3169,9 @@ case "$ACTION" in
             beta)
                 case "$MODE_ARG" in
                     rebuild) do_release_beta rebuild ;;
+                    page)    do_release_beta page ;;
                     "")      do_release_beta full ;;
-                    *) error "Unknown beta release mode: $MODE_ARG (rebuild)"; exit 1 ;;
+                    *) error "Unknown beta release mode: $MODE_ARG (rebuild|page)"; exit 1 ;;
                 esac
                 ;;
             beta-rebuild) do_release_beta rebuild ;;

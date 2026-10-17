@@ -245,7 +245,7 @@ export function registerTools(
 
   server.tool(
     "get_debug",
-    "Get debug/diagnostics info (firmware build, heap, RAM). No authentication required. Equivalent to /db.",
+    "Get debug/diagnostics info (firmware build, heap, RAM). Requires the device password since 2.4.0(230). Equivalent to /db.",
     {},
     async () => {
       const data = await getClient().get("/db");
