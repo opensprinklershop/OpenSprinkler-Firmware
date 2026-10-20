@@ -4992,9 +4992,13 @@ void calc_sunrise_sunset() { // calculate sunrise and sunset time
 #if defined(USE_SSD1306)
 #include "images.h"
 void OpenSprinkler::flash_screen() {
+#if defined(ESP32)
+	lcd.drawXbm(0, 0, OS_Logo_width, OS_Logo_height, (const unsigned char*) OS_Logo_image);
+#else
 	lcd.setCursor(0, -1);
 	lcd.print(F(" OpenSprinkler"));
 	lcd.drawXbm(34, 24, WiFi_Logo_width, WiFi_Logo_height, (const unsigned char*) WiFi_Logo_image);
+#endif
 	lcd.setCursor(0, 2);
 	lcd.display();
 	delay(1500);
