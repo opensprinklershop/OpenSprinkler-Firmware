@@ -50,6 +50,15 @@ static const uint32_t W5500_CMD_TIMEOUT_MS    = 20;    // wait for Sn_CR to clea
 static const uint32_t W5500_CLOSE_TIMEOUT_MS  = 100;   // wait for SOCK_CLOSED in end()
 static const uint8_t  W5500_STABLE_READ_MAX   = 32;    // read-until-stable retries
 
+// ESP.wdtFeed() only exists in the ESP8266 core. This driver is built for the
+// ESP8266 only (lib_ignore'd elsewhere); the guard keeps other toolchains and
+// IntelliSense configured for ESP32 from flagging it.
+#if defined(ESP8266)
+#define W5500_WDT_FEED() ESP.wdtFeed()
+#else
+#define W5500_WDT_FEED() do {} while (0)
+#endif
+
 
 uint8_t Wiznet5500::wizchip_read(uint8_t block, uint16_t address)
 {
@@ -148,7 +157,7 @@ void Wiznet5500::setSn_CR(uint8_t cr)
         {
             break;
         }
-        ESP.wdtFeed();
+        W5500_WDT_FEED();
     }
 }
 
@@ -462,7 +471,7 @@ uint16_t Wiznet5500::sendFrame(const uint8_t* buf, uint16_t len)
         {
             return -1;  // drop the frame, lwIP will retransmit
         }
-        ESP.wdtFeed();
+        W5500_WDT_FEED();
     };
 
     wizchip_send_data(buf, len);
@@ -489,7 +498,7 @@ uint16_t Wiznet5500::sendFrame(const uint8_t* buf, uint16_t len)
         {
             return -1;  // give up, the frame stays in the chip until the link is back
         }
-        ESP.wdtFeed();
+        W5500_WDT_FEED();
     }
 
     return len;

@@ -189,6 +189,37 @@ def patch_zigbee_application_controlled_steering(source, target, env):
 env.AddPreAction("buildprog", patch_zigbee_application_controlled_steering)
 patch_zigbee_application_controlled_steering(None, None, env)
 
+def patch_oled_always_inline():
+    """Drop always_inline from the virtual sendCommand() overrides of the ThingPulse OLED lib.
+
+    With -flto GCC 14 devirtualizes OLEDDisplay::sendCommand() calls (init(),
+    flipScreenVertically()) to e.g. SSD1306Wire::sendCommand(), which is marked
+    always_inline but cannot be inlined across the LTO partition, so the link
+    fails with "inlining failed in call to 'always_inline' 'sendCommand'".
+    Whether it hits depends on how LTO partitions the program."""
+    libdeps = os.path.join(env.subst("$PROJECT_LIBDEPS_DIR"), env.subst("$PIOENV"))
+    if not os.path.isdir(libdeps):
+        return
+    pattern = re.compile(r"(inline\s+void\s+sendCommand\s*\([^)]*\))\s*__attribute__\s*\(\(\s*always_inline\s*\)\)")
+    for libname in os.listdir(libdeps):
+        src = os.path.join(libdeps, libname, "src")
+        if "SSD1306" not in libname or not os.path.isdir(src):
+            continue
+        for fname in os.listdir(src):
+            if not fname.endswith(".h"):
+                continue
+            path = os.path.join(src, fname)
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            patched, count = pattern.subn(r"\1", content)
+            if count:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(patched)
+                print(f"[FIX_BUILD] Patched {fname}: removed always_inline from sendCommand() (LTO devirtualization)")
+
+
+patch_oled_always_inline()
+
 # --- Parallel build: use all available CPU cores ---
 # The ESP32-C5 toolchain occasionally races when many jobs compile the
 # framework's Network library and try to create depfiles in parallel.
