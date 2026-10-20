@@ -733,8 +733,10 @@ unsigned char OpenSprinkler::start_network() {
 	if(update_server) { delete update_server; update_server = NULL; }
 	#if defined(ESP8266)
 	update_server = new ESP8266WebServer(8080);
+	update_server->collectHeaders("Origin"); // for the CORS allowlist (variadic form on the ESP8266 core)
 	#else
 	update_server = new WebServer(8080);
+	{ static const char* hdrs[] = { "Origin" }; update_server->collectHeaders(hdrs, 1); } // Origin, for the CORS allowlist
 	#endif
 	DEBUG_PRINT(F("Started update server"));
 	log_net_mem_checkpoint("start_network:after_update_server");
@@ -796,7 +798,11 @@ bool init_W5500(boolean initSPI) {
 		SPI.begin();
 		SPI.setBitOrder(MSBFIRST);
 		SPI.setDataMode(SPI_MODE0);
-		SPI.setFrequency(40000000); // 80MHz is the maximum SPI clock for W5500 - we init for 40MHz
+		// 20 MHz instead of 40: the add-on adapter hangs on a connector without
+		// termination; at 40 MHz the 7th harmonic (280 MHz) is beyond what a few
+		// centimetres of unterminated trace carry cleanly (ticket JE4-T69-22RQ).
+		// Throughput is still far above anything the controller needs.
+		SPI.setFrequency(20000000);
 	}
 
 	if(!probe_w5500()) {

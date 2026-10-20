@@ -76,3 +76,18 @@ Wskazówki systemowe:
 - Połączenie z siecią Internet jest wymagane do pobrania najnowszego manifestu aktualizacji.
 
 Przed aktualizacją zaleca się wyeksportowanie konfiguracji. W systemach ESP32 oraz ESP8266, REST API obsługuje polecenie `/ub` tworzące pełny zrzut zabezpieczający bazy danych, natomiast `/sx` eksportuje wyłącznie wpisy dotyczące czujników.
+
+## Informacje radiowe i ograniczenia użytkowania
+
+OpenSprinkler Pro zawiera moduł radiowy Espressif ESP32-C5-WROOM-1 ze zintegrowaną anteną.
+
+| Radio | Pasmo częstotliwości | Maks. moc nadawania (e.i.r.p.) |
+|---|---|---|
+| Wi-Fi 2,4 GHz, Bluetooth LE, IEEE 802.15.4 (Zigbee/Thread) | 2400–2483,5 MHz | 20 dBm |
+| Wi-Fi 5 GHz | 5150–5350 MHz, 5470–5725 MHz | 23 dBm |
+
+**Ograniczenie 5 GHz:** w paśmie 5150–5350 MHz (kanały Wi-Fi 36–64) użytkowanie jest dozwolone wyłącznie wewnątrz pomieszczeń. Ograniczenie obowiązuje w: AT, BE, BG, CH, CY, CZ, DE, DK, EE, EL, ES, FI, FR, HR, HU, IE, IS, IT, LI, LT, LU, LV, MT, NL, NO, PL, PT, RO, SE, SI, SK, TR, UK(NI).
+
+W paśmie 5 GHz sterownik nadaje wyłącznie jako klient Wi-Fi, na kanale ustawionym przez router. Jeżeli sterownik jest zamontowany na zewnątrz, również w obudowie odpornej na warunki atmosferyczne, należy ustawić router tak, aby w paśmie 5 GHz używał tylko kanałów 100–140, albo połączyć sterownik z siecią Wi-Fi 2,4 GHz.
+
+**Odstęp:** podczas pracy należy zachować odległość co najmniej 20 cm między urządzeniem a osobami.

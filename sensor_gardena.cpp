@@ -304,17 +304,19 @@ static bool gardena_fill_services(JsonDocument &raw, JsonDocument &out) {
 			entry["id"] = sensorIndex++;
 			entry["serviceId"] = serviceId;
 			entry["name"] = name;
-			entry["soilHumidity"] = attrs["soilHumidity"]["value"] | nullptr;
-			entry["soilTemperature"] = attrs["soilTemperature"]["value"] | nullptr;
-			entry["ambientTemperature"] = attrs["ambientTemperature"]["value"] | nullptr;
-			entry["lightIntensity"] = attrs["lightIntensity"]["value"] | nullptr;
+			// Assign the variant directly: `| nullptr` always evaluated to null in
+			// ArduinoJson 7, so no Gardena value ever reached the sensors.
+			entry["soilHumidity"] = attrs["soilHumidity"]["value"];
+			entry["soilTemperature"] = attrs["soilTemperature"]["value"];
+			entry["ambientTemperature"] = attrs["ambientTemperature"]["value"];
+			entry["lightIntensity"] = attrs["lightIntensity"]["value"];
 		} else if (strcmp(type, "VALVE") == 0) {
 			JsonObject entry = valves.add<JsonObject>();
 			entry["id"] = valveIndex++;
 			entry["serviceId"] = serviceId;
 			entry["name"] = name;
-			entry["state"] = attrs["state"]["value"] | nullptr;
-			entry["activity"] = attrs["activity"]["value"] | nullptr;
+			entry["state"] = attrs["state"]["value"];
+			entry["activity"] = attrs["activity"]["value"];
 		}
 	}
 

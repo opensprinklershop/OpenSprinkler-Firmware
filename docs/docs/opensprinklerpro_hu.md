@@ -76,3 +76,18 @@ Megjegyzések:
 - Az online frissítés működéséhez aktív internetkapcsolat szükséges.
 
 Frissítés előtt mindenképpen készítsen biztonsági mentést. Az API automatikus hívásokat is támogat: `/uc` az ellenőrzéshez, `/uu` a frissítés indításához, `/us` az állapot lekéréséhez, és `/ub` a teljes biztonsági mentés elkészítéséhez.
+
+## Rádiós adatok és használati korlátozások
+
+Az OpenSprinkler Pro integrált antennás Espressif ESP32-C5-WROOM-1 rádiómodult tartalmaz.
+
+| Rádió | Frekvenciasáv | Max. adóteljesítmény (e.i.r.p.) |
+|---|---|---|
+| Wi-Fi 2,4 GHz, Bluetooth LE, IEEE 802.15.4 (Zigbee/Thread) | 2400–2483,5 MHz | 20 dBm |
+| Wi-Fi 5 GHz | 5150–5350 MHz, 5470–5725 MHz | 23 dBm |
+
+**5 GHz-es korlátozás:** az 5150–5350 MHz-es sávban (36–64. Wi-Fi csatorna) az üzemeltetés csak beltérben megengedett. A korlátozás a következő országokban érvényes: AT, BE, BG, CH, CY, CZ, DE, DK, EE, EL, ES, FI, FR, HR, HU, IE, IS, IT, LI, LT, LU, LV, MT, NL, NO, PL, PT, RO, SE, SI, SK, TR, UK(NI).
+
+Az 5 GHz-es sávban a vezérlő csak Wi-Fi kliensként ad, a router által megadott csatornán. Ha a vezérlőt kültéren szerelik fel, időjárásálló házban is, állítsa be a routert úgy, hogy az 5 GHz-es sávban csak a 100–140. csatornát használja, vagy csatlakoztassa a vezérlőt a 2,4 GHz-es Wi-Fi-hálózathoz.
+
+**Biztonsági távolság:** üzem közben tartson legalább 20 cm távolságot a készülék és a személyek között.

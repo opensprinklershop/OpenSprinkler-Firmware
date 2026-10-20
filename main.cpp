@@ -227,6 +227,12 @@ static void flow_count_restore() {
 }
 unsigned char prev_flow_state = HIGH;
 float flow_last_gpm=0;
+// Pulses and start time of the current station run. The RAH measurement above
+// ignores the first 90 s of a run (pipe fill); runs shorter than that always
+// logged 0 L/min (ticket 6RM-3W9-ATH4). When that window yields fewer than two
+// pulses, the rate is derived from all pulses of the run instead.
+static uint32_t flow_run_pulses = 0;
+static ulong    flow_run_start_ms = 0;
 int32_t flow_rt_period = -1;
 int16_t flow_sid = -1; // current flow sensor station id, -1 means not set
 // Per-station flags, indexed directly by station id (sid). One byte per station.
@@ -338,6 +344,7 @@ static void flow_process_pulses(ulong curr, uint32_t pulses) {
 	}
 
 	flow_count += pulses;
+	flow_run_pulses += pulses;
 
 	/* RAH implementation of flow sensor */
 	if (flow_start == 0) {
@@ -2225,6 +2232,14 @@ void check_weather() {
 	}
 }
 
+/** Pulses per minute over the whole current run (station start to last pulse),
+ *  used when the 90 s warm-up window left fewer than two pulses. Needs at least
+ *  two pulses; the pipe-fill phase is included, so the value is slightly high. */
+static float flow_short_run_rate() {
+	if (flow_run_pulses < 2 || flow_stop <= flow_run_start_ms) return 0;
+	return 60000.0f * (float)(flow_run_pulses - 1) / (float)(flow_stop - flow_run_start_ms);
+}
+
 /** Turn on a station
  * This function turns on a scheduled station
  */
@@ -2240,7 +2255,7 @@ void turn_on_station(unsigned char sid, ulong duration) {
 			if(flow_stop <= flow_begin) flow_last_gpm = 0;
 			else flow_last_gpm = (float) 60000 / (float)((flow_stop-flow_begin) / (flow_gallons - 1));
 		}// RAH calculate GPM, 1 pulse per gallon
-		else {flow_last_gpm = 0;}  // RAH if not one gallon (two pulses) measured then record 0 gpm
+		else {flow_last_gpm = flow_short_run_rate();}  // fewer than two pulses after the 90 s window: use the whole run
 		update_station_flow_average((unsigned char)flow_sid, flow_last_gpm, os.get_flow_volume_per_pulse());
 
 		unsigned char qid = pd.station_qid[flow_sid];
@@ -2270,6 +2285,8 @@ void turn_on_station(unsigned char sid, ulong duration) {
 	flow_start=0;
 	//Added flow_gallons reset to station turn on.
 	flow_gallons=0;
+	flow_run_pulses = 0;
+	flow_run_start_ms = millis();
 	flow_sid = sid;
 	if (sid < MAX_NUM_STATIONS) {
 		flow_alert_sent[sid] = false;
@@ -2486,7 +2503,7 @@ void turn_off_station(unsigned char sid, time_os_t curr_time, unsigned char shif
 			if(flow_stop <= flow_begin) flow_last_gpm = 0;
 			else flow_last_gpm = (float) 60000 / (float)((flow_stop-flow_begin) / (flow_gallons - 1));
 		}// RAH calculate GPM, 1 pulse per gallon
-		else {flow_last_gpm = 0;}  // RAH if not one gallon (two pulses) measured then record 0 gpm
+		else {flow_last_gpm = flow_short_run_rate();}  // fewer than two pulses after the 90 s window: use the whole run
 		update_station_flow_average(sid, flow_last_gpm, os.get_flow_volume_per_pulse());
 		flow_sid = -1;
 			flow_alert_check_sid = -1;

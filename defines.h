@@ -297,8 +297,6 @@ enum {
 #define DEFAULT_WEATHER_URL       "weather.opensprinkler.com"
 #define DEFAULT_IFTTT_URL         "maker.ifttt.com"
 #define DEFAULT_PUSH_URL          "https://io.opensprinklershop.de/wp-json/ospf/v1/event"
-/** WiFi regulatory country code (ESP32): EU regulatory domain, 2.4 GHz channels 1-13, 5 GHz EU channels */
-#define OS_WIFI_COUNTRY_CODE      "DE"
 #define DEFAULT_OTC_SERVER_DEV     "ws.cloud.openthings.io"
 #define DEFAULT_OTC_PORT_DEV       80
 #define DEFAULT_OTC_SERVER_APP    "cloud.openthings.io"

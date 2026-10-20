@@ -86,6 +86,11 @@ static void emit_monthly_water_backup_json(T &bfill) {
 
 #if defined(ESP32) && defined(USE_OTF)
 #include "cert.h"  // for /ca.der cert download endpoint
+#if defined(ESP8266)
+#include <bearssl/bearssl_hash.h>
+#elif defined(ESP32)
+#include <mbedtls/sha256.h>
+#endif
 #include "custom_cert.h"  // for custom certificate management endpoints
 #include "acme_client.h"  // for Let's Encrypt ACME certificate management
 #endif
@@ -415,18 +420,23 @@ static bool cors_host_suffix(const char* host, size_t n, const char* suffix) {
 	return n > sl && host[n - sl - 1] == '.' && strncasecmp(host + n - sl, suffix, sl) == 0;
 }
 
+static bool cors_origin_allowed(const char* origin);
 static const char* cors_allowed_origin(const OTF::Request &req) {
 	const char* origin = req.getHeader("origin");
-	if(!origin || !origin[0] || strcmp(origin, "null") == 0) return NULL;
+	return cors_origin_allowed(origin) ? origin : NULL;
+}
+
+static bool cors_origin_allowed(const char* origin) {
+	if(!origin || !origin[0] || strcmp(origin, "null") == 0) return false;
 	const char* host; size_t n = cors_origin_host(origin, &host);
-	if(n == 0 || n > 128) return NULL;
+	if(n == 0 || n > 128) return false;
 	if(!cors_jsp_host_loaded) cors_refresh_jsp_host();
 	if(cors_host_suffix(host, n, "localhost") || cors_host_suffix(host, n, "127.0.0.1") ||
 	   cors_host_suffix(host, n, "opensprinklershop.de") || cors_host_suffix(host, n, "opensprinkler.com") ||
 	   (cors_jsp_host[0] && n == strlen(cors_jsp_host) && strncasecmp(host, cors_jsp_host, n) == 0)) {
-		return origin;
+		return true;
 	}
-	return NULL;
+	return false;
 }
 
 static void print_cors_header(OTF_PARAMS_DEF) {
@@ -558,10 +568,20 @@ void otf_send_result(OTF_PARAMS_DEF, unsigned char code, const char *item = NULL
 }
 
 #if defined(ESP8266) || defined(ESP32)
+/** Same CORS allowlist as the API, for the separate upload server on port 8080
+ *  (the Origin header is collected via collectHeaders in OpenSprinkler.cpp). */
+static void update_server_send_cors() {
+	String origin = update_server->header("Origin");
+	if(origin.length() && cors_origin_allowed(origin.c_str())) {
+		update_server->sendHeader("Access-Control-Allow-Origin", origin);
+		update_server->sendHeader("Vary", "Origin");
+	}
+}
+
 void update_server_send_result(unsigned char code, const char* item = NULL) {
 	char json[96];
 	format_result_json(json, sizeof(json), code, item);
-	update_server->sendHeader("Access-Control-Allow-Origin", "*"); // from esp8266 2.4 this has to be sent explicitly
+	update_server_send_cors();
 	update_server->send(200, "application/json", json);
 }
 
@@ -1706,6 +1726,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 		char opt_buf[MAX_SOPTS_SIZE + 1];
 		os.sopt_load(SOPT_WEATHER_OPTS, opt_buf, MAX_SOPTS_SIZE);
 		normalize_json_object_fragment(opt_buf, sizeof(opt_buf));
+		mask_json_string_field(opt_buf, sizeof(opt_buf), "key"); // weather provider API key
 		// Secrets are masked (finding 5): the IFTTT key is reported as set/unset,
 		// the MQTT and e-mail passwords as SECRET_MASK; sending the mask back keeps them.
 		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$S\",\"mqtt\":"),
@@ -2103,6 +2124,7 @@ void server_change_options(OTF_PARAMS_DEF)
 	uint8_t keyfound = 0;
 	if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wto"), true)) {
 		DEBUG_PRINTF("/co: wto='%s'\n", tmp_buffer);
+		restore_masked_json_field(tmp_buffer, TMP_BUFFER_SIZE, "key", SOPT_WEATHER_OPTS);
 		if (!parse_wto(tmp_buffer)) {
 			tmp_buffer[0] = 0;
 		}
@@ -4196,12 +4218,26 @@ void server_backup_get(OTF_PARAMS_DEF) {
 	char *buf = (char*)malloc(MAX_SOPTS_SIZE + 1); // transient (no permanent DRAM)
 	if (buf) {
 		for (int i = 0; i < NUM_SOPTS; i++) {
+			// Clear before reading: a slot beyond the end of an older, shorter
+			// sopts.dat returns nothing and the heap buffer kept whatever was
+			// there before (a password hash showed up as slot 15, finding 5).
+			memset(buf, 0, MAX_SOPTS_SIZE + 1);
 			file_read_block(SOPTS_FILENAME, buf, i * MAX_SOPTS_SIZE, MAX_SOPTS_SIZE);
 			buf[MAX_SOPTS_SIZE] = 0;
-			// The password hash and the WiFi password are not part of the
-			// backup (finding 5): neither can be restored through the API
-			// anyway (a reset device needs the AP setup, the hash is the login).
-			if (i == SOPT_PASSWORD || i == SOPT_STA_PASS) continue;
+			// The password hash, the WiFi password and the IFTTT key are not part
+			// of the backup (finding 5); the other secrets are masked like in
+			// /jc and restored from the stored value when the mask comes back.
+			if (i == SOPT_PASSWORD || i == SOPT_STA_PASS || i == SOPT_IFTTT_KEY) continue;
+			switch (i) {
+				case SOPT_WEATHER_OPTS: mask_json_string_field(buf, MAX_SOPTS_SIZE + 1, "key"); break;
+				case SOPT_MQTT_OPTS:
+				case SOPT_EMAIL_OPTS:   mask_json_string_field(buf, MAX_SOPTS_SIZE + 1, "pass"); break;
+				case SOPT_FYTA_OPTS:    mask_json_string_field(buf, MAX_SOPTS_SIZE + 1, "token");
+				                        mask_json_string_field(buf, MAX_SOPTS_SIZE + 1, "password"); break;
+				case SOPT_GARDENA_OPTS: mask_json_string_field(buf, MAX_SOPTS_SIZE + 1, "client_secret");
+				                        mask_json_string_field(buf, MAX_SOPTS_SIZE + 1, "refresh_token"); break;
+				default: break;
+			}
 			if (strlen(buf) > 0 || i <= SOPT_STA_PASS) {
 				if (!first) bfill.emit_p(PSTR(","));
 				bfill.emit_p(PSTR("\"$D\":"), i);
@@ -8224,6 +8260,49 @@ static const char* normalize_ota_slot_arg(const String& slotArgRaw) {
 	return "";
 }
 
+/** Optional integrity check for manual uploads (/update): the client may pass
+ *  sha256=<64 hex> as a form field; the digest is computed over the stream and
+ *  compared before the image is activated (ticket YXH-BU6-G5P6). Unsigned and
+ *  unhashed uploads stay possible. */
+#if defined(ESP8266)
+static br_sha256_context s_upload_sha_ctx;
+#elif defined(ESP32)
+static mbedtls_sha256_context s_upload_sha_ctx;
+#endif
+static bool s_upload_sha_active = false;
+static char s_upload_sha_hex[65] = {0};
+
+static void upload_sha_begin() {
+#if defined(ESP8266)
+	br_sha256_init(&s_upload_sha_ctx);
+	s_upload_sha_active = true;
+#elif defined(ESP32)
+	mbedtls_sha256_init(&s_upload_sha_ctx);
+	s_upload_sha_active = (mbedtls_sha256_starts(&s_upload_sha_ctx, 0) == 0);
+#endif
+	s_upload_sha_hex[0] = 0;
+}
+static void upload_sha_update(const uint8_t* data, size_t len) {
+	if (!s_upload_sha_active) return;
+#if defined(ESP8266)
+	br_sha256_update(&s_upload_sha_ctx, data, len);
+#elif defined(ESP32)
+	mbedtls_sha256_update(&s_upload_sha_ctx, data, len);
+#endif
+}
+static void upload_sha_finish() {
+	if (!s_upload_sha_active) return;
+	unsigned char digest[32];
+#if defined(ESP8266)
+	br_sha256_out(&s_upload_sha_ctx, digest);
+#elif defined(ESP32)
+	mbedtls_sha256_finish(&s_upload_sha_ctx, digest);
+	mbedtls_sha256_free(&s_upload_sha_ctx);
+#endif
+	for (int i = 0; i < 32; i++) snprintf(s_upload_sha_hex + i * 2, 3, "%02x", digest[i]);
+	s_upload_sha_active = false;
+}
+
 void on_firmware_upload_fin() {
 	String submitted_pw = s_ota_password ? s_ota_password : "";
 	if (submitted_pw.length() == 0 && update_server->hasArg("pw")) {
@@ -8258,6 +8337,29 @@ void on_firmware_upload_fin() {
 		ota_set_password(NULL);
 		s_ota_slot = "";
 		return;
+	}
+
+	// Optional SHA-256 supplied by the client: reject the image before activation.
+	if (update_server->hasArg("sha256")) {
+		String want = update_server->arg("sha256");
+		want.trim();
+		if (want.length() == 64 && (s_upload_sha_hex[0] == 0 || strcasecmp(want.c_str(), s_upload_sha_hex) != 0)) {
+			DEBUG_PRINTF("[OTA] SHA-256 mismatch: expected %s got %s\n", want.c_str(), s_upload_sha_hex);
+			update_server_send_result(HTML_UPLOAD_FAILED, "sha256");
+#if defined(ESP32C5)
+			if (s_esp_ota_running) {
+				esp_ota_abort(s_esp_ota_handle);
+				s_esp_ota_running = false;
+			}
+#else
+			Update.end(false);
+#endif
+			ota_resume_services();
+			ota_set_password(NULL);
+			s_ota_slot = "";
+			delay(250);
+			return;
+		}
 	}
 
 #if defined(ESP32C5)
@@ -8306,7 +8408,7 @@ void on_firmware_upload_fin() {
 }
 
 void on_update_options() {
-	update_server->sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+	update_server_send_cors();
 	update_server->sendHeader(F("Access-Control-Max-Age"), F("10000"));
 	update_server->sendHeader(F("Access-Control-Allow-Methods"), F("POST,GET,OPTIONS"));
 	update_server->sendHeader(F("Access-Control-Allow-Headers"), F("Origin, X-Requested-With, Content-Type, Accept"));
@@ -8314,7 +8416,7 @@ void on_update_options() {
 }
 
 void on_update_capabilities() {
-	update_server->sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+	update_server_send_cors();
 #if defined(ESP32C5)
 	update_server->send_P(200, PSTR("application/json"), PSTR("{\"dualOta\":1,\"uploadPort\":8080,\"platform\":\"esp32c5\"}"));
 #elif defined(ESP32)
@@ -8327,6 +8429,7 @@ void on_update_capabilities() {
 void on_firmware_upload() {
 	HTTPUpload& upload = update_server->upload();
 	if(upload.status == UPLOAD_FILE_START){
+		upload_sha_begin();
 #if !defined(ESP32C5)
 		// Free RAM and stop network contention before flashing. On the
 		// memory-tight ESP8266 an active MQTT client (PubSubClient buffer +
@@ -8394,6 +8497,7 @@ void on_firmware_upload() {
 
 	} else if(upload.status == UPLOAD_FILE_WRITE) {
 		DEBUG_PRINT(F("."));
+		upload_sha_update(upload.buf, upload.currentSize);
 #if defined(ESP32C5)
 		if (s_esp_ota_running && !s_esp_ota_error) {
 			esp_err_t err = esp_ota_write(s_esp_ota_handle, upload.buf, upload.currentSize);
@@ -8430,6 +8534,7 @@ void on_firmware_upload() {
 #endif
 
 	} else if(upload.status == UPLOAD_FILE_END) {
+		upload_sha_finish();
 
 		DEBUG_PRINTLN(F("completed"));
 #if (defined(ESP8266) || defined(ESP32)) && defined(USE_SSD1306)
