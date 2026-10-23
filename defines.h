@@ -258,6 +258,13 @@ enum {
 #define REBOOT_CAUSE_NTP          10
 #define REBOOT_CAUSE_PROGRAM      11
 #define REBOOT_CAUSE_LOOP_STALL   12  // main loop stopped advancing (loop_guard.cpp)
+// 13-16 are derived from the hardware reset reason when the firmware did not
+// record a cause itself (nvdata still says POWERON): an unplanned restart is
+// no longer reported as "power on" (ticket 8V1-8LT-M81W).
+#define REBOOT_CAUSE_CRASH        13  // exception / panic
+#define REBOOT_CAUSE_WATCHDOG     14  // hardware or software watchdog
+#define REBOOT_CAUSE_BROWNOUT     15  // supply voltage dip (ESP32 brownout detector)
+#define REBOOT_CAUSE_SOFTWARE     16  // software reset without a recorded cause
 #define REBOOT_CAUSE_POWERON      99
 
 

@@ -807,8 +807,10 @@ bool init_W5500(boolean initSPI) {
 
 	if(!probe_w5500()) {
 		if (initSPI) {
-			DEBUG_PRINTLN(F("W5500 probe failed at 40MHz, retrying 20MHz"));
-			SPI.setFrequency(20000000);
+			// The driver keeps whatever clock is set here, so a module that only
+			// answers at 10 MHz also runs at 10 MHz afterwards.
+			DEBUG_PRINTLN(F("W5500 probe failed at 20MHz, retrying 10MHz"));
+			SPI.setFrequency(10000000);
 			delay(20);
 			if(!probe_w5500()) {
 				return false;
@@ -3880,6 +3882,31 @@ void OpenSprinkler::options_setup() {
 		nvdata_load();
 
 		last_reboot_cause = nvdata.reboot_cause;
+		if (last_reboot_cause == REBOOT_CAUSE_POWERON) {
+			// Nothing recorded before the restart: ask the SoC what really happened.
+			#if defined(ESP8266)
+			const rst_info* ri = ESP.getResetInfoPtr();
+			if (ri) {
+				switch (ri->reason) {
+					case REASON_EXCEPTION_RST: last_reboot_cause = REBOOT_CAUSE_CRASH; break;
+					case REASON_WDT_RST:
+					case REASON_SOFT_WDT_RST:  last_reboot_cause = REBOOT_CAUSE_WATCHDOG; break;
+					case REASON_SOFT_RESTART:  last_reboot_cause = REBOOT_CAUSE_SOFTWARE; break;
+					default: break; // power on / external reset stay POWERON
+				}
+			}
+			#elif defined(ESP32)
+			switch (esp_reset_reason()) {
+				case ESP_RST_PANIC:    last_reboot_cause = REBOOT_CAUSE_CRASH; break;
+				case ESP_RST_INT_WDT:
+				case ESP_RST_TASK_WDT:
+				case ESP_RST_WDT:      last_reboot_cause = REBOOT_CAUSE_WATCHDOG; break;
+				case ESP_RST_BROWNOUT: last_reboot_cause = REBOOT_CAUSE_BROWNOUT; break;
+				case ESP_RST_SW:       last_reboot_cause = REBOOT_CAUSE_SOFTWARE; break;
+				default: break;
+			}
+			#endif
+		}
 		nvdata.reboot_cause = REBOOT_CAUSE_POWERON;
 		nvdata_save();
 		#if defined(ESP8266) || defined(ESP32)

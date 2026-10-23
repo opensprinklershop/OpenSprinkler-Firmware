@@ -464,8 +464,13 @@ ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 	if (!LittleFS.exists(fn)) return 0;
 	File f = LittleFS.open(fn, "r");
 	if(f) {
-		f.seek(pos, SeekSet);
-		result = f.read((unsigned char*)dst, len);
+		// A seek beyond the end of the file fails and leaves the position at 0;
+		// the read then silently returned the first block (the password hash
+		// for sopts.dat written by an older build with fewer slots, ticket
+		// YXH-BU6-G5P6). Treat it as "nothing stored".
+		if ((ulong)f.size() > pos && f.seek(pos, SeekSet)) {
+			result = f.read((unsigned char*)dst, len);
+		}
 		f.close();
 	}
 
@@ -474,8 +479,7 @@ ulong file_read_block(const char *fn, void *dst, ulong pos, ulong len) {
 	sd.chdir("/");
 	SdFile file;
 	if(file.open(fn, O_READ)) {
-		file.seekSet(pos);
-		result = file.read(dst, len);
+		if (file.seekSet(pos)) result = file.read(dst, len);
 		file.close();
 	}
 

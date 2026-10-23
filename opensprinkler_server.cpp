@@ -4434,8 +4434,15 @@ void server_sensor_readnow(OTF_PARAMS_DEF) {
 		if (nr != 0 && nr != sensor->nr)
 			continue;
 
-		sensor->last_read = time - sensor->read_interval - 1;
-		int status = read_sensor(sensor, time);
+		// Only schedule the read: a synchronous HTTP/cloud read inside this
+		// handler ran on the OTF/WebSocket stack and crashed the ESP8266
+		// (stack overflow -> watchdog, seen as "power on" restart after copying
+		// a sensor, tickets 8V1-8LT-M81W / JE4-T69-22RQ). The main loop reads
+		// the sensor on its next pass; the app refreshes the list afterwards.
+		if (sensor->type != SENSOR_ZIGBEE && sensor->repeat_read == 0) {
+			sensor->last_read = 0;
+		}
+		int status = HTTP_RQT_PENDING;
 
 		if (first) first = false; else bfill.emit_p(PSTR(","));
 
