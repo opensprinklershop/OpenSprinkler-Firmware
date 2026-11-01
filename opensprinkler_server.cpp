@@ -1785,6 +1785,9 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 #endif
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
 		bfill.emit_p(PSTR("\"flcrt\":$L,\"flwrt\":$D,\"flcto\":$L,"), os.flowcount_rt, FLOWCOUNT_RT_WINDOW, flow_count);
+		// pulses since the current watering cycle started (what the next flow log entry will report)
+		ulong flcrun = (os.status.program_busy && flow_count>os.flowcount_log_start) ? (flow_count-os.flowcount_log_start) : 0;
+		bfill.emit_p(PSTR("\"flcrun\":$L,"), flcrun);
 	}
 
 	bfill.emit_p(PSTR("\"sbits\":["));

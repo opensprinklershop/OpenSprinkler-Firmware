@@ -189,6 +189,8 @@ const char *sensor_unitNames[]{
 uint8_t logFileSwitch[3] = {0, 0, 0};  // 0=use smaller File, 1=LOG1, 2=LOG2
 
 extern volatile ulong flow_count;
+extern bool flow_count_restored;      // main.cpp: counter continued from the on-flash checkpoint
+extern void flow_count_persist();     // main.cpp: write the checkpoint
 
 static bool sensor_unit_is_water_absolute(uint8_t unitid) {
   return unitid == UNIT_LITER || unitid == UNIT_GALLON;
@@ -225,14 +227,20 @@ public:
       flags.data_ok = 1;
       return HTTP_RQT_SUCCESS;
     }
-    // flow_count restarts at 0 on every boot. Detect the reboot from the
-    // timestamps instead of comparing counters: after a daily power cycle the
-    // new count can exceed the old baseline (a day with more water than the
-    // day before), and "current < baseline" alone would then subtract a
-    // stale baseline. Pulses between the previous read and the reboot are
-    // lost, but the interval no longer reports 0 or a truncated value
-    // (ticket 8V1-8LT-M81W).
-    if (current_count < last_native_data || (last > 0 && os.powerup_lasttime > last)) {
+    // flow_count restarts at 0 on a boot without checkpoint (main.cpp
+    // flow_count_restore). Detect that from the timestamps instead of comparing
+    // counters: after a daily power cycle the new count can exceed the old
+    // baseline (a day with more water than the day before), and
+    // "current < baseline" alone would then subtract a stale baseline. Pulses
+    // between the previous read and the reboot are lost, but the interval no
+    // longer reports 0 or a truncated value. When the counter was restored from
+    // the checkpoint (written at every cycle end and after every read of this
+    // sensor) it is continuous with the stored baseline and only the pulses after
+    // the last checkpoint are missing, so the baseline must be kept
+    // (ticket 8V1-8LT-M81W: nightly timer switch cut the power between the
+    // 01:06 reading and the morning, the night run was missing every day).
+    if (current_count < last_native_data ||
+        (!flow_count_restored && last > 0 && os.powerup_lasttime > last)) {
       last_native_data = 0;
     }
 
@@ -1448,8 +1456,14 @@ bool sensorlog_add(uint8_t log, SensorBase *sensor, ulong time) {
     ulong dt = time - sensor->last_logged_time;
     bool interval_ok = (sensor->log_interval == 0) || (dt >= sensor->log_interval);
 
+    // Consumption readings (L/gal per interval) are amounts, not levels: two
+    // equal readings in a row are twice the water, so they must both be logged
+    // or the week/month sums (calc_sensorlogs) miss one of them. The "only on
+    // change" rule stays for level-type sensors (ticket M9W-TM2-3S17).
+    bool is_amount = sensor_unit_is_water_consumption(getSensorUnitId(sensor)) && sensor->last_data > 0;
+
     // Write to log file only if necessary
-    if (interval_ok && (dt > 86400 || abs(sensor->last_data - sensor->last_logged_data) > 0.00999)) {
+    if (interval_ok && (is_amount || dt > 86400 || abs(sensor->last_data - sensor->last_logged_data) > 0.00999)) {
       SensorLog_t sensorlog;
       memset(&sensorlog, 0, sizeof(SensorLog_t));
       sensorlog.nr = sensor->nr;
@@ -2051,6 +2065,7 @@ void read_all_sensors(boolean online) {
             SensorBase *reading = current_sensor;
             sensor_save();
             current_sensor = reading;
+            flow_count_persist(); // counter checkpoint matching the new baseline
           }
 #if !defined(ESP8266)
           current_sensor->trend_add_sample(current_sensor->last_data, time);

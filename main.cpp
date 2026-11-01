@@ -201,28 +201,37 @@ NotifQueue notif; // NotifQueue object
 ulong flow_begin, flow_start, flow_stop, flow_gallons, flow_rt_reset, last_flow_rt;
 volatile ulong flow_count = 0;
 
-/** Flow pulse counter persistence across a software reboot (":>reboot" program,
- *  /cv?rbt=1, OTA, loop-stall restart). flow_count lives in RAM, so every reboot
- *  restarted it at 0 and the pulse water meter sensor (type 97) lost the pulses
- *  since its previous read; with a 24 h interval and a daily reboot program that
- *  was most of the day (ticket 8V1-8LT-M81W). reboot_dev() writes the counter to
- *  FLOWCNT_FILENAME, do_setup() reads it back once and removes the file. A power
- *  cut leaves no file, the sensor then falls back to counting from 0 as before. */
+/** Flow pulse counter persistence across reboots. flow_count lives in RAM, so
+ *  every restart began at 0 and the pulse water meter sensor (type 97) lost the
+ *  pulses since its previous read; with a 24 h interval that was most of the day
+ *  (ticket 8V1-8LT-M81W). The counter is checkpointed to FLOWCNT_FILENAME before
+ *  a software reboot (reboot_dev()), at the end of every watering cycle (when the
+ *  flow log entry is written) and after every read of a type-97 sensor. do_setup()
+ *  restores it and keeps the file, so a power cut (e.g. a nightly timer switch)
+ *  loses only the pulses after the last checkpoint instead of everything since
+ *  the sensor's last read. flow_count_restored tells the sensor that the counter
+ *  is continuous with its stored baseline. A missing or corrupt file falls back
+ *  to counting from 0 as before. */
 struct FlowCountRecord { uint32_t magic; uint32_t count; };
 #define FLOWCNT_MAGIC 0x464C4F57UL  // "FLOW"
+bool flow_count_restored = false;
+static uint32_t flow_count_persisted = 0xFFFFFFFFUL; // last value written (sentinel: none yet)
 
 void flow_count_persist() {
 	FlowCountRecord rec = { FLOWCNT_MAGIC, (uint32_t)flow_count };
+	if (rec.count == flow_count_persisted) return; // nothing new, spare the flash
 	file_write_block(FLOWCNT_FILENAME, &rec, 0, sizeof(rec));
+	flow_count_persisted = rec.count;
 }
 
 static void flow_count_restore() {
 	if (!file_exists(FLOWCNT_FILENAME)) return;
 	FlowCountRecord rec = { 0, 0 };
 	file_read_block(FLOWCNT_FILENAME, &rec, 0, sizeof(rec));
-	remove_file(FLOWCNT_FILENAME);
-	if (rec.magic != FLOWCNT_MAGIC) return;
+	if (rec.magic != FLOWCNT_MAGIC) { remove_file(FLOWCNT_FILENAME); return; }
 	flow_count = rec.count;
+	flow_count_persisted = rec.count;
+	flow_count_restored = true;
 	DEBUG_PRINTF("[FLOW] pulse counter restored after reboot: %lu\n", (ulong)flow_count);
 }
 unsigned char prev_flow_state = HIGH;
@@ -782,7 +791,7 @@ void do_setup() {
 	os.options_setup();  // Setup options
 	log_heap_snapshot("after options_setup");
 	loop_guard_init();   // after options_setup: may override last_reboot_cause
-	flow_count_restore(); // pulse water meter: continue counting after a software reboot
+	flow_count_restore(); // pulse water meter: continue counting after a reboot/power cut
 	os.mwdata_load();    // Load monthly water usage data
 
 	#if defined(ESP8266)
@@ -884,7 +893,7 @@ void do_setup() {
 	initialiseEpoch();   // initialize time reference for millis() and micros()
 	os.begin();          // OpenSprinkler init
 	os.options_setup();  // Setup options
-	flow_count_restore(); // pulse water meter: continue counting after a software reboot
+	flow_count_restore(); // pulse water meter: continue counting after a reboot/power cut
 	os.mwdata_load();    // Load monthly water usage data
 
 	pd.init();           // ProgramData init
@@ -1980,6 +1989,7 @@ void do_loop()
 					uint32_t flow_delta = (flow_count>os.flowcount_log_start)?(flow_count-os.flowcount_log_start):0;
 					notif.add(NOTIFY_FLOWSENSOR, flow_delta);
 					os.mwdata_add_flow(flow_delta); // accumulate into monthly water counter
+					flow_count_persist(); // checkpoint for the pulse water meter sensor (power cut)
 
 					// Pipe burst detection: start monitoring for unexpected flow after all stations off
 					pipeburst_check_time = millis() + FLOW_ANOMALY_DELAY_MS;
@@ -3782,9 +3792,14 @@ static void perform_ntp_sync() {
 	//#endif
 
 	if (os.status.req_ntpsync) {
+		// Failed syncs used to be retried every 5 s forever; with UDP 123
+		// blocked (LTE router, firewall) that was ~50k requests a day to the
+		// public pool and up to 6 s of blocked loop each time. Back off
+		// 5 s -> 10 min on consecutive failures, reset on success.
 		static ulong last_ntp_attempt_ms = 0;
+		static ulong ntp_retry_ms = 5000L;
 		ulong now_ms = millis();
-		if (last_ntp_attempt_ms != 0 && (long)(now_ms - last_ntp_attempt_ms) < 5000L) {
+		if (last_ntp_attempt_ms != 0 && (long)(now_ms - last_ntp_attempt_ms) < (long)ntp_retry_ms) {
 			return;
 		}
 		last_ntp_attempt_ms = now_ms;
@@ -3803,6 +3818,7 @@ static void perform_ntp_sync() {
 		}
 		if (t>0) {
 			os.status.req_ntpsync = 0;
+			ntp_retry_ms = 5000L;
 			// The boot timestamp was taken from the RTC (or 1970) before this
 			// sync. On OS 3.x the RTC stops during a power cut, so the clock
 			// resumes at the power-off time and powerup_lasttime showed that
@@ -3820,6 +3836,7 @@ static void perform_ntp_sync() {
 		} else {
 			// Keep the sync request pending so the next retry can try again.
 			os.status.req_ntpsync = 1;
+			ntp_retry_ms = (ntp_retry_ms >= 300000L) ? 600000L : ntp_retry_ms*2;
 		}
 	}
 #else
