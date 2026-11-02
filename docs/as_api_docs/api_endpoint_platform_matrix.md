@@ -147,6 +147,7 @@ Related: `/jp` appends the program sensor-adjustment object, `/cp` accepts `snad
 |---|---------|-----------------|----------------|-------------|
 | 55 | `fy` | `server_fyta_query_plants` | `ESP8266 \|\| ESP32 \|\| OSPI` | Query FYTA plant sensor data |
 | 56 | `fc` | `server_fyta_get_credentials` | `ESP8266 \|\| ESP32 \|\| OSPI` | Get / set FYTA API credentials |
+| 57 | `ul` | `server_ui_local` | `ESP32 \|\| OSPI` | On-device web UI (ui_local.cpp): status, `install=1[&url=]`, `remove=1[&ver=]`, `check=1` |
 
 ---
 
@@ -158,6 +159,9 @@ These are registered directly in `start_server_client()` (ESP8266 / ESP32 only):
 |-------|---------|----------------|-------------|
 | `/` | `server_home` | `ESP8266 \|\| ESP32` | Serve home page / index |
 | `/index.html` | `server_home` | `ESP8266 \|\| ESP32` | Alias for home page |
+| `/ui/*` | `on_missing_page` → `ui_local_serve` | `ESP32 \|\| OSPI` | On-device web UI files (`/ui/js/home.js`, `/ui/versions.json`, `/ui/<version>/...`), pre-gzipped from the signed package |
+| `/js/hasher.js` | `on_hasher_js` | All (ESP32/ESP8266 embedded, OSPi from the local UI or redirect) | MD5 helper for `/su`, works offline |
+| `/uf` (port 8080, POST multipart) | `on_ui_upload` / `on_ui_upload_fin` | `ESP32` | Upload of a signed UI package (`ui.tar`), fields `pw`, `sig` |
 | `/update` (GET) | `on_firmware_update` | `ESP8266 \|\| ESP32` | Serve firmware-update HTML page |
 | `/update` (POST) | `on_firmware_upload_fin` + `on_firmware_upload` | `ESP8266 \|\| ESP32` | Handle firmware upload & flash |
 

@@ -3,6 +3,7 @@
 #include "online_update.h"
 #include "defines.h"
 #include "OpenSprinkler.h"
+#include "ui_local.h"
 #include <HTTPClient.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -212,6 +213,7 @@ bool online_update_check(OnlineUpdateManifest &manifest) {
 	strncpy(manifest.zigbee_sha256, doc["zigbee_sha256"] | "", sizeof(manifest.zigbee_sha256) - 1);
 	strncpy(manifest.matter_sha256, doc["matter_sha256"] | "", sizeof(manifest.matter_sha256) - 1);
 	strncpy(manifest.esp8266_sha256, doc["esp8266_sha256"] | "", sizeof(manifest.esp8266_sha256) - 1);
+	strncpy(manifest.ui_url, doc["ui_url"] | "", sizeof(manifest.ui_url) - 1);
 	strncpy(manifest.changelog, doc["changelog"] | "", sizeof(manifest.changelog) - 1);
 	manifest.valid = (manifest.fw_version > 0 && manifest.zigbee_url[0] && manifest.matter_url[0]);
 
@@ -608,10 +610,12 @@ static bool ota_save_start_manifest(const OnlineUpdateManifest& m) {
 	f.printf("{\"fw_version\":%u,\"fw_minor\":%u,"
 	         "\"zigbee_url\":\"%s\",\"matter_url\":\"%s\","
 	         "\"zigbee_sha256\":\"%s\",\"matter_sha256\":\"%s\","
+	         "\"ui_url\":\"%s\","
 	         "\"variant\":\"%s\",\"pw\":\"%s\"}",
 	         m.fw_version, m.fw_minor,
 	         m.zigbee_url, m.matter_url,
 	         m.zigbee_sha256, m.matter_sha256,
+	         m.ui_url,
 	         s_ota_requested_variant, pwBuf);
 	f.close();
 	DEBUG_PRINTLN(F("[OTA] Start manifest saved — OTA will begin after reboot"));
@@ -622,7 +626,7 @@ static bool ota_save_start_manifest(const OnlineUpdateManifest& m) {
 // url: firmware URL for the remaining partition, label: partition label,
 // variant: boot variant name to restore after both partitions are flashed.
 // Also saves the current password hash so it can be restored after factory_reset.
-static bool ota_save_continuation(const char* url, const char* sha256_hex, const char* label, const char* variant) {
+static bool ota_save_continuation(const char* url, const char* sha256_hex, const char* label, const char* variant, const char* ui_url) {
 	File f = LittleFS.open(OTA_CONTINUE_FILE, "w");
 	if (!f) {
 		DEBUG_PRINTLN(F("[OTA] Failed to write continuation file"));
@@ -631,8 +635,8 @@ static bool ota_save_continuation(const char* url, const char* sha256_hex, const
 	// Save password hash: factory_reset() on phase 2 boot will reset it to default
 	static PSRAM_BSS_ATTR char pwBuf[MAX_SOPTS_SIZE + 1];
 	os.sopt_load(SOPT_PASSWORD, pwBuf);
-	f.printf("{\"url\":\"%s\",\"sha256\":\"%s\",\"label\":\"%s\",\"variant\":\"%s\",\"pw\":\"%s\"}",
-	         url, sha256_hex ? sha256_hex : "", label, variant, pwBuf);
+	f.printf("{\"url\":\"%s\",\"sha256\":\"%s\",\"label\":\"%s\",\"variant\":\"%s\",\"ui_url\":\"%s\",\"pw\":\"%s\"}",
+	         url, sha256_hex ? sha256_hex : "", label, variant, ui_url ? ui_url : "", pwBuf);
 	f.close();
 	DEBUG_PRINTLN(F("[OTA] Continuation state saved (incl. password + sha256)"));
 	return true;
@@ -747,7 +751,7 @@ static void ota_update_task(void* param) {
 			return;
 		}
 		// Save continuation: need to flash matter after reboot
-		ota_save_continuation(manifest.matter_url, manifest.matter_sha256, "matter", target_variant_name);
+		ota_save_continuation(manifest.matter_url, manifest.matter_sha256, "matter", target_variant_name, manifest.ui_url);
 		// Set boot to zigbee (the partition we just flashed) so phase 2 can write matter
 		esp_ota_set_boot_partition(esp_partition_find_first(
 			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr));
@@ -762,7 +766,7 @@ static void ota_update_task(void* param) {
 			return;
 		}
 		// Save continuation: need to flash zigbee after reboot
-		ota_save_continuation(manifest.zigbee_url, manifest.zigbee_sha256, "zigbee", target_variant_name);
+		ota_save_continuation(manifest.zigbee_url, manifest.zigbee_sha256, "zigbee", target_variant_name, manifest.ui_url);
 		// Set boot to matter (the partition we just flashed) so phase 2 can write zigbee
 		esp_ota_set_boot_partition(esp_partition_find_first(
 			ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, nullptr));
@@ -904,6 +908,9 @@ static void ota_phase2_task(void* param) {
 	const char* sha256_hex = doc["sha256"] | "";
 	const char* label = doc["label"] | "";
 	const char* variant = doc["variant"] | "";
+	char ui_url[200];
+	strncpy(ui_url, doc["ui_url"] | "", sizeof(ui_url) - 1);
+	ui_url[sizeof(ui_url) - 1] = 0;
 	if (!url[0] || !label[0]) {
 		DEBUG_PRINTLN(F("[OTA] Phase 2: invalid continuation data"));
 		LittleFS.remove(OTA_CONTINUE_FILE);
@@ -939,6 +946,18 @@ static void ota_phase2_task(void* param) {
 
 	// Restore sensor files from backup if originals were lost
 	ota_restore_sensor_files();
+
+	// On-device web UI for the new firmware (ui_local.cpp). Both slots are
+	// flashed, the running image already is the new version, so the package
+	// of this version is the right one. Failures are not fatal: the device
+	// falls back to the external UI and retries from the main loop.
+	if (os.iopts[IOPT_UI_SOURCE] != UI_SOURCE_EXTERNAL || os.iopts[IOPT_UI_FALLBACK]) {
+		ota_set_state(OTA_STATUS_FLASHING_ZIGBEE, 98, "Installing web UI...");
+		DEBUG_PRINTF("[OTA] Installing UI package (%s)\n", ui_url[0] ? ui_url : "archive default");
+		if (!ui_local_install_from_url(ui_url[0] ? ui_url : NULL, false)) {
+			DEBUG_PRINTF("[OTA] UI install failed: %s\n", ui_local_install_state().message);
+		}
+	}
 
 #if defined(ESP32C5)
 	// Set boot partition to the user's original variant
@@ -994,6 +1013,7 @@ void online_update_resume() {
 				strncpy(task_param->matter_url,    doc["matter_url"]    | "", sizeof(task_param->matter_url)    - 1);
 				strncpy(task_param->zigbee_sha256, doc["zigbee_sha256"] | "", sizeof(task_param->zigbee_sha256) - 1);
 				strncpy(task_param->matter_sha256, doc["matter_sha256"] | "", sizeof(task_param->matter_sha256) - 1);
+				strncpy(task_param->ui_url,        doc["ui_url"]        | "", sizeof(task_param->ui_url)        - 1);
 				task_param->valid = (task_param->zigbee_url[0] != '\0');
 
 				const char* variant = doc["variant"] | "";

@@ -184,6 +184,19 @@ extern "C" {
 // headroom we trim old log ring files before saving config (#293).
 #define CONFIG_HEADROOM 32768  // 32Kb reserved for config saves
 
+// Free space the sensor logs must leave untouched on the large filesystems
+// (ESP32: 16 MB external LittleFS on the OS4 Pro, OSPi: SD card). The log rings
+// grow until MAX_LOG_SIZE entries (2 M entries x 24 B per ring file) and had no
+// lower bound for free space, so they filled the external flash completely
+// (bench unit: 13.9 of 16 MB used). The on-device web UI (ui_local.cpp, two
+// versions of ~2.2 MB) and the config saves need this headroom. Below the floor
+// the oldest half-rings are trimmed before a new entry is written, then the
+// active ring of the log being written. Small filesystems (ESP8266, ESP32
+// without external flash) keep the historic 64 KB floor.
+#define LOG_SPACE_FLOOR_LARGE  (6UL * 1024UL * 1024UL)   // FS >= 8 MB
+#define LOG_SPACE_FLOOR_SMALL  (64UL * 1024UL)
+#define LOG_SPACE_LARGE_FS     (8UL * 1024UL * 1024UL)
+
 #define MAX_SENSOR_REPEAT_READ 32000  // max reads for calculating avg
 #define MAX_SENSOR_READ_TIME 1        // second for reading sensors
 
@@ -681,6 +694,8 @@ boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t
 ulong diskFree();
 bool checkDiskFree();  // true: disk space Ok, false: Out of disk space
 void ensureConfigSpace();  // free space for a config save by trimming old logs
+ulong logSpaceFloor();      // free space the sensor logs must leave (ui_local, config)
+void ensureLogSpace(uint8_t log);  // trim log rings until logSpaceFloor() is free again
 #endif
 
 // Returns true if there is enough filesystem space to safely store a NEW

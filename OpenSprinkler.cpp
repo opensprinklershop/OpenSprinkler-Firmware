@@ -272,6 +272,8 @@ const char iopt_json_names[] PROGMEM =
 	"fpd0\0" // IOPT_FLOW_PULSE_DIV_0
 	"fpd1\0" // IOPT_FLOW_PULSE_DIV_1
 	"wims\0" // IOPT_WIFI_MODEM_SLEEP: 0=off/full power, 1=modem sleep
+	"uisr\0" // IOPT_UI_SOURCE: 0=device/auto, 1=device only, 2=external URL, 3=unset
+	"uifb\0" // IOPT_UI_FALLBACK: 1=fall back to the on-device UI when the external loader fails
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -360,7 +362,9 @@ const char iopt_prompts[] PROGMEM =
 	"Invert grp sch.?"
 	"Flow div low:   "
 	"Flow div high:  "
-	"WiFi modem sleep";
+	"WiFi modem sleep"
+	"UI source:      "
+	"UI fallback?    ";
 
 // string options do not have prompts
 
@@ -448,7 +452,9 @@ const unsigned char iopt_max[] PROGMEM = {
 	1,               // IOPT_INVERT_GROUP_SCHEDULING
 	255,             // IOPT_FLOW_PULSE_DIV_0
 	255,             // IOPT_FLOW_PULSE_DIV_1
-	1                // IOPT_WIFI_MODEM_SLEEP
+	1,               // IOPT_WIFI_MODEM_SLEEP
+	3,               // IOPT_UI_SOURCE (0 device/auto, 1 device only, 2 external, 3 unset)
+	1                // IOPT_UI_FALLBACK
 };
 
 /** Integer option values (stored in RAM) */
@@ -541,6 +547,8 @@ unsigned char OpenSprinkler::iopts[] = {
 	1,  // flow pulse divisor low byte (default divisor=1)
 	0,  // flow pulse divisor high byte
 	0,  // IOPT_WIFI_MODEM_SLEEP: 0=off/full power (default), 1=modem sleep
+	3,  // IOPT_UI_SOURCE: unset -> ui_local_init() picks device (default URL) or external (custom URL)
+	1,  // IOPT_UI_FALLBACK: external UI source falls back to the on-device UI
 };
 
 /** String option values (stored in RAM) */
@@ -4270,6 +4278,9 @@ void OpenSprinkler::iopts_load() {
 	file_read_block(IOPTS_FILENAME, iopts, 0, NUM_IOPTS);
 #if EN18031_COMPLIANCE
 	iopts[IOPT_IGNORE_PASSWORD] = 0; // EN 18031-1 ACM: unauthenticated access cannot be enabled
+#endif
+#if !(defined(ESP32) || defined(OSPI))
+	iopts[IOPT_UI_SOURCE] = 2; // no on-device UI on this platform (ui_local.cpp): always the external URL
 #endif
 	nboards = iopts[IOPT_EXT_BOARDS]+1;
 	nstations = nboards * 8;

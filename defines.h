@@ -462,6 +462,8 @@ enum {
 	IOPT_FLOW_PULSE_DIV_0, ///< low byte of flow pulse divisor (effective volume = pulse_rate/100/divisor)
 	IOPT_FLOW_PULSE_DIV_1, ///< high byte of flow pulse divisor
 	IOPT_WIFI_MODEM_SLEEP, ///< ESP8266 WiFi modem sleep: 0 = off/full power (default, fewer disconnects); 1 = modem sleep (lower power, better weak-signal RX)
+	IOPT_UI_SOURCE,   ///< web UI source (ui_local.h UiSource): 0 device/auto, 1 device only, 2 external URL, 3 unset (migrated on first boot)
+	IOPT_UI_FALLBACK, ///< 1 = with an external UI source fall back to the on-device UI when the external loader fails
 	NUM_IOPTS // total number of integer options
 };
 

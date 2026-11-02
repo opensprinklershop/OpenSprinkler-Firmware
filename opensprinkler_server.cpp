@@ -83,6 +83,7 @@ static void emit_monthly_water_backup_json(T &bfill) {
 
 #include "ieee802154_config.h"
 #include "online_update.h"
+#include "ui_local.h"
 
 #if defined(ESP32) && defined(USE_OTF)
 #include "cert.h"  // for /ca.der cert download endpoint
@@ -1654,19 +1655,139 @@ void server_json_programs(OTF_PARAMS_DEF) {
 void server_view_scripturl(OTF_PARAMS_DEF) {
 	rewind_ether_buffer();
 	print_header(OTF_PARAMS,false,strlen(ether_buffer));
-	bfill.emit_p(PSTR(R"(<form name=of action=cu method=get><table cellspacing=12>
+#if defined(UI_LOCAL_SUPPORTED)
+	// UI source selector (ui_local.cpp): device copy or external server, with
+	// installation controls. hasher.js is served by the firmware itself
+	// (/js/hasher.js) so the page works without Internet access.
+	uint8_t uis = os.iopts[IOPT_UI_SOURCE];
+	bool dev = (uis != UI_SOURCE_EXTERNAL);
+	const char* uiv = ui_local_version();
+	bfill.emit_p(PSTR(R"SU(<form name=of action=cu method=get><table cellspacing=12>
+<tr><td><b>UI Source</b>:</td><td><label><input type=radio name=uis value=0 $S> On this device (installed: <span id=uiv>$S</span>)</label><br>
+<label><input type=radio name=uis value=2 $S> External server:</label> <input type=text size=40 maxlength=$D value='$O' id=jsp name=jsp> <button type=button onclick='rst_jsp()'>Default</button><br>
+<label><input type=checkbox name=uifb value=1 $S> Use the device copy when the external server cannot be reached</label></td></tr>
+<tr><td></td><td><button type=button onclick="ul('install=1')">Install/update UI on device</button> <button type=button onclick="if(confirm('Remove the UI from the device?'))ul('remove=1')">Remove</button> <span id=uist></span></td></tr>
+<tr><td><b>Weather</b>:</td><td><input type=text size=40 maxlength=$D value='$O' id=wsp name=wsp> <button type=button onclick='rst_wsp()'>Default</button></td></tr>
+<tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw id=pw value=''><input type=submit value=Save></td></tr>
+</table></form>
+<script src=/js/hasher.js></script>
+<script>function rst_jsp(){document.getElementById('jsp').value='$S';}
+function rst_wsp(){document.getElementById('wsp').value='$S';}
+var st=document.getElementById('uist'),uv=document.getElementById('uiv'),tm=0;
+function pwh(){var p=document.getElementById('pw').value;return /^[a-f0-9]{32}$/i.test(p)?p:md5(p);}
+function ul(a){clearTimeout(tm);fetch('ul?pw='+pwh()+(a?'&'+a:'')).then(function(r){return r.json();}).then(function(j){
+if(j.result==2){st.textContent='Invalid password';return;}
+var m=['','Downloading','Verifying','Activating','Done','Error'][j.state]||'';
+st.textContent=(m?m+' '+(j.state<4?j.progress+'%':''):'')+' '+(j.msg||'')+' (free: '+Math.round(j.free/1024)+' kB)';
+uv.textContent=j.installed||'none';if(j.state>0&&j.state<4)tm=setTimeout(function(){ul('');},2000);});}
+</script>)SU"),
+	dev ? "checked" : "", uiv[0] ? uiv : "none", dev ? "" : "checked",
+	MAX_SOPTS_SIZE, SOPT_JAVASCRIPTURL, os.iopts[IOPT_UI_FALLBACK] ? "checked" : "",
+	MAX_SOPTS_SIZE, SOPT_WEATHERURL, DEFAULT_JAVASCRIPT_URL, DEFAULT_WEATHER_URL);
+#else
+	bfill.emit_p(PSTR(R"SU(<form name=of action=cu method=get><table cellspacing=12>
 <tr><td><b>UI Source</b>:</td><td><input type=text size=40 maxlength=$D value='$O' id=jsp name=jsp></td></tr>
 <tr><td></td><td><button type=button onclick='rst_jsp()'>Reset UI Source</button></td></tr>
 <tr><td><b>Weather</b>:</td><td><input type=text size=40 maxlength=$D value='$O' id=wsp name=wsp></td></tr>
 <tr><td></td><td><button type=button onclick='rst_wsp()'>Reset Weather Server</button></td></tr>
-<tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw value='a6d82bced638de3def1e9bbb4983225c'><input type=submit value=submit></tr>
+<tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw value=''><input type=submit value=submit></tr>
 </table></form>
-<script src=https://ui.opensprinkler.com/js/hasher.js></script>
+<script src=/js/hasher.js></script>
 <script>function rst_jsp() {document.getElementById('jsp').value='$S';}
-function rst_wsp() {document.getElementById('wsp').value='$S';}</script>)"),
+function rst_wsp() {document.getElementById('wsp').value='$S';}</script>)SU"),
 	MAX_SOPTS_SIZE, SOPT_JAVASCRIPTURL, MAX_SOPTS_SIZE, SOPT_WEATHERURL, DEFAULT_JAVASCRIPT_URL, DEFAULT_WEATHER_URL);
+#endif
 	handle_return(HTML_OK);
 }
+
+#if defined(ARDUINO)
+/** MD5 helper for the firmware pages (/su), embedded so it works offline. */
+void on_hasher_js(OTF_PARAMS_DEF) {
+	res.writeStatus(200, F("OK"));
+	res.writeHeader(F("Content-Type"), F("application/javascript; charset=utf-8"));
+	print_cors_header(OTF_PARAMS);
+	res.writeHeader(F("Content-Length"), (int)hasher_js_gz_len);
+	res.writeHeader(F("Vary"), F("Accept-Encoding"));
+	res.writeHeader(F("Content-Encoding"), F("gzip"));
+	res.writeHeader(F("Cache-Control"), F("public, max-age=86400"));
+	res.writeHeader(F("Connection"), F("close"));
+	res.writeBodyData((const __FlashStringHelper*)hasher_js_gz, hasher_js_gz_len);
+}
+#elif defined(UI_LOCAL_SUPPORTED)
+/** OSPi has no embedded copy: serve hasher.js from the on-device UI, or send
+ *  the browser to the external UI host. */
+void on_hasher_js(OTF_PARAMS_DEF) {
+	if (ui_local_version()[0]) { ui_local_serve_path("/ui/js/hasher.js", res); return; }
+	char *url = (char*)malloc(MAX_SOPTS_SIZE + 32);
+	if (!url) return;
+	os.sopt_load(SOPT_JAVASCRIPTURL, url, MAX_SOPTS_SIZE);
+	url[MAX_SOPTS_SIZE] = 0;
+	strcat(url, "/js/hasher.js");
+	res.writeStatus(302, F("Found"));
+	res.writeHeader(F("Location"), url);
+	res.writeHeader(F("Content-Length"), 0);
+	res.writeHeader(F("Connection"), F("close"));
+	free(url);
+}
+#endif
+
+#if defined(UI_LOCAL_SUPPORTED)
+/** Everything that is not a registered route: /ui/* is the on-device UI,
+ *  anything else answers like OTF's default (404 with CORS headers). */
+void on_missing_page(OTF_PARAMS_DEF) {
+	const char* p = req.getPath();
+	if (p && strncmp(p, "/ui/", 4) == 0) { ui_local_serve(req, res); return; }
+	res.writeStatus(404, F("Not found"));
+	res.writeHeader(F("Content-Type"), F("text/plain"));
+	res.writeHeader(F("Access-Control-Allow-Origin"), F("*"));
+	res.writeHeader(F("Cache-Control"), F("max-age=0, no-cache, no-store, must-revalidate"));
+	res.writeHeader(F("Connection"), F("close"));
+	const char* msg = "The requested page does not exist";
+	res.writeBodyData(msg, strlen(msg));
+}
+
+/** On-device UI status and control.
+ * GET /ul?pw=xxx[&install=1[&url=...]][&remove=1[&ver=x.y.z.n]][&check=1]
+ */
+void server_ui_local(OTF_PARAMS_DEF) {
+	if(!api_begin(OTF_PARAMS)) return;
+	int action_result = -1;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("install"), true) && atoi(tmp_buffer) > 0) {
+		char* url = NULL;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("url"), true) && tmp_buffer[0]) {
+			urlDecode(tmp_buffer);
+			url = tmp_buffer;
+		}
+		action_result = ui_local_install_from_url(url, true) ? 1 : 0;
+	} else if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("remove"), true) && atoi(tmp_buffer) > 0) {
+		char ver[UI_LOCAL_VERSION_LEN] = "";
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ver"), true)) {
+			strncpy(ver, tmp_buffer, sizeof(ver) - 1);
+		}
+		action_result = ui_local_remove(ver[0] ? ver : NULL) ? 1 : 0;
+	} else if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("check"), true) && atoi(tmp_buffer) > 0) {
+		ui_local_request_check();
+		action_result = 1;
+	}
+	char fw[UI_LOCAL_VERSION_LEN];
+	ui_local_firmware_version(fw, sizeof(fw));
+	char versions[160];
+	ui_local_list_versions(versions, sizeof(versions));
+	UiInstallState st = ui_local_install_state();
+	char url[UI_LOCAL_URL_LEN];
+	ui_local_default_url(url, sizeof(url));
+	bfill.emit_p(PSTR("{\"fw\":\"$S\",\"installed\":\"$S\",\"exact\":$D,\"use\":$D,\"stale\":$D,\"src\":$D,\"fb\":$D,\"versions\":\"$S\","
+	                  "\"state\":$D,\"progress\":$D,\"received\":$L,\"total\":$L,\"free\":$L,\"fs\":$L,\"busy\":$D,\"action\":$D,\"url\":\"$S\",\"msg\":\""),
+		fw, ui_local_version(), ui_local_available() ? 1 : 0, ui_local_use() ? 1 : 0, ui_local_stale() ? 1 : 0,
+		(int)os.iopts[IOPT_UI_SOURCE], (int)os.iopts[IOPT_UI_FALLBACK], versions,
+		(int)st.status, (int)st.progress, (unsigned long)st.received, (unsigned long)st.total,
+		(unsigned long)ui_local_free_bytes(), (unsigned long)ui_local_total_bytes(),
+		ui_local_install_busy() ? 1 : 0, action_result, url);
+	bfill_emit_json_escaped(st.message);
+	bfill.emit_p(PSTR("\"}"));
+	handle_return(HTML_OK);
+}
+#endif // UI_LOCAL_SUPPORTED
 
 void server_json_controller_main(OTF_PARAMS_DEF) {
 	unsigned char bid, sid;
@@ -1729,6 +1850,11 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 		mask_json_string_field(opt_buf, sizeof(opt_buf), "key"); // weather provider API key
 		// Secrets are masked (finding 5): the IFTTT key is reported as set/unset,
 		// the MQTT and e-mail passwords as SECRET_MASK; sending the mask back keeps them.
+		// on-device UI: installed version served locally, whether the home page
+		// uses it, and whether it is an older version (local-only mode)
+#if defined(UI_LOCAL_SUPPORTED)
+		bfill.emit_p(PSTR("\"uiv\":\"$S\",\"uia\":$D,\"uist\":$D,"), ui_local_version(), ui_local_use() ? 1 : 0, ui_local_stale() ? 1 : 0);
+#endif
 		bfill.emit_p(PSTR("\"loc\":\"$O\",\"jsp\":\"$O\",\"wsp\":\"$O\",\"wto\":{$S},\"ifkey\":\"$S\",\"mqtt\":"),
 					 SOPT_LOCATION,
 					 SOPT_JAVASCRIPTURL,
@@ -1867,6 +1993,18 @@ void server_home(OTF_PARAMS_DEF)
 	bfill.emit_p(PSTR("var ver=$D,ipas=$D;</script>"),
 							 OS_FW_VERSION, os.iopts[IOPT_IGNORE_PASSWORD]);
 
+#if defined(UI_LOCAL_SUPPORTED)
+	// On-device UI (ui_local.cpp): relative URL so it also works behind the OTC
+	// relay prefix. home.js derives the UI root by cutting "js/home.js" off its
+	// own URL, so the loader must live at ui/js/home.js (root = ui/). With an
+	// external source the loader may fall back to the device copy when the
+	// external script cannot be loaded (server/Internet down).
+	if (ui_local_use()) {
+		bfill.emit_p(PSTR("<script src=\"ui/js/home.js\"></script></body></html>"));
+	} else if (ui_local_fallback()) {
+		bfill.emit_p(PSTR("<script src=\"$O/home.js\" onerror=\"var s=document.createElement('script');s.src='ui/js/home.js';document.head.appendChild(s)\"></script></body></html>"), SOPT_JAVASCRIPTURL);
+	} else
+#endif
 	bfill.emit_p(PSTR("<script src=\"$O/home.js\"></script></body></html>"), SOPT_JAVASCRIPTURL);
 
 	handle_return(HTML_OK);
@@ -2027,6 +2165,23 @@ void server_change_scripturl(OTF_PARAMS_DEF) {
 		os.sopt_save(SOPT_JAVASCRIPTURL, tmp_buffer);
 		cors_refresh_jsp_host();
 	}
+#if defined(UI_LOCAL_SUPPORTED)
+	{
+		bool ui_change = false;
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uis"), true)) {
+			int v = atoi(tmp_buffer);
+			if (v < 0 || v > UI_SOURCE_EXTERNAL) handle_return(HTML_DATA_OUTOFBOUND);
+			if (os.iopts[IOPT_UI_SOURCE] != (unsigned char)v) { os.iopts[IOPT_UI_SOURCE] = (unsigned char)v; ui_change = true; }
+			// the form omits an unchecked checkbox: uis present without uifb means off
+			unsigned char fb = (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uifb"), true) && atoi(tmp_buffer) > 0) ? 1 : 0;
+			if (os.iopts[IOPT_UI_FALLBACK] != fb) { os.iopts[IOPT_UI_FALLBACK] = fb; ui_change = true; }
+		} else if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uifb"), true)) {
+			unsigned char fb = atoi(tmp_buffer) > 0 ? 1 : 0;
+			if (os.iopts[IOPT_UI_FALLBACK] != fb) { os.iopts[IOPT_UI_FALLBACK] = fb; ui_change = true; }
+		}
+		if (ui_change) { os.iopts_save(); ui_local_refresh(); }
+	}
+#endif
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("wsp"), true)) {
 		tmp_buffer[TMP_BUFFER_SIZE-1]=0;
 		string_remove_space(tmp_buffer);
@@ -2057,6 +2212,7 @@ void server_change_options(OTF_PARAMS_DEF)
 	bool weather_change = false;
 	bool sensor_change = false;
 	bool tpdv_change = false;
+	bool ui_change = false;
 
 	// !!! p and bfill share the same buffer, so don't write
 	// to bfill before you are done analyzing the buffer !!!
@@ -2091,6 +2247,7 @@ void server_change_options(OTF_PARAMS_DEF)
 			if(oid==IOPT_I_MIN_THRESHOLD || oid==IOPT_I_MAX_LIMIT) {
 				v/=10;
 			}
+			if (oid==IOPT_UI_SOURCE && v>2) v = -1; // 3 = "unset" is internal (first-boot migration)
 			if (v>=0 && v<=max_value) {
 				os.iopts[oid] = v;
 			} else {
@@ -2100,6 +2257,7 @@ void server_change_options(OTF_PARAMS_DEF)
 		}
 
 		if (os.iopts[oid] != prev_value) {	// if value has changed
+			if (oid==IOPT_UI_SOURCE || oid==IOPT_UI_FALLBACK) ui_change = true;
 			if (oid==IOPT_TIMEZONE || oid==IOPT_USE_NTP)		time_change = true;
 			if (oid>=IOPT_NTP_IP1 && oid<=IOPT_NTP_IP4)			time_change = true;
 			if (oid==IOPT_USE_WEATHER) {
@@ -2297,6 +2455,11 @@ void server_change_options(OTF_PARAMS_DEF)
 
 	os.iopts_save();
 	os.populate_master();
+#if defined(UI_LOCAL_SUPPORTED)
+	if (ui_change) ui_local_refresh();
+#else
+	(void)ui_change;
+#endif
 
 #if defined(ESP8266)
 	if (tpdv_change) {
@@ -8026,6 +8189,7 @@ const char _url_keys[] PROGMEM =
 	"fc"
 	"gl"
 	"ga"
+	"ul"  // on-device web UI: status, install, remove
 #elif defined(ESP8266)
 	"fy"
 	"fc"
@@ -8133,6 +8297,7 @@ const URLHandler urls[] PROGMEM = {
 	server_fyta_get_credentials, //fc
 	server_gardena_query_locations, // gl
 	server_gardena_get_credentials, // ga
+	server_ui_local, // ul
 #elif defined(ESP8266)
 	server_fyta_query_plants, // fy
 	server_fyta_get_credentials, //fc
@@ -8566,6 +8731,70 @@ void on_firmware_upload() {
 	delay(0);
 }
 
+#if defined(ESP32) && defined(UI_LOCAL_SUPPORTED)
+// ---- /uf: upload of a signed UI package (ui.tar) on the update server --------
+// Same pattern as /update: the multipart body is streamed into the installer
+// (ui_local_install_write), the password and the base64 signature arrive as
+// form fields and are checked when the upload is complete. Nothing is
+// activated unless the password is right and the signature verifies.
+static char* s_uf_password = NULL;   // heap copy, alive only during an upload
+static bool  s_uf_failed = false;
+
+static void uf_set_password(const char* pw) {
+	free(s_uf_password);
+	s_uf_password = (pw && pw[0]) ? strdup(pw) : NULL;
+}
+
+void on_ui_upload() {
+	HTTPUpload& upload = update_server->upload();
+	if (upload.status == UPLOAD_FILE_START) {
+		s_uf_failed = false;
+		uf_set_password(update_server->hasArg("pw") ? update_server->arg("pw").c_str() : NULL);
+		DEBUG_PRINT(F("[UI] upload: "));
+		DEBUG_PRINTLN(upload.filename);
+		size_t total = update_server->clientContentLength();
+		if (ui_local_install_busy() || !ui_local_install_begin(total > 1024 ? (uint32_t)(total - 1024) : 0, "upload")) {
+			s_uf_failed = true;
+		}
+	} else if (upload.status == UPLOAD_FILE_WRITE) {
+		if (!s_uf_failed && !ui_local_install_write(upload.buf, upload.currentSize)) s_uf_failed = true;
+	} else if (upload.status == UPLOAD_FILE_END) {
+		DEBUG_PRINTLN(F("[UI] upload complete"));
+	} else if (upload.status == UPLOAD_FILE_ABORTED) {
+		if (!s_uf_failed) ui_local_install_abort("Upload aborted");
+		s_uf_failed = true;
+	}
+	delay(0);
+}
+
+void on_ui_upload_fin() {
+	String submitted_pw = s_uf_password ? s_uf_password : "";
+	if (submitted_pw.length() == 0 && update_server->hasArg("pw")) submitted_pw = update_server->arg("pw");
+	uf_set_password(NULL);
+	bool locked = en18031_login_locked();
+	bool pw_ok = !locked && submitted_pw.length() > 0 && os.password_verify(submitted_pw.c_str());
+	if (pw_ok) en18031_login_ok(); else if (!locked && submitted_pw.length() > 0) en18031_login_fail();
+#if !EN18031_COMPLIANCE
+	if (!locked && os.iopts[IOPT_IGNORE_PASSWORD]) pw_ok = true;
+#endif
+	if (!pw_ok) {
+		if (!s_uf_failed) ui_local_install_abort("Unauthorized");
+		update_server_send_result(HTML_UNAUTHORIZED);
+		return;
+	}
+	if (s_uf_failed) {
+		update_server_send_result(HTML_UPLOAD_FAILED, ui_local_install_state().message);
+		return;
+	}
+	String sig = update_server->hasArg("sig") ? update_server->arg("sig") : String();
+	if (ui_local_install_finish(sig.length() ? sig.c_str() : NULL)) {
+		update_server_send_result(HTML_SUCCESS, ui_local_version());
+	} else {
+		update_server_send_result(HTML_UPLOAD_FAILED, ui_local_install_state().message);
+	}
+}
+#endif // ESP32 && UI_LOCAL_SUPPORTED
+
 void start_server_client() {
 	DEBUG_PRINTLN(F("[SERVER] start_server_client() called"));
 	if(!otf) {
@@ -8584,8 +8813,12 @@ void start_server_client() {
 		update_server->on("/update", HTTP_OPTIONS, on_update_options);
 		update_server->on("/upcap", HTTP_GET, on_update_capabilities);
 		update_server->on("/upcap", HTTP_OPTIONS, on_update_options);
+		otf->on("/js/hasher.js", on_hasher_js);  // MD5 helper for /su (offline)
 #if defined(ESP32)
 		otf->on("/ca.der", on_serve_cert);  // CA cert download for HTTPS trust setup
+		otf->onMissingPage(on_missing_page); // /ui/* = on-device web UI
+		update_server->on("/uf", HTTP_POST, on_ui_upload_fin, on_ui_upload);  // UI package upload
+		update_server->on("/uf", HTTP_OPTIONS, on_update_options);
 #endif
 		register_api_handlers(true);
 		callback_initialized = true;
@@ -8678,6 +8911,8 @@ void initialize_otf() {
 	if(!callback_initialized) {
 		otf->on("/", server_home);  // handle home page
 		otf->on("/index.html", server_home);
+		otf->on("/js/hasher.js", on_hasher_js);  // MD5 helper for /su
+		otf->onMissingPage(on_missing_page); // /ui/* = on-device web UI
 
 		register_api_handlers(true);
 		callback_initialized = true;

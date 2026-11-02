@@ -3,6 +3,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import zlib from "zlib";
 import { minify } from "html-minifier-terser";
+import { minify as minifyJs } from "terser";
 
 const WEB_DIR = path.resolve("html");        // <-- adjust if needed
 const OUT_H   = path.resolve("./htmls.h");// output header
@@ -39,8 +40,10 @@ async function main() {
   console.log("OpenSprinkler HTML Compressor");
   console.log("--------------------------------------------------");
 
+  // .html files are minified+gzipped as <name>_html_gz, .js files (e.g. the
+  // md5 helper hasher.js served at /js/hasher.js for /su) as <name>_js_gz.
   const files = (await fs.readdir(WEB_DIR))
-    .filter(f => f.endsWith(".html"))
+    .filter(f => f.endsWith(".html") || f.endsWith(".js"))
     .sort();
 
   let totalOrig = 0;
@@ -64,7 +67,10 @@ typedef struct {
     const raw = await fs.readFile(inPath, "utf8");
     const origSize = Buffer.byteLength(raw, "utf8");
 
-    const minified = await minify(raw, MINIFY_OPTIONS);
+    const isJs = fname.endsWith(".js");
+    const minified = isJs
+      ? (await minifyJs(raw, { compress: true, mangle: true })).code
+      : await minify(raw, MINIFY_OPTIONS);
     const gz = zlib.gzipSync(Buffer.from(minified, "utf8"), { level: 9 });
     const gzSize = gz.length;
 
@@ -74,7 +80,7 @@ typedef struct {
     console.log(`Processing ${fname}...`);
     console.log(`  -> Original: ${origSize} bytes | Compressed: ${gzSize} bytes`);
 
-    const ident = toCIdent(path.basename(fname, ".html")) + "_html_gz";
+    const ident = toCIdent(path.basename(fname, isJs ? ".js" : ".html")) + (isJs ? "_js_gz" : "_html_gz");
     const keyPath = toPathKey(fname);
 
     headerBody += `

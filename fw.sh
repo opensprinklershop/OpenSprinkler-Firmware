@@ -137,6 +137,13 @@ BETA_UPGRADE_URL_BASE="${OS_BETA_UPGRADE_URL_BASE:-https://opensprinklershop.de/
 # ESP8266 binary is published to an upgrade directory; unsigned images are
 # rejected by firmware >= 2.4.0(230).
 ESP8266_SIGNING_KEY="${ESP8266_SIGNING_KEY:-/data/Workspace/App-Keys/esp8266-fw-signing.pem}"
+# On-device web UI package (ui_local.cpp): built by tools/mkuipack.py from the
+# UI snapshot that is promoted for this release, signed with the UI update key
+# (public key compiled in via ui_local_pubkey.h), published as
+# upgrade/archive/v<fw>_<minor>/ui.tar (+ .sig) and referenced by manifest.json.
+UI_SNAPSHOT_SRC="${UI_SNAPSHOT_SRC:-/srv/www/htdocs/ui-test/www/dev}"
+UI_SIGNING_KEY="${UI_SIGNING_KEY:-/data/Workspace/App-Keys/ui-update-signing.pem}"
+UI_PACK_LOCALES="${UI_PACK_LOCALES:-all}"
 MANIFEST="${UPGRADE_DIR}/manifest.json"
 VERSIONS_JSON="${UPGRADE_DIR}/versions.json"
 BETA_MANIFEST="${BETA_UPGRADE_DIR}/manifest.json"
@@ -1986,7 +1993,7 @@ except Exception:
     mkdir -p "$archive_dir"
 
     # Copy current binaries to archive
-    for bin_name in firmware_zigbee.bin firmware_matter.bin firmware_esp8266.bin; do
+    for bin_name in firmware_zigbee.bin firmware_matter.bin firmware_esp8266.bin ui.tar ui.tar.sig ui.tar.json; do
         if [[ -f "${UPGRADE_DIR}/${bin_name}" ]]; then
             cp "${UPGRADE_DIR}/${bin_name}" "${archive_dir}/${bin_name}"
         fi
@@ -2005,7 +2012,7 @@ archive_current_version() {
     local archive_dir="${UPGRADE_DIR}/archive/v${OS_FW_VERSION}_${OS_FW_MINOR}"
     mkdir -p "$archive_dir"
 
-    for bin_name in firmware_zigbee.bin firmware_matter.bin firmware_esp8266.bin; do
+    for bin_name in firmware_zigbee.bin firmware_matter.bin firmware_esp8266.bin ui.tar ui.tar.sig ui.tar.json; do
         if [[ -f "${UPGRADE_DIR}/${bin_name}" ]]; then
             cp "${UPGRADE_DIR}/${bin_name}" "${archive_dir}/${bin_name}"
         fi
@@ -2072,6 +2079,51 @@ with open(sys.argv[1], 'w') as f:
     ok "versions.json catalog updated."
 }
 
+# Build the signed on-device UI package for the version being released.
+# Writes ${UPGRADE_DIR}/ui.tar, ui.tar.sig and ui.tar.json (size/sha256/sig for
+# the manifest). Skipped with a warning when the snapshot or the key is missing:
+# devices then keep the external UI (the firmware tolerates a missing package).
+build_ui_package() {
+    local ver_str="${1:-$(format_version "$OS_FW_VERSION").${OS_FW_MINOR}}"
+    local tool="${SCRIPT_DIR}/tools/mkuipack.py"
+    if [[ ! -f "$tool" ]]; then
+        warn "UI package skipped — ${tool} not found."
+        return 0
+    fi
+    if [[ ! -d "$UI_SNAPSHOT_SRC" ]]; then
+        warn "UI package skipped — UI snapshot ${UI_SNAPSHOT_SRC} not found (run buildweb.sh in the app repo)."
+        return 0
+    fi
+    if [[ ! -r "$UI_SIGNING_KEY" ]]; then
+        warn "UI package skipped — signing key ${UI_SIGNING_KEY} not readable."
+        return 0
+    fi
+    header "UI package ${ver_str}"
+    info "Source: ${UI_SNAPSHOT_SRC}"
+    python3 -I "$tool" build "$UI_SNAPSHOT_SRC" "$ver_str" "${UPGRADE_DIR}/ui.tar" \
+        --key "$UI_SIGNING_KEY" --locales "$UI_PACK_LOCALES" --source "$(basename "$UI_SNAPSHOT_SRC")" >/dev/null \
+        || { error "UI package build failed."; exit 1; }
+    python3 -I "$tool" verify "${UPGRADE_DIR}/ui.tar" --key "$UI_SIGNING_KEY" >/dev/null \
+        || { error "UI package signature check failed."; exit 1; }
+    ok "UI package: ${UPGRADE_DIR}/ui.tar ($(du -k "${UPGRADE_DIR}/ui.tar" | cut -f1) kB, signed)"
+}
+
+# JSON fragment with the ui_* manifest fields (empty when no package was built)
+ui_manifest_fields() {
+    local info="${UPGRADE_DIR}/ui.tar.json"
+    if [[ ! -f "$info" ]]; then
+        echo ""
+        return 0
+    fi
+    python3 - "$info" "${UPGRADE_URL_BASE}/archive/v${OS_FW_VERSION}_${OS_FW_MINOR}/ui.tar" <<'PYEOF2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+out = {"ui_url": sys.argv[2], "ui_version": d.get("version", ""), "ui_size": d.get("size", 0),
+       "ui_sha256": d.get("sha256", ""), "ui_sig": d.get("sig", "")}
+print("".join("\t%s: %s,\n" % (json.dumps(k), json.dumps(v)) for k, v in out.items()), end="")
+PYEOF2
+}
+
 # Update manifest.json with new version and changelog entry
 update_manifest() {
     local changelog_text="$1"
@@ -2097,7 +2149,7 @@ update_manifest() {
 	"zigbee_sha256": "${zigbee_sha256}",
 	"matter_sha256": "${matter_sha256}",
 	"esp8266_sha256": "${esp8266_sha256}",
-	"versions_url": "${UPGRADE_URL_BASE}/versions.json",
+$(ui_manifest_fields)	"versions_url": "${UPGRADE_URL_BASE}/versions.json",
 	"releases_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$releases_url"),
 	"prev_release_url": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$prev_release_url"),
 	"changelog": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$changelog_text")
@@ -2168,6 +2220,9 @@ entry = {
     "zigbee_sha256": manifest.get("zigbee_sha256", ""),
     "matter_sha256": manifest.get("matter_sha256", ""),
     "esp8266_sha256": manifest.get("esp8266_sha256", ""),
+    "ui_url": manifest.get("ui_url", ""),
+    "ui_version": manifest.get("ui_version", ""),
+    "ui_sha256": manifest.get("ui_sha256", ""),
     "changelog": manifest.get("changelog", "")
 }
 
@@ -2692,6 +2747,8 @@ All releases: https://github.com/${GITHUB_REPO}/releases
 
 ${changelog_section}"
 
+    # On-device UI package for this version (signed; see tools/mkuipack.py)
+    build_ui_package "${version_str}.${OS_FW_MINOR}"
     update_manifest "$release_notes"
     # Ensure the archive directory for this version contains the same consistent
     # post-build binaries and manifest that are now in upgrade/.  This must run

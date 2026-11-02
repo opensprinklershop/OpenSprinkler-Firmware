@@ -56,6 +56,7 @@ struct OnlineUpdateManifest {
 	char zigbee_sha256[65];    // lowercase hex SHA-256, or empty if not provided
 	char matter_sha256[65];
 	char esp8266_sha256[65];
+	char ui_url[200];          // on-device UI package (ui_local.cpp), "" = archive default
 	char changelog[512];
 	bool valid;
 };

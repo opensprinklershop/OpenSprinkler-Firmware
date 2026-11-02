@@ -49,6 +49,7 @@
 #include "psram_utils.h"
 #include "matter_ble_optimize.h"
 #include "online_update.h"
+#include "ui_local.h"
 #include "loop_guard.h"
 #include "eth_w5500.h"
 #if defined(ESP32C5)
@@ -793,6 +794,7 @@ void do_setup() {
 	loop_guard_init();   // after options_setup: may override last_reboot_cause
 	flow_count_restore(); // pulse water meter: continue counting after a reboot/power cut
 	os.mwdata_load();    // Load monthly water usage data
+	ui_local_init();     // on-device web UI: pick the installed version, migrate the source option
 
 	#if defined(ESP8266)
 	// Restore password/WiFi settings after OTA reboot if a restore marker exists.
@@ -895,6 +897,7 @@ void do_setup() {
 	os.options_setup();  // Setup options
 	flow_count_restore(); // pulse water meter: continue counting after a reboot/power cut
 	os.mwdata_load();    // Load monthly water usage data
+	ui_local_init();     // on-device web UI: pick the installed version, migrate the source option
 
 	pd.init();           // ProgramData init
 
@@ -1754,6 +1757,8 @@ void do_loop()
 		// we only need to check once every minute
 		if (curr_minute != last_minute) {
 			last_minute = curr_minute;
+
+			ui_local_loop(curr_time); // on-device web UI: automatic install, cleanup of old versions
 
 			apply_monthly_adjustment(curr_time); // check and apply monthly adjustment here, if it's selected
 

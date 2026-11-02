@@ -1432,6 +1432,9 @@ bool sensorlog_add(uint8_t log, SensorLog_t *sensorlog) {
   // DEBUG_PRINT(F("sensorlog_add "));
   // DEBUG_PRINT(log);
   checkLogSwitch(log);
+#if defined(ESP8266) || defined(ESP32) || defined(OSPI)
+  ensureLogSpace(log);  // keep the UI/config headroom free (external flash filled up to 16 MB)
+#endif
   file_append_block(getlogfile(log), sensorlog, SENSORLOG_STORE_SIZE);
   checkLogSwitchAfterWrite(log);
   // DEBUG_PRINT(F("="));
@@ -2961,6 +2964,48 @@ void ensureConfigSpace() {
         DEBUG_PRINTLN(fn);
         remove_file(fn);
       }
+    }
+  }
+}
+
+// Floor for the sensor logs: on the large filesystems (OS4 Pro external
+// 16 MB flash, OSPi SD card) the rings must leave room for the on-device UI
+// (ui_local.cpp) and config saves; small filesystems keep a 64 KB floor.
+ulong logSpaceFloor() {
+#if defined(ESP32)
+  return (LittleFS.totalBytes() >= LOG_SPACE_LARGE_FS) ? LOG_SPACE_FLOOR_LARGE : LOG_SPACE_FLOOR_SMALL;
+#elif defined(OSPI)
+  return LOG_SPACE_FLOOR_LARGE;
+#else
+  return LOG_SPACE_FLOOR_SMALL;
+#endif
+}
+
+// Called before every log append. Trims the inactive half-rings (oldest data,
+// least granular first) and, if that is not enough, the active ring of the
+// log that is about to be written, so the logs can never squeeze the UI or
+// the configuration off the filesystem. Cheap when there is room: one
+// LittleFS/statvfs query.
+void ensureLogSpace(uint8_t log) {
+  const ulong floor_bytes = logSpaceFloor();
+  if (diskFree() >= floor_bytes) return;
+  const uint8_t order[] = { LOG_MONTH, LOG_WEEK, LOG_STD };
+  for (uint8_t i = 0; i < 3 && diskFree() < floor_bytes; i++) {
+    const char *fn = getlogfile2(order[i]);
+    if (fn && fn[0] && file_exists(fn)) {
+      DEBUG_PRINT(F("ensureLogSpace: trimming old log "));
+      DEBUG_PRINTLN(fn);
+      remove_file(fn);
+    }
+  }
+  if (diskFree() < floor_bytes) {
+    // The active ring of this log is rotated away: the entry is written into a
+    // fresh file, the full one is dropped (same effect as reaching MAX_LOG_SIZE).
+    const char *fn = getlogfile(log);
+    if (fn && fn[0] && file_exists(fn)) {
+      DEBUG_PRINT(F("ensureLogSpace: dropping full log "));
+      DEBUG_PRINTLN(fn);
+      remove_file(fn);
     }
   }
 }

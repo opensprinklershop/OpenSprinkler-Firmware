@@ -6,6 +6,15 @@ Versions: `<FW_VERSION>.<FW_MINOR>` — e.g. `2.4.0 (187)` means `OS_FW_VERSION=
 
 ---
 
+## [2.4.0(231)] — unveröffentlicht
+
+### Added
+- **Web-UI auf dem Gerät (ESP32-C5, OSPi)**: Die App-Oberfläche wird als signiertes Paket (`ui.tar`, ECDSA P-256, `tools/mkuipack.py`, Schlüssel `ui-update-signing.pem`) auf dem Controller gespeichert (`/ui/<Version>/`, externer 16-MB-Flash des OS4 Pro bzw. `<data dir>/ui/` auf dem OSPi) und vom Controller selbst ausgeliefert (`ui_local.cpp`). Dateien liegen vorkomprimiert und werden mit `Content-Encoding: gzip` und `immutable`-Caching gestreamt; die Module sind zu einer `bundle.js` zusammengefasst. Eine lokale UI wird nur ausgeliefert, wenn ihre Version exakt der Firmware entspricht; sonst greift die externe URL. Installation läuft nach `/ui/.new` mit SHA-256 und Signaturprüfung und wird atomar umbenannt; Pakete ohne gültige Signatur werden verworfen. Neue Optionen `uisr` (UI-Quelle: 0 Gerät/automatisch, 1 nur Gerät, 2 externer Server) und `uifb` (bei externer Quelle auf die Gerätekopie ausweichen, wenn das externe Script nicht lädt); beim ersten Start bleibt eine selbst gesetzte `jsp`-URL extern, die Standard-URL wechselt auf das Gerät. Neue Endpoints `/ul` (Status, `install=1[&url=]`, `remove=1`, `check=1`), `/uf` (Upload eines Pakets auf Port 8080, ESP32) und `/ui/*`; `/jo` liefert `uiv`, `uia`, `uist`. Der tägliche Manifest-Check und das Ende der OTA-Phase 2 installieren das zur Firmware passende Paket (`upgrade/archive/v<fw>_<minor>/ui.tar`, Manifest-Felder `ui_url`, `ui_version`, `ui_size`, `ui_sha256`, `ui_sig`; `fw.sh release` baut und signiert es). Es bleiben höchstens zwei Versionen liegen (aktive + vorherige für Rollback und zweiten OTA-Slot).
+- **`/su`-Seite**: Auswahl Gerät/externer Server, Ausfall-Fallback, Installations-/Entfernen-Buttons mit Fortschritt (`/ul`), `hasher.js` wird jetzt von der Firmware selbst ausgeliefert (`/js/hasher.js`), damit die Seite auch ohne Internet funktioniert (bisher fest von `ui.opensprinkler.com`).
+
+### Changed
+- **Platz-Reserve für die Sensorlogs**: Auf großen Dateisystemen (externer Flash ≥ 8 MB, OSPi) lassen die Log-Ringe jetzt 6 MB frei (`ensureLogSpace()`, `LOG_SPACE_FLOOR_LARGE`); unterhalb werden erst die inaktiven Halbringe (Monat, Woche, Standard), dann der aktive Ring des betroffenen Logs verworfen. Bisher wuchsen die Logs ohne Untergrenze bis der Flash voll war (Bench-Gerät: 13,9 von 16 MB).
+
 ## [2.4.0(230)] — veröffentlicht 2026-11-01
 
 ### Added
