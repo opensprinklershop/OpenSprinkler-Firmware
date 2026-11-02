@@ -3248,6 +3248,10 @@ void Monitor::toJson(ArduinoJson::JsonObject obj) const {
       mObj[F("monitor")] = m.set_sensor12.monitor;
       mObj[F("sensor12")] = m.set_sensor12.sensor12;
       break;
+    case MONITOR_SET_MASTER:
+      mObj[F("monitor")] = m.set_master.monitor;
+      mObj[F("master")] = m.set_master.master;
+      break;
     case MONITOR_AND:
     case MONITOR_OR:
     case MONITOR_XOR:
@@ -3315,6 +3319,10 @@ void Monitor::fromJson(ArduinoJson::JsonVariantConst obj) {
       case MONITOR_SET_SENSOR12:
         m.set_sensor12.monitor = mVar[F("monitor")] | 0;
         m.set_sensor12.sensor12 = mVar[F("sensor12")] | 0;
+        break;
+      case MONITOR_SET_MASTER:
+        m.set_master.monitor = mVar[F("monitor")] | 0;
+        m.set_master.master = mVar[F("master")] | 0;
         break;
       case MONITOR_AND:
       case MONITOR_OR:
@@ -3598,7 +3606,7 @@ bool monitor_union_build(Monitor_Union_t &m, uint type, double value1, double va
                          uint16_t monitor1, uint16_t monitor2, uint16_t monitor3, uint16_t monitor4,
                          bool invers1, bool invers2, bool invers3, bool invers4,
                          uint16_t monitor, uint16_t time_from, uint16_t time_to, uint8_t weekdays,
-                         uint16_t rmonitor, uint32_t ip, uint16_t port) {
+                         uint16_t rmonitor, uint32_t ip, uint16_t port, uint8_t master) {
   memset(&m, 0, sizeof(m));
   switch (type) {
     case MONITOR_MIN:
@@ -3613,6 +3621,11 @@ bool monitor_union_build(Monitor_Union_t &m, uint type, double value1, double va
     case MONITOR_SET_SENSOR12:
       m.set_sensor12.monitor = monitor;
       m.set_sensor12.sensor12 = sensor12;
+      return true;
+    case MONITOR_SET_MASTER:
+      if (master != 1 && master != 2) return false;
+      m.set_master.monitor = monitor;
+      m.set_master.master = master;
       return true;
     case MONITOR_AND:
     case MONITOR_OR:
@@ -4099,6 +4112,9 @@ void check_monitors() {
         case MONITOR_SET_SENSOR12:
           newState = getEval(mon->m.set_sensor12.monitor, false, false);
           break;
+        case MONITOR_SET_MASTER:
+          newState = getEval(mon->m.set_master.monitor, false, false);
+          break;
         case MONITOR_AND:
           newState = getEval(mon->m.andorxor.monitor1, mon->m.andorxor.invers1, true) &&
             getEval(mon->m.andorxor.monitor2, mon->m.andorxor.invers2, true) &&
@@ -4131,7 +4147,12 @@ void check_monitors() {
     }
   }
 
-  // Phase 1c: derive forced sensor1/2 bits from the final SET_SENSOR12 states.
+  // Phase 1c: derive forced sensor1/2 bits from the final SET_SENSOR12 states
+  // and the master redirect from the final SET_MASTER states. The redirect is
+  // volatile: OpenSprinkler::bound_to_master() serves the bindings of the
+  // redirected master through the other master slot while it is set. Without
+  // any SET_MASTER monitor it stays 0 and the master handling is unchanged.
+  uint8_t master_redirect = 0;
   for (auto &kv : monitorsMap) {
     Monitor_t *mon = kv.second;
     if (mon->type == MONITOR_SET_SENSOR12) {
@@ -4141,7 +4162,15 @@ void check_monitors() {
       if (mon->m.set_sensor12.sensor12 == 2) {
         os.status.forced_sensor2 = ev[mon->nr].active;
       }
+    } else if (mon->type == MONITOR_SET_MASTER) {
+      if (ev[mon->nr].active && (mon->m.set_master.master == 1 || mon->m.set_master.master == 2)) {
+        master_redirect = mon->m.set_master.master;
+      }
     }
+  }
+  if (master_redirect != os.master_redirect) {
+    DEBUG_PRINTF(F("[MON] master redirect %d->%d\n"), (int)os.master_redirect, (int)master_redirect);
+    os.master_redirect = master_redirect;
   }
 
   // Phase 2: apply the computed states atomically (outputs + reset timers).

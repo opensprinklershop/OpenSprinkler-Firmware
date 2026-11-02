@@ -923,11 +923,12 @@ static int tool_configure_monitor(const ArduinoJson::JsonObjectConst& args) {
   uint16_t rmonitor = params["rmonitor"] | 0;
   uint32_t ip = params["ip"] | 0;
   uint16_t port = params["port"] | 0;
+  uint8_t master = params["master"] | 0;
 
   Monitor_Union_t m;
   if (!monitor_union_build(m, type, value1, value2, sensor12, invers,
                            monitor1, monitor2, monitor3, monitor4, invers1, invers2, invers3, invers4,
-                           monitor, time_from, time_to, wdays, rmonitor, ip, port)) {
+                           monitor, time_from, time_to, wdays, rmonitor, ip, port, master)) {
     return 18; // HTML_DATA_FORMATERROR
   }
 
@@ -1008,7 +1009,7 @@ static void build_tools_list(ArduinoJson::JsonObject& result) {
     auto props = schema["properties"].to<ArduinoJson::JsonObject>();
     auto params = props["params"].to<ArduinoJson::JsonObject>();
     params["type"] = "object";
-    params["description"] = "Monitor parameters: nr, sensor, type, prog, zone, maxrun, value1, value2, sensor12, monitor1..4, from, to, wdays, rmonitor, ip, port, rs, prio.";
+    params["description"] = "Monitor parameters: nr, sensor, type, prog, zone, maxrun, value1, value2, sensor12, monitor, master (type 5 SET MASTER: redirect master 1|2 bindings to the other master while monitor is active), monitor1..4, from, to, wdays, rmonitor, ip, port, rs, prio.";
     auto req_arr = schema["required"].to<ArduinoJson::JsonArray>();
     req_arr.add("params");
   }

@@ -142,6 +142,7 @@ uint16_t OpenSprinkler::hw_chip_rev = 0; // ESP32-C5 silicon revision (major*100
 #endif
 unsigned char OpenSprinkler::masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
 time_os_t OpenSprinkler::masters_last_on[NUM_MASTER_ZONES];
+uint8_t OpenSprinkler::master_redirect = 0;
 RCSwitch OpenSprinkler::rfswitch;
 OSInfluxDB OpenSprinkler::influxdb;
 
@@ -2641,6 +2642,19 @@ unsigned char OpenSprinkler::bound_to_master(unsigned char sid, unsigned char ma
 	unsigned char bid = sid >> 3;
 	unsigned char s = sid & 0x07;
 	unsigned char attributes = 0;
+
+	// Water source switch (MONITOR_SET_MASTER): while master_redirect is set, the
+	// stations bound to the redirected master are served by the other master
+	// instead (with that master's own on/off adjustments). The redirected master
+	// itself then has no bound stations and stays off. Station attributes are
+	// never modified; master_redirect == 0 is the unchanged legacy path.
+	if (master_redirect == 1) {
+		if (mas == MASTER_1) return 0;
+		if (mas == MASTER_2) return (attrib_mas[bid] | attrib_mas2[bid]) & (1 << s);
+	} else if (master_redirect == 2) {
+		if (mas == MASTER_2) return 0;
+		if (mas == MASTER_1) return (attrib_mas[bid] | attrib_mas2[bid]) & (1 << s);
+	}
 
 	switch (mas) {
 		case MASTER_1:

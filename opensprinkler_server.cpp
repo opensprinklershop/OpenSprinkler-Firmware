@@ -1792,6 +1792,7 @@ void server_ui_local(OTF_PARAMS_DEF) {
 void server_json_controller_main(OTF_PARAMS_DEF) {
 	unsigned char bid, sid;
 	time_os_t curr_time = os.now_tz();
+	bfill.emit_p(PSTR("\"masrd\":$D,"), os.master_redirect); // active master redirect (MONITOR_SET_MASTER), 0 = none
 	bfill.emit_p(PSTR("\"devt\":$L,\"nbrd\":$D,\"en\":$D,\"sn1\":$D,\"sn2\":$D,\"rd\":$D,\"rdst\":$L,"
 										"\"sunrise\":$D,\"sunset\":$D,\"eip\":$L,\"lwc\":$L,\"lswc\":$L,"
 									"\"lupt\":$L,\"lrbtc\":$D,\"lrun\":[$D,$D,$D,$L],\"pq\":$D,\"pt\":$L,\"nq\":$D,\"ocs\":$D,\"ocma\":$D,"),
@@ -5387,6 +5388,7 @@ void server_monitor_types(OTF_PARAMS_DEF) {
 	bfill.emit_p(PSTR("{\"name\":\"Max\",\"type\":$D},"), MONITOR_MAX);
 	bfill.emit_p(PSTR("{\"name\":\"SN 1/2\",\"type\":$D},"), MONITOR_SENSOR12);
 	bfill.emit_p(PSTR("{\"name\":\"SET SN 1/2\",\"type\":$D},"), MONITOR_SET_SENSOR12);
+	bfill.emit_p(PSTR("{\"name\":\"SET MASTER\",\"type\":$D},"), MONITOR_SET_MASTER);
 	bfill.emit_p(PSTR("{\"name\":\"AND\",\"type\":$D},"), MONITOR_AND);
 	bfill.emit_p(PSTR("{\"name\":\"OR\",\"type\":$D},"), MONITOR_OR);
 	bfill.emit_p(PSTR("{\"name\":\"XOR\",\"type\":$D},"), MONITOR_XOR);
@@ -5515,10 +5517,15 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("invers4"), true))
 		invers4 = strtoul(tmp_buffer, NULL, 0) > 0;
 
-	//type = NOT
+	//type = NOT / SET_SENSOR12 / SET_MASTER
 	uint16_t monitor = 0;
 	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("monitor"), true))
 		monitor = strtoul(tmp_buffer, NULL, 0);
+
+	//type = SET_MASTER: which master's bindings are redirected (1|2)
+	uint8_t master = 0;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("master"), true))
+		master = strtoul(tmp_buffer, NULL, 0);
 
 	//type = TIME
 	uint16_t time_from = 0;
@@ -5570,7 +5577,7 @@ void server_monitor_config(OTF_PARAMS_DEF) {
 	Monitor_Union_t m;
 	if (!monitor_union_build(m, type, value1, value2, sensor12, invers,
 	                         monitor1, monitor2, monitor3, monitor4, invers1, invers2, invers3, invers4,
-	                         monitor, time_from, time_to, wdays, rmonitor, ip, port)) {
+	                         monitor, time_from, time_to, wdays, rmonitor, ip, port, master)) {
 		handle_return(HTML_DATA_FORMATERROR);
 	}
 	int ret = monitor_define(nr, type, sensor, prog, zone, m, name, maxRuntime, prio, reset_seconds, output_mode, stale_timeout, failsafe_active, order, show);
@@ -5682,6 +5689,11 @@ void monitorconfig_json(Monitor_t *mon) {
 			bfill.emit_p(PSTR("\"monitor\":$D,\"sensor12\":$D}"),
 				mon->m.set_sensor12.monitor,
 				mon->m.set_sensor12.sensor12);
+			break;
+		case MONITOR_SET_MASTER:
+			bfill.emit_p(PSTR("\"monitor\":$D,\"master\":$D}"),
+				mon->m.set_master.monitor,
+				mon->m.set_master.master);
 			break;
 		case MONITOR_AND:
 		case MONITOR_OR:

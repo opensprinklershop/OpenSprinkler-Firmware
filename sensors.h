@@ -359,6 +359,7 @@ private:
 #define MONITOR_MAX 2
 #define MONITOR_SENSOR12 3 // Read Digital OS Sensors Rain/Soil Moisture 
 #define MONITOR_SET_SENSOR12 4 // Write Digital OS Sensors Rain/Soil Moisture 
+#define MONITOR_SET_MASTER 5 // Redirect master 1<->2 bindings while the source monitor is active (water source switch)
 #define MONITOR_AND 10
 #define MONITOR_OR 11
 #define MONITOR_XOR 12
@@ -389,6 +390,11 @@ typedef struct Monitor_SET_SENSOR12 { // type = 4
   uint16_t monitor;
   uint16_t sensor12;
 } Monitor_SET_SENSOR12_t;
+
+typedef struct Monitor_SET_MASTER { // type = 5
+  uint monitor;   // source monitor nr whose state drives the redirect
+  uint8_t master; // 1 or 2: bindings of this master are served by the other master while active
+} Monitor_SET_MASTER_t;
 
 typedef struct Monitor_ANDORXOR { // type = 10+11+12
   uint16_t monitor1;
@@ -421,6 +427,7 @@ typedef union Monitor_Union {
     Monitor_MINMAX_t minmax;     // type = 1+2
     Monitor_SENSOR12_t sensor12; // type = 3
     Monitor_SET_SENSOR12_t set_sensor12; // type = 4
+    Monitor_SET_MASTER_t set_master; // type = 5
     Monitor_ANDORXOR_t andorxor; // type = 10+11+12
     Monitor_NOT_t mnot; // type = 13
     Monitor_TIME_t mtime; // type = 14
@@ -669,7 +676,7 @@ bool monitor_union_build(Monitor_Union_t &m, uint type, double value1, double va
                          uint16_t monitor1, uint16_t monitor2, uint16_t monitor3, uint16_t monitor4,
                          bool invers1, bool invers2, bool invers3, bool invers4,
                          uint16_t monitor, uint16_t time_from, uint16_t time_to, uint8_t weekdays,
-                         uint16_t rmonitor, uint32_t ip, uint16_t port);
+                         uint16_t rmonitor, uint32_t ip, uint16_t port, uint8_t master = 0);
 int monitor_define(uint nr, uint type, uint sensor, uint prog, uint zone, const Monitor_Union_t m, char * name, ulong maxRuntime, uint8_t prio, ulong reset_seconds = 0, uint8_t output_mode = 0, ulong stale_timeout = 0, uint8_t failsafe_active = 0, uint order = 0, uint8_t show = 1);
 Monitor_t * monitor_by_nr(uint nr);
 Monitor_t * monitor_by_idx(uint idx);

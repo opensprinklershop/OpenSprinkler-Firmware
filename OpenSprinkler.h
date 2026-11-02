@@ -434,6 +434,7 @@ static unsigned char iopts[]; // integer options (initialized — must NOT be in
 	static uint16_t EXT_RAM_BSS_ATTR attrib_favg[MAX_NUM_STATIONS]; //value*100 flow avg values
 	static unsigned char EXT_RAM_BSS_ATTR masters[NUM_MASTER_ZONES][NUM_MASTER_OPTS];
 	static time_os_t EXT_RAM_BSS_ATTR masters_last_on[NUM_MASTER_ZONES];
+	static uint8_t master_redirect;  // 0: none; 1: stations bound to master 1 are served by master 2; 2: vice versa (set by MONITOR_SET_MASTER)
 
 	// variables for time keeping
 	static time_os_t sensor1_on_timer;  // time when sensor1 is detected on last time
