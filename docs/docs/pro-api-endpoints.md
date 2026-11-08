@@ -12,6 +12,7 @@ The OpenSprinklerShop firmware, including OpenSprinklerPro, uses its own firmwar
 | `/sx` | ESP32, ESP8266, OSPi | Sensor-only configuration backup/import. Distinct from `/ub`. |
 | `/ul`, `/uf`, `/ui/*` | ESP32, OSPi | On-device web UI: status/installation, package upload (ESP32 only, port 8080), static UI files. Not on the ESP8266 (no room). |
 | `/jw` | ESP32, ESP8266, OSPi | Monthly water-usage data. |
+| `/db?lp=1\|2\|3` | ESP32 | Diagnostics: main-loop profiler (`lp=1` read, `lp=2` read and reset, `lp=3` filesystem benchmark, blocks 1-3 s). Without `lp` the usual `/db` diagnostic object. |
 | `/tg`, `/tl`, `/ta`, `/tc`, `/tx` | ESP32 | HTTPS certificate and ACME/Let's Encrypt management. |
 | `/rk`, `/rp`, `/ru` | ESP32 with `ENABLE_RAINMAKER` | ESP RainMaker status, provisioning and unlink/reset flows. |
 | `/jm`, `/mm` | ESP32 with `ENABLE_MATTER` | Matter pairing information and commissioning window. |
@@ -45,8 +46,8 @@ The web interface can be stored on the controller and served by the controller
 itself (ESP32: external LittleFS, OSPi: `<data dir>/ui/`). A UI package
 (`ui.tar`, built by `tools/mkuipack.py`, ECDSA P-256 signed) is installed per
 firmware version under `/ui/<version>/`; the local copy is only used when its
-version equals the running firmware, otherwise the external URL (`jsp`) is used.
-Without Internet access the device still serves its own UI.
+version equals the running firmware. It is the fallback for offline / island
+operation: without Internet access the device still serves its own UI.
 
 | Endpoint | Purpose |
 |---|---|
@@ -58,9 +59,13 @@ Without Internet access the device still serves its own UI.
 | `GET /ui/...` | Static files of the active UI version (`/ui/js/home.js`, `/ui/versions.json`, `/ui/<version>/js/...`), served gzip-encoded with immutable caching for versioned paths. |
 | `GET /su`, `GET /cu?pw=...&uis=0|2&uifb=0|1&jsp=...` | Firmware-own settings page and its form target: UI source, fallback, external URL, weather URL. |
 
-Related options (`/jo`, `/co`): `uisr` (0 device/auto, 1 device only, 2 external
-URL), `uifb` (1 = with an external URL fall back to the device copy when the
-external loader cannot be loaded). `/jo` also reports `uiv` (installed version
+The external UI is faster, so it stays the default: in mode 0 the home page
+loads the external loader with an error handler and a watchdog and reloads
+itself as `/?ui=local` (device copy) when the loader fails or has not run after
+`uifb` seconds; `/?ui=ext` forces the external loader. Related options (`/jo`,
+`/co`): `uisr` (0 external first / device copy when offline, 1 always the device
+copy, 2 external only, no package installed), `uifb` (seconds before the
+browser switches to the device copy, default 6, 0 = only on load error). `/jo` also reports `uiv` (installed version
 served locally), `uia` (1 = home page uses the local copy) and `uist` (1 = an
 older local version is served in "device only" mode). On the first boot after
 the upgrade a custom `jsp` URL keeps the external source (`uisr=2`), the default

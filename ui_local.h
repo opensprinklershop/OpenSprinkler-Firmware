@@ -44,13 +44,18 @@
 #define UI_LOCAL_MIN_FREE      (512UL * 1024UL)   // headroom kept free after an install
 #define UI_LOCAL_KEEP_VERSIONS 2           // active + previous (rollback / second OTA slot)
 
-/** IOPT_UI_SOURCE values */
+/** IOPT_UI_SOURCE values. The external UI is faster than the copy on the
+ *  controller, so the device copy is the fallback for offline / island
+ *  operation, not the default. The browser decides: server_home() emits the
+ *  external loader plus a watchdog; when the external script fails or does not
+ *  run within IOPT_UI_FALLBACK seconds the page reloads as /?ui=local. */
 enum UiSource {
-	UI_SOURCE_AUTO = 0,        // local when a matching version is installed, else external URL
-	UI_SOURCE_LOCAL_ONLY = 1,  // local; on version mismatch the newest older installed UI (with notice)
-	UI_SOURCE_EXTERNAL = 2,    // external URL (SOPT_JAVASCRIPTURL), optional fallback to local
+	UI_SOURCE_AUTO = 0,        // external URL first, device copy when the external loader fails (offline)
+	UI_SOURCE_LOCAL_ONLY = 1,  // always the device copy; on version mismatch the newest older installed UI
+	UI_SOURCE_EXTERNAL = 2,    // external URL only, never the device copy (package not installed either)
 	UI_SOURCE_UNSET = 3        // first boot after the upgrade: migrated in ui_local_init()
 };
+#define UI_FALLBACK_TIMEOUT_DEFAULT 6   // s; IOPT_UI_FALLBACK, 0 = only on load error
 
 enum UiInstallStatus {
 	UI_INST_IDLE = 0,
@@ -75,11 +80,11 @@ void ui_local_loop(unsigned long now_tz);               // once per minute from 
 void ui_local_firmware_version(char *buf, size_t len);  // "2.4.0.231"
 const char* ui_local_version();                         // version served locally ("" = none)
 bool ui_local_available();                              // exact match for the running firmware installed
-bool ui_local_use();                                    // server_home: emit the local loader
-bool ui_local_fallback();                               // server_home: add onerror fallback to local
+bool ui_local_use();                                    // server_home: emit only the local loader (device-only mode)
+bool ui_local_fallback();                               // server_home: external loader + watchdog falling back to local
 bool ui_local_stale();                                  // local-only mode serving an older version
 void ui_local_default_url(char *buf, size_t len);       // archive URL of the package for this firmware
-size_t ui_local_free_bytes();
+size_t ui_local_free_bytes(size_t exact_below = 0);  // ESP32: cached, exact near exact_below
 size_t ui_local_total_bytes();
 size_t ui_local_list_versions(char *buf, size_t len);   // comma separated installed versions
 

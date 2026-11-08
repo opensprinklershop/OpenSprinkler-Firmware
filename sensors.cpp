@@ -24,6 +24,7 @@
 #include "SensorBase.hpp"
 #include "sensors_util.h"
 #include "sensor_compat.h"
+#include "loop_prof.h"
 #include "main.h"
 #include "TimeLib.h"
 #include <new>
@@ -687,13 +688,17 @@ void sensor_api_loop() {
 
 #if defined(ESP32C5) && defined(OS_ENABLE_ZIGBEE)
   if (ieee802154_is_zigbee() && sensor_zigbee_is_active()) {
+    LOOP_PROF_MARK(LPS_SENSAPI);
     sensor_zigbee_loop();
+    LOOP_PROF_MARK(LPS_ZIGBEE);
   }
 #endif
 
 #if defined(ESP32) && defined(OS_ENABLE_BLE)
   if (sensor_ble_is_active()) {
+    LOOP_PROF_MARK(LPS_SENSAPI);
     sensor_ble_loop();
+    LOOP_PROF_MARK(LPS_BLE);
   }
 #endif
 }
@@ -2012,10 +2017,13 @@ void read_all_sensors(boolean online) {
   if (time != s_last_periodic) {
     s_last_periodic = time;
     sensor_update_groups();
+    LOOP_PROF_MARK(LPS_SENS_PRE);
     calc_sensorlogs();
+    LOOP_PROF_MARK(LPS_SENS_LOGS);
     check_monitors();
     if (time - last_save_time > 3600)  // 1h
       sensor_save();
+    LOOP_PROF_MARK(LPS_SENS_MON);
   }
 
   // Initialize iterator if we're starting over
@@ -2050,6 +2058,7 @@ void read_all_sensors(boolean online) {
           current_sensor = NULL;
           return;
         }
+        LOOP_PROF_SENSOR((uint16_t)current_sensor->nr, (uint16_t)current_sensor->type, 0, (uint32_t)read_ms);
         DEBUG_PRINTF(F("[SENSOR] read end #%d result=%d duration=%lums\n"),
                      current_sensor->nr, result, read_ms);
         if (result == HTTP_RQT_SUCCESS) {
@@ -2076,9 +2085,11 @@ void read_all_sensors(boolean online) {
           unsigned long log_start_ms = millis();
           sensorlog_add(LOG_STD, current_sensor, time);
           sensor_standard_waterlog_add(current_sensor, time);
+          LOOP_PROF_SENSOR((uint16_t)current_sensor->nr, (uint16_t)current_sensor->type, 1, (uint32_t)(millis() - log_start_ms));
           DEBUG_PRINTF(F("[SENSOR] log done #%d duration=%lums\n"), current_sensor->nr, millis() - log_start_ms);
           unsigned long push_start_ms = millis();
           push_message(current_sensor);
+          LOOP_PROF_SENSOR((uint16_t)current_sensor->nr, (uint16_t)current_sensor->type, 2, (uint32_t)(millis() - push_start_ms));
           DEBUG_PRINTF(F("[SENSOR] push done #%d duration=%lums\n"), current_sensor->nr, millis() - push_start_ms);
         } else if (result == HTTP_RQT_TIMEOUT) {
           // delay next read on timeout:
@@ -2894,17 +2905,19 @@ ProgSensorAdjust *prog_adjust_by_idx(uint idx) {
 }
 
 #if defined(ESP8266)
-ulong diskFree() {
+ulong diskFree(ulong exact_below) {
+  (void)exact_below;
   struct FSInfo fsinfo;
   LittleFS.info(fsinfo);
   return fsinfo.totalBytes - fsinfo.usedBytes;
 }
 #elif defined(ESP32)
-ulong diskFree() {
-  return LittleFS.totalBytes() - LittleFS.usedBytes();
+ulong diskFree(ulong exact_below) {
+  return (ulong)fs_free_bytes(exact_below);
 }
 #elif defined(OSPI)
-ulong diskFree() {
+ulong diskFree(ulong exact_below) {
+  (void)exact_below;
   struct statvfs stat;
   if (statvfs("/", &stat) == 0) {
     return (ulong)stat.f_bavail * stat.f_bsize;
@@ -2915,7 +2928,7 @@ ulong diskFree() {
 
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
 bool checkDiskFree() {
-  if (diskFree() < MIN_DISK_FREE) {
+  if (diskFree(MIN_DISK_FREE) < MIN_DISK_FREE) {
     DEBUG_PRINT(F("fs has low space!"));
     return false;
   }
@@ -2936,9 +2949,9 @@ bool checkDiskFree() {
 // drops current rings (least-valuable first) so a full-device restore can still
 // create its sensors instead of failing with "not enough space".
 void ensureConfigSpace() {
-  if (diskFree() >= CONFIG_HEADROOM) return;
+  if (diskFree(CONFIG_HEADROOM) >= CONFIG_HEADROOM) return;
   const uint8_t order[] = { LOG_MONTH, LOG_WEEK, LOG_STD };
-  for (uint8_t i = 0; i < 3 && diskFree() < CONFIG_HEADROOM; i++) {
+  for (uint8_t i = 0; i < 3 && diskFree(CONFIG_HEADROOM) < CONFIG_HEADROOM; i++) {
     const char *fn = getlogfile2(order[i]);
     if (fn && fn[0] && file_exists(fn)) {
       DEBUG_PRINT(F("ensureConfigSpace: trimming old log "));
@@ -2955,9 +2968,9 @@ void ensureConfigSpace() {
   // the current ring too. Order preserves the most valuable data longest: the
   // high-resolution std log (regenerates fastest) goes first, the long-term
   // monthly aggregate last.
-  if (diskFree() < CONFIG_HEADROOM) {
+  if (diskFree(CONFIG_HEADROOM) < CONFIG_HEADROOM) {
     const uint8_t last_order[] = { LOG_STD, LOG_WEEK, LOG_MONTH };
-    for (uint8_t i = 0; i < 3 && diskFree() < CONFIG_HEADROOM; i++) {
+    for (uint8_t i = 0; i < 3 && diskFree(CONFIG_HEADROOM) < CONFIG_HEADROOM; i++) {
       const char *fn = getlogfile(last_order[i]);
       if (fn && fn[0] && file_exists(fn)) {
         DEBUG_PRINT(F("ensureConfigSpace: trimming current log "));
@@ -2973,7 +2986,7 @@ void ensureConfigSpace() {
 // (ui_local.cpp) and config saves; small filesystems keep a 64 KB floor.
 ulong logSpaceFloor() {
 #if defined(ESP32)
-  return (LittleFS.totalBytes() >= LOG_SPACE_LARGE_FS) ? LOG_SPACE_FLOOR_LARGE : LOG_SPACE_FLOOR_SMALL;
+  return (fs_total_bytes() >= LOG_SPACE_LARGE_FS) ? LOG_SPACE_FLOOR_LARGE : LOG_SPACE_FLOOR_SMALL;
 #elif defined(OSPI)
   return LOG_SPACE_FLOOR_LARGE;
 #else
@@ -2988,9 +3001,9 @@ ulong logSpaceFloor() {
 // LittleFS/statvfs query.
 void ensureLogSpace(uint8_t log) {
   const ulong floor_bytes = logSpaceFloor();
-  if (diskFree() >= floor_bytes) return;
+  if (diskFree(floor_bytes) >= floor_bytes) return;
   const uint8_t order[] = { LOG_MONTH, LOG_WEEK, LOG_STD };
-  for (uint8_t i = 0; i < 3 && diskFree() < floor_bytes; i++) {
+  for (uint8_t i = 0; i < 3 && diskFree(floor_bytes) < floor_bytes; i++) {
     const char *fn = getlogfile2(order[i]);
     if (fn && fn[0] && file_exists(fn)) {
       DEBUG_PRINT(F("ensureLogSpace: trimming old log "));
@@ -2998,7 +3011,7 @@ void ensureLogSpace(uint8_t log) {
       remove_file(fn);
     }
   }
-  if (diskFree() < floor_bytes) {
+  if (diskFree(floor_bytes) < floor_bytes) {
     // The active ring of this log is rotated away: the entry is written into a
     // fresh file, the full one is dropped (same effect as reaching MAX_LOG_SIZE).
     const char *fn = getlogfile(log);
@@ -3024,7 +3037,7 @@ bool config_space_for_new_entry(const char *cfgfile) {
   ulong need = MIN_DISK_FREE;  // safety margin for the atomic save
   if (cfgfile && cfgfile[0] && file_exists(cfgfile))
     need += file_size(cfgfile);  // the save rewrites the whole file into a temp copy
-  return diskFree() >= need;
+  return diskFree(need) >= need;
 #else
   (void)cfgfile;
   return true;

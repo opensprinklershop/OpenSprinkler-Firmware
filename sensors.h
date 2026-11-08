@@ -698,7 +698,7 @@ boolean send_rs485_command(uint32_t ip, uint16_t port, uint8_t address, uint16_t
 #endif
 
 #if defined(ESP8266) || defined(ESP32) || defined(OSPI)
-ulong diskFree();
+ulong diskFree(ulong exact_below = 0);  // ESP32: cached, exact near exact_below (utils.h fs_free_bytes)
 bool checkDiskFree();  // true: disk space Ok, false: Out of disk space
 void ensureConfigSpace();  // free space for a config save by trimming old logs
 ulong logSpaceFloor();      // free space the sensor logs must leave (ui_local, config)

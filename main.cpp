@@ -51,6 +51,7 @@
 #include "online_update.h"
 #include "ui_local.h"
 #include "loop_guard.h"
+#include "loop_prof.h"
 #include "eth_w5500.h"
 #if defined(ESP32C5)
 #include "esp_chip_info.h"
@@ -185,7 +186,8 @@ void remote_http_callback(char*);
 #define CLIENT_READ_TIMEOUT       5     // client read timeout (in seconds)
 #define DHCP_CHECKLEASE_INTERVAL  3600L // DHCP check lease interval (in seconds)
 #define FLOWPOLL_INTERVAL         5     // flow poll interval (in milli-seconds)
-#define CURRPOLL_INTERVAL         20    // current poll interval (in milli-seconds)
+#define CURRPOLL_INTERVAL         20    // current poll interval while stations run (in milli-seconds)
+#define CURRPOLL_IDLE_INTERVAL  1000    // idle: baseline only; one C5 reading blocks the loop for 20 ms
 #define OVERCURRENT_CONSEC_COUNT   3    // consecutive above-threshold readings before triggering system overcurrent
 
 // ====== PSRAM-aware buffer allocation (8MB PSRAM available) ======
@@ -1060,10 +1062,29 @@ void gratuitousARPTask() {
 #endif
 
 /** Main Loop */
+#if defined(ESP32)
+/** update_server (port 8080: /update, /uf, setup pages) costs ~0.5 ms per
+ *  handleClient() even when nobody is connected (accept() on the listening
+ *  socket). Without a client poll it every UPDSRV_IDLE_POLL_MS; with a client
+ *  (upload in progress, keep-alive) on every pass as before. */
+#define UPDSRV_IDLE_POLL_MS 20
+static void update_server_poll() {
+	if (!update_server) return;
+	static uint32_t last = 0;
+	uint32_t now = millis();
+	if (update_server->client().connected() || (uint32_t)(now - last) >= UPDSRV_IDLE_POLL_MS) {
+		last = now;
+		update_server->handleClient();
+	}
+}
+#endif
+
 void do_loop()
 {
 	loop_guard_beat();
+	LOOP_PROF_BEGIN();
 	eth_w5500_loop(); // ESP32: executes a pending Ethernet recovery
+	LOOP_PROF_MARK(LPS_ETH);
 
 	#if defined(ARDUINOOTA)
 	handle_arduino_ota();
@@ -1173,7 +1194,9 @@ void do_loop()
 
 	// BLE und Matter werden jetzt direkt nach WiFi-Verbindung initialisiert (siehe OS_STATE_CONNECTING)
 	// Keine verzögerte Initialisierung mehr nötig
+	LOOP_PROF_MARK(LPS_PRE);
 	flow_update_input_mode();
+	LOOP_PROF_MARK(LPS_FLOWMODE);
 
 	static ulong flowpoll_timeout=0;
 	if(os.iopts[IOPT_SENSOR1_TYPE]==SENSOR_TYPE_FLOW) {
@@ -1186,20 +1209,25 @@ void do_loop()
 		}
 	}
 
+	LOOP_PROF_MARK(LPS_PRE);
 #if defined(ARDUINO)
 	{
 		static uint8_t oc_consec = 0;   // consecutive above-threshold readings
 		static uint16_t oc_peak = 0;    // peak valve current during consecutive readings
+		static bool curr_was_busy = false;
 		ulong tn = millis();
-		if((long)(tn-currpoll_timeout) > 0) { // overflow proof timeout
-			int16_t curr = (int16_t)os.read_current();
+		// a program just started: poll now instead of waiting for the idle interval
+		if(os.status.program_busy && !curr_was_busy) currpoll_timeout = tn;
+		curr_was_busy = os.status.program_busy;
+		if((long)(tn-currpoll_timeout) >= 0) { // overflow proof timeout
+			int16_t curr = (int16_t)os.read_current(); // single reading (C5: 20 ms of ADC averaging)
 			// update baseline when no stations are running
 			if(!os.status.program_busy) {
-				os.update_baseline();
+				os.update_baseline((uint16_t)curr);
 				oc_consec = 0;
 				oc_peak = 0;
 			} else {
-				os.get_valve_current(); // tick the display EMA while stations run
+				os.get_valve_current(); // tick the display EMA while stations run (no new reading)
 			}
 			// subtract baseline to get valve-only current for overcurrent comparison
 			int16_t vcurr = (os.baseline_current > 0) ? (curr - (int16_t)os.baseline_current) : curr;
@@ -1222,12 +1250,13 @@ void do_loop()
 			} else {
 				oc_consec = 0;
 				oc_peak = 0;
-				currpoll_timeout = tn+CURRPOLL_INTERVAL;
+				currpoll_timeout = tn + (os.status.program_busy ? CURRPOLL_INTERVAL : CURRPOLL_IDLE_INTERVAL);
 			}
 		}
 	}
 #endif
 
+	LOOP_PROF_MARK(LPS_CURRENT);
 	static time_os_t last_time = 0;
 	static ulong last_minute = 0;
 
@@ -1238,6 +1267,7 @@ void do_loop()
 	os.status.mas2= os.iopts[IOPT_MASTER_STATION_2];
 	time_os_t curr_time = os.now_tz();
 
+	LOOP_PROF_MARK(LPS_PRE);
 	// ====== Process Ethernet packets ======
 #if defined(ARDUINO)	// Process Ethernet packets for Arduino
 	#if defined(ESP8266) || defined(ESP32)
@@ -1473,8 +1503,15 @@ void do_loop()
 		if(os.get_wifi_mode() == WIFI_MODE_AP) {
 			// AP mode: handle DNS and HTTP requests for captive portal
 			dns->processNextRequest();
+			LOOP_PROF_MARK(LPS_NET);
+			#if defined(ESP32)
+			update_server_poll();
+			#else
 			update_server->handleClient();
+			#endif
+			LOOP_PROF_MARK(LPS_UPDSRV);
 			otf->loop();
+			LOOP_PROF_MARK(LPS_HTTP);
 			connecting_timeout = 0;
 		} else {
 			// STA or Ethernet mode: keep serving HTTP even if mode flags lag behind
@@ -1486,8 +1523,15 @@ void do_loop()
 			}
 			#endif
 
+			LOOP_PROF_MARK(LPS_NET);
+			#if defined(ESP32)
+			update_server_poll();
+			#else
 			update_server->handleClient();
+			#endif
+			LOOP_PROF_MARK(LPS_UPDSRV);
 			otf->loop();
+			LOOP_PROF_MARK(LPS_HTTP);
 			if (useEth || WiFi.status() == WL_CONNECTED) {
 				connecting_timeout = 0;
 			} else {
@@ -1550,7 +1594,9 @@ void do_loop()
 
 	#endif
 
+	LOOP_PROF_MARK(LPS_NET);
 	online_update_loop();
+	LOOP_PROF_MARK(LPS_OTA);
 	if (online_update_in_progress()) {
 #if defined(USE_SSD1306)
 		// Show a full-screen progress bar on the OLED so the firmware update
@@ -1569,9 +1615,11 @@ void do_loop()
 #endif
 		// Keep the loop lightweight during OTA to avoid WDT under heavy network contention.
 		yield();
+		LOOP_PROF_END();
 		return;
 	}
 	ui_state_machine();
+	LOOP_PROF_MARK(LPS_DISPLAY);
 
 #else // Process Ethernet packets for RPI/LINUX
 	if(otf) otf->loop();
@@ -1582,6 +1630,7 @@ void do_loop()
 
 	// Start up MQTT when we have a network connection (skip during ZigBee lock or join)
 	os.process_async_http_requests();
+	LOOP_PROF_MARK(LPS_ASYNC);
 
 	// Start up MQTT when we have a network connection (skip during ZigBee lock or join)
 	if (!online_update_in_progress() && os.status.req_mqtt_restart && os.network_connected() && boot_elapsed >= 15000) {
@@ -1591,23 +1640,29 @@ void do_loop()
 		os.mqtt.subscribe();
 	}
 	os.mqtt.loop();
+	LOOP_PROF_MARK(LPS_MQTT);
 	
 	// Service web clients between potentially blocking operations
 	if(otf) otf->loop();
+	LOOP_PROF_MARK(LPS_HTTP);
 
 	// Legacy sensor maintenance loop (BLE/Zigbee auto-stop timers)
 	sensor_api_loop();
+	LOOP_PROF_MARK(LPS_SENSAPI);
 
 	// Service web clients after sensor/radio maintenance
 	if(otf) otf->loop();
+	LOOP_PROF_MARK(LPS_HTTP);
 
 #ifdef ENABLE_MATTER
 	// Matter loop handler
 	OSMatter::instance().loop();
+	LOOP_PROF_MARK(LPS_MATTER);
 #endif
 
 #ifdef ENABLE_RAINMAKER
 	if (auto *rm = OSRainMaker::get()) rm->loop();
+	LOOP_PROF_MARK(LPS_RAINMAKER);
 #endif
 
 	// The main control loop runs once every second
@@ -2101,26 +2156,33 @@ void do_loop()
 			os.reboot_dev(REBOOT_CAUSE_TIMER);
 		}
 
+		LOOP_PROF_MARK(LPS_CTRL);
 // perform ntp sync
                 // instead of using curr_time, which may change due to NTP sync itself
                 // we use Arduino's millis() method
                 if (curr_time % NTP_SYNC_INTERVAL == 0) os.status.req_ntpsync = 1;
                 perform_ntp_sync();
+                LOOP_PROF_MARK(LPS_NTP);
 
                 // Service web clients between potentially blocking operations
                 // to keep HTTPS/HTTP response times low on single-core ESP32-C5
                 if(otf) otf->loop();
+                LOOP_PROF_MARK(LPS_HTTP);
 
                 // check network connection
                 if (curr_time && (curr_time % CHECK_NETWORK_INTERVAL==0))  os.status.req_network = 1;
                 check_network();
+                LOOP_PROF_MARK(LPS_NETCHK);
 
                 if(otf) otf->loop();
+                LOOP_PROF_MARK(LPS_HTTP);
 
                 // check weather
                 check_weather();
+                LOOP_PROF_MARK(LPS_WEATHER);
 
                 if(otf) otf->loop();
+                LOOP_PROF_MARK(LPS_HTTP);
 
                 // process notifier events.
                 // Skip the TLS email/push flush during the early-boot quiet
@@ -2128,8 +2190,10 @@ void do_loop()
                 if(os.network_connected() && boot_elapsed >= NOTIF_BOOT_QUIET_MS) {
                         notif.run();
                 }
+                LOOP_PROF_MARK(LPS_NOTIF);
 
                 if(otf) otf->loop();
+                LOOP_PROF_MARK(LPS_HTTP);
 
                 if(os.weather_update_flag & WEATHER_UPDATE_WL) {
                         // at the moment, we only send notification if water level changed
@@ -2139,9 +2203,11 @@ void do_loop()
                 }
 
                 read_all_sensors(curr_time && os.network_connected());
+                LOOP_PROF_MARK(LPS_SENS_READ);
 
                 // Service web clients after sensor reads (can be blocking)
                 if(otf) otf->loop();
+                LOOP_PROF_MARK(LPS_HTTP);
 
 		static unsigned char reboot_notification = 1;
 		if(reboot_notification && os.network_connected() && boot_elapsed >= 10000) {
@@ -2150,6 +2216,7 @@ void do_loop()
 			}
 		}
 
+	LOOP_PROF_END();
 	#if !defined(ARDUINO)
 		delay(1); // For OSPI/LINUX, sleep 1 ms to minimize CPU usage
 	#endif
@@ -3215,7 +3282,7 @@ void write_flow_log(double volume, uint8_t unitid, ulong duration, time_os_t cur
 			for(unsigned char i=0;i<7;i++) delete_log_oldest();
 		}
 		#else
-		if(LittleFS.totalBytes() < LittleFS.usedBytes() + 2048 * 4) {
+		if(fs_free_bytes(2048 * 4) < 2048 * 4) {
 			for(unsigned char i=0;i<7;i++) delete_log_oldest();
 		}
 		#endif
@@ -3296,7 +3363,7 @@ void write_log(unsigned char type, time_os_t curr_time) {
 		}
 		#else
 		// check if we are getting close to run out of space, and delete some oldest files
-		if(LittleFS.totalBytes() < LittleFS.usedBytes() + 2048 * 4) {
+		if(fs_free_bytes(2048 * 4) < 2048 * 4) {
 			// delete the oldest 7 files (1 week of log)
 			for(unsigned char i=0;i<7;i++)	delete_log_oldest();
 		}

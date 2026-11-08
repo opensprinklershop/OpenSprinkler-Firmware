@@ -94,6 +94,14 @@ Related: `/jp` appends the program sensor-adjustment object, `/cp` accepts `snad
 |---|---------|-----------------|----------------|-------------|
 | 37 | `db` | `server_json_debug` | All | Get debug / diagnostic info (free heap, etc.) |
 
+`/db?pw=...&lp=1|2|3` (ESP32 only, `LOOP_PROF` in `loop_prof.h`): main-loop profiler instead of the
+diagnostic object. `lp=1` returns the per-section profile of `do_loop()` (count, sum, max, slow calls),
+a loop-duration histogram, the last slow loops with their worst section, slow sensor read/log/push
+steps, slow HTTP handlers and OTF phases (`#accept`, `#header`, `#ws`, ... via the weak
+`otf_prof_hook`), and the CPU share per FreeRTOS task since the previous query. `lp=2` returns the
+same and resets the counters. `lp=3` runs a filesystem benchmark (raw external-flash read, LittleFS
+open/exists/read, root directory size, `usedBytes()`); it blocks the loop for 1-3 s.
+
 ### InfluxDB endpoints (no platform guard — all platforms)
 
 | # | URL key | Handler function | Platform guard | Description |

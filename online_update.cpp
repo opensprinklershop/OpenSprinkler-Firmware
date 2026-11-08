@@ -951,7 +951,7 @@ static void ota_phase2_task(void* param) {
 	// flashed, the running image already is the new version, so the package
 	// of this version is the right one. Failures are not fatal: the device
 	// falls back to the external UI and retries from the main loop.
-	if (os.iopts[IOPT_UI_SOURCE] != UI_SOURCE_EXTERNAL || os.iopts[IOPT_UI_FALLBACK]) {
+	if (os.iopts[IOPT_UI_SOURCE] != UI_SOURCE_EXTERNAL) {
 		ota_set_state(OTA_STATUS_FLASHING_ZIGBEE, 98, "Installing web UI...");
 		DEBUG_PRINTF("[OTA] Installing UI package (%s)\n", ui_url[0] ? ui_url : "archive default");
 		if (!ui_local_install_from_url(ui_url[0] ? ui_url : NULL, false)) {

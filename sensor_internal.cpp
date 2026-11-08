@@ -75,9 +75,9 @@ int InternalSensor::read(unsigned long time) {
           return HTTP_RQT_NOT_RECEIVED;
         }
 #elif defined(ESP32)
-      boolean ok = LittleFS.totalBytes() > 0;
+      boolean ok = fs_total_bytes() > 0;
       if (ok) {
-        uint32_t fd = LittleFS.totalBytes() - LittleFS.usedBytes();
+        uint32_t fd = (uint32_t)fs_free_bytes();
 #endif
         this->last_native_data = fd;
         this->last_data = fd/1000;

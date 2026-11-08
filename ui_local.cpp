@@ -281,10 +281,11 @@ static void fs_each_store_entry(F cb) {
 #endif
 }
 
-size_t ui_local_free_bytes() {
+size_t ui_local_free_bytes(size_t exact_below) {
 #if defined(ESP32)
-	return (size_t)(LittleFS.totalBytes() - LittleFS.usedBytes());
+	return fs_free_bytes(exact_below);  // cached: usedBytes() walks the whole FS
 #else
+	(void)exact_below;
 	struct statvfs st;
 	if (statvfs(get_data_dir(), &st) == 0) return (size_t)st.f_bavail * st.f_bsize;
 	return 0;
@@ -293,7 +294,7 @@ size_t ui_local_free_bytes() {
 
 size_t ui_local_total_bytes() {
 #if defined(ESP32)
-	return (size_t)LittleFS.totalBytes();
+	return fs_total_bytes();
 #else
 	struct statvfs st;
 	if (statvfs(get_data_dir(), &st) == 0) return (size_t)st.f_blocks * st.f_frsize;
@@ -364,14 +365,11 @@ bool ui_local_available() { return s_active_exact; }
 bool ui_local_stale() { return s_active[0] && !s_active_exact; }
 
 bool ui_local_use() {
-	if (!s_active[0]) return false;
-	uint8_t src = os.iopts[IOPT_UI_SOURCE];
-	if (src == UI_SOURCE_EXTERNAL) return false;
-	return true;
+	return s_active[0] && os.iopts[IOPT_UI_SOURCE] == UI_SOURCE_LOCAL_ONLY;
 }
 
 bool ui_local_fallback() {
-	return s_active[0] && os.iopts[IOPT_UI_SOURCE] == UI_SOURCE_EXTERNAL && os.iopts[IOPT_UI_FALLBACK];
+	return s_active[0] && os.iopts[IOPT_UI_SOURCE] == UI_SOURCE_AUTO;
 }
 
 bool ui_local_install_busy() { return s_busy; }
@@ -611,6 +609,9 @@ static void ctx_destroy() {
 	if (!s_ctx) return;
 	ctx_close_out();
 #if defined(ESP32)
+	fs_used_invalidate();  // an install writes/removes megabytes past the file helpers
+#endif
+#if defined(ESP32)
 	mbedtls_sha256_free(&s_ctx->sha);
 #endif
 	s_ctx->~UiInstallCtx();
@@ -730,10 +731,11 @@ static void tar_end_entry() {
 bool ui_local_install_begin(uint32_t total_hint, const char *source) {
 	if (s_ctx) return false;
 	size_t need = total_hint ? (size_t)total_hint + UI_LOCAL_MIN_FREE : (size_t)(3UL * 1024UL * 1024UL);
-	if (ui_local_free_bytes() < need) {
+	size_t free_b = ui_local_free_bytes(need);
+	if (free_b < need) {
 		char m[64];
 		snprintf(m, sizeof(m), "Not enough flash: %lu kB free, %lu kB needed",
-			(unsigned long)(ui_local_free_bytes() / 1024), (unsigned long)(need / 1024));
+			(unsigned long)(free_b / 1024), (unsigned long)(need / 1024));
 		ui_set_state(UI_INST_ERROR, 0, m);
 		return false;
 	}
@@ -1193,7 +1195,7 @@ static void ui_gc() {
 		if (!strcmp(v, s_active)) continue;
 		if (!keep[0] || ui_version_cmp(v, keep) > 0) { strncpy(keep, v, sizeof(keep) - 1); keep[sizeof(keep) - 1] = 0; }
 	}
-	bool low = ui_local_free_bytes() < UI_LOCAL_MIN_FREE * 2;
+	bool low = ui_local_free_bytes(UI_LOCAL_MIN_FREE * 2) < UI_LOCAL_MIN_FREE * 2;
 	if (count <= UI_LOCAL_KEEP_VERSIONS && !low) return;
 	save = NULL;
 	strncpy(copy, list, sizeof(copy));
@@ -1204,6 +1206,9 @@ static void ui_gc() {
 		ui_path(p, sizeof(p), v);
 		DEBUG_PRINTF("[UI] removing old UI %s\n", v);
 		fs_remove_tree(p);
+#if defined(ESP32)
+		fs_used_invalidate();
+#endif
 	}
 }
 
@@ -1213,8 +1218,7 @@ void ui_local_loop(unsigned long now_tz) {
 	if (!s_gc_done && now_tz - s_boot_tz >= UI_GC_DELAY_S && !s_busy) { s_gc_done = true; ui_gc(); }
 
 	if (s_active_exact || s_busy) return;
-	uint8_t src = os.iopts[IOPT_UI_SOURCE];
-	if (src == UI_SOURCE_EXTERNAL && !os.iopts[IOPT_UI_FALLBACK]) return;
+	if (os.iopts[IOPT_UI_SOURCE] == UI_SOURCE_EXTERNAL) return;   // external only: no package needed
 	if (online_update_in_progress() || !os.network_connected()) return;
 	if (now_tz < s_next_auto) return;
 	// backoff: 1 h, 6 h, then daily

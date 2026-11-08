@@ -446,8 +446,8 @@ static String tool_get_debug(const OTF::Request& /*req*/, OTF::Response& /*res*/
   obj["time"]  = __TIME__;
 #if defined(ESP32)
   obj["heap"]  = (unsigned long)ESP.getFreeHeap();
-  obj["flash"] = (unsigned long)LittleFS.totalBytes();
-  obj["used"]  = (unsigned long)LittleFS.usedBytes();
+  obj["flash"] = (unsigned long)fs_total_bytes();
+  obj["used"]  = (unsigned long)fs_used_bytes();
   if (useEth) {
     obj["ETH"] = 1;
   } else {

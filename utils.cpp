@@ -366,9 +366,70 @@ BoardType get_board_type() {
 #endif
 
 
+#if defined(ESP32)
+#define FS_BLOCK_SIZE     4096UL
+#define FS_USED_RESYNC_MS (15UL * 60UL * 1000UL)
+static size_t   s_fs_total = 0;
+static size_t   s_fs_used = 0;
+static uint32_t s_fs_used_ms = 0;
+static bool     s_fs_used_ok = false;
+
+size_t fs_total_bytes() {
+	if (!s_fs_total) s_fs_total = LittleFS.totalBytes();  // constant while mounted
+	return s_fs_total;
+}
+
+static void fs_used_measure() {
+	s_fs_used = LittleFS.usedBytes();
+	s_fs_used_ms = millis();
+	s_fs_used_ok = true;
+}
+
+/** Re-measures when the cache is empty or stale. Returns true if it measured. */
+static bool fs_used_refresh() {
+	if (s_fs_used_ok && (uint32_t)(millis() - s_fs_used_ms) <= FS_USED_RESYNC_MS) return false;
+	fs_used_measure();
+	return true;
+}
+
+size_t fs_used_bytes() {
+	fs_used_refresh();
+	return s_fs_used;
+}
+
+size_t fs_free_bytes(size_t exact_below) {
+	size_t total = fs_total_bytes();
+	bool fresh = fs_used_refresh();
+	size_t free_b = total > s_fs_used ? total - s_fs_used : 0;
+	if (exact_below && !fresh && free_b < exact_below + FS_EXACT_MARGIN) {
+		fs_used_measure();  // close to the caller's limit: no estimate
+		free_b = total > s_fs_used ? total - s_fs_used : 0;
+	}
+	return free_b;
+}
+
+void fs_used_adjust(long delta) {
+	if (!s_fs_used_ok) return;
+	if (delta < 0 && (size_t)(-delta) > s_fs_used) s_fs_used = 0;
+	else s_fs_used = (size_t)((long)s_fs_used + delta);
+	if (s_fs_total && s_fs_used > s_fs_total) s_fs_used = s_fs_total;
+}
+
+void fs_used_invalidate() { s_fs_used_ok = false; }
+#endif
+
 void remove_file(const char *fn) {
 #if defined(ESP8266) || defined(ESP32)
 	if(!LittleFS.exists(fn)) return;
+#if defined(ESP32)
+	if (s_fs_used_ok) {
+		File f = LittleFS.open(fn, "r");
+		ulong sz = f ? (ulong)f.size() : 0;
+		if (f) f.close();
+		if (LittleFS.remove(fn)) fs_used_adjust(-(long)(((sz + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE) * FS_BLOCK_SIZE));
+		return;
+	}
+#endif
 	LittleFS.remove(fn);
 
 #elif defined(ARDUINO)
@@ -501,6 +562,9 @@ void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 	File f = LittleFS.open(fn, "r+");
 	if(!f) f = LittleFS.open(fn, "w");
 	if(f) {
+#if defined(ESP32)
+		ulong old_size = (ulong)f.size();
+#endif
 		if (strcmp(fn, SOPTS_FILENAME) == 0) {
 			DEBUG_PRINTF("[FILE] write %s pos=%lu len=%lu first='%.*s'\n", fn, (unsigned long)pos, (unsigned long)len, 16, (const char*)src);
 		}
@@ -520,6 +584,9 @@ void file_write_block(const char *fn, const void *src, ulong pos, ulong len) {
 			DEBUG_PRINTF("[FILE] seek failed %s pos=%lu len=%lu\n", fn, (unsigned long)pos, (unsigned long)len);
 		}
 		f.write((unsigned char*)src, len);
+#if defined(ESP32)
+		if ((ulong)f.size() > old_size) fs_used_adjust((long)((ulong)f.size() - old_size));
+#endif
 		f.close();
 	}
 
@@ -555,7 +622,12 @@ void file_append_block(const char *fn, const void *src, ulong len) {
 	if(!f) f = LittleFS.open(fn, "w");
 	if(f) {
 		f.seek(0, SeekEnd);
-		f.write((byte*)src, len);
+		size_t w = f.write((byte*)src, len);
+#if defined(ESP32)
+		fs_used_adjust((long)w);
+#else
+		(void)w;
+#endif
 		f.close();
 	}
 

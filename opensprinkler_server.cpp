@@ -84,6 +84,7 @@ static void emit_monthly_water_backup_json(T &bfill) {
 #include "ieee802154_config.h"
 #include "online_update.h"
 #include "ui_local.h"
+#include "loop_prof.h"
 
 #if defined(ESP32) && defined(USE_OTF)
 #include "cert.h"  // for /ca.der cert download endpoint
@@ -1660,12 +1661,13 @@ void server_view_scripturl(OTF_PARAMS_DEF) {
 	// installation controls. hasher.js is served by the firmware itself
 	// (/js/hasher.js) so the page works without Internet access.
 	uint8_t uis = os.iopts[IOPT_UI_SOURCE];
-	bool dev = (uis != UI_SOURCE_EXTERNAL);
 	const char* uiv = ui_local_version();
 	bfill.emit_p(PSTR(R"SU(<form name=of action=cu method=get><table cellspacing=12>
-<tr><td><b>UI Source</b>:</td><td><label><input type=radio name=uis value=0 $S> On this device (installed: <span id=uiv>$S</span>)</label><br>
-<label><input type=radio name=uis value=2 $S> External server:</label> <input type=text size=40 maxlength=$D value='$O' id=jsp name=jsp> <button type=button onclick='rst_jsp()'>Default</button><br>
-<label><input type=checkbox name=uifb value=1 $S> Use the device copy when the external server cannot be reached</label></td></tr>
+<tr><td><b>UI Source</b>:</td><td><label><input type=radio name=uis value=0 $S> External server, copy on this device when offline (recommended)</label><br>
+<label><input type=radio name=uis value=1 $S> Always the copy on this device</label><br>
+<label><input type=radio name=uis value=2 $S> External server only</label><br>
+URL: <input type=text size=40 maxlength=$D value='$O' id=jsp name=jsp> <button type=button onclick='rst_jsp()'>Default</button><br>
+Switch to the device copy after <input type=number min=0 max=60 size=3 name=uifb value=$D> s without the external loader (0 = only on error). Installed on device: <span id=uiv>$S</span></td></tr>
 <tr><td></td><td><button type=button onclick="ul('install=1')">Install/update UI on device</button> <button type=button onclick="if(confirm('Remove the UI from the device?'))ul('remove=1')">Remove</button> <span id=uist></span></td></tr>
 <tr><td><b>Weather</b>:</td><td><input type=text size=40 maxlength=$D value='$O' id=wsp name=wsp> <button type=button onclick='rst_wsp()'>Default</button></td></tr>
 <tr><td><b>Password</b>:</td><td><input type=password size=32 name=pw id=pw value=''><input type=submit value=Save></td></tr>
@@ -1681,8 +1683,8 @@ var m=['','Downloading','Verifying','Activating','Done','Error'][j.state]||'';
 st.textContent=(m?m+' '+(j.state<4?j.progress+'%':''):'')+' '+(j.msg||'')+' (free: '+Math.round(j.free/1024)+' kB)';
 uv.textContent=j.installed||'none';if(j.state>0&&j.state<4)tm=setTimeout(function(){ul('');},2000);});}
 </script>)SU"),
-	dev ? "checked" : "", uiv[0] ? uiv : "none", dev ? "" : "checked",
-	MAX_SOPTS_SIZE, SOPT_JAVASCRIPTURL, os.iopts[IOPT_UI_FALLBACK] ? "checked" : "",
+	uis == UI_SOURCE_AUTO ? "checked" : "", uis == UI_SOURCE_LOCAL_ONLY ? "checked" : "", uis == UI_SOURCE_EXTERNAL ? "checked" : "",
+	MAX_SOPTS_SIZE, SOPT_JAVASCRIPTURL, (int)os.iopts[IOPT_UI_FALLBACK], uiv[0] ? uiv : "none",
 	MAX_SOPTS_SIZE, SOPT_WEATHERURL, DEFAULT_JAVASCRIPT_URL, DEFAULT_WEATHER_URL);
 #else
 	bfill.emit_p(PSTR(R"SU(<form name=of action=cu method=get><table cellspacing=12>
@@ -1905,7 +1907,7 @@ void server_json_controller_main(OTF_PARAMS_DEF) {
 	}
 
 #if defined(ARDUINO)
-	uint16_t current = os.read_current(true);
+	uint16_t current = os.read_current_cached(true); // main loop polls it; a fresh C5 read blocks 20 ms
 		if(!os.status.program_busy) current=0; // show 0 at idle; baseline noise can be significant
 		uint16_t valve_current = os.get_valve_current();
 		bfill.emit_p(PSTR("\"curr\":$D,\"vcurr\":$D,\"blcurr\":$D,"), current, valve_current, os.baseline_current);
@@ -1987,26 +1989,44 @@ void server_json_controller(OTF_PARAMS_DEF) {
 /** Output homepage */
 void server_home(OTF_PARAMS_DEF)
 {
+#if defined(UI_LOCAL_SUPPORTED)
+	// Read the query before anything is written: request and response share
+	// the buffer (see the note in server_change_options), the parameters are
+	// gone once print_header() has run.
+	bool force_local = false, force_ext = false;
+	if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("ui"), true)) {
+		force_local = strcmp(tmp_buffer, "local") == 0 && ui_local_version()[0];
+		force_ext = strcmp(tmp_buffer, "ext") == 0;
+	}
+#endif
 	rewind_ether_buffer();
 	print_header(OTF_PARAMS,false,strlen(ether_buffer));
 	bfill.emit_p(PSTR("<!DOCTYPE html><html><head>$F</head><body><script>"), htmlMobileHeader);
 	// send server variables and javascript packets
-	bfill.emit_p(PSTR("var ver=$D,ipas=$D;</script>"),
+	bfill.emit_p(PSTR("var ver=$D,ipas=$D;"),
 							 OS_FW_VERSION, os.iopts[IOPT_IGNORE_PASSWORD]);
 
 #if defined(UI_LOCAL_SUPPORTED)
-	// On-device UI (ui_local.cpp): relative URL so it also works behind the OTC
-	// relay prefix. home.js derives the UI root by cutting "js/home.js" off its
-	// own URL, so the loader must live at ui/js/home.js (root = ui/). With an
-	// external source the loader may fall back to the device copy when the
-	// external script cannot be loaded (server/Internet down).
-	if (ui_local_use()) {
-		bfill.emit_p(PSTR("<script src=\"ui/js/home.js\"></script></body></html>"));
-	} else if (ui_local_fallback()) {
-		bfill.emit_p(PSTR("<script src=\"$O/home.js\" onerror=\"var s=document.createElement('script');s.src='ui/js/home.js';document.head.appendChild(s)\"></script></body></html>"), SOPT_JAVASCRIPTURL);
+	// On-device UI (ui_local.cpp). The external UI is faster, so it stays the
+	// default; the device copy is for offline / island operation. The browser
+	// decides: the external loader gets an onerror handler and a watchdog, and
+	// when it fails or has not run after IOPT_UI_FALLBACK seconds the page
+	// reloads itself as /?ui=local, which serves only the local loader (no
+	// second loader in the same document, the pending download is dropped by
+	// the navigation). ?ui=ext forces the external loader. Relative URLs so it
+	// also works behind the OTC relay prefix; home.js derives the UI root by
+	// cutting "js/home.js" off its own URL, so the local loader lives at
+	// ui/js/home.js (root = ui/).
+	if ((ui_local_use() || force_local) && !force_ext) {
+		bfill.emit_p(PSTR("</script><script src=\"ui/js/home.js\"></script></body></html>"));
+	} else if (ui_local_fallback() && !force_ext) {
+		bfill.emit_p(PSTR("function osUiL(){if(window.osUiD||window.currLocal)return;window.osUiD=1;location.replace(location.pathname+'?ui=local'+location.hash);}"
+		                  "if($D)setTimeout(osUiL,$D000);</script>"
+		                  "<script src=\"$O/home.js\" onerror=\"osUiL()\"></script></body></html>"),
+		             (int)os.iopts[IOPT_UI_FALLBACK], (int)os.iopts[IOPT_UI_FALLBACK], SOPT_JAVASCRIPTURL);
 	} else
 #endif
-	bfill.emit_p(PSTR("<script src=\"$O/home.js\"></script></body></html>"), SOPT_JAVASCRIPTURL);
+	bfill.emit_p(PSTR("</script><script src=\"$O/home.js\"></script></body></html>"), SOPT_JAVASCRIPTURL);
 
 	handle_return(HTML_OK);
 }
@@ -2173,12 +2193,11 @@ void server_change_scripturl(OTF_PARAMS_DEF) {
 			int v = atoi(tmp_buffer);
 			if (v < 0 || v > UI_SOURCE_EXTERNAL) handle_return(HTML_DATA_OUTOFBOUND);
 			if (os.iopts[IOPT_UI_SOURCE] != (unsigned char)v) { os.iopts[IOPT_UI_SOURCE] = (unsigned char)v; ui_change = true; }
-			// the form omits an unchecked checkbox: uis present without uifb means off
-			unsigned char fb = (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uifb"), true) && atoi(tmp_buffer) > 0) ? 1 : 0;
-			if (os.iopts[IOPT_UI_FALLBACK] != fb) { os.iopts[IOPT_UI_FALLBACK] = fb; ui_change = true; }
-		} else if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uifb"), true)) {
-			unsigned char fb = atoi(tmp_buffer) > 0 ? 1 : 0;
-			if (os.iopts[IOPT_UI_FALLBACK] != fb) { os.iopts[IOPT_UI_FALLBACK] = fb; ui_change = true; }
+		}
+		if (findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("uifb"), true)) {
+			int fb = atoi(tmp_buffer);   // seconds until the browser falls back to the device copy
+			if (fb < 0 || fb > 60) handle_return(HTML_DATA_OUTOFBOUND);
+			if (os.iopts[IOPT_UI_FALLBACK] != (unsigned char)fb) { os.iopts[IOPT_UI_FALLBACK] = (unsigned char)fb; ui_change = true; }
 		}
 		if (ui_change) { os.iopts_save(); ui_local_refresh(); }
 	}
@@ -3478,6 +3497,28 @@ void server_json_debug(OTF_PARAMS_DEF) {
 	if(!process_password(OTF_PARAMS)) return;
 	rewind_ether_buffer();
 	print_header(OTF_PARAMS);
+#if defined(LOOP_PROF)
+	// lp=1: main-loop section profile, lp=2: return it and reset the counters, lp=3: filesystem benchmark
+	if(findKeyVal(FKV_SOURCE, tmp_buffer, TMP_BUFFER_SIZE, PSTR("lp"), true)) {
+		int lp = atoi(tmp_buffer);
+		const size_t lp_len = 8192;
+		char *lp_buf = (char*)heap_caps_malloc(lp_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		if(!lp_buf) lp_buf = (char*)malloc(lp_len);
+		if(!lp_buf) { bfill.emit_p(PSTR("{\"result\":0}")); handle_return(HTML_OK); }
+		size_t lp_n = (lp == 3) ? loop_prof_fsbench(lp_buf, lp_len) : loop_prof_json(lp_buf, lp_len);
+		if(lp == 2) loop_prof_reset();
+		// larger than ether_buffer on ESP32 (4 KB): write the body directly
+		if(g_mcp_capture_active) {
+			MCP_BUF_APPEND(g_mcp_capture_buf, lp_buf, (int)lp_n);
+			free(lp_buf);
+			rewind_ether_buffer();
+			return;
+		}
+		res.writeBodyData(lp_buf, lp_n);
+		free(lp_buf);
+		return;
+	}
+#endif
 	bfill.emit_p(PSTR("{\"date\":\"$S\",\"time\":\"$S\",\"heap\":$L,\"debug_build\":$D"), __DATE__, __TIME__,
 #if defined(ESP8266) || defined(ESP32)
 	(unsigned long)ESP.getFreeHeap(),
@@ -3506,7 +3547,7 @@ void server_json_debug(OTF_PARAMS_DEF) {
 		WiFi.RSSI(), WiFi.BSSIDstr().c_str(), SOPT_STA_BSSID_CHL);
 	}
 	#elif defined(ESP32)
-	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,"), LittleFS.totalBytes(), LittleFS.usedBytes());
+	bfill.emit_p(PSTR(",\"flash\":$D,\"used\":$D,"), (int)fs_total_bytes(), (int)fs_used_bytes());
 	if(useEth) {
 		#if defined(OS_ENABLE_BLE)
 		bfill.emit_p(PSTR("\"ETH\":$D,\"ble_ok\":$D,\"ble_scan\":$D,\"ble_found\":$D,\"ble_sens\":$D,\"ble_rx\":$D,\"coex\":\"$S\",\"sensor_count\":$D,\"sensor_file_sz\":$L}"),
@@ -6436,9 +6477,9 @@ extern uint32_t ping_ok;
 	bfill.emit_p(PSTR("{\"status\":$D,\"freeMemory\":$D,\"totalBytes\":$D,\"usedBytes\":$D,\"freeBytes\":$D,\"pingok\":$D,\"mqtt\":$D,\"ifttt\":$L"),
 		1,
 		freeMemory(),
-		LittleFS.totalBytes(),
-		LittleFS.usedBytes(),
-		LittleFS.totalBytes()-LittleFS.usedBytes(),
+		(int)fs_total_bytes(),
+		(int)fs_used_bytes(),
+		(int)fs_free_bytes(),
 		ping_ok,
 		os.mqtt.connected(),
 		(unsigned long)get_notif_enabled());
@@ -8387,7 +8428,14 @@ void server_api_dispatch(OTF_PARAMS_DEF) {
 		return;
 	}
 
+#if defined(LOOP_PROF)
+	char lp_path[16];  // the handler reuses the buffer path points into
+	strncpy(lp_path, path, sizeof(lp_path) - 1);
+	lp_path[sizeof(lp_path) - 1] = 0;
+	uint32_t lp_t0 = millis();
+#endif
 	((URLHandler)pgm_read_ptr(&urls[idx]))(OTF_PARAMS);
+	LOOP_PROF_HTTP(lp_path, millis() - lp_t0, req.isCloudRequest());
 }
 
 // handle Ethernet request

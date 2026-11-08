@@ -273,8 +273,8 @@ const char iopt_json_names[] PROGMEM =
 	"fpd0\0" // IOPT_FLOW_PULSE_DIV_0
 	"fpd1\0" // IOPT_FLOW_PULSE_DIV_1
 	"wims\0" // IOPT_WIFI_MODEM_SLEEP: 0=off/full power, 1=modem sleep
-	"uisr\0" // IOPT_UI_SOURCE: 0=device/auto, 1=device only, 2=external URL, 3=unset
-	"uifb\0" // IOPT_UI_FALLBACK: 1=fall back to the on-device UI when the external loader fails
+	"uisr\0" // IOPT_UI_SOURCE: 0=external first/device copy when offline, 1=device only, 2=external only, 3=unset
+	"uifb\0" // IOPT_UI_FALLBACK: seconds before the browser falls back to the device copy (0=only on error)
 	;
 
 /** Option prompts (stored in PROGMEM to reduce RAM usage) */
@@ -365,7 +365,7 @@ const char iopt_prompts[] PROGMEM =
 	"Flow div high:  "
 	"WiFi modem sleep"
 	"UI source:      "
-	"UI fallback?    ";
+	"UI fallback sec ";
 
 // string options do not have prompts
 
@@ -454,8 +454,8 @@ const unsigned char iopt_max[] PROGMEM = {
 	255,             // IOPT_FLOW_PULSE_DIV_0
 	255,             // IOPT_FLOW_PULSE_DIV_1
 	1,               // IOPT_WIFI_MODEM_SLEEP
-	3,               // IOPT_UI_SOURCE (0 device/auto, 1 device only, 2 external, 3 unset)
-	1                // IOPT_UI_FALLBACK
+	3,               // IOPT_UI_SOURCE (0 external first, 1 device only, 2 external only, 3 unset)
+	60               // IOPT_UI_FALLBACK (seconds)
 };
 
 /** Integer option values (stored in RAM) */
@@ -548,8 +548,8 @@ unsigned char OpenSprinkler::iopts[] = {
 	1,  // flow pulse divisor low byte (default divisor=1)
 	0,  // flow pulse divisor high byte
 	0,  // IOPT_WIFI_MODEM_SLEEP: 0=off/full power (default), 1=modem sleep
-	3,  // IOPT_UI_SOURCE: unset -> ui_local_init() picks device (default URL) or external (custom URL)
-	1,  // IOPT_UI_FALLBACK: external UI source falls back to the on-device UI
+	3,  // IOPT_UI_SOURCE: unset -> ui_local_init() picks auto (default URL) or external only (custom URL)
+	6,  // IOPT_UI_FALLBACK: seconds before the browser falls back to the device copy
 };
 
 /** String option values (stored in RAM) */
@@ -2368,8 +2368,17 @@ void OpenSprinkler::sensor_resetall() {
  *           to reduce noise from asynchronous AC waveform sampling.
  */
 #if defined(ARDUINO)
+static uint16_t s_curr_ema = 0;   // exponential moving average of read_current()
+static uint16_t s_curr_last = 0;  // last instantaneous reading
+
+/** Last value of read_current() without a new ADC measurement (the C5 measurement
+ *  blocks for 20 ms; status pages and the display use this one). */
+uint16_t OpenSprinkler::read_current_cached(bool use_ema) {
+	return use_ema ? s_curr_ema : s_curr_last;
+}
+
 uint16_t OpenSprinkler::read_current(bool use_ema) {
-	static uint16_t ema = 0; // exponential moving average
+	uint16_t &ema = s_curr_ema;
 	static float scale = -1;
 	if(scale < 0) { // assign scale upon first call of this function
 		if (hw_type == HW_TYPE_DC) {
@@ -2414,6 +2423,7 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
 	#else
 	ema = curr / 5 + ema * 4 / 5; // alpha=0.2 for exponential moving average
 	#endif
+	s_curr_last = curr;
 	return use_ema ? ema : curr;
 }
 
@@ -2421,8 +2431,8 @@ uint16_t OpenSprinkler::read_current(bool use_ema) {
  *  Call this periodically from the main loop when program_busy is false.
  *  Uses a slow EMA (alpha=0.05) to get a stable idle current reading.
  */
-void OpenSprinkler::update_baseline() {
-	uint16_t curr = read_current(false); // instantaneous reading
+void OpenSprinkler::update_baseline(uint16_t curr) {
+	// curr: instantaneous reading the caller just took (read_current(false))
 	if(!baseline_initialized) {
 		baseline_ema = curr;
 		baseline_initialized = true;
@@ -2439,7 +2449,7 @@ void OpenSprinkler::update_baseline() {
  */
 uint16_t OpenSprinkler::get_valve_current() {
 	static uint16_t valve_ema = 0;
-	uint16_t total = read_current(true); // EMA-smoothed total
+	uint16_t total = read_current_cached(true); // EMA of the main-loop current poll
 	if(!status.program_busy) {
 		valve_ema = 0;
 		return 0;

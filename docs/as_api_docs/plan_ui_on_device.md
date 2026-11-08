@@ -559,3 +559,25 @@ Messungen Bench .151 (Zigbee-Variante, Debug-Build, WiFi, 2026-11-01):
 - Korrektur aus dem Test: home.js schneidet `js/home.js` von seiner URL ab, der Loader liegt deshalb unter `/ui/js/home.js`.
 - Offen: Installationsdauer verbessern (größerer Schreibpuffer/weniger Dateien), Matter-Variante und OSPi am Gerät testen.
 
+Änderung 2026-11-07 (Stefan): Die Gerätekopie lädt langsamer als die externe UI
+(≈ 14 kB/s Installation, serielle Auslieferung), deshalb bleibt extern der
+Normalfall und die Gerätekopie ist der Rückfall für Offline-/Inselbetrieb.
+Umsetzung: `IOPT_UI_SOURCE` 0 = extern zuerst, Gerätekopie bei Ausfall;
+1 = immer Gerät; 2 = nur extern. Die Entscheidung trifft der Browser:
+`server_home()` gibt den externen Loader mit `onerror` und einem Wächter aus
+(`IOPT_UI_FALLBACK` Sekunden, Standard 6, 0 = nur bei Fehler; erkannt an
+`window.currLocal`, das home.js als Erstes setzt); schlägt er fehl, navigiert
+die Seite auf `/?ui=local` und bekommt nur den lokalen Loader (kein zweiter
+Loader im selben Dokument, der laufende Download wird durch die Navigation
+verworfen). `/?ui=ext` erzwingt extern. Die Firmware braucht damit keine
+Internet-Erkennung. Das Paket wird in Modus 0 und 1 installiert, in Modus 2 nicht.
+Die Regeln 6.2/6.3 gelten unverändert (Versionsgleichheit, Migration einer
+eigenen `jsp`-URL auf „nur extern“).
+Messung Bench .151 am 2026-11-07 (headless Chromium, Login, Hauptseite gerendert):
+online → extern, 8,0 s, 59 externe Requests, 0 vom Gerät; Internet abgeklemmt
+(alle externen Requests abgebrochen) → `onerror`, Wechsel auf `/?ui=local`,
+17,4 s inkl. Login, 21 Requests vom Gerät; externer Server hängt (keine
+Antwort) → Wächter nach 6 s, `/?ui=local`, 18,6 s. In allen Fällen keine
+Fehler-Requests. Stolperstein: Der Query-Parameter muss in `server_home()` vor
+`print_header()` gelesen werden, Request- und Antwortpuffer sind derselbe Speicher.
+

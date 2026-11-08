@@ -77,6 +77,21 @@ ulong file_size(const char *fn);
 ulong file_read_block (const char *fname, void *dst, ulong pos, ulong len);
 void file_write_block(const char *fname, const void *src, ulong pos, ulong len);
 void file_append_block(const char *fname, const void *src, ulong len);
+
+#if defined(ESP32)
+/* LittleFS size queries. LittleFS.totalBytes() and usedBytes() both run
+ * lfs_fs_size(), a walk over the whole filesystem: ~0.4 s each on the 16 MB
+ * external flash, in the main loop. These keep the numbers in RAM: total once,
+ * used is tracked by the file helpers above and re-measured every 15 min, and
+ * exactly whenever the cached free space is within FS_EXACT_MARGIN of the
+ * caller's threshold (exact_below), so space checks near a limit stay exact. */
+#define FS_EXACT_MARGIN (64UL * 1024UL)
+size_t fs_total_bytes();
+size_t fs_used_bytes();
+size_t fs_free_bytes(size_t exact_below = 0);
+void   fs_used_adjust(long delta);  // bytes allocated (+) or freed (-) outside the helpers
+void   fs_used_invalidate();        // next query measures (after bulk writes/deletes)
+#endif
 void file_copy_block (const char *fname, ulong from, ulong to, ulong len, void *tmp=0);
 unsigned char file_read_byte (const char *fname, ulong pos);
 void file_write_byte(const char *fname, ulong pos, unsigned char v);
