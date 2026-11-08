@@ -21,6 +21,8 @@
 #                                          (automatically reboots the device)
 #   install-ip [matter|zigbee|esp8266] [firmware.bin]
 #                                        – Upload/install firmware via device IP (REST)
+#   ui-upload [ip]                       – Build signed ui.tar for defines.h version and
+#                                          upload it to :8080/uf (also done by deploy)
 #   reset                                 – Reset/reboot device via USB (RTS/DTR)
 #
 # Usage:
@@ -70,6 +72,7 @@
 #   OS_HASH         Admin password already as MD5 hash
 #   MONITOR_SPEED   Serial monitor baud rate (default: 115200)
 #   MONITOR_LOGS    Enable saving monitor logs to /tmp/ (automatic with 'monitor' flag)
+#   FW_DEPLOY_UI     1|0 (default 1): deploy also uploads the on-device UI (ESP32-C5)
 #   FW_UPLOAD_METHOD auto|ip|usb (default: usb; IP only when explicitly selected)
 # =============================================================================
 
@@ -2085,6 +2088,7 @@ with open(sys.argv[1], 'w') as f:
 # devices then keep the external UI (the firmware tolerates a missing package).
 build_ui_package() {
     local ver_str="${1:-$(format_version "$OS_FW_VERSION").${OS_FW_MINOR}}"
+    local out_tar="${2:-${UPGRADE_DIR}/ui.tar}"
     local tool="${SCRIPT_DIR}/tools/mkuipack.py"
     if [[ ! -f "$tool" ]]; then
         warn "UI package skipped — ${tool} not found."
@@ -2100,12 +2104,84 @@ build_ui_package() {
     fi
     header "UI package ${ver_str}"
     info "Source: ${UI_SNAPSHOT_SRC}"
-    python3 -I "$tool" build "$UI_SNAPSHOT_SRC" "$ver_str" "${UPGRADE_DIR}/ui.tar" \
+    python3 -I "$tool" build "$UI_SNAPSHOT_SRC" "$ver_str" "$out_tar" \
         --key "$UI_SIGNING_KEY" --locales "$UI_PACK_LOCALES" --source "$(basename "$UI_SNAPSHOT_SRC")" >/dev/null \
         || { error "UI package build failed."; exit 1; }
-    python3 -I "$tool" verify "${UPGRADE_DIR}/ui.tar" --key "$UI_SIGNING_KEY" >/dev/null \
+    python3 -I "$tool" verify "$out_tar" --key "$UI_SIGNING_KEY" >/dev/null \
         || { error "UI package signature check failed."; exit 1; }
-    ok "UI package: ${UPGRADE_DIR}/ui.tar ($(du -k "${UPGRADE_DIR}/ui.tar" | cut -f1) kB, signed)"
+    ok "UI package: ${out_tar} ($(du -k "$out_tar" | cut -f1) kB, signed)"
+}
+
+# ── On-device UI for `deploy` ───────────────────────────────────────────────
+# Builds a signed ui.tar for the firmware version in defines.h and uploads it to
+# POST :8080/uf of the freshly flashed ESP32-C5 (the device only activates a
+# package whose version equals its firmware, so this waits until the new
+# firmware is up). The package goes to .pio/ui_pack/, never to UPGRADE_DIR
+# (release staging). Failures only warn: the firmware deploy itself succeeded.
+# FW_DEPLOY_UI=0 skips the step. ESP8266 and OSPi have no /uf.
+FW_DEPLOY_UI="${FW_DEPLOY_UI:-1}"
+FW_DEPLOY_UI_WAIT="${FW_DEPLOY_UI_WAIT:-180}"   # seconds to wait for the reboot
+
+deploy_ui_package() {
+    local ip="${1:-${OS_IP_C5_PRIMARY:-$DEFAULT_C5_IP}}"
+    if [[ "$FW_DEPLOY_UI" == "0" ]]; then
+        info "On-device UI upload skipped (FW_DEPLOY_UI=0)."
+        return 0
+    fi
+    read_version
+    local ver_str
+    ver_str="$(format_version "$OS_FW_VERSION").${OS_FW_MINOR}"
+    local out_dir="${SCRIPT_DIR}/.pio/ui_pack"
+    local tar="${out_dir}/ui.tar"
+    mkdir -p "$out_dir"
+    rm -f "$tar" "${tar}.sig" "${tar}.json"
+    build_ui_package "$ver_str" "$tar"
+    if [[ ! -f "$tar" || ! -f "${tar}.sig" ]]; then
+        warn "On-device UI not uploaded (no package built)."
+        return 0
+    fi
+
+    local hash
+    hash=$(_get_hash)
+    header "On-device UI ${ver_str} → ${ip}"
+
+    # Wait until the device answers /ul with the new firmware version.
+    info "Waiting for ${ip} to report firmware ${ver_str} (max ${FW_DEPLOY_UI_WAIT}s) ..."
+    local deadline=$((SECONDS + FW_DEPLOY_UI_WAIT)) resp="" fw=""
+    while (( SECONDS < deadline )); do
+        resp=$(curl -sf --connect-timeout 3 --max-time 6 "http://${ip}/ul?pw=${hash}" 2>/dev/null) || resp=""
+        fw=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("fw",""))' "$resp" 2>/dev/null || true)
+        [[ "$fw" == "$ver_str" ]] && break
+        sleep 3
+    done
+    if [[ "$fw" != "$ver_str" ]]; then
+        warn "Device ${ip} does not report firmware ${ver_str} (got '${fw:-no answer}'); UI not uploaded."
+        warn "Retry later: FW_DEPLOY_UI=1 ./fw.sh ui-upload"
+        return 0
+    fi
+
+    info "Uploading ${tar} ($(du -k "$tar" | cut -f1) kB) to http://${ip}:8080/uf ..."
+    local sig
+    sig=$(tr -d '\n' < "${tar}.sig")
+    resp=$(curl -sS -X POST --connect-timeout 10 --max-time 600 \
+        -F "pw=${hash}" -F "sig=${sig}" -F "file=@${tar};type=application/x-tar" \
+        "http://${ip}:8080/uf?pw=${hash}" 2>&1) || {
+        warn "UI upload to ${ip} failed: ${resp}"
+        return 0
+    }
+    if ! python3 -c 'import json,sys; sys.exit(0 if json.loads(sys.argv[1]).get("result")==1 else 1)' "$resp" 2>/dev/null; then
+        warn "UI upload rejected by the device: ${resp}"
+        return 0
+    fi
+
+    resp=$(curl -sf --connect-timeout 3 --max-time 6 "http://${ip}/ul?pw=${hash}" 2>/dev/null) || resp=""
+    local installed
+    installed=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("installed",""))' "$resp" 2>/dev/null || true)
+    if [[ "$installed" == "$ver_str" ]]; then
+        ok "On-device UI ${installed} installed on ${ip}."
+    else
+        warn "Upload accepted, but /ul reports installed='${installed}'."
+    fi
 }
 
 # JSON fragment with the ui_* manifest fields (empty when no package was built)
@@ -2892,6 +2968,11 @@ ${BOLD}Actions:${NC}
                                                                                         Install firmware via device IP.
                                                                                         If firmware.bin is omitted, defaults to:
                                                                                         ${UPGRADE_DIR}/firmware_<variant>.bin
+  ui-upload [ip]                            Build the signed on-device UI (ui.tar) for the
+                                            firmware version in defines.h and upload it to
+                                            http://<ip>:8080/uf (default ${DEFAULT_C5_IP});
+                                            deploy matter|zigbee|esp32|all does this too
+                                            (FW_DEPLOY_UI=0 skips it)
   status                                    Show device status
 
 ${BOLD}Variants (build/upload/deploy):${NC}
@@ -3018,6 +3099,10 @@ MODE_ARG="${3:-}"
 case "$ACTION" in
     install-ip)
         install_ip "$VARIANT" "$MODE_ARG" ;;
+    ui-upload)
+        ui_target=""
+        [[ "${VARIANT:-}" =~ ^[0-9A-Za-z.-]+$ && "$VARIANT" != "all" ]] && ui_target="$VARIANT"
+        FW_DEPLOY_UI=1 deploy_ui_package "$ui_target" ;;
     build)
         case "$VARIANT" in
             ospi)     build_ospi ;;
@@ -3139,6 +3224,7 @@ case "$ACTION" in
                         build_release_env "$ENV_C5_MATTER"
                         copy_one_to_upgrade "$ENV_C5_MATTER" "firmware_matter.bin"
                         upload_env_auto "$ENV_C5_MATTER"
+                        deploy_ui_package
                         ;;
                     zigbee)
                         build_release_env "$ENV_C5_ZIGBEE"
@@ -3151,6 +3237,7 @@ case "$ACTION" in
                         if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
                             ensure_zigbee_boot_partition
                         fi
+                        deploy_ui_package
                         ;;
                     esp32)
                         build_release_env "$ENV_C5_MATTER"
@@ -3162,6 +3249,7 @@ case "$ACTION" in
                         if [[ "$LAST_UPLOAD_PATH" == "usb" ]]; then
                             ensure_zigbee_boot_partition
                         fi
+                        deploy_ui_package
                         header "ESP32 deploy complete"
                         ok "Matter:   flashed to ota_1 (0x3A0000)"
                         ok "ZigBee:   flashed to ota_0 (0x10000)"
@@ -3192,6 +3280,7 @@ case "$ACTION" in
                             ensure_zigbee_boot_partition
                         fi
                         upload_env_auto "$ENV_ESP8266"
+                        deploy_ui_package
                         header "Deploy complete"
                         ok "Matter:   flashed to ota_1 (0x3A0000)"
                         ok "ZigBee:   flashed to ota_0 (0x10000)"
